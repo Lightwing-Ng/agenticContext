@@ -1,4 +1,4 @@
-/* Code version: v1.19.0-codex.0 */
+/* Code version: v1.22.0-codex.0 */
 
 (() => {
     "use strict";
@@ -128,6 +128,8 @@
 
     function currentCacheContentMode() {
         if (page.dataset.cacheLocal === "true") return "text";
+        const supportedModes = (page.dataset.cacheContentModes || "text,media").split(",");
+        if (supportedModes.length === 1) return supportedModes[0];
         return contentModeFromCacheUrl()
             || cacheSourceSwitcher?.dataset.cacheSourceContentMode
             || readRememberedContentMode();
@@ -147,10 +149,12 @@
     function cacheCanonicalPath(mode, browserId) {
         const source = page.dataset.cacheSource || "";
         const selectedBrowser = browserId || currentCacheBrowser();
-        if (!source || !cacheContentModeControl || !selectedBrowser) {
+        if (!source || page.dataset.cacheLocal === "true" || !selectedBrowser) {
             return source ? `/cache/${source}` : "";
         }
-        const normalizedMode = mode === "media" ? "media" : "text";
+        const supportedModes = (page.dataset.cacheContentModes || "text,media").split(",");
+        const requestedMode = mode === "media" ? "media" : "text";
+        const normalizedMode = supportedModes.includes(requestedMode) ? requestedMode : supportedModes[0];
         return `/cache/${source}/${normalizedMode}/${selectedBrowser}`;
     }
 
@@ -355,7 +359,9 @@
             const targetUrl = new URL(targetPath, window.location.origin);
             const selectedPath = cacheSelectionPathPattern.exec(targetUrl.pathname);
             if (selectedPath) {
-                const selectedMode = currentCacheContentMode();
+                const supportedModes = (option.dataset.cacheSourceContentModes || "text,media").split(",");
+                const requestedMode = currentCacheContentMode();
+                const selectedMode = supportedModes.includes(requestedMode) ? requestedMode : supportedModes[0];
                 const selectedBrowser = currentCacheBrowser();
                 const supportsSelectedBrowser = (option.dataset.cacheSourceBrowsers || "")
                     .split(",").includes(selectedBrowser);
@@ -578,9 +584,48 @@
             resources: "resources",
         };
         const progressUnit = progressUnits[data.progress_unit] || "items";
+        if (sourceKey === "copilot") {
+            const metrics = data.performance_metrics && typeof data.performance_metrics === "object"
+                ? data.performance_metrics
+                : {};
+            const expected = Math.max(Number(metrics.expected_sessions) || 0, 0);
+            const cached = Math.max(Number(data.downloaded_posts) || 0, 0);
+            if (data.discovery_complete !== true) {
+                const workDetail = queued > 0
+                    ? `${formatMetricNumber(processed)} of ${formatMetricNumber(queued)} discovered sessions processed.`
+                    : `${formatMetricNumber(cached)} sessions cached.`;
+                const totalDetail = expected > 0
+                    ? `Copilot reports ${formatMetricNumber(expected)} total sessions; full history discovery is incomplete.`
+                    : "The full history total is unknown.";
+                return {
+                    completePercent: 0,
+                    auditPercent: 0,
+                    isIndeterminate: Boolean(data.running),
+                    hasMeasuredProgress: false,
+                    label: data.running ? "Scanning" : "Partial",
+                    detail: `${workDetail} ${totalDetail} Full-history completeness is unverified.`,
+                };
+            }
+            const failed = Math.max(Number(data.failed_tweets) || 0, 0);
+            const verifiedSuccess = data.phase === "finished"
+                && metrics.sync_complete === true
+                && failed === 0
+                && processed >= queued;
+            if (!verifiedSuccess && (!data.running || processed >= queued)) {
+                return {
+                    completePercent: 0,
+                    auditPercent: 0,
+                    isIndeterminate: Boolean(data.running),
+                    hasMeasuredProgress: false,
+                    label: data.running ? "Verifying" : "Partial",
+                    detail: `${formatMetricNumber(processed)} / ${formatMetricNumber(queued)} sessions processed; ${formatMetricNumber(cached)} sessions cached; ${formatMetricNumber(failed)} session ${failed === 1 ? "failure" : "failures"}. Full-history completion is unverified.`,
+                };
+            }
+        }
         const hasMeasuredProgress = queued > 0;
         const isIndeterminate = Boolean(data.running && !hasMeasuredProgress);
         let completePercent = hasMeasuredProgress ? (processed / queued) * 100 : 0;
+        if (sourceKey === "copilot" && data.running) completePercent = Math.min(completePercent, 99);
         let label = "Ready";
         let detail = `No ${sourceLabel} sync is active.`;
 

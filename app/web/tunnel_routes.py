@@ -6,7 +6,7 @@ the Agent surface. Request handling, credential validation, and status presentat
 live here.
 """
 
-# Code version: v1.11.5-codex.0
+# Code version: v1.11.6-codex.0
 
 from __future__ import annotations
 
@@ -62,13 +62,13 @@ from app.core.agent import (
     merge_tunnel_credentials,
     protected_resource_metadata,
     project_availability,
+    project_transaction_lock,
     resolve_current_project,
     save_tunnel_credentials,
     selected_projects,
     valid_tunnel_id,
     www_authenticate_challenge,
 )
-from app.core.tunnel_projects import project_transaction_lock
 
 
 TUNNEL_BLUEPRINT_NAME = "tunnel"

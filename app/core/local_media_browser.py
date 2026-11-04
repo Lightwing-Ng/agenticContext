@@ -1,6 +1,6 @@
 """Local media discovery, deletion tombstones, and pagination."""
 
-# Code version: v1.36.0-codex.0
+# Code version: v1.37.2-codex.0
 
 from __future__ import annotations
 
@@ -45,11 +45,11 @@ VIDEO_SUFFIXES = frozenset({".m4v", ".mkv", ".mov", ".mp4", ".webm"})
 MEDIA_SUFFIXES = IMAGE_SUFFIXES | VIDEO_SUFFIXES
 SOURCE_VALUES = frozenset({"all", "x", "grok", "chatgpt", "claude", "gemini"})
 TEXT_SOURCE_VALUES = frozenset(
-    {"all", "x", "chatgpt", "claude", "claude_code", "gemini", "grok", "grok_build", "zhihu", "wechat"}
+    {"all", "x", "chatgpt", "copilot", "codex", "claude", "claude_code", "gemini", "grok", "grok_build", "zhihu", "wechat"}
 ) | frozenset(OPENCLAW_SOURCE_LABELS)
 # Text-only providers have no media cache source. Treat a URL naming one in
 # Media mode as the ChatGPT media view instead of silently showing all media.
-TEXT_ONLY_SOURCE_VALUES = frozenset({"zhihu", "claude_code", "grok_build", "wechat"}) | frozenset(OPENCLAW_SOURCE_LABELS)
+TEXT_ONLY_SOURCE_VALUES = frozenset({"zhihu", "claude_code", "codex", "grok_build", "copilot", "wechat"}) | frozenset(OPENCLAW_SOURCE_LABELS)
 MEDIA_KIND_VALUES = frozenset({"all", "image", "video"})
 SORT_VALUES = frozenset({"newest", "oldest", "name"})
 VIEW_VALUES = frozenset({"media", "text", "prompts"})
@@ -1047,13 +1047,16 @@ def build_local_store_pagination(
         )
 
     if end_page < normalized_total_pages:
-        items.append(
-            LocalMediaPaginationItem(
-                kind="ellipsis",
-                position="trailing",
-                ranges=_build_pagination_ranges(end_page + 1, normalized_total_pages, chunk_size),
+        if end_page + 1 < normalized_total_pages:
+            items.append(
+                LocalMediaPaginationItem(
+                    kind="ellipsis",
+                    position="trailing",
+                    ranges=_build_pagination_ranges(
+                        end_page + 1, normalized_total_pages, chunk_size
+                    ),
+                )
             )
-        )
         items.append(LocalMediaPaginationItem(kind="page", page=normalized_total_pages))
         items.append(LocalMediaPaginationItem(kind="next", page=end_page + 1))
 

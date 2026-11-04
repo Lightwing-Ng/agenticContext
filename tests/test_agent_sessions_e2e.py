@@ -1,4 +1,4 @@
-"""Session switching, capacity, and selected controls. Code version: v1.37.0-claude.0."""
+"""Session switching, capacity, and selected controls. Code version: v1.37.1-codex.0."""
 
 import re
 from copy import deepcopy
@@ -1370,6 +1370,7 @@ def test_tunnel_project_folder_picker_selects_or_registers_chosen_roots(
     requests = []
     reject_next = {"value": False}
     register_requests = []
+    accept_registration = {"value": False}
     native_next = {"path": str(alpha_root)}
     native_requests = []
 
@@ -1406,6 +1407,23 @@ def test_tunnel_project_folder_picker_selects_or_registers_chosen_roots(
 
     def fulfill_register(route):
         register_requests.append(route.request.post_data_json)
+        if accept_registration["value"]:
+            added = {
+                **alpha,
+                "id": "added",
+                "identity": "added00000000000",
+                "root": str(unregistered_root),
+            }
+            status["project_context"] = {
+                **status["project_context"],
+                "revision": 4,
+                "current": added,
+                "selected_project_ids": ["alpha", "beta", "added"],
+                "projects": [alpha, beta, added],
+            }
+            status["status_observed_at"] = 4
+            route.fulfill(json=deepcopy(status))
+            return
         route.fulfill(
             status=409,
             json={"error": "Registration was declined for this test."},
@@ -1434,7 +1452,13 @@ def test_tunnel_project_folder_picker_selects_or_registers_chosen_roots(
         assert radius >= box["width"] / 2 - 1
 
         project_path = page.locator("#agent_tunnel_project_path")
+        prompt = page.locator("[data-agent-tunnel-kickoff]")
+        _assert_exact_project_kickoff(prompt, "alpha", alpha["identity"], 1)
+        task = "Preserve this task while I choose a folder."
+        prompt.fill(prompt.input_value().replace("[describe your task].", task))
         project_path.fill(str(unregistered_root))
+        page.locator('[data-agent-connection-mode][value="tunnel"]').dispatch_event("change")
+        expect(project_path).to_have_value(str(unregistered_root))
         project_path.dispatch_event("change")
         expect(page.locator("[data-agent-tunnel-project-status]")).to_contain_text(
             "Registration was declined"
@@ -1521,6 +1545,36 @@ def test_tunnel_project_folder_picker_selects_or_registers_chosen_roots(
             "selected_project_ids": ["alpha", "beta"],
             "expected_revision": 3,
         }
+        assert prompt.input_value().endswith("\n\nTask:\n" + task)
+
+        if width < 900:
+            page.locator("#sidebar_toggle").click()
+        page.locator(
+            "[data-agent-tunnel-kickoff-project-field] .browser-filter-select-trigger"
+        ).click()
+        page.locator(
+            '[data-agent-tunnel-kickoff-project-field] '
+            '[data-browser-filter-select-option="beta"]'
+        ).click()
+        _assert_exact_project_kickoff(prompt, "beta", beta["identity"], 3)
+        if width < 900:
+            page.locator("#sidebar_toggle").click()
+        prior_requests = len(requests)
+        native_next["path"] = str(alpha_root)
+        picker.click()
+        _assert_exact_project_kickoff(prompt, "alpha", alpha["identity"], 3)
+        assert len(requests) == prior_requests
+
+        accept_registration["value"] = True
+        native_next["path"] = str(unregistered_root)
+        picker.click()
+        expect(project_path).to_have_value(str(unregistered_root))
+        _assert_exact_project_kickoff(prompt, "added", "added00000000000", 4)
+        assert register_requests[-1] == {
+            "path": str(unregistered_root),
+            "expected_revision": 3,
+        }
+        assert prompt.input_value().endswith("\n\nTask:\n" + task)
         assert page.evaluate("() => document.documentElement.scrollWidth") <= width
     finally:
         context.close()

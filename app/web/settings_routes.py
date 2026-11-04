@@ -36,11 +36,9 @@ from app.core.foundation import (
     APP_VERSION,
     DEFAULT_HOST,
     DEFAULT_PORT,
-    get_log_file_path,
-)
-from app.core.native_directory_picker import (
     NativeDirectoryPickerError,
     choose_native_directory,
+    get_log_file_path,
 )
 from app.core.storage import (
     SettingsDirectoryBrowserError,
@@ -186,6 +184,7 @@ def register_settings_routes(app: Flask, context: SettingsRouteContext) -> None:
         directory_options = {
             "grok_build_directory": context.config_store.config.grok_build_directory,
             "claude_code_directory": context.config_store.config.claude_code_directory,
+            "codex_directory": context.config_store.config.codex_directory,
             "chrome_user_data_dir": context.config_store.config.chrome_user_data_dir,
             "shadow_backup_destination": context.config_store.config.shadow_backup_destination,
             "agent_allowed_root": Path(context.computer_use_settings.settings.workspace_path),

@@ -1,4 +1,4 @@
-<!-- Code version: v1.0.0-codex.1 -->
+<!-- Code version: v1.2.0-codex.0 -->
 <div
     id="cache_wait_modal"
     class="workspace-modal-overlay cache-wait-modal"
@@ -7,7 +7,7 @@
     aria-labelledby="cache_wait_modal_title"
     aria-describedby="cache_wait_modal_copy"
     aria-busy="true"
-    hidden
+    {% if not wait_modal_initially_open|default(false) %}hidden{% endif %}
 >
     <div class="workspace-modal-dialog">
         <button
@@ -18,8 +18,14 @@
         >
             <span class="cache-wait-modal-close-icon" aria-hidden="true"></span>
         </button>
-        <span class="suggestion-loading-spinner workspace-modal-icon" aria-hidden="true"></span>
-        <p id="cache_wait_modal_title" class="workspace-modal-title">Working locally</p>
-        <p id="cache_wait_modal_copy" class="workspace-modal-copy">Please wait while the app completes your request on this computer.</p>
+        <!-- Keep the shared spinner paintable without an external mask request during navigation. -->
+        <span class="suggestion-loading-spinner workspace-modal-icon" style="background-color: transparent; color: var(--accent-fill); mask: none; -webkit-mask: none;" aria-hidden="true">
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="100%" height="100%" shape-rendering="geometricPrecision" focusable="false" style="display: block;">
+                <circle cx="12" cy="12" r="8.75" fill="none" stroke="currentColor" stroke-width="2.25" opacity="0.26" />
+                <circle cx="12" cy="12" r="8.75" fill="none" stroke="currentColor" stroke-width="2.25" stroke-linecap="round" stroke-dasharray="39 16" transform="rotate(-90 12 12)" />
+            </svg>
+        </span>
+        <p id="cache_wait_modal_title" class="workspace-modal-title">{{ wait_modal_title|default('Working locally') }}</p>
+        <p id="cache_wait_modal_copy" class="workspace-modal-copy">{{ wait_modal_copy|default('Please wait while the app completes your request on this computer.') }}</p>
     </div>
 </div>

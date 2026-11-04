@@ -10,7 +10,7 @@ Jury, and Cache route modules borrow those few Agent capabilities without import
 this module's internals or duplicating the gate.
 """
 
-# Code version: v1.2.0-claude.0
+# Code version: v1.3.0-codex.0
 
 from __future__ import annotations
 
@@ -71,8 +71,12 @@ from app.core.agent import (
     probe_and_collect_grok_sources,
     validate_agent_access_password,
 )
-from app.core.browser import open_zhihu_browser_for_login, probe_browser_session
-from app.core.browser_sessions import agent_uses_daily_edge_profile
+from app.core.browser import (
+    agent_uses_daily_edge_profile,
+    open_copilot_browser_for_login,
+    open_zhihu_browser_for_login,
+    probe_browser_session,
+)
 from app.core.foundation import (
     APP_VERSION,
     CacheTaskCoordinator,
@@ -1511,7 +1515,12 @@ def register_agent_routes(app: Flask, context: AgentRouteContext) -> AgentSurfac
             and browser_name in {"edge", "chrome"}
             and browser_name in available_agent_browser_keys()
         )
-        if not is_zhihu_selection and (
+        is_copilot_selection = (
+            platform_name == "copilot"
+            and scope != "agent"
+            and browser_name in available_agent_browser_keys()
+        )
+        if not (is_zhihu_selection or is_copilot_selection) and (
             not is_supported_agent_selection(browser_name, platform_name)
             or browser_name not in available_agent_browser_keys()
         ):
@@ -1522,6 +1531,8 @@ def register_agent_routes(app: Flask, context: AgentRouteContext) -> AgentSurfac
             result = (
                 open_zhihu_browser_for_login(browser_name, context.config_store.config)
                 if is_zhihu_selection
+                else open_copilot_browser_for_login(browser_name, context.config_store.config)
+                if is_copilot_selection
                 else open_browser_for_login(
                     platform_name,
                     browser_name,

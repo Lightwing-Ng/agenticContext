@@ -1,6 +1,6 @@
 """Isolated browser coverage for a Cache task that waits for a busy browser.
 
-Code version: v1.0.0-claude.0
+Code version: v1.1.0-codex.0
 """
 
 from __future__ import annotations
@@ -189,5 +189,160 @@ def test_busy_safari_keeps_the_last_account_check_and_an_unverified_account_stil
         expect(panel.locator('[data-role="browser-session-message"]')).to_have_text(
             "Safari is not signed in to ChatGPT."
         )
+    finally:
+        context.close()
+
+
+@pytest.mark.integration
+@pytest.mark.slow
+@pytest.mark.parametrize(("width", "height"), ((1_006, 791), (390, 844)))
+def test_transient_safari_probe_recovers_automatically_without_caching_busy(
+    disposable_browser: Browser,
+    sidebar_server_url: str,
+    macos_host,
+    width: int,
+    height: int,
+) -> None:
+    """An overlapping account probe stays neutral and retries after the lease is free."""
+    context = disposable_browser.new_context(
+        viewport={"width": width, "height": height},
+        reduced_motion="reduce",
+    )
+    requests: list[str] = []
+
+    def respond(route) -> None:
+        requests.append(route.request.url)
+        ready = len(requests) > 1
+        route.fulfill(json={
+            "platform": "x", "browser": "safari", "browser_label": "Safari",
+            "logged_in": True if ready else None,
+            "can_download": ready,
+            "account_name": "Isolated X account" if ready else "",
+            "busy": not ready,
+            "retry_after_seconds": 2 if not ready else 0,
+            "message": "Ready." if ready else "Safari is finishing another browser check.",
+        })
+
+    context.route("**/api/browser-session**", respond)
+    cache_key = "cachelikes:browser-session:v8:default:x:safari"
+    context.add_init_script(
+        "sessionStorage.setItem(%s, JSON.stringify({cached_at: Date.now(), payload: %s}));"
+        % (json.dumps(cache_key), json.dumps({
+            "logged_in": None, "can_download": False,
+            "message": (
+                "Could not verify the account: RuntimeError: "
+                "Safari is busy with another active browser task. Try again after it finishes."
+            ),
+        }))
+    )
+    page = context.new_page()
+    page.clock.install()
+    try:
+        page.goto(f"{sidebar_server_url}/cache/x/media/safari")
+        if width < 768:
+            page.locator("#sidebar_toggle").click()
+        panel = page.locator("[data-browser-session-panel]")
+        account = panel.locator('[data-role="browser-session-account"]')
+        expect(account).to_have_text("Waiting for Safari")
+        expect(panel.locator('[data-role="browser-session-checkmark"]')).to_be_hidden()
+        expect(panel.locator('[data-role="browser-session-spinner"]')).to_be_visible()
+        assert page.evaluate("key => sessionStorage.getItem(key)", cache_key) is None
+        assert len(requests) == 1
+
+        page.clock.run_for(2_100)
+        expect(account).to_have_text("Isolated X account")
+        expect(panel.locator('[data-role="browser-session-spinner"]')).to_be_hidden()
+        expect(panel.locator('[data-role="browser-session-checkmark"]')).to_have_attribute(
+            "data-status-state", "ready"
+        )
+        assert len(requests) == 2
+        cached = json.loads(page.evaluate("key => sessionStorage.getItem(key)", cache_key))
+        assert cached["payload"]["can_download"] is True
+        assert page.evaluate("document.documentElement.scrollWidth <= innerWidth + 1")
+    finally:
+        context.close()
+
+
+@pytest.mark.integration
+@pytest.mark.slow
+def test_transient_safari_probe_retries_stop_after_a_bounded_attempt_count(
+    disposable_browser: Browser,
+    sidebar_server_url: str,
+    macos_host,
+) -> None:
+    """Persistent contention remains neutral and eventually requires an explicit Recheck."""
+    context = disposable_browser.new_context(viewport={"width": 1_006, "height": 791})
+    requests: list[str] = []
+
+    def respond(route) -> None:
+        requests.append(route.request.url)
+        route.fulfill(json={
+            "platform": "x", "browser": "safari", "browser_label": "Safari",
+            "logged_in": None, "can_download": False, "account_name": "",
+            "busy": True, "retry_after_seconds": 2,
+            "message": f"Waiting on check {len(requests)}.",
+        })
+
+    context.route("**/api/browser-session**", respond)
+    page = context.new_page()
+    page.clock.install()
+    try:
+        page.goto(f"{sidebar_server_url}/cache/x/media/safari")
+        message = page.locator('[data-role="browser-session-message"]')
+        expect(message).to_have_text("Waiting on check 1.")
+        for attempt in range(2, 32):
+            page.clock.run_for(2_100)
+            expect(message).to_have_text(
+                "Safari is still busy. Choose Recheck when it is free."
+                if attempt == 31 else f"Waiting on check {attempt}."
+            )
+        page.clock.run_for(10_000)
+        assert len(requests) == 31
+        expect(page.locator('[data-role="browser-session-account"]')).to_have_text("Waiting for Safari")
+        expect(page.locator('[data-role="browser-session-checkmark"]')).to_be_hidden()
+        expect(page.locator('[data-role="browser-session-spinner"]')).to_be_hidden()
+        expect(page.locator('[data-role="browser-session-recheck"]')).to_be_visible()
+    finally:
+        context.close()
+
+
+@pytest.mark.integration
+@pytest.mark.slow
+def test_transient_safari_probe_retry_is_cancelled_when_browser_changes(
+    disposable_browser: Browser,
+    sidebar_server_url: str,
+    macos_host,
+) -> None:
+    """A pending Safari retry cannot overwrite a newly selected browser account."""
+    context = disposable_browser.new_context(viewport={"width": 1_006, "height": 791})
+    safari_requests: list[str] = []
+
+    def respond(route) -> None:
+        safari = "browser=safari" in route.request.url
+        if safari:
+            safari_requests.append(route.request.url)
+        route.fulfill(json={
+            "platform": "x", "browser": "safari" if safari else "edge",
+            "browser_label": "Safari" if safari else "Edge",
+            "logged_in": None if safari else True,
+            "can_download": not safari, "busy": safari,
+            "retry_after_seconds": 2 if safari else 0,
+            "account_name": "" if safari else "Isolated Edge account",
+            "message": "Waiting." if safari else "Ready.",
+        })
+
+    context.route("**/api/browser-session**", respond)
+    page = context.new_page()
+    page.clock.install()
+    try:
+        page.goto(f"{sidebar_server_url}/cache/x/media/safari")
+        account = page.locator('[data-role="browser-session-account"]')
+        expect(account).to_have_text("Waiting for Safari")
+        page.locator('[data-role="browser-picker-trigger"]').click()
+        page.locator('[data-browser-option="edge"]').click()
+        expect(account).to_have_text("Isolated Edge account")
+        page.clock.run_for(5_000)
+        expect(account).to_have_text("Isolated Edge account")
+        assert len(safari_requests) == 1
     finally:
         context.close()

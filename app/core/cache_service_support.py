@@ -1,6 +1,6 @@
 """Shared lifecycle and status helpers for background Cache services."""
 
-# Code version: v1.1.0-claude.0
+# Code version: v1.2.0-codex.0
 
 from __future__ import annotations
 
@@ -13,6 +13,7 @@ from .cache_task_coordinator import CacheTaskCoordinator, CacheTaskIdentity
 from .config import CrawlConfig
 from .job_lock import CacheTaskLock, SHARED_CACHE_TASK_LOCK
 from .logging_setup import reset_job_id, set_job_id
+from .safari_automation import SafariCacheCancelled, safari_cache_acquisition_scope
 from .shadow_backup import ShadowBackupService
 from .state import TaskState, utc_now
 
@@ -72,6 +73,20 @@ class CooperativeCacheWorker:
     ) -> None:
         """Admit one daemon worker: start it now, or queue it behind a busy resource."""
 
+        def run_target() -> None:
+            if str(browser or "").strip().lower() != "safari":
+                target(*args)
+                return
+            with safari_cache_acquisition_scope(
+                self._is_stop_requested,
+                self._stop_requested.wait,
+                self._state.append_event,
+            ):
+                try:
+                    target(*args)
+                except SafariCacheCancelled:
+                    self._finish_cancelled_browser_wait()
+
         with self._lifecycle_lock:
             if self.is_queued() and self._task is not None:
                 raise RuntimeError(f"The {self._task.title} cache is already queued.")
@@ -81,8 +96,8 @@ class CooperativeCacheWorker:
                 self._start_exclusive_worker(
                     lock_owner=lock_owner,
                     lock_busy_message=lock_busy_message,
-                    target=target,
-                    args=args,
+                    target=run_target,
+                    args=(),
                     prepare=prepare,
                     thread_factory=thread_factory,
                 )
@@ -112,7 +127,7 @@ class CooperativeCacheWorker:
                     )
                 else:
                     begin_run()
-                self._worker = thread_factory(target=target, args=args, daemon=True)
+                self._worker = thread_factory(target=run_target, daemon=True)
                 self._worker.start()
 
             def fail_queued_launch(error: Exception) -> None:
@@ -134,6 +149,12 @@ class CooperativeCacheWorker:
                 if self.is_running():
                     self._state.finish_error(str(exc))
                 raise
+
+    def _finish_cancelled_browser_wait(self) -> None:
+        """Publish cancellation after the provider's cleanup scopes have unwound."""
+        self._state.finish_stopped(
+            "Cache stopped while waiting for Safari. Cached content was preserved."
+        )
 
     def _start_exclusive_worker(
         self,

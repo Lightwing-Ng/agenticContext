@@ -1,6 +1,6 @@
 """Rendered Jury readiness, review evidence, and one-question session behavior.
 
-Code version: v1.3.7-codex.0
+Code version: v1.3.9-codex.0
 """
 
 from copy import deepcopy
@@ -195,7 +195,7 @@ def test_jury_model_menu_escapes_sidebar_clipping(jury_browser, sidebar_server_u
 
 @pytest.mark.parametrize(
     ("width", "height", "summary_columns"),
-    ((1024, 900, "248px 34px"), (585, 1218, "240px 26px")),
+    ((1024, 900, "252px 30px"), (585, 1218, "252px 14px")),
 )
 def test_jury_recent_sessions_reuses_agent_disclosure_style(
     jury_browser,
@@ -513,7 +513,7 @@ def test_jury_all_selected_accounts_gate_and_shared_responsive_sidebar(jury_brow
     errors = []
     page.on("pageerror", lambda error: errors.append(str(error)))
     try:
-        expect(page.locator('[aria-label="Agent modes"] a')).to_have_text(["Agentic", "Jurors"])
+        expect(page.locator('[aria-label="Agent modes"] a')).to_have_text(["Agentic", "Jurors", "iPhone"])
         expect(page.locator('[aria-label="Agent modes"] a[aria-current="page"]')).to_have_text("Jurors")
         expect(page.locator('[aria-label="Agent modes"]')).to_have_class(
             re.compile(r"\bsegmented-control\b")

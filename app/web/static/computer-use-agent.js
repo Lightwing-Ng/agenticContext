@@ -1,4 +1,4 @@
-/* Code version: v3.74.1-codex.0 */
+/* Code version: v3.74.3-codex.0 */
 
 (() => {
     const BOOTSTRAPPED_SOURCE_PLATFORMS = new Set(["chatgpt", "gemini", "grok", "claude"]);
@@ -2020,6 +2020,12 @@
         if (projectId === tunnelProjectContext.current?.id
             && JSON.stringify(normalizedSelected)
                 === JSON.stringify(tunnelProjectContext.selectedProjectIds)) {
+            if (path) {
+                tunnelKickoffProjectId = project.id;
+                tunnelKickoffProjectIdentity = project.identity;
+                tunnelProjectNotice = "";
+                syncTunnelProjectUi();
+            }
             return true;
         }
         const operationRevision = ++tunnelProjectSaveRevision;
@@ -2059,6 +2065,11 @@
             }
             if (!applyTunnelStatus(payload, requestedPlatform)) {
                 throw new Error("The server returned an invalid project selection response.");
+            }
+            if (path) {
+                // An explicit folder choice also targets the task after confirmation.
+                tunnelKickoffProjectId = returnedContext.current.id;
+                tunnelKickoffProjectIdentity = returnedContext.current.identity;
             }
             if (path && elements.tunnelProjectPath instanceof HTMLInputElement) {
                 elements.tunnelProjectPath.value = path;
@@ -2200,6 +2211,8 @@
             if (!applyTunnelStatus(payload, requestedPlatform)) {
                 throw new Error("The server returned an invalid project registration response.");
             }
+            tunnelKickoffProjectId = tunnelProjectContext.current?.id || "";
+            tunnelKickoffProjectIdentity = tunnelProjectContext.current?.identity || "";
             if (elements.tunnelProjectPath instanceof HTMLInputElement) {
                 elements.tunnelProjectPath.value = path;
                 tunnelProjectPathTouched = true;
@@ -3870,8 +3883,10 @@
                 event.preventDefault();
             }
         });
-        elements.tunnelProjectPath?.addEventListener("change", () => {
-            tunnelProjectPathTouched = true;
+        ["input", "change"].forEach((type) => {
+            elements.tunnelProjectPath?.addEventListener(type, () => {
+                tunnelProjectPathTouched = true;
+            });
         });
         elements.tunnelProjectPath?.addEventListener(
             "settings-directory-path-validated",
@@ -4847,12 +4862,14 @@
             items.push({kind: "page", page, isActive: page === currentPage});
         }
         if (endPage < totalPages) {
-            items.push({
-                kind: "ellipsis",
-                position: "trailing",
-                firstPage: endPage + 1,
-                lastPage: totalPages,
-            });
+            if (endPage + 1 < totalPages) {
+                items.push({
+                    kind: "ellipsis",
+                    position: "trailing",
+                    firstPage: endPage + 1,
+                    lastPage: totalPages,
+                });
+            }
             items.push({kind: "page", page: totalPages});
             items.push({kind: "next", page: endPage + 1});
         }

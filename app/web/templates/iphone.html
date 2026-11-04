@@ -1,0 +1,285 @@
+<!-- Code version: v1.1.8-codex.0 -->
+<!doctype html>
+<html lang="en-US">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+    <title>{{ product_name }} iPhone</title>
+    <link rel="icon" type="image/svg+xml" href="{{ url_for('static', filename='images/favicon.svg', v=version ~ '-favicon-v1.0.1-codex.1') }}">
+    <script src="{{ url_for('static', filename='language-rendering.js', v='language-rendering-v1.0.0-codex.1') }}"></script>
+    <script src="{{ url_for('static', filename='theme-mode.js', v='theme-mode-v1.0.0-codex.1') }}"></script>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css', v=version ~ '-style-v2.157.0-codex.0') }}">
+    {% include "_cache_activity_assets.html" %}
+    <link rel="stylesheet" href="{{ url_for('static', filename='agent-sessions.css', v='1.9.0') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='selection-list.css', v='selection-list-v1.0.0-codex.0') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='iphone.css', v='iphone-v1.0.0-claude.0') }}">
+    <script defer src="{{ url_for('static', filename='segmented-control.js', v='segmented-control-v1.0.4-codex.1') }}"></script>
+    <script src="{{ url_for('static', filename='responsive.js', v='responsive-v1.0.0-codex.1') }}"></script>
+    <script defer src="{{ url_for('static', filename='waiting-modal.js', v='waiting-modal-v1.2.0-codex.0') }}"></script>
+</head>
+<body>
+{% include "_sidebar_bootstrap.html" %}
+{% set iphone_available = iphone_supported and iphone_operations_enabled and iphone_loopback %}
+{% if not iphone_supported %}
+    {% set iphone_notice_title = 'iPhone control needs a Mac' %}
+    {% set iphone_notice_copy = 'Setting up and controlling an iPhone uses Xcode and WebDriverAgent, so it only works when ' ~ product_name ~ ' runs on macOS.' %}
+{% elif not iphone_loopback %}
+    {% set iphone_notice_title = 'Open this page on the Mac' %}
+    {% set iphone_notice_copy = 'The iPhone can only be set up and controlled from the Mac that runs ' ~ product_name ~ ', not from another device on the network.' %}
+{% elif not iphone_operations_enabled %}
+    {% set iphone_notice_title = 'iPhone control is turned off' %}
+    {% set iphone_notice_copy = 'This ' ~ product_name ~ ' instance runs with Agent operations disabled, so it cannot set up or control an iPhone.' %}
+{% else %}
+    {% set iphone_notice_title = '' %}
+    {% set iphone_notice_copy = '' %}
+{% endif %}
+<main
+    class="page agent-page iphone-page"
+    data-iphone-root
+    data-iphone-supported="{{ 'true' if iphone_supported else 'false' }}"
+    data-iphone-operations-enabled="{{ 'true' if iphone_operations_enabled else 'false' }}"
+    data-iphone-loopback="{{ 'true' if iphone_loopback else 'false' }}"
+    data-iphone-live="offline"
+    data-frame-seq="0"
+    data-iphone-ready="false"
+>
+    <button type="button" class="circular-icon-button sidebar-toggle" id="sidebar_toggle" data-layout-role="sidebar-toggle" aria-label="Toggle sidebar" aria-expanded="false"><span class="icon sidebar-toggle-icon" aria-hidden="true"></span></button>
+    <div class="app-shell is-sidebar-open" id="app_shell">
+        {% include "_theme_toggle.html" %}
+        <button type="button" class="sidebar-backdrop" id="sidebar_backdrop" aria-label="Close sidebar" aria-hidden="true" tabindex="-1" hidden></button>
+        <aside class="panel sidebar agent-sidebar" id="iphone_sidebar" data-layout-role="sidebar-shell">
+            <section class="hero" data-layout-role="sidebar-title"><h1>Agent</h1></section>
+            {% set current_agent_mode = 'iphone' %}
+            {% include "_agent_mode_nav.html" %}
+            <section class="iphone-connection" aria-labelledby="iphone_connection_title">
+                <h2 class="iphone-sidebar-heading" id="iphone_connection_title">Connection</h2>
+                <div class="browser-session-status-card browser-session-status-card-compact iphone-status-card" data-iphone-status-card role="status" aria-live="polite">
+                    <div class="browser-session-status-copy">
+                        <div class="browser-session-status-item">
+                            <span class="browser-session-status-checkmark" data-iphone-status-check aria-hidden="true" hidden></span>
+                            <span class="suggestion-loading-spinner browser-session-status-spinner" data-iphone-status-spinner aria-hidden="true"{% if not iphone_available %} hidden{% endif %}></span>
+                            <span class="browser-session-status-literal"><span class="browser-session-status-field-label">Status:</span><span class="browser-session-status-field-value" data-iphone-status-label>{{ 'Checking' if iphone_available else 'Unavailable' }}</span></span>
+                        </div>
+                        <p class="browser-session-status-message" data-role="browser-session-message" data-iphone-status-message{% if iphone_available %} hidden{% endif %}>{{ iphone_notice_copy }}</p>
+                    </div>
+                </div>
+                <ol class="process-list iphone-setup-steps" role="list" aria-label="iPhone setup steps">
+                    <li class="process-list-step iphone-setup-step" data-process-continues data-iphone-step="doctor" data-step-state="pending">
+                        <span class="process-list-marker" aria-hidden="true">1</span>
+                        <div class="process-list-content">
+                            <h3 class="process-list-heading" id="iphone_step_doctor">Check this Mac</h3>
+                            <p>Confirms Xcode, Git and Node.js, and looks for a connected iPhone.</p>
+                            <ul class="iphone-check-list" data-iphone-doctor-checks aria-label="Mac checks" hidden></ul>
+                            <ul class="iphone-hint-list" data-iphone-doctor-hints aria-label="Suggested next steps" hidden></ul>
+                            <p class="iphone-step-message" data-iphone-step-message="doctor" aria-live="polite" hidden></p>
+                            <div class="iphone-step-actions">
+                                <button type="button" class="secondary-button" data-iphone-setup-action="doctor" aria-describedby="iphone_step_doctor" disabled>Run check</button>
+                            </div>
+                        </div>
+                    </li>
+                    <li class="process-list-step iphone-setup-step" data-process-continues data-iphone-step="discover" data-step-state="pending">
+                        <span class="process-list-marker" aria-hidden="true">2</span>
+                        <div class="process-list-content">
+                            <h3 class="process-list-heading" id="iphone_step_discover">Find iPhone</h3>
+                            <p>Connect the iPhone by USB, unlock it and tap Trust when it asks.</p>
+                            <div class="selection-list iphone-device-list" data-iphone-device-list role="radiogroup" aria-labelledby="iphone_step_discover" hidden></div>
+                            <p class="iphone-step-message" data-iphone-step-message="discover" aria-live="polite" hidden></p>
+                            <div class="iphone-step-actions">
+                                <button type="button" class="secondary-button" data-iphone-setup-action="discover" aria-describedby="iphone_step_discover" disabled>Search</button>
+                            </div>
+                        </div>
+                    </li>
+                    <li class="process-list-step iphone-setup-step" data-process-continues data-iphone-step="configure" data-step-state="pending">
+                        <span class="process-list-marker" aria-hidden="true">3</span>
+                        <div class="process-list-content">
+                            <h3 class="process-list-heading" id="iphone_step_configure">Signing</h3>
+                            <p>Xcode signs WebDriverAgent with your own Apple developer team.</p>
+                            <p class="iphone-step-summary" data-iphone-signing-summary hidden></p>
+                            <form class="iphone-signing-form" data-iphone-signing-form novalidate>
+                                <div class="iphone-field">
+                                    <label class="iphone-field-label" for="iphone_team_id">Team ID</label>
+                                    <input id="iphone_team_id" class="text-input-control iphone-code-input iphone-team-input" type="text" name="team_id" maxlength="10" autocomplete="off" autocapitalize="characters" spellcheck="false" aria-describedby="iphone_team_id_help" data-iphone-team-id{% if not iphone_available %} disabled{% endif %}>
+                                    <p class="iphone-field-help" id="iphone_team_id_help">10 letters or digits, shown in Xcode Settings &gt; Accounts.</p>
+                                </div>
+                                <div class="iphone-field">
+                                    <label class="iphone-field-label" for="iphone_bundle_id">Bundle ID</label>
+                                    <input id="iphone_bundle_id" class="text-input-control iphone-code-input" type="text" name="bundle_id" maxlength="155" placeholder="com.yourname.wda" autocomplete="off" autocapitalize="off" spellcheck="false" aria-describedby="iphone_bundle_id_help" data-iphone-bundle-id{% if not iphone_available %} disabled{% endif %}>
+                                    <p class="iphone-field-help" id="iphone_bundle_id_help">A unique reverse-DNS name of your own.</p>
+                                </div>
+                                <p class="iphone-step-message" data-iphone-step-message="configure" aria-live="polite" hidden></p>
+                                <div class="iphone-step-actions">
+                                    <button type="submit" class="secondary-button" data-iphone-setup-action="configure" aria-describedby="iphone_step_configure" disabled>Save</button>
+                                </div>
+                            </form>
+                        </div>
+                    </li>
+                    <li class="process-list-step iphone-setup-step" data-process-continues data-iphone-step="fetch" data-step-state="pending">
+                        <span class="process-list-marker" aria-hidden="true">4</span>
+                        <div class="process-list-content">
+                            <h3 class="process-list-heading" id="iphone_step_fetch">Download WebDriverAgent</h3>
+                            <p>Downloads the pinned Appium WebDriverAgent source from GitHub.</p>
+                            <p class="iphone-job-state" data-iphone-job-state="fetch" hidden></p>
+                            <pre class="iphone-job-log" data-iphone-job-log="fetch" tabindex="0" aria-label="Download log" hidden></pre>
+                            <p class="iphone-step-message" data-iphone-step-message="fetch" aria-live="polite" hidden></p>
+                            <div class="iphone-step-actions">
+                                <button type="button" class="secondary-button" data-iphone-setup-action="fetch" aria-describedby="iphone_step_fetch" disabled>Download</button>
+                            </div>
+                        </div>
+                    </li>
+                    <li class="process-list-step iphone-setup-step" data-process-continues data-iphone-step="build" data-step-state="pending">
+                        <span class="process-list-marker" aria-hidden="true">5</span>
+                        <div class="process-list-content">
+                            <h3 class="process-list-heading" id="iphone_step_build">Build</h3>
+                            <p>Builds and signs WebDriverAgent for this iPhone with Xcode.</p>
+                            <p class="iphone-step-hint" data-iphone-xcode-hint hidden></p>
+                            <p class="iphone-job-state" data-iphone-job-state="build" hidden></p>
+                            <pre class="iphone-job-log" data-iphone-job-log="build" tabindex="0" aria-label="Build log" hidden></pre>
+                            <p class="iphone-step-message" data-iphone-step-message="build" aria-live="polite" hidden></p>
+                            <div class="iphone-step-actions">
+                                <button type="button" class="secondary-button" data-iphone-setup-action="build" aria-describedby="iphone_step_build" disabled>Build</button>
+                            </div>
+                        </div>
+                    </li>
+                    <li class="process-list-step iphone-setup-step" data-process-continues data-iphone-step="start" data-step-state="pending">
+                        <span class="process-list-marker" aria-hidden="true">6</span>
+                        <div class="process-list-content">
+                            <h3 class="process-list-heading" id="iphone_step_start">Start</h3>
+                            <p>Runs WebDriverAgent on the iPhone and the USB connection. Keep the iPhone unlocked.</p>
+                            <p class="iphone-step-hint" data-iphone-xcode-hint hidden></p>
+                            <p class="iphone-job-state" data-iphone-job-state="start" hidden></p>
+                            <pre class="iphone-job-log" data-iphone-job-log="start" tabindex="0" aria-label="Start log" hidden></pre>
+                            <p class="iphone-step-message" data-iphone-step-message="start" aria-live="polite" hidden></p>
+                            <div class="iphone-step-actions">
+                                <button type="button" class="secondary-button" data-iphone-setup-action="stop" aria-describedby="iphone_step_start" disabled>Stop</button>
+                                <button type="button" class="secondary-button" data-iphone-setup-action="start" aria-describedby="iphone_step_start" disabled>Start</button>
+                            </div>
+                        </div>
+                    </li>
+                    <li class="process-list-step iphone-setup-step" data-iphone-step="ready" data-step-state="pending">
+                        <span class="process-list-marker" aria-hidden="true">7</span>
+                        <div class="process-list-content">
+                            <h3 class="process-list-heading" id="iphone_step_ready">Connect</h3>
+                            <p>Verifies that the iPhone accepts commands.</p>
+                            <p class="iphone-step-message" data-iphone-step-message="ready" aria-live="polite" hidden></p>
+                            <div class="iphone-step-actions">
+                                <button type="button" class="secondary-button" data-iphone-setup-action="ready" aria-describedby="iphone_step_ready" disabled>Connect</button>
+                            </div>
+                        </div>
+                    </li>
+                </ol>
+            </section>
+        </aside>
+        <section class="panel chart-panel workspace agent-workspace iphone-workspace" id="iphone_workspace">
+            <div class="workspace-header">
+                <article class="report-card workspace-summary-card workspace-article-card agent-summary-card" data-layout-role="title-rail">
+                    <div class="report-heading-row" data-layout-role="title-heading"><div><h2>iPhone</h2></div></div>
+                </article>
+            </div>
+            <div class="workspace-grid workspace-content-card agent-workspace-grid iphone-workspace-grid" id="iphone_workspace_content" data-layout-role="content-scrollport">
+                <div class="iphone-notice" data-iphone-notice role="note"{% if iphone_available %} hidden{% endif %}>
+                    <h3 class="iphone-notice-title" data-iphone-notice-title>{{ iphone_notice_title }}</h3>
+                    <p class="iphone-notice-copy" data-iphone-notice-copy>{{ iphone_notice_copy }}</p>
+                </div>
+                <article class="report-card workspace-article-card iphone-preview-card" aria-labelledby="iphone_preview_title">
+                    <header class="iphone-card-header">
+                        <h3 class="iphone-card-title" id="iphone_preview_title" data-iphone-model>iPhone screen</h3>
+                        <span class="iphone-live-badge" data-iphone-live-badge data-state="offline">
+                            <span class="live-marker iphone-live-marker" aria-hidden="true"></span>
+                            <span class="iphone-live-dot" aria-hidden="true"></span>
+                            <span data-iphone-live-text>Not connected</span>
+                        </span>
+                    </header>
+                    <div class="iphone-stage">
+                        <div class="iphone-device" data-iphone-device data-orientation="portrait">
+                            <div class="iphone-screen" data-iphone-screen data-interactive="false" aria-describedby="iphone_preview_hint">
+                                <img class="iphone-screen-image" data-iphone-image alt="Live iPhone screen" draggable="false" hidden>
+                                <div class="iphone-screen-empty" data-iphone-empty data-state="{{ 'setup' if iphone_available else 'disabled' }}">
+                                    <span class="iphone-screen-empty-icon" aria-hidden="true"></span>
+                                    <span class="suggestion-loading-spinner iphone-screen-empty-spinner" aria-hidden="true"></span>
+                                    <p data-iphone-empty-text>{{ 'Finish the setup steps to see the iPhone screen' if iphone_available else 'iPhone control is unavailable' }}</p>
+                                </div>
+                                <span class="iphone-gesture-marker" data-iphone-marker aria-hidden="true" hidden></span>
+                            </div>
+                        </div>
+                    </div>
+                    <p class="iphone-preview-hint" id="iphone_preview_hint">Click the screen to tap. Drag across it to swipe.</p>
+                    <div class="iphone-toolbar" role="toolbar" aria-label="Screen controls">
+                        <button type="button" class="circular-icon-button iphone-tool" data-iphone-tool="refresh" aria-label="Refresh preview" title="Refresh preview" disabled><span class="icon iphone-tool-icon iphone-icon-refresh" aria-hidden="true"></span></button>
+                        <button type="button" class="circular-icon-button iphone-tool" data-iphone-tool="home" aria-label="Go to the Home Screen" title="Go to the Home Screen" disabled><span class="icon iphone-tool-icon iphone-icon-home" aria-hidden="true"></span></button>
+                        <button type="button" class="circular-icon-button iphone-tool" data-iphone-tool="screenshot" aria-label="Take a screenshot" title="Take a screenshot" disabled><span class="icon iphone-tool-icon iphone-icon-screenshot" aria-hidden="true"></span></button>
+                        <button type="button" class="circular-icon-button iphone-tool" data-iphone-tool="pause" data-paused="false" aria-label="Pause preview" title="Pause preview" disabled><span class="icon iphone-tool-icon iphone-icon-pause" aria-hidden="true"></span></button>
+                    </div>
+                </article>
+                <div class="iphone-side-column">
+                    <article class="report-card workspace-article-card iphone-controls-card" data-iphone-tunnel-card aria-labelledby="iphone_tunnel_title">
+                        <h3 class="iphone-card-title" id="iphone_tunnel_title">ChatGPT Tunnel</h3>
+                        <div class="iphone-control-group">
+                            <label class="selection-list-identity iphone-checkbox" for="iphone_tunnel_enabled">
+                                <input id="iphone_tunnel_enabled" class="selection-list-input" type="checkbox" data-iphone-tunnel-enabled aria-describedby="iphone_tunnel_help iphone_tunnel_lifetime" disabled>
+                                <span class="selection-list-mark" aria-hidden="true"></span>
+                                <span class="iphone-field-label">Allow iPhone access through ChatGPT Tunnel</span>
+                            </label>
+                        </div>
+                        <p class="iphone-step-message" data-iphone-tunnel-status role="status" aria-live="polite">{{ 'Checking access status.' if iphone_available else 'iPhone control is unavailable on this page.' }}</p>
+                        <p class="iphone-field-help" id="iphone_tunnel_help">Finish iPhone setup, enable access here, then open ChatGPT Tunnel. After changing access, refresh or reconnect the ChatGPT app to reload its tools.</p>
+                        <p class="iphone-field-help" id="iphone_tunnel_lifetime">Access is off by default and turns off when this app restarts. Enabling it does not start WebDriverAgent. An action already in progress may finish after access is turned off.</p>
+                        <div class="iphone-step-actions"><a class="secondary-button" href="/agent/tunnel/chatgpt">Open ChatGPT Tunnel</a></div>
+                    </article>
+                    <article class="report-card workspace-article-card iphone-controls-card" aria-labelledby="iphone_controls_title">
+                        <h3 class="iphone-card-title" id="iphone_controls_title">Controls</h3>
+                        <form class="iphone-control-group" data-iphone-type-form>
+                            <label class="iphone-field-label" for="iphone_type_text">Type text</label>
+                            <textarea id="iphone_type_text" class="iphone-type-input" rows="3" maxlength="10000" placeholder="Text for the focused field on the iPhone" aria-describedby="iphone_type_help" data-iphone-type-text{% if not iphone_available %} disabled{% endif %}></textarea>
+                            <p class="iphone-field-help" id="iphone_type_help">Tap a text field on the iPhone first. Press Shift+Return for a new line.</p>
+                            <div class="iphone-control-footer">
+                                <label class="selection-list-identity iphone-checkbox" for="iphone_type_submit">
+                                    <input id="iphone_type_submit" class="selection-list-input" type="checkbox" data-iphone-type-submit{% if not iphone_available %} disabled{% endif %}>
+                                    <span class="selection-list-mark" aria-hidden="true"></span>
+                                    <span class="selection-list-name">Press Return after typing</span>
+                                </label>
+                                <button type="submit" class="secondary-button" data-iphone-type-send disabled>Type</button>
+                            </div>
+                        </form>
+                        <div class="iphone-control-group" role="group" aria-labelledby="iphone_swipe_label">
+                            <span class="iphone-field-label" id="iphone_swipe_label">Swipe</span>
+                            <div class="iphone-button-row">
+                                <button type="button" class="circular-icon-button iphone-swipe" data-iphone-swipe="up" aria-label="Swipe up" title="Swipe up" disabled><span class="icon iphone-tool-icon iphone-icon-up" aria-hidden="true"></span></button>
+                                <button type="button" class="circular-icon-button iphone-swipe" data-iphone-swipe="down" aria-label="Swipe down" title="Swipe down" disabled><span class="icon iphone-tool-icon iphone-icon-down" aria-hidden="true"></span></button>
+                                <button type="button" class="circular-icon-button iphone-swipe" data-iphone-swipe="left" aria-label="Swipe left" title="Swipe left" disabled><span class="icon iphone-tool-icon iphone-icon-left" aria-hidden="true"></span></button>
+                                <button type="button" class="circular-icon-button iphone-swipe" data-iphone-swipe="right" aria-label="Swipe right" title="Swipe right" disabled><span class="icon iphone-tool-icon iphone-icon-right" aria-hidden="true"></span></button>
+                            </div>
+                        </div>
+                        <form class="iphone-control-group" data-iphone-launch-form>
+                            <label class="iphone-field-label" for="iphone_launch_query">Launch app</label>
+                            <div class="iphone-inline-field">
+                                <input id="iphone_launch_query" class="text-input-control" type="text" maxlength="100" placeholder="App name or bundle ID" autocomplete="off" spellcheck="false" data-iphone-launch-query{% if not iphone_available %} disabled{% endif %}>
+                                <button type="submit" class="secondary-button" data-iphone-launch-send disabled>Open</button>
+                            </div>
+                            <div class="iphone-app-candidates" data-iphone-app-candidates role="list" aria-label="Matching apps" hidden></div>
+                        </form>
+                        <div class="iphone-control-group" role="group" aria-labelledby="iphone_volume_label">
+                            <span class="iphone-field-label" id="iphone_volume_label">Volume</span>
+                            <div class="iphone-button-row">
+                                <button type="button" class="secondary-button" data-iphone-button="volumeup" disabled>Volume up</button>
+                                <button type="button" class="secondary-button" data-iphone-button="volumedown" disabled>Volume down</button>
+                            </div>
+                        </div>
+                    </article>
+                    <article class="report-card workspace-article-card iphone-activity-card" aria-labelledby="iphone_activity_title">
+                        <h3 class="iphone-card-title" id="iphone_activity_title">Activity</h3>
+                        <p class="iphone-activity-empty" data-iphone-activity-empty>No actions yet.</p>
+                        <ol class="iphone-activity-log" data-iphone-activity role="log" aria-live="polite" aria-relevant="additions" aria-labelledby="iphone_activity_title" tabindex="0" hidden></ol>
+                    </article>
+                </div>
+            </div>
+        </section>
+    </div>
+    {% set dock_section = "agent" %}
+    {% include "_sidebar_dock.html" %}
+    {% include "_cache_activity.html" %}
+</main>
+{% include "_waiting_modal.html" %}
+<script src="{{ url_for('static', filename='sidebar.js', v='sidebar-v1.31.0-codex.0') }}"></script>
+<script src="{{ url_for('static', filename='iphone.js', v='iphone-v1.1.2-codex.0') }}"></script>
+</body>
+</html>

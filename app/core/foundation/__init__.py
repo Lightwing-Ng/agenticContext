@@ -1,6 +1,6 @@
 """Stable foundation boundary for runtime configuration, identity, and task state."""
 
-# Code version: v1.4.0-claude.0
+# Code version: v1.4.1-codex.0
 
 from ..brand import PRODUCT_NAME
 from ..cache_task_coordinator import CacheTaskCoordinator, CacheTaskIdentity
@@ -34,6 +34,20 @@ from ..state import (
 )
 from ..version import APP_VERSION
 
+_NATIVE_DIRECTORY_EXPORTS = frozenset(
+    {"NativeDirectoryPickerError", "choose_native_directory"}
+)
+
+
+def __getattr__(name: str):
+    """Load host-native picker support only when a caller needs it."""
+    if name in _NATIVE_DIRECTORY_EXPORTS:
+        from .. import native_directory_picker
+
+        return getattr(native_directory_picker, name)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
 __all__ = [
     "APP_VERSION",
     "DEFAULT_HOST",
@@ -47,6 +61,7 @@ __all__ = [
     "MIN_CHATGPT_STARTUP_TIMEOUT_SECONDS",
     "MIN_MAX_MEDIA_FILE_SIZE_MIB",
     "MIN_DOWNLOAD_WORKERS",
+    "NativeDirectoryPickerError",
     "PRODUCT_NAME",
     "CrawlConfig",
     "CacheTaskCoordinator",
@@ -57,6 +72,7 @@ __all__ = [
     "TaskState",
     "build_initial_snapshot",
     "build_x_text_snapshot",
+    "choose_native_directory",
     "configure_logging",
     "get_log_file_path",
     "is_macos_host",

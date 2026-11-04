@@ -1,6 +1,6 @@
 """ChatGPT project image cache helpers."""
 
-# Code version: v1.51.0-codex.0
+# Code version: v1.52.6-codex.0
 
 from __future__ import annotations
 
@@ -25,7 +25,9 @@ from urllib.parse import parse_qs, unquote, urlencode, urlsplit
 from PIL import Image, UnidentifiedImageError
 
 from .cache_timing import wait_for_cache_scan
+from .chatgpt_cache_io import ChatGPTCacheReadTimeoutError, read_cached_image
 from .chatgpt_history_cleanup import is_chatgpt_tool_trace
+from .chatgpt_history_merge import merge_history_rows
 from .chatgpt_markdown import normalize_chatgpt_markdown
 from .browser_sessions import browser_descriptors, launch_chromium_context
 from .compute_backend import analyze_image_paths, analyze_image_payload
@@ -58,7 +60,7 @@ from .resource_persistence import (
     retire_legacy_file,
     write_parquet_rows_atomic,
 )
-from .safari_automation import SafariContext
+from .safari_automation import SafariContext, inherit_safari_cache_context
 from .state import TaskSnapshot, TaskState, utc_now
 
 try:  # pragma: no cover - depends on the local runtime
@@ -96,6 +98,7 @@ CHATGPT_RENDERED_IMAGE_STABLE_ROUNDS = 3
 CHATGPT_PROJECT_API_PAGE_SIZE = 10
 CHATGPT_HISTORY_API_PAGE_SIZE = 100
 CHATGPT_RECENT_IMAGE_PAGE_SIZE = 25
+CHATGPT_RECENT_IMAGE_NEXT_PAGE_SIZE = 20
 CHATGPT_API_PAGE_LIMIT = 1_000
 CHATGPT_API_RETRY_LIMIT = 3
 CHATGPT_API_RETRY_DELAY_SECONDS = 1.0
@@ -167,6 +170,14 @@ class ChatGPTRateLimitError(RuntimeError):
     """Signal that one ChatGPT API route should be deferred without aborting the sync."""
 
 
+class ChatGPTConversationIndexIncompleteError(RuntimeError):
+    """Retain verified session URLs when account-history discovery is incomplete."""
+
+    def __init__(self, message: str, conversation_urls: list[str]) -> None:
+        super().__init__(message)
+        self.conversation_urls = conversation_urls
+
+
 @dataclass(slots=True)
 class ChatGPTImageCandidate:
     """Describe one original-resolution image found in a ChatGPT conversation."""
@@ -183,6 +194,14 @@ class ChatGPTImageCandidate:
     created_at: str = ""
     prompt_metadata_authoritative: bool = False
     request_headers: dict[str, str] = field(default_factory=dict, repr=False)
+
+
+class ChatGPTImageIndexIncompleteError(RuntimeError):
+    """Retain verified image candidates when a later index page cannot be read."""
+
+    def __init__(self, message: str, candidates: list[ChatGPTImageCandidate]) -> None:
+        super().__init__(message)
+        self.candidates = candidates
 
 
 @dataclass(slots=True)
@@ -329,8 +348,33 @@ def _chatgpt_message_timestamp(message: object, fallback: str) -> str:
     return fallback
 
 
+def _chatgpt_is_completed_outbound_voice_transcript(message: dict[str, object]) -> bool:
+    """Recognize typed outbound voice text, including a reply's earlier stages."""
+    metadata = message.get("metadata")
+    content = message.get("content")
+    if not isinstance(metadata, dict) or not isinstance(content, dict):
+        return False
+    if metadata.get("bidi_voice_fem_message") is not True:
+        return False
+    if metadata.get("bidi_voice_mode_message") is not True:
+        return False
+    if content.get("content_type") != "multimodal_text":
+        return False
+    if message.get("status") != "finished_successfully":
+        return False
+    parts = content.get("parts")
+    return isinstance(parts, list) and bool(parts) and all(
+        isinstance(part, dict)
+        and part.get("content_type") == "audio_transcription"
+        and part.get("direction") == "out"
+        and isinstance(part.get("text"), str)
+        and bool(part["text"].strip())
+        for part in parts
+    )
+
+
 def _chatgpt_message_is_cacheable(message: dict[str, object], role: str) -> bool:
-    """Keep visible prompts and final replies using provider message metadata."""
+    """Keep visible prompts, final replies, and completed outbound voice text."""
     if role not in {"user", "assistant"}:
         return False
     metadata = message.get("metadata")
@@ -350,7 +394,8 @@ def _chatgpt_message_is_cacheable(message: dict[str, object], role: str) -> bool
     channel = str(message.get("channel") or metadata.get("channel") or "").strip().lower()
     if recipient not in {"", "all"} or channel not in {"", "final"}:
         return False
-    if message.get("end_turn") is False:
+    completed_voice = _chatgpt_is_completed_outbound_voice_transcript(message)
+    if message.get("end_turn") is False and not completed_voice:
         return False
     if not channel and is_chatgpt_tool_trace(_chatgpt_message_text(message)):
         return False
@@ -364,7 +409,7 @@ def _extract_chatgpt_conversation_messages(
     conversation_url: str,
     captured_at: str,
 ) -> list[dict[str, object]]:
-    """Extract visible user prompts and final assistant replies from every branch."""
+    """Extract readable user and assistant text from every eligible branch."""
     mapping = payload.get("mapping")
     if not isinstance(mapping, dict):
         return []
@@ -414,6 +459,25 @@ def _extract_chatgpt_conversation_messages(
     return messages
 
 
+def _chatgpt_history_preservation_enabled(path: Path) -> bool:
+    """Fail closed when an installed recovery guard is invalid."""
+    guard_path = path.with_name("history-preservation.json")
+    if not guard_path.exists():
+        return False
+    try:
+        value = json.loads(guard_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise RuntimeError("ChatGPT history preservation guard is unreadable; history was not changed.") from exc
+    if (
+        not isinstance(value, dict)
+        or type(value.get("version")) is not int
+        or value["version"] != 1
+        or value.get("mode") != "preserve-existing"
+    ):
+        raise RuntimeError("ChatGPT history preservation guard is invalid; history was not changed.")
+    return True
+
+
 class ChatGPTHistoryStore:
     """Merge complete ChatGPT sessions into one atomic Parquet file."""
 
@@ -422,6 +486,10 @@ class ChatGPTHistoryStore:
         rows = read_parquet_rows(path)
         if path.exists() and rows is None:
             raise RuntimeError(f"ChatGPT history Parquet is unreadable: {path}")
+        if _chatgpt_history_preservation_enabled(path):
+            keys = [str(row.get("message_key") or "") for row in rows or []]
+            if any(not key for key in keys) or len(keys) != len(set(keys)):
+                raise RuntimeError("Protected ChatGPT history has ambiguous identities; history was not changed.")
         self._rows_by_key = {
             str(row.get("message_key")): dict(row)
             for row in rows or []
@@ -489,6 +557,15 @@ class ChatGPTHistoryStore:
         }
         if not next_rows:
             raise RuntimeError(f"ChatGPT session {conversation_id} exposed no cacheable text messages.")
+        if _chatgpt_history_preservation_enabled(self.path):
+            merged, manifest = merge_history_rows(
+                previous.values(), next_rows.values(), source="online",
+                source_reference=conversation_url, captured_at=captured_at,
+            )
+            self._rows_by_key = retained_rows
+            self._rows_by_key.update((str(row["message_key"]), row) for row in merged)
+            appended = int(manifest["appended_rows"])
+            return appended, appended == 0
         new_count = sum(
             1 for key, row in next_rows.items()
             if str(previous.get(key, {}).get("content_sha256") or "") != str(row["content_sha256"])
@@ -504,6 +581,7 @@ class ChatGPTHistoryStore:
 
     def save(self) -> None:
         """Persist all cached ChatGPT messages with schema verification."""
+        _chatgpt_history_preservation_enabled(self.path)
         write_parquet_rows_atomic(
             self.path,
             sort_history_rows(self._rows_by_key.values()),
@@ -512,6 +590,8 @@ class ChatGPTHistoryStore:
 
     def refresh_titles(self, titles: dict[str, str]) -> None:
         """Apply the discovery index even when cached message bodies can be skipped."""
+        if _chatgpt_history_preservation_enabled(self.path):
+            return
         changed = False
         for row in self._rows_by_key.values():
             title = str(titles.get(str(row.get("conversation_id"))) or "").strip()
@@ -755,7 +835,7 @@ def should_cache_chatgpt_candidate(candidate: ChatGPTImageCandidate) -> bool:
 def chatgpt_visual_properties(path: Path) -> tuple[str, int, int] | None:
     """Return a stable visual signature and decoded dimensions for one image file."""
     try:
-        payload = path.read_bytes()
+        payload = read_cached_image(path)
     except OSError:
         return None
     return analyze_image_payload(payload)
@@ -792,10 +872,16 @@ class ChatGPTImageCatalog:
         self._lock = RLock()
         self._in_flight_file_ids: set[str] = set()
         self._unavailable_file_ids: set[str] = set()
+        self._visual_metadata_dirty = False
 
     @classmethod
-    def build(cls, target_dir: Path = CHATGPT_TARGET_DIR) -> "ChatGPTImageCatalog":
-        """Load Parquet state and migrate one valid legacy JSON catalog when present."""
+    def build(
+        cls,
+        target_dir: Path = CHATGPT_TARGET_DIR,
+        *,
+        repair: bool = True,
+    ) -> "ChatGPTImageCatalog":
+        """Load catalog metadata, optionally repairing files in a cache worker."""
         catalog_path = target_dir / CHATGPT_CATALOG_FILENAME
         legacy_catalog_path = target_dir / LEGACY_CHATGPT_CATALOG_FILENAME
         entries: dict[str, ChatGPTCatalogEntry] = {}
@@ -839,10 +925,13 @@ class ChatGPTImageCatalog:
             if entry.file_id and entry.relative_path:
                 entries[entry.file_id] = entry
         catalog = cls(target_dir, entries)
+        if not repair:
+            return catalog
         catalog._normalize_file_extensions()
         catalog.repair_result = catalog.prune_incomplete_entries()
-        if migrated_legacy:
+        if migrated_legacy or catalog._visual_metadata_dirty:
             catalog.save()
+        if migrated_legacy:
             retire_legacy_file(legacy_catalog_path)
         elif rows is not None:
             retire_legacy_file(legacy_catalog_path)
@@ -850,20 +939,26 @@ class ChatGPTImageCatalog:
 
     def _normalize_file_extensions(self) -> None:
         """Correct legacy filenames when a server reports the wrong media type."""
-        changed = False
+        planned_renames: list[tuple[ChatGPTCatalogEntry, Path, Path]] = []
         for entry in self.entries_by_file_id.values():
             path = self.target_dir / entry.relative_path
             if not path.is_file():
                 continue
             try:
-                with path.open("rb") as handle:
-                    signature = handle.read(64)
+                signature = read_cached_image(path, 64)
             except OSError:
                 continue
             expected_suffix = image_signature_extension(signature)
             if not expected_suffix or path.suffix.lower() == expected_suffix:
                 continue
             corrected_path = path.with_suffix(expected_suffix)
+            if corrected_path.exists():
+                continue
+            planned_renames.append((entry, path, corrected_path))
+
+        # A timed-out read must not leave earlier renames ahead of the catalog.
+        changed = False
+        for entry, path, corrected_path in planned_renames:
             if corrected_path.exists():
                 continue
             try:
@@ -904,6 +999,7 @@ class ChatGPTImageCatalog:
                 ),
                 CHATGPT_CATALOG_SCHEMA,
             )
+            self._visual_metadata_dirty = False
 
     def complete_entry(self, file_id: str) -> ChatGPTCatalogEntry | None:
         """Return a catalog entry only when its local file is still valid."""
@@ -911,14 +1007,15 @@ class ChatGPTImageCatalog:
             entry = self.entries_by_file_id.get(file_id)
             if entry is None:
                 return None
+            if _is_chatgpt_thumbnail_source_url(entry.source_url):
+                return None
             path = self.target_dir / entry.relative_path
             if not path.exists() or not path.is_file() or path.stat().st_size <= 0:
                 return None
             if entry.content_bytes and path.stat().st_size != entry.content_bytes:
                 return None
             try:
-                with path.open("rb") as handle:
-                    signature = handle.read(64)
+                signature = read_cached_image(path, 64)
                 if not looks_like_image(signature):
                     return None
             except OSError:
@@ -927,8 +1024,12 @@ class ChatGPTImageCatalog:
             # a PNG with a damaged interior chunk in the catalog. Re-decode
             # entries without a persisted visual signature so the next sync
             # prunes and downloads those files again.
-            if not entry.visual_signature and chatgpt_visual_properties(path) is None:
-                return None
+            if not entry.visual_signature or entry.width <= 0 or entry.height <= 0:
+                properties = chatgpt_visual_properties(path)
+                if properties is None:
+                    return None
+                entry.visual_signature, entry.width, entry.height = properties
+                self._visual_metadata_dirty = True
             return entry
 
     def claim_download(self, file_id: str) -> bool:
@@ -1029,23 +1130,36 @@ class ChatGPTImageCatalog:
                 self.save()
             return updated_count
 
-    def summarize(self) -> int:
+    def summarize(self, *, validate_files: bool = True) -> int:
         """Return the number of cataloged images whose files still exist."""
         with self._lock:
+            if not validate_files:
+                count = 0
+                for entry in self.entries_by_file_id.values():
+                    path = self.target_dir / entry.relative_path
+                    try:
+                        size = path.stat().st_size
+                        if path.is_file() and size > 0 and (
+                            not entry.content_bytes or size == entry.content_bytes
+                        ):
+                            count += 1
+                    except OSError:
+                        continue
+                return count
             return sum(1 for file_id in self.entries_by_file_id if self.complete_entry(file_id) is not None)
 
     def prune_incomplete_entries(self) -> ChatGPTCatalogRepairResult:
         """Remove invalid entries so only original ChatGPT images remain cached."""
         with self._lock:
+            incomplete_entries = [
+                (file_id, entry)
+                for file_id, entry in self.entries_by_file_id.items()
+                if self.complete_entry(file_id) is None
+            ]
             removed_file_ids: list[str] = []
             removed_local_files = 0
             reclaimed_bytes = 0
-            for file_id, entry in list(self.entries_by_file_id.items()):
-                if (
-                    self.complete_entry(file_id) is not None
-                    and not _is_chatgpt_thumbnail_source_url(entry.source_url)
-                ):
-                    continue
+            for file_id, entry in incomplete_entries:
                 path = self.target_dir / entry.relative_path
                 if path.exists() and path.is_file():
                     try:
@@ -1093,11 +1207,16 @@ class ChatGPTImageCatalog:
         content_sha256: str,
         content_bytes: int,
         seen_at: str,
+        image_payload: bytes | None = None,
     ) -> bool:
         """Register one successfully downloaded image and persist immediately."""
         with self._lock:
             existing = self.entries_by_file_id.get(candidate.file_id)
-            visual_properties = chatgpt_visual_properties(self.target_dir / relative_path)
+            visual_properties = (
+                analyze_image_payload(image_payload)
+                if image_payload is not None
+                else chatgpt_visual_properties(self.target_dir / relative_path)
+            )
             width = visual_properties[1] if visual_properties else candidate.width
             height = visual_properties[2] if visual_properties else candidate.height
             self.entries_by_file_id[candidate.file_id] = ChatGPTCatalogEntry(
@@ -1132,7 +1251,10 @@ class ChatGPTImageCatalog:
         current = self.entries_by_file_id.get(file_id)
         if current is None:
             return
-        current_record = self._entry_visual_record_unlocked(file_id, current)
+        try:
+            current_record = self._entry_visual_record_unlocked(file_id, current)
+        except ChatGPTCacheReadTimeoutError:
+            return
         if current_record is None:
             return
         conversation_key = current.conversation_url.strip().rstrip("/")
@@ -1142,7 +1264,12 @@ class ChatGPTImageCatalog:
         for other_file_id, other in list(self.entries_by_file_id.items()):
             if other_file_id == file_id or other.conversation_url.strip().rstrip("/") != conversation_key:
                 continue
-            other_record = self._entry_visual_record_unlocked(other_file_id, other)
+            try:
+                if self.complete_entry(other_file_id) is None:
+                    continue
+                other_record = self._entry_visual_record_unlocked(other_file_id, other)
+            except ChatGPTCacheReadTimeoutError:
+                continue
             if other_record is None or not self._entries_are_visual_duplicates(current_record, other_record):
                 continue
             winner = max((current_record, other_record), key=self._entry_quality_key)
@@ -1285,7 +1412,9 @@ def build_chatgpt_initial_snapshot(
     """Hydrate the ChatGPT idle snapshot from the local image catalog."""
     resolved_target_dir = target_dir or chatgpt_target_dir(project_name)
     snapshot = TaskSnapshot(version=version)
-    cached_count = ChatGPTImageCatalog.build(resolved_target_dir).summarize()
+    cached_count = ChatGPTImageCatalog.build(resolved_target_dir, repair=False).summarize(
+        validate_files=False,
+    )
     snapshot.account_name = project_name
     snapshot.output_dir = str(resolved_target_dir)
     snapshot.discovered_images = cached_count
@@ -1956,7 +2085,7 @@ def _iter_parallel_safari_prompt_metadata_results(
         rate_limited = Event()
         workers = [
             Thread(
-                target=_chatgpt_prompt_metadata_worker,
+                target=inherit_safari_cache_context(_chatgpt_prompt_metadata_worker),
                 args=(
                     page,
                     assignment,
@@ -2422,7 +2551,7 @@ def _collect_project_conversation_urls_via_api(
     should_stop,
     conversation_titles_by_id: dict[str, str] | None = None,
 ) -> list[str]:
-    """Load project conversations and their authoritative titles through the API."""
+    """Load project conversations only while every continuation can be verified."""
     project_id = _chatgpt_project_id(project_url)
     if not project_id or not request_headers:
         return []
@@ -2433,28 +2562,57 @@ def _collect_project_conversation_urls_via_api(
     seen_ids: set[str] = set()
     seen_cursors: set[str] = set()
     cursor = "0"
+
+    def incomplete(reason: str) -> ChatGPTConversationIndexIncompleteError:
+        return ChatGPTConversationIndexIncompleteError(
+            f"ChatGPT project discovery is incomplete. {reason} Existing cached media was preserved.",
+            list(conversation_urls),
+        )
+
     for page_index in range(CHATGPT_API_PAGE_LIMIT):
-        if should_stop() or not cursor or cursor in seen_cursors:
-            break
+        if should_stop():
+            return conversation_urls
+        if cursor in seen_cursors:
+            raise incomplete("The provider repeated a project continuation cursor.")
         seen_cursors.add(cursor)
         query = urlencode({"cursor": cursor, "limit": CHATGPT_PROJECT_API_PAGE_SIZE})
-        payload = _get_chatgpt_api_json(
-            context,
-            f"https://chatgpt.com/backend-api/gizmos/{project_id}/conversations?{query}",
-            api_headers,
-        )
+        try:
+            payload = _get_chatgpt_api_json(
+                context,
+                f"https://chatgpt.com/backend-api/gizmos/{project_id}/conversations?{query}",
+                api_headers,
+            )
+        except RuntimeError as exc:
+            if should_stop():
+                return conversation_urls
+            if not conversation_urls:
+                raise
+            raise incomplete("A later project-list page could not be read.") from exc
         raw_items = payload.get("items")
         if not isinstance(raw_items, list):
-            break
+            raise incomplete("The provider returned an invalid project-list response.")
+        # Project pagination is defined by its cursor; total has no verified fixed-count contract.
+        total = payload.get("total")
+        if total is not None:
+            if not isinstance(total, int) or isinstance(total, bool) or total < 0:
+                raise incomplete("The provider returned an invalid project session total.")
+        invalid_items = False
+        repeated_items = False
         for raw_item in raw_items:
             if not isinstance(raw_item, dict):
+                invalid_items = True
                 continue
-            conversation_id = str(raw_item.get("id") or raw_item.get("conversation_id") or "").strip()
-            if conversation_id and conversation_id not in seen_ids:
-                seen_ids.add(conversation_id)
-                conversation_urls.append(f"{conversation_prefix}{conversation_id}")
+            conversation_id = raw_item.get("id") or raw_item.get("conversation_id") or ""
+            if not isinstance(conversation_id, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", conversation_id):
+                invalid_items = True
+                continue
+            if conversation_id in seen_ids:
+                repeated_items = True
+                continue
+            seen_ids.add(conversation_id)
+            conversation_urls.append(f"{conversation_prefix}{conversation_id}")
             conversation_title = str(raw_item.get("title") or "").strip()
-            if conversation_id and conversation_title and conversation_titles_by_id is not None:
+            if conversation_title and conversation_titles_by_id is not None:
                 conversation_titles_by_id[conversation_id] = conversation_title
         state.update(
             discovered_tweets=len(conversation_urls),
@@ -2464,10 +2622,23 @@ def _collect_project_conversation_urls_via_api(
         state.append_event(
             f"ChatGPT project API loaded {len(conversation_urls):,} sessions after page {page_index + 1}."
         )
-        cursor = str(payload.get("cursor") or "").strip()
+        if invalid_items:
+            raise incomplete("A project-list entry had no valid stable identity.")
+        if repeated_items:
+            raise incomplete("The provider repeated project sessions before catalog exhaustion.")
+        next_cursor = payload.get("cursor")
+        if next_cursor is not None and not isinstance(next_cursor, str):
+            raise incomplete("The provider returned an invalid project continuation cursor.")
+        if next_cursor is None or next_cursor == "":
+            return conversation_urls
+        if not next_cursor.strip():
+            raise incomplete("The provider returned an invalid project continuation cursor.")
         if not raw_items:
-            break
-    return conversation_urls
+            raise incomplete("An empty project page still advertised a continuation cursor.")
+        cursor = next_cursor
+    if should_stop():
+        return conversation_urls
+    raise incomplete("The bounded page limit was reached before project catalog exhaustion.")
 
 
 def _collect_all_chatgpt_conversation_urls_via_api(
@@ -2479,13 +2650,19 @@ def _collect_all_chatgpt_conversation_urls_via_api(
     conversation_titles_by_id: dict[str, str] | None = None,
     conversation_revisions_by_id: dict[str, str] | None = None,
 ) -> list[str]:
-    """Load every ChatGPT session for text history, independent of the media project."""
-    if not request_headers:
-        return []
-
-    api_headers = _chatgpt_api_request_headers(request_headers, referer)
+    """Load consecutive account-history pages until an explicit empty page is reached."""
     conversation_urls: list[str] = []
     seen_ids: set[str] = set()
+
+    def incomplete(reason: str) -> ChatGPTConversationIndexIncompleteError:
+        return ChatGPTConversationIndexIncompleteError(
+            f"ChatGPT session discovery is incomplete. {reason} Existing cached history was preserved.",
+            list(conversation_urls),
+        )
+
+    if not request_headers:
+        raise incomplete("Session authorization was unavailable.")
+    api_headers = _chatgpt_api_request_headers(request_headers, referer)
     offset = 0
     pace_seconds = 0.0
     for page_index in range(CHATGPT_API_PAGE_LIMIT):
@@ -2500,31 +2677,62 @@ def _collect_all_chatgpt_conversation_urls_via_api(
                 "order": "updated",
             }
         )
-        payload, cooled_down = _get_chatgpt_json_after_rate_limit_cooldowns(
-            lambda: _get_chatgpt_api_json(
-                context,
-                f"https://chatgpt.com/backend-api/conversations?{query}",
-                api_headers,
-            ),
-            state,
-            should_stop,
-            f"session list page {page_index + 1}",
-        )
+        try:
+            payload, cooled_down = _get_chatgpt_json_after_rate_limit_cooldowns(
+                lambda: _get_chatgpt_api_json(
+                    context,
+                    f"https://chatgpt.com/backend-api/conversations?{query}",
+                    api_headers,
+                ),
+                state,
+                should_stop,
+                f"session list page {page_index + 1}",
+            )
+        except RuntimeError as exc:
+            if should_stop():
+                return conversation_urls
+            raise incomplete("A session-list page could not be read.") from exc
         if payload is None:
             break
         if cooled_down:
             pace_seconds = _widen_chatgpt_rate_limited_pace(pace_seconds)
         raw_items = payload.get("items")
         if not isinstance(raw_items, list):
-            break
+            raise incomplete("The provider returned an unsupported session-list response.")
+        response_offset = payload.get("offset")
+        if "offset" in payload and (
+            not isinstance(response_offset, int)
+            or isinstance(response_offset, bool)
+            or response_offset != offset
+        ):
+            raise incomplete("The provider returned a mismatched session-list offset.")
+        response_limit = payload.get("limit")
+        if "limit" in payload and (
+            not isinstance(response_limit, int)
+            or isinstance(response_limit, bool)
+            or response_limit != CHATGPT_HISTORY_API_PAGE_SIZE
+        ):
+            raise incomplete("The provider returned a mismatched session-list limit.")
+        total = payload.get("total")
+        if total is not None:
+            if not isinstance(total, int) or isinstance(total, bool) or total < 0:
+                raise incomplete("The provider returned an invalid session total.")
+            # This endpoint reports a page-relative lower bound, not a fixed account total.
         new_session_count = 0
+        malformed_items = False
+        repeated_items = False
         for raw_item in raw_items:
             if not isinstance(raw_item, dict):
+                malformed_items = True
                 continue
-            conversation_id = str(
+            conversation_id = (
                 raw_item.get("id") or raw_item.get("conversation_id") or ""
-            ).strip()
-            if not conversation_id or conversation_id in seen_ids:
+            )
+            if not isinstance(conversation_id, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", conversation_id):
+                malformed_items = True
+                continue
+            if conversation_id in seen_ids:
+                repeated_items = True
                 continue
             seen_ids.add(conversation_id)
             new_session_count += 1
@@ -2540,10 +2748,18 @@ def _collect_all_chatgpt_conversation_urls_via_api(
             f"ChatGPT history API loaded {len(conversation_urls):,} total sessions "
             f"after page {page_index + 1}."
         )
-        if not raw_items or not new_session_count:
-            break
+        if malformed_items:
+            raise incomplete("A session-list entry had no valid stable identity.")
+        if repeated_items or (raw_items and not new_session_count):
+            raise incomplete("The provider repeated sessions before catalog exhaustion.")
+        if not raw_items:
+            if total is not None and total > offset:
+                raise incomplete("An empty final page still advertised more sessions.")
+            return conversation_urls
         offset += len(raw_items)
-    return conversation_urls
+    if should_stop():
+        return conversation_urls
+    raise incomplete("The bounded page limit was reached before catalog exhaustion.")
 
 
 def collect_project_conversation_urls(
@@ -2583,11 +2799,12 @@ def collect_project_conversation_urls(
                     should_stop,
                     conversation_titles_by_id,
                 )
+            except ChatGPTConversationIndexIncompleteError:
+                raise
             except RuntimeError as exc:
                 state.append_event(f"ChatGPT project API fallback: {exc}")
             else:
-                if api_urls:
-                    return api_urls
+                return api_urls
     finally:
         _stop_listening_for_chatgpt_response(page, header_listener)
 
@@ -2603,6 +2820,16 @@ def collect_project_conversation_urls(
         scan_wait_seconds=max(float(scan_wait_seconds), CHATGPT_PROJECT_SCAN_WAIT_SECONDS),
     )
 
+    def incomplete_project_scan(reason: str) -> ChatGPTConversationIndexIncompleteError:
+        for url in current_links:
+            if url not in seen_urls:
+                seen_urls.add(url)
+                conversation_urls.append(url)
+        return ChatGPTConversationIndexIncompleteError(
+            f"ChatGPT project discovery is incomplete. {reason} Existing cached media was preserved.",
+            list(conversation_urls),
+        )
+
     for round_index in range(CHATGPT_PROJECT_LOAD_ROUNDS):
         if should_stop():
             break
@@ -2614,10 +2841,10 @@ def collect_project_conversation_urls(
             f"ChatGPT project scan loaded {len(conversation_urls):,} sessions after page {round_index + 1}."
         )
         if not _has_load_more_conversations(page):
-            break
+            return conversation_urls
         previous_rendered_count = len(current_links)
         if not _click_load_more_conversations(page):
-            break
+            raise incomplete_project_scan("The project still offered more sessions but could not load them.")
         for _ in range(CHATGPT_PROJECT_LINK_WAIT_ROUNDS):
             page.wait_for_timeout(1_000)
             current_links = _extract_project_links(page, project_url)
@@ -2626,10 +2853,11 @@ def collect_project_conversation_urls(
         after_count = len(current_links)
         stagnant_rounds = stagnant_rounds + 1 if after_count <= previous_rendered_count else 0
         if stagnant_rounds >= 3:
-            state.append_event("ChatGPT project pagination stopped making progress.")
-            break
+            raise incomplete_project_scan("Project pagination stopped making progress before exhaustion.")
 
-    return conversation_urls
+    if should_stop():
+        return conversation_urls
+    raise incomplete_project_scan("The bounded project scan limit was reached before exhaustion.")
 
 
 def _recent_chatgpt_image_candidate(
@@ -2697,11 +2925,15 @@ def collect_chatgpt_project_index_images(
         if should_stop():
             break
         if cursor in seen_cursors:
-            raise RuntimeError(
-                "ChatGPT recent-image index repeated a pagination cursor before discovery completed."
+            raise ChatGPTImageIndexIncompleteError(
+                "ChatGPT recent-image index repeated a pagination cursor before discovery completed.",
+                list(candidates_by_file_id.values()),
             )
         seen_cursors.add(cursor)
-        query_values = {"limit": CHATGPT_RECENT_IMAGE_PAGE_SIZE}
+        # Match ChatGPT's first-party gallery: 25 items initially, then 20 per cursor.
+        query_values = {
+            "limit": CHATGPT_RECENT_IMAGE_NEXT_PAGE_SIZE if cursor else CHATGPT_RECENT_IMAGE_PAGE_SIZE,
+        }
         if cursor:
             query_values["after"] = cursor
         try:
@@ -2709,19 +2941,27 @@ def collect_chatgpt_project_index_images(
                 context,
                 f"https://chatgpt.com/backend-api/my/recent/image_gen?{urlencode(query_values)}",
                 api_headers,
+                should_stop=should_stop,
             )
         except RuntimeError as exc:
+            if should_stop():
+                break
             if not candidates_by_file_id:
                 state.append_event(f"ChatGPT recent-image index unavailable; using session scans: {exc}")
                 return []
-            raise RuntimeError(
-                "ChatGPT recent-image index stopped before pagination completed."
+            raise ChatGPTImageIndexIncompleteError(
+                "ChatGPT recent-image index stopped before pagination completed "
+                f"at page {page_index + 1}: {exc}",
+                list(candidates_by_file_id.values()),
             ) from exc
         raw_items = payload.get("items")
         if not isinstance(raw_items, list):
             if not candidates_by_file_id:
                 return []
-            raise RuntimeError("ChatGPT recent-image index returned an incomplete page payload.")
+            raise ChatGPTImageIndexIncompleteError(
+                "ChatGPT recent-image index returned an incomplete page payload.",
+                list(candidates_by_file_id.values()),
+            )
         for raw_item in raw_items:
             if not isinstance(raw_item, dict):
                 continue
@@ -2752,6 +2992,11 @@ def collect_chatgpt_project_index_images(
         cursor = str(payload.get("cursor") or "").strip()
         if not raw_items or not cursor:
             break
+    else:
+        raise ChatGPTImageIndexIncompleteError(
+            "ChatGPT recent-image index reached its page limit before discovery completed.",
+            list(candidates_by_file_id.values()),
+        )
     return list(candidates_by_file_id.values())
 
 
@@ -3321,6 +3566,7 @@ def _chatgpt_conversation_worker(
                                 target_dir,
                                 candidate,
                                 max_file_size_bytes=max_file_size_bytes,
+                                should_stop=should_stop,
                             )
                         except ChatGPTImageSizeLimitError:
                             skipped_known += 1
@@ -3400,7 +3646,7 @@ def _iter_chatgpt_conversation_results(
     )
     workers = [
         Thread(
-            target=_chatgpt_conversation_worker,
+            target=inherit_safari_cache_context(_chatgpt_conversation_worker),
             args=(
                 worker_assignments,
                 descriptor,
@@ -3494,6 +3740,7 @@ def _drain_chatgpt_index_candidates(
                 target_dir,
                 candidate,
                 max_file_size_bytes=max_file_size_bytes,
+                should_stop=should_stop,
                 **page_options,
             )
         except ChatGPTImageSizeLimitError:
@@ -3579,7 +3826,7 @@ def _chatgpt_index_image_worker(
                 )
                 tab_workers = [
                     Thread(
-                        target=_drain_chatgpt_index_candidates,
+                        target=inherit_safari_cache_context(_drain_chatgpt_index_candidates),
                         args=drain_arguments + (page,),
                         daemon=True,
                         name=f"chatgpt-index-tab-{tab_number}",
@@ -3641,9 +3888,31 @@ def _iter_chatgpt_index_image_results(
     if not candidates or should_stop():
         return
 
+    known_file_ids = set(catalog.entries_by_file_id)
+    new_candidates = [candidate for candidate in candidates if candidate.file_id not in known_file_ids]
+    yield from _iter_chatgpt_pending_index_downloads(
+        new_candidates,
+        descriptor,
+        catalog,
+        target_dir,
+        should_stop,
+        worker_count,
+        max_file_size_bytes,
+    )
+
     pending_candidates: list[ChatGPTImageCandidate] = []
     for candidate in candidates:
-        if catalog.complete_entry(candidate.file_id) is not None:
+        if should_stop():
+            return
+        if candidate.file_id not in known_file_ids:
+            continue
+        try:
+            cached_entry = catalog.complete_entry(candidate.file_id)
+        except ChatGPTCacheReadTimeoutError as exc:
+            # Do not overwrite an unreadable cached file or block unrelated new images.
+            yield ChatGPTImageDownloadWorkResult(candidate_file_id=candidate.file_id, error=str(exc))
+            continue
+        if cached_entry is not None:
             yield ChatGPTImageDownloadWorkResult(
                 candidate_file_id=candidate.file_id,
                 skipped=True,
@@ -3652,6 +3921,27 @@ def _iter_chatgpt_index_image_results(
         else:
             pending_candidates.append(candidate)
 
+    yield from _iter_chatgpt_pending_index_downloads(
+        pending_candidates,
+        descriptor,
+        catalog,
+        target_dir,
+        should_stop,
+        worker_count,
+        max_file_size_bytes,
+    )
+
+
+def _iter_chatgpt_pending_index_downloads(
+    pending_candidates: list[ChatGPTImageCandidate],
+    descriptor,
+    catalog: ChatGPTImageCatalog,
+    target_dir: Path,
+    should_stop,
+    worker_count: int,
+    max_file_size_bytes: int = 0,
+) -> Iterator[ChatGPTImageDownloadWorkResult]:
+    """Run one bounded download batch before inspecting another set of cached files."""
     if not pending_candidates or should_stop():
         return
 
@@ -3670,7 +3960,7 @@ def _iter_chatgpt_index_image_results(
     )
     workers = [
         Thread(
-            target=_chatgpt_index_image_worker,
+            target=inherit_safari_cache_context(_chatgpt_index_image_worker),
             args=(worker_candidates, descriptor, catalog, target_dir, should_stop, result_queue)
             + ((max_file_size_bytes,) if max_file_size_bytes > 0 else ()),
             kwargs={"safari_tab_count": safari_tab_count} if safari_tab_count > 1 else {},
@@ -3731,6 +4021,7 @@ def _resolve_chatgpt_image_source_url(
     context,
     candidate: ChatGPTImageCandidate,
     page=None,
+    should_stop: Callable[[], bool] | None = None,
 ) -> str:
     """Resolve a file-service asset to its short-lived original image URL.
 
@@ -3741,7 +4032,15 @@ def _resolve_chatgpt_image_source_url(
     if not candidate.request_headers:
         raise RuntimeError("ChatGPT image authorization was not captured from the conversation response.")
 
-    if page is None:
+    if isinstance(context, SafariContext) and should_stop is not None:
+        response = context.request.get_from_page(
+            context.primary_page if page is None else page,
+            candidate.source_url,
+            timeout=CHATGPT_IMAGE_TIMEOUT_MS,
+            headers=_chatgpt_image_request_headers(candidate),
+            should_stop=should_stop,
+        )
+    elif page is None:
         response = context.request.get(
             candidate.source_url,
             timeout=CHATGPT_IMAGE_TIMEOUT_MS,
@@ -3897,12 +4196,14 @@ def _download_chatgpt_image_via_safari(
     candidate: ChatGPTImageCandidate,
     max_file_size_bytes: int,
     page=None,
+    should_stop: Callable[[], bool] | None = None,
 ) -> bool:
     """Stream one original image through an authenticated offscreen Safari page.
 
     ``page`` selects the tab that owns this transfer; the primary page is the default.
     """
-    source_url = _resolve_chatgpt_image_source_url(context, candidate, page)
+    request_options = {"should_stop": should_stop} if should_stop is not None else {}
+    source_url = _resolve_chatgpt_image_source_url(context, candidate, page, **request_options)
     resolved_candidate = (
         candidate
         if source_url == candidate.source_url
@@ -3919,7 +4220,7 @@ def _download_chatgpt_image_via_safari(
         content_type, _resumed = transfer_page.download_to_path(
             source_url,
             partial_path,
-            lambda: False,
+            should_stop or (lambda: False),
             headers=_safari_chatgpt_image_headers(candidate, source_url),
             max_bytes=max_file_size_bytes,
         )
@@ -3940,12 +4241,13 @@ def _download_chatgpt_image_via_safari(
                     context,
                     refresh_candidate,
                     page,
+                    **request_options,
                 )
                 _require_safe_chatgpt_media_path(target_dir, partial_path)
                 content_type, _resumed = transfer_page.download_to_path(
                     refreshed_source_url,
                     partial_path,
-                    lambda: False,
+                    should_stop or (lambda: False),
                     headers=_safari_chatgpt_image_headers(refresh_candidate, refreshed_source_url),
                     max_bytes=max_file_size_bytes,
                 )
@@ -3996,6 +4298,7 @@ def _download_chatgpt_image_via_safari(
         content_sha256=compute_sha256(content),
         content_bytes=len(content),
         seen_at=utc_now(),
+        image_payload=content,
     )
 
 
@@ -4006,11 +4309,14 @@ def download_chatgpt_image(
     candidate: ChatGPTImageCandidate,
     max_file_size_bytes: int = 0,
     page=None,
+    should_stop: Callable[[], bool] | None = None,
 ) -> bool:
     """Download one original image through the authenticated browser context.
 
     ``page`` pins a Safari transfer to one tab of the context; other browsers ignore it.
     """
+    if should_stop is not None and should_stop():
+        raise RuntimeError("ChatGPT image download interrupted.")
     if not should_cache_chatgpt_candidate(candidate):
         return False
     if BrowserDeletionCatalog(_chatgpt_local_store_root(target_dir)).is_excluded("chatgpt", candidate.file_id):
@@ -4022,6 +4328,8 @@ def download_chatgpt_image(
     try:
         for attempt_index in range(CHATGPT_IMAGE_DOWNLOAD_RETRY_LIMIT):
             try:
+                if should_stop is not None and should_stop():
+                    raise RuntimeError("ChatGPT image download interrupted.")
                 if isinstance(context, SafariContext):
                     return _download_chatgpt_image_via_safari(
                         context,
@@ -4030,6 +4338,7 @@ def download_chatgpt_image(
                         candidate,
                         max_file_size_bytes,
                         page,
+                        should_stop,
                     )
                 response, source_url, resolved_candidate = _request_chatgpt_image_with_refresh(context, candidate)
                 if not response.ok:
@@ -4068,9 +4377,12 @@ def download_chatgpt_image(
                     content_sha256=compute_sha256(content),
                     content_bytes=len(content),
                     seen_at=utc_now(),
+                    image_payload=content,
                 )
                 return registered
             except Exception as exc:
+                if should_stop is not None and should_stop():
+                    raise RuntimeError("ChatGPT image download interrupted.") from exc
                 should_retry = (
                     attempt_index + 1 < CHATGPT_IMAGE_DOWNLOAD_RETRY_LIMIT
                     and _is_retryable_chatgpt_image_error(exc)
@@ -4086,7 +4398,11 @@ def download_chatgpt_image(
                         "error": _summarize_chatgpt_image_error(exc),
                     },
                 )
-                time.sleep(CHATGPT_IMAGE_DOWNLOAD_RETRY_DELAY_SECONDS * (attempt_index + 1))
+                retry_delay = CHATGPT_IMAGE_DOWNLOAD_RETRY_DELAY_SECONDS * (attempt_index + 1)
+                if should_stop is None:
+                    time.sleep(retry_delay)
+                elif wait_for_cache_scan(retry_delay, should_stop):
+                    raise RuntimeError("ChatGPT image download interrupted.") from exc
     except Exception:
         catalog.release_download(candidate.file_id)
         raise
@@ -4141,9 +4457,15 @@ def sync_chatgpt_images(
         MAX_CHATGPT_SCAN_WAIT_SECONDS,
     )
     resolved_target_dir = target_dir or chatgpt_target_dir(project_name)
-    history_store = ChatGPTHistoryStore(chatgpt_history_path_for_target(resolved_target_dir))
+    state.append_event("Preparing the local ChatGPT cache before opening the browser.")
+    history_store = (
+        ChatGPTHistoryStore(chatgpt_history_path_for_target(resolved_target_dir))
+        if normalized_content_mode == "text"
+        else None
+    )
     cached_count = 0
     if normalized_content_mode == "text":
+        assert history_store is not None
         state.update(
             account_name="ChatGPT",
             output_dir=str(history_store.path.parent),
@@ -4151,11 +4473,12 @@ def sync_chatgpt_images(
             progress_unit="sessions",
         )
     else:
-        catalog = ChatGPTImageCatalog.build(resolved_target_dir)
-        repair_result = catalog.repair_result
-        performance_metrics = PerformanceMetrics()
-        cleanup_result = catalog.deduplicate_visual_duplicates(metrics=performance_metrics)
-        cached_count = catalog.summarize()
+        state.append_event("Loading the existing ChatGPT image catalog.")
+        # Startup and progress need counts, not a full repair of historical files.
+        # Each candidate is validated by claim_download before reuse, and new
+        # downloads still undergo payload validation and per-conversation deduplication.
+        catalog = ChatGPTImageCatalog.build(resolved_target_dir, repair=False)
+        cached_count = catalog.summarize(validate_files=False)
         state.update(
             account_name=project_name,
             output_dir=str(resolved_target_dir),
@@ -4168,28 +4491,21 @@ def sync_chatgpt_images(
             processed_tweets=0,
             discovery_complete=False,
         )
-        if performance_metrics.has_data:
-            state.update(performance_metrics=performance_metrics.snapshot())
         state.append_event(f"Prepared ChatGPT cache with {cached_count:,} existing original images.")
-        if repair_result.removed_count:
-            state.append_event(
-                f"Pruned {repair_result.removed_count:,} incomplete ChatGPT catalog records so their "
-                "assets can be downloaded again."
-            )
-        if cleanup_result.removed_count:
-            state.append_event(
-                f"Removed {cleanup_result.removed_count:,} lower-quality duplicate ChatGPT images "
-                f"and reclaimed {cleanup_result.reclaimed_bytes:,} bytes."
-            )
     state.append_event(
         f"ChatGPT startup timeout: {startup_timeout_seconds:g} s; "
         f"scan wait: {scan_wait_seconds:g} s."
     )
     if should_stop():
-        return ChatGPTSyncResult(cached_count=cached_count, cached_messages=history_store.cached_messages, stopped=True)
+        return ChatGPTSyncResult(
+            cached_count=cached_count,
+            cached_messages=history_store.cached_messages if history_store is not None else 0,
+            stopped=True,
+        )
 
     try:
         if normalized_content_mode == "text":
+            assert history_store is not None
             state.update(phase="collecting", progress_unit="sessions")
             state.append_event(
                 f"Starting an offscreen {descriptor.label} session for all ChatGPT text history."
@@ -4198,6 +4514,7 @@ def sync_chatgpt_images(
             history_processed = 0
             history_new_messages = 0
             history_unchanged_sessions = 0
+            history_discovery_incomplete = True
             with _launch_chatgpt_browser_context(descriptor, CHATGPT_HOME_URL) as discovery_context:
                 if discovery_context is not None:
                     page = _chatgpt_context_page(discovery_context)
@@ -4212,15 +4529,21 @@ def sync_chatgpt_images(
                     )
                     conversation_titles_by_id: dict[str, str] = {}
                     conversation_revisions_by_id: dict[str, str] = {}
-                    conversation_urls = _collect_all_chatgpt_conversation_urls_via_api(
-                        discovery_context,
-                        CHATGPT_HOME_URL,
-                        request_headers,
-                        state,
-                        should_stop,
-                        conversation_titles_by_id,
-                        conversation_revisions_by_id,
-                    )
+                    try:
+                        conversation_urls = _collect_all_chatgpt_conversation_urls_via_api(
+                            discovery_context,
+                            CHATGPT_HOME_URL,
+                            request_headers,
+                            state,
+                            should_stop,
+                            conversation_titles_by_id,
+                            conversation_revisions_by_id,
+                        )
+                    except ChatGPTConversationIndexIncompleteError as exc:
+                        conversation_urls = exc.conversation_urls
+                        state.append_event(f"{exc} Caching {len(conversation_urls):,} verified sessions.")
+                    else:
+                        history_discovery_incomplete = False
                     history_processed, history_new_messages, history_unchanged_sessions = (
                         cache_chatgpt_conversation_history(
                             history_store,
@@ -4243,7 +4566,7 @@ def sync_chatgpt_images(
                 failed_tweets=history_failures,
                 downloaded_tweets=history_store.cached_messages,
                 progress_unit="sessions",
-                discovery_complete=not stopped,
+                discovery_complete=not stopped and not history_discovery_incomplete,
             )
             state.append_event(
                 f"Cached ChatGPT text history for {history_processed:,}/{len(conversation_urls):,} sessions "
@@ -4254,7 +4577,7 @@ def sync_chatgpt_images(
                 discovered_conversations=len(conversation_urls),
                 cached_count=cached_count,
                 cached_messages=history_store.cached_messages,
-                incomplete=not conversation_urls or history_processed < len(conversation_urls),
+                incomplete=history_discovery_incomplete or history_processed < len(conversation_urls),
                 failed_count=history_failures,
                 stopped=stopped,
             )
@@ -4263,6 +4586,8 @@ def sync_chatgpt_images(
         project_request_headers: dict[str, str] = {}
         conversation_titles_by_id: dict[str, str] = {}
         project_index_candidates: list[ChatGPTImageCandidate] = []
+        index_discovery_incomplete = False
+        session_discovery_incomplete = False
         conversation_urls: list[str] = []
         if all_generated_media:
             state.append_event(
@@ -4288,35 +4613,53 @@ def sync_chatgpt_images(
                             CHATGPT_HOME_URL,
                         )
                     )
-                    conversation_urls = _collect_all_chatgpt_conversation_urls_via_api(
-                        discovery_context,
-                        CHATGPT_HOME_URL,
-                        project_request_headers,
-                        state,
-                        should_stop,
-                        conversation_titles_by_id,
-                    )
+                    try:
+                        conversation_urls = _collect_all_chatgpt_conversation_urls_via_api(
+                            discovery_context,
+                            CHATGPT_HOME_URL,
+                            project_request_headers,
+                            state,
+                            should_stop,
+                            conversation_titles_by_id,
+                        )
+                    except ChatGPTConversationIndexIncompleteError as exc:
+                        session_discovery_incomplete = True
+                        conversation_urls = exc.conversation_urls
+                        state.append_event(f"{exc} Scanning {len(conversation_urls):,} verified sessions.")
                 else:
-                    conversation_urls = collect_project_conversation_urls(
-                        page,
-                        project_url,
-                        state,
-                        should_stop,
-                        startup_timeout_seconds=startup_timeout_seconds,
-                        scan_wait_seconds=scan_wait_seconds,
-                        request_headers=project_request_headers,
-                        conversation_titles_by_id=conversation_titles_by_id,
-                    )
+                    try:
+                        conversation_urls = collect_project_conversation_urls(
+                            page,
+                            project_url,
+                            state,
+                            should_stop,
+                            startup_timeout_seconds=startup_timeout_seconds,
+                            scan_wait_seconds=scan_wait_seconds,
+                            request_headers=project_request_headers,
+                            conversation_titles_by_id=conversation_titles_by_id,
+                        )
+                    except ChatGPTConversationIndexIncompleteError as exc:
+                        session_discovery_incomplete = True
+                        conversation_urls = exc.conversation_urls
+                        state.append_event(f"{exc} Scanning {len(conversation_urls):,} verified project sessions.")
                 if not all_generated_media and not should_stop() and not direct_session_refresh:
-                    project_index_candidates = collect_chatgpt_project_index_images(
-                        discovery_context,
-                        project_url,
-                        conversation_urls,
-                        project_request_headers,
-                        state,
-                        should_stop,
-                        conversation_titles_by_id,
-                    )
+                    try:
+                        project_index_candidates = collect_chatgpt_project_index_images(
+                            discovery_context,
+                            project_url,
+                            conversation_urls,
+                            project_request_headers,
+                            state,
+                            should_stop,
+                            conversation_titles_by_id,
+                        )
+                    except ChatGPTImageIndexIncompleteError as exc:
+                        index_discovery_incomplete = True
+                        project_index_candidates = exc.candidates
+                        state.append_event(
+                            f"{exc} Processing {len(project_index_candidates):,} verified image candidates; "
+                            "discovery remains incomplete. Retry to discover the remaining images."
+                        )
                     project_index_candidates = catalog.merge_known_metadata(
                         project_index_candidates
                     )
@@ -4459,7 +4802,7 @@ def sync_chatgpt_images(
 
             if result.downloaded:
                 # Only a registered download can change the cached total.
-                cached_count = catalog.summarize()
+                cached_count = catalog.summarize(validate_files=False)
             publish_index_progress()
             if (
                 indexed_images_processed == len(project_index_candidates)
@@ -4471,7 +4814,7 @@ def sync_chatgpt_images(
                 )
         announce_already_cached_batch()
 
-        if project_index_candidates and not should_stop():
+        if project_index_candidates and not index_discovery_incomplete and not should_stop():
             state.update(
                 phase="enriching",
                 progress_unit="sessions",
@@ -4526,7 +4869,13 @@ def sync_chatgpt_images(
                 if not should_stop():
                     raise
 
-        if project_index_candidates:
+        if index_discovery_incomplete:
+            state.append_event(
+                "ChatGPT image discovery is incomplete. Verified images were processed; "
+                "remaining index pages need a retry."
+            )
+            conversation_results = ()
+        elif project_index_candidates:
             state.append_event(
                 "ChatGPT's project image index is available; skipping legacy session scans "
                 "that only surface unavailable historical assets."
@@ -4575,7 +4924,7 @@ def sync_chatgpt_images(
             for image_error in result.image_errors:
                 state.append_event(f"Failed ChatGPT image {image_error}")
 
-            cached_count = catalog.summarize()
+            cached_count = catalog.summarize(validate_files=False)
             state.update(
                 phase="downloading" if downloaded_count else "collecting",
                 discovered_tweets=len(conversation_urls),
@@ -4594,7 +4943,7 @@ def sync_chatgpt_images(
                 f"found {len(result.candidate_file_ids):,} original images."
             )
 
-        cached_count = catalog.summarize()
+        cached_count = catalog.summarize(validate_files=False)
         stopped = should_stop()
         state.update(
             discovered_tweets=len(conversation_urls),
@@ -4602,7 +4951,7 @@ def sync_chatgpt_images(
             queued_tweets=len(project_index_candidates) or len(conversation_urls),
             processed_tweets=indexed_images_processed if project_index_candidates else processed_conversations,
             progress_unit="images" if project_index_candidates else "sessions",
-            discovery_complete=not stopped,
+            discovery_complete=not stopped and not index_discovery_incomplete and not session_discovery_incomplete,
             downloaded_posts=cached_count,
             downloaded_tweets=cached_count,
             downloaded_images=cached_count,
@@ -4618,8 +4967,8 @@ def sync_chatgpt_images(
             skipped_size=size_skipped_count,
             failed_count=failed_count,
             cached_count=cached_count,
-            cached_messages=history_store.cached_messages,
             stopped=stopped,
+            incomplete=index_discovery_incomplete or session_discovery_incomplete,
         )
     except PlaywrightError as exc:
         raise RuntimeError(f"ChatGPT browser automation failed: {exc}") from exc

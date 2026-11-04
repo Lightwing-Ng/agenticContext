@@ -1,6 +1,6 @@
 """Add native text observations without replacing earlier WeChat evidence."""
 
-# Code version: v1.1.0-codex.0
+# Code version: v1.6.2-codex.0
 
 from __future__ import annotations
 
@@ -23,6 +23,7 @@ from .wechat_archive import (
     _time_fields,
     wechat_archive_path,
 )
+from .wechat_payments import payment_card_text, validate_payment_card_fields
 
 
 _ADDITIVE_SCHEMA = """
@@ -45,6 +46,26 @@ CREATE TEMP TABLE reconcile_server_ids (
 """
 _APP_TEXT_KINDS = {"app_text", "text_appmsg", "forwarded_text", "quoted_reply"}
 _HEX = re.compile(r"[0-9a-f]{32}")
+_TEXT_METADATA_FIELDS = (
+    "text_components",
+    "quoted_reference",
+    "appmsg_subtype",
+    "forwarded_references",
+    "forwarded_record_title",
+    "omitted_forwarded_items",
+    "payment_card_fields",
+)
+_SOURCE_TEXT_FIELDS = {
+    "source_sender_id",
+    "source_sender_label",
+    "source_chat_id",
+    "source_timestamp",
+    "source_create_time",
+    "source_data_id",
+    "forwarded_record_title",
+    "relationship",
+    "authority",
+}
 
 
 def _json(value: Any) -> str:
@@ -55,6 +76,361 @@ def _json(value: Any) -> str:
         separators=(",", ":"),
         allow_nan=False,
     )
+
+
+def _forwarded_reference_schema(reference):
+    """Accept explicit, body-free references without upgrading their relationship authority."""
+    if (
+        not isinstance(reference, dict)
+        or set(reference) - {"schema_version", "authority", "items", "title"}
+        or type(reference.get("schema_version")) is not int
+        or reference["schema_version"] != 1
+        or reference.get("authority")
+        != "user_confirmation_with_native_sequence_corroboration"
+        or not isinstance(reference.get("items"), list)
+        or not 1 <= len(reference["items"]) <= 100
+        or ("title" in reference and not isinstance(reference["title"], str))
+    ):
+        raise ValueError("Unsupported forwarded reference declaration.")
+    for item in reference["items"]:
+        if not isinstance(item, dict):
+            raise ValueError("Forwarded reference items must be objects.")
+        common = {"kind", "account_id", "peer_id"}
+        if any(
+            not isinstance(item.get(key), str) or not item[key] or "\0" in item[key]
+            for key in ("account_id", "peer_id")
+        ):
+            raise ValueError(
+                "Forwarded references need exact account and conversation scope."
+            )
+        if item.get("kind") == "message":
+            if (
+                set(item) != common | {"message_id"}
+                or not isinstance(item.get("message_id"), str)
+                or re.fullmatch(r"[0-9a-f]{64}", item["message_id"]) is None
+            ):
+                raise ValueError(
+                    "Forwarded text references need only a canonical message identifier and scope."
+                )
+        elif item.get("kind") == "native_resource":
+            required = common | {
+                "resource_id",
+                "message_type",
+                "unix_timestamp",
+                "source_locator",
+            }
+            if (
+                set(item) != required
+                or not isinstance(item.get("resource_id"), str)
+                or re.fullmatch(r"[0-9a-f]{64}", item["resource_id"]) is None
+                or type(item.get("message_type")) is not int
+                or item["message_type"] != 3
+                or type(item.get("unix_timestamp")) is not int
+                or not 0 < item["unix_timestamp"] <= 2**63 - 1
+            ):
+                raise ValueError(
+                    "Forwarded resource references need exact native image metadata."
+                )
+            locator = item["source_locator"]
+            if (
+                not isinstance(locator, dict)
+                or set(locator) != {"database", "table", "local_id"}
+                or not isinstance(locator.get("database"), str)
+                or re.fullmatch(r"[A-Za-z0-9_.-]{1,128}", locator["database"]) is None
+                or locator.get("table")
+                != "Chat_" + hashlib.md5(item["peer_id"].encode(), usedforsecurity=False).hexdigest()
+                or type(locator.get("local_id")) is not int
+                or locator["local_id"] < 1
+            ):
+                raise ValueError(
+                    "Forwarded resource locators need an exact native conversation and local ID."
+                )
+        else:
+            raise ValueError("Unsupported forwarded reference item kind.")
+
+
+def native_text_metadata(raw, locator):
+    """Validate bounded native text evidence, including legacy locator fields."""
+    result = {}
+    remaining_bytes = 2 * 1024 * 1024
+    remaining_nodes = 20_000
+
+    def bounded(value, depth=0, max_depth=12):
+        nonlocal remaining_bytes, remaining_nodes
+        remaining_nodes -= 1
+        if remaining_nodes < 0 or depth > max_depth:
+            raise ValueError("Native text metadata exceeds the supported structure.")
+        if isinstance(value, str):
+            remaining_bytes -= len(value.encode())
+        elif value is None or type(value) is bool:
+            remaining_bytes -= 8
+        elif type(value) is int:
+            if value.bit_length() > 256:
+                raise ValueError(
+                    "Native text metadata integer exceeds the supported size."
+                )
+            remaining_bytes -= 80
+        elif isinstance(value, list):
+            if len(value) > 1_000:
+                raise ValueError("Native text metadata has too many list items.")
+            for item in value:
+                bounded(item, depth + 1, max_depth)
+        elif isinstance(value, dict):
+            if len(value) > 128:
+                raise ValueError("Native text metadata has too many object fields.")
+            for key, item in value.items():
+                if not isinstance(key, str) or len(key) > 256:
+                    raise ValueError(
+                        "Native text metadata keys must be bounded strings."
+                    )
+                bounded(key, depth + 1, max_depth)
+                bounded(item, depth + 1, max_depth)
+        else:
+            raise ValueError("Native text metadata must contain JSON evidence types.")
+        if remaining_bytes < 0:
+            raise ValueError("Native text metadata exceeds the supported size.")
+
+    def source_fields(value):
+        for key in _SOURCE_TEXT_FIELDS & value.keys():
+            if not isinstance(value[key], str):
+                raise ValueError("Native quoted source fields must be strings.")
+        for key in ("original_message_type", "appmsg_subtype", "forwarded_data_type"):
+            if (
+                key in value
+                and value[key] is not None
+                and (type(value[key]) is not int or not 0 <= value[key] <= 2**31 - 1)
+            ):
+                raise ValueError("Native message type metadata must be integer codes.")
+        if "source_ids" in value and (
+            not isinstance(value["source_ids"], dict)
+            or any(not isinstance(item, str) for item in value["source_ids"].values())
+        ):
+            raise ValueError("Native quoted source identifiers must be strings.")
+        if (
+            "content_unavailable" in value
+            and type(value["content_unavailable"]) is not bool
+        ):
+            raise ValueError("Native quoted content availability must be a boolean.")
+        if "omitted_forwarded_items" in value and (
+            type(value["omitted_forwarded_items"]) is not int
+            or value["omitted_forwarded_items"] < 0
+        ):
+            raise ValueError(
+                "Native forwarded omission counts must be nonnegative integers."
+            )
+
+    def quoted_reference(reference, values):
+        if not isinstance(reference, dict):
+            raise ValueError("Native quoted references must be objects.")
+        source_fields(reference)
+        for component in values:
+            if component["kind"] in {"quoted_text", "quoted_forwarded_text"}:
+                if reference.get("content_unavailable") is True:
+                    raise ValueError(
+                        "Unavailable native quoted content conflicts with quoted text components."
+                    )
+                for key in reference.keys() & component.keys():
+                    if _json(reference[key]) != _json(component[key]):
+                        raise ValueError(
+                            "Native quote and reference source evidence conflicts."
+                        )
+
+    def components(values, *, mode="all", depth=0):
+        if not isinstance(values, list):
+            raise ValueError("Native text components must be a list.")
+        if depth > 18:
+            raise ValueError("Native forwarding exceeds the supported structure.")
+        forwarded_kinds = {
+            "forwarded_text",
+            "forwarded_resource",
+            "forwarded_group",
+            "forwarded_quote",
+        }
+        quote_kinds = {"reply_text", "quoted_text", "quoted_forwarded_text"}
+        for component in values:
+            if not isinstance(component, dict):
+                raise ValueError("Native text components must be objects.")
+            kind = component.get("kind")
+            if not isinstance(kind, str) or kind not in forwarded_kinds | quote_kinds:
+                raise ValueError("Unsupported native text component kind.")
+            if mode == "forward" and kind not in forwarded_kinds:
+                raise ValueError(
+                    "Quoted forwarding items must retain their original text role."
+                )
+            if mode == "quote" and kind not in quote_kinds:
+                raise ValueError(
+                    "Native quote items must retain their reply and quote roles."
+                )
+            if not isinstance(component.get("text"), str):
+                raise ValueError("Native text component bodies must be strings.")
+            source_fields(component)
+            if "payment_card_fields" in component:
+                payment = validate_payment_card_fields(
+                    component["payment_card_fields"]
+                )
+                if (
+                    kind not in {"forwarded_text", "quoted_text"}
+                    or component.get("original_message_type") != 49
+                    or component.get("appmsg_subtype") != payment["appmsg_subtype"]
+                    or component.get("text_extraction_kind") != "app_text"
+                    or component["text"] != payment_card_text(payment)
+                ):
+                    raise ValueError(
+                        "Native payment components conflict with their source text or role."
+                    )
+            if "forwarded_item_path" in component and (
+                not isinstance(component["forwarded_item_path"], list)
+                or any(
+                    type(item) is not int or item < 1
+                    for item in component["forwarded_item_path"]
+                )
+            ):
+                raise ValueError(
+                    "Native forwarded item paths must contain positive integers."
+                )
+            if "omitted_forwarded_items" in component and (
+                type(component["omitted_forwarded_items"]) is not int
+                or component["omitted_forwarded_items"] < 0
+            ):
+                raise ValueError(
+                    "Native forwarded omission counts must be nonnegative integers."
+                )
+            if "flags" in component and (
+                not isinstance(component["flags"], list)
+                or any(not isinstance(flag, str) for flag in component["flags"])
+            ):
+                raise ValueError("Native text component flags must be strings.")
+            if "text_components" in component:
+                if kind not in {
+                    "quoted_forwarded_text",
+                    "forwarded_group",
+                    "forwarded_quote",
+                }:
+                    raise ValueError(
+                        "Only forwarding groups and quotes can contain original text items."
+                    )
+                components(
+                    component["text_components"],
+                    mode="quote" if kind == "forwarded_quote" else "forward",
+                    depth=depth + 1,
+                )
+            if kind == "forwarded_resource" and (
+                component["text"] != ""
+                or not isinstance(component.get("resource_kind"), str)
+                or component["resource_kind"]
+                not in {"image", "video", "audio", "file", "app", "sticker", "unknown"}
+            ):
+                raise ValueError(
+                    "Native forwarded resources must be body-free typed metadata."
+                )
+            if kind in {"forwarded_group", "forwarded_quote"}:
+                children = component.get("text_components")
+                if not isinstance(children, list) or not children:
+                    raise ValueError(
+                        "Native forwarded containers need explicit components."
+                    )
+                aggregate = "\n\n".join(
+                    item["text"] for item in children if item["text"].strip()
+                )
+                if component["text"] != aggregate:
+                    raise ValueError(
+                        "Native forwarding text conflicts with its components."
+                    )
+                if kind == "forwarded_quote":
+                    quoted_reference(component.get("quoted_reference"), children)
+                    if component.get("appmsg_subtype") != 57:
+                        raise ValueError(
+                            "Native forwarded quotes need explicit subtype 57."
+                        )
+
+    for field in _TEXT_METADATA_FIELDS:
+        declarations = [
+            container[field] for container in (raw, locator) if field in container
+        ]
+        if not declarations:
+            continue
+        for value in declarations:
+            bounded(value, max_depth=40 if field == "text_components" else 12)
+        if len(declarations) == 2 and _json(declarations[0]) != _json(declarations[1]):
+            raise ValueError("Native text metadata conflicts with its source locator.")
+        result[field] = declarations[0]
+    if "text_components" in result:
+        components(result["text_components"])
+    if "forwarded_references" in result:
+        _forwarded_reference_schema(result["forwarded_references"])
+    if "payment_card_fields" in result:
+        result["payment_card_fields"] = validate_payment_card_fields(
+            result["payment_card_fields"]
+        )
+        if result.get("appmsg_subtype") != result["payment_card_fields"]["appmsg_subtype"]:
+            raise ValueError("Payment-card metadata conflicts with its native subtype.")
+    if "quoted_reference" in result:
+        quoted_reference(result["quoted_reference"], result.get("text_components", []))
+    source_fields(result)
+    return result
+
+
+def native_text_metadata_extends(previous, candidate):
+    """Accept exact metadata or a source-preserving flat native forwarding upgrade.
+
+    Only existing text leaves can supply words. New resources remain body-free;
+    explicit path prefixes can restore containers without changing a prior text
+    leaf, speaker, clock, or reference. Other quoted-role changes fail closed.
+    """
+    if not isinstance(previous, dict) or not isinstance(candidate, dict):
+        return False
+    if (set(previous) | set(candidate)) - set(_TEXT_METADATA_FIELDS):
+        return False
+    try:
+        native_text_metadata(previous, {})
+        native_text_metadata(candidate, {})
+        conflicts = {
+            key
+            for key in previous.keys() & candidate.keys()
+            if _json(previous[key]) != _json(candidate[key])
+        }
+        if not conflicts:
+            return True
+        if conflicts != {"text_components"} or (
+            "quoted_reference" in previous
+            or "quoted_reference" in candidate
+            or previous.get("appmsg_subtype") not in {None, 19}
+            or candidate.get("appmsg_subtype") not in {None, 19}
+        ):
+            return False
+        old = previous.get("text_components", [])
+        new = candidate.get("text_components", [])
+        if not old or any(item["kind"] != "forwarded_text" for item in old):
+            return False
+        old_paths = [item.get("forwarded_item_path", []) for item in old]
+        if any(not path for path in old_paths) or old_paths != sorted(old_paths):
+            return False
+        leaves = []
+
+        def walk(values, prefix=()):
+            previous_ordinal = 0
+            for item in values:
+                path = item.get("forwarded_item_path")
+                if (
+                    not isinstance(path, list)
+                    or len(path) != len(prefix) + 1
+                    or tuple(path[:-1]) != prefix
+                    or path[-1] <= previous_ordinal
+                ):
+                    return False
+                previous_ordinal = path[-1]
+                if item["kind"] == "forwarded_text":
+                    leaves.append(item)
+                elif item["kind"] == "forwarded_group":
+                    if not walk(item["text_components"], tuple(path)):
+                        return False
+                elif item["kind"] != "forwarded_resource":
+                    return False
+            return True
+
+        return walk(new) and _json(leaves) == _json(old)
+    except (ValueError, TypeError, KeyError, RecursionError, UnicodeError):
+        return False
 
 
 def _file_identity(path: Path):
@@ -174,7 +550,7 @@ def _normalize_sources(sources, exclusions):
             if (
                 not isinstance(owner, str)
                 or not owner
-                or hashlib.md5(owner.encode()).hexdigest() != account_hash
+                or hashlib.md5(owner.encode(), usedforsecurity=False).hexdigest() != account_hash
                 or source_id != "ios-" + account_hash
             ):
                 raise ValueError("Verified source account does not match its hash.")
@@ -219,6 +595,9 @@ def _normalize_record(raw, source, source_snapshot):
     text_kind = str(raw.get("text_extraction_kind") or "plain_text")
     if type(original_type) is not int or not (
         original_type == 1
+        and text_kind != "pushmail_text"
+        or original_type == 35
+        and text_kind == "pushmail_text"
         or original_type == 49
         and text_kind in _APP_TEXT_KINDS
         or original_type in {10000, 10002}
@@ -229,7 +608,7 @@ def _normalize_record(raw, source, source_snapshot):
     if not isinstance(conversation_hash, str) or not _HEX.fullmatch(conversation_hash):
         raise ValueError("Native observations need their conversation table hash.")
     peer = str(raw.get("conversation_id") or "")
-    if peer and hashlib.md5(peer.encode()).hexdigest() != conversation_hash:
+    if peer and hashlib.md5(peer.encode(), usedforsecurity=False).hexdigest() != conversation_hash:
         raise ValueError("Conversation ID does not match its native table hash.")
     kind = str(raw.get("conversation_kind") or "unclassified")
     if kind not in {"direct", "group", "unclassified"}:
@@ -250,8 +629,21 @@ def _normalize_record(raw, source, source_snapshot):
         "source_snapshot": source_snapshot,
         "message_type": original_type,
         "text_extraction_kind": text_kind,
+        **native_text_metadata(raw, locator),
     }
-    # Extra observations contain a digest, not another copy of the message body.
+    if "forwarded_references" in provenance and (
+        not source["verified"]
+        or original_type != 49
+        or text_kind not in {"forwarded_text", "quoted_reply"}
+        or any(
+            item["account_id"] != source["owner"]
+            for item in provenance["forwarded_references"]["items"]
+        )
+    ):
+        raise ValueError(
+            "Forwarded references must retain their verified native account and message role."
+        )
+    # Retain structured source evidence and fingerprint the unchanged primary body.
     observation = {
         **provenance,
         "content_sha256": hashlib.sha256(text.encode()).hexdigest(),
@@ -505,7 +897,7 @@ def reconcile_wechat_records(
             if row["peer_id"]:
                 key = (
                     row["partition_id"],
-                    hashlib.md5(row["peer_id"].encode()).hexdigest(),
+                    hashlib.md5(row["peer_id"].encode(), usedforsecurity=False).hexdigest(),
                 )
                 by_hash.setdefault(key, set()).add(row["id"])
         # This index stays on disk and grows independently of Python memory.

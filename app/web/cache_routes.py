@@ -11,7 +11,7 @@ The Safari mutual-exclusion check belongs to the Agent surface, so it arrives as
 capability instead of being reimplemented here.
 """
 
-# Code version: v1.7.1-codex.0
+# Code version: v1.8.1-codex.0
 
 from __future__ import annotations
 
@@ -136,6 +136,21 @@ def build_reconciled_cache_snapshot(
         source_key,
         content_mode or request.args.get("content_mode"),
     )
+    live = runtime.state.snapshot()
+    if (
+        source_key == "chatgpt"
+        and mode == "media"
+        and live["running"]
+        and live["phase"] != "queued"
+    ):
+        # Polling must remain responsive while a worker is reading the local store.
+        # ChatGPT's hidden text metrics use that mode's own in-memory totals.
+        text_runtime = context.cache_runtimes[source_key].get("text")
+        if text_runtime is not None:
+            text_snapshot = text_runtime.state.snapshot()
+            live["cached_sessions"] = text_snapshot["downloaded_posts"]
+            live["cached_messages"] = text_snapshot["downloaded_tweets"]
+        return live
     hydrated = asdict(runtime.hydrate_snapshot())
     live = runtime.state.snapshot()
     # A mode that has not run, failed, or been reset in this process has no task status
@@ -159,6 +174,16 @@ def build_reconciled_cache_snapshot(
             "message": live["message"],
             "started_at": live["started_at"],
             "recent_events": live["recent_events"],
+        }
+    elif source_key == "copilot" and not live["running"]:
+        # Coverage must match the archive currently on disk, even after a finished
+        # task. Keep operational history while replacing stale completion proof.
+        snapshot = {
+            **hydrated,
+            "recent_events": live["recent_events"],
+            "task_failures": live["task_failures"],
+            "started_at": live["started_at"] or hydrated["started_at"],
+            "finished_at": live["finished_at"] or hydrated["finished_at"],
         }
     else:
         snapshot = reconcile_cached_snapshot(live, hydrated)
@@ -243,6 +268,8 @@ def cache_source_switcher_path(
         return ""
     view_args = request.view_args or {}
     content_mode = normalize_cache_content_mode(view_args.get("content_mode"))
+    if content_mode not in target_source.content_modes:
+        content_mode = target_source.content_modes[0]
     browser = str(
         view_args.get("browser")
         or getattr(context.config_store.config, target_source.browser_config_field, "")
@@ -312,6 +339,8 @@ def register_cache_routes(app: Flask, context: CacheRouteContext) -> None:
         cache_content_mode = normalize_cache_content_mode(
             content_mode or request.args.get("content_mode")
         )
+        if cache_content_mode not in cache_source.content_modes:
+            cache_content_mode = cache_source.content_modes[0]
         if cache_source.is_local:
             browser_options = []
             selected_browser_id = ""
@@ -361,6 +390,8 @@ def register_cache_routes(app: Flask, context: CacheRouteContext) -> None:
             or request.args.get("content_mode")
             or view_args.get("content_mode")
         )
+        if content_mode not in cache_source.content_modes:
+            content_mode = cache_source.content_modes[0]
         browser = str(
             request.form.get(cache_source.browser_config_field)
             or view_args.get("browser")
@@ -400,7 +431,7 @@ def register_cache_routes(app: Flask, context: CacheRouteContext) -> None:
             cache_source is None
             or source_key not in context.cache_runtimes
             or not cache_source.show_content_mode
-            or content_mode not in {"text", "media"}
+            or content_mode not in cache_source.content_modes
             or not is_supported_cache_browser(browser)
         ):
             abort(404)

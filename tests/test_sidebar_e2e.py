@@ -1,6 +1,6 @@
 """Disposable-browser E2E coverage for the responsive sidebar and language boundaries.
 
-Code version: v1.55.5-codex.0
+Code version: v1.57.0-codex.0
 """
 
 from __future__ import annotations
@@ -500,7 +500,9 @@ def test_cache_source_switcher_reuses_the_complete_registry_across_cache_pages(
     sidebar_server_url: str,
 ) -> None:
     """Verify every cache sidebar exposes the same complete source menu in Chromium."""
-    expected_sources = ["chatgpt", "claude", "claude_code", "gemini", "grok_build", "grok", "x", "zhihu"]
+    from app.core.config import load_saved_config
+
+    expected_sources = ["chatgpt", "claude", "claude_code", "codex", "gemini", "grok_build", "grok", "copilot", "x", "zhihu"]
     page, context = _open_page(
         disposable_browser,
         f"{sidebar_server_url}/cache/chatgpt",
@@ -530,9 +532,11 @@ def test_cache_source_switcher_reuses_the_complete_registry_across_cache_pages(
                 "/cache/chatgpt/text/edge",
                 "/cache/claude/text/edge",
                 "/cache/claude_code",
+                "/cache/codex",
                 "/cache/gemini/text/edge",
                 "/cache/grok_build",
                 "/cache/grok/text/edge",
+                f"/cache/copilot/text/{load_saved_config().copilot_browser}",
                 "/cache/x/text/chrome",
                 "/cache/zhihu/text/edge",
             ]
@@ -611,7 +615,7 @@ def test_cache_source_switcher_menu_has_an_opaque_base(
         )
         assert rendering["backgroundColor"] == rendering["themeBackground"], rendering
         assert rendering["backgroundColor"].startswith("rgb("), rendering
-        assert rendering["optionCount"] == 8, rendering
+        assert rendering["optionCount"] == 9, rendering
         assert all(rendering["hitTests"]), rendering
 
         menu.locator('[data-cache-source-switcher-option="chatgpt"]').focus()
@@ -834,7 +838,7 @@ def test_cache_title_rail_stays_aligned_and_clear_when_the_sidebar_collapses(
         toggle = page.locator("#sidebar_toggle")
         title = page.locator(".cache-overview-title-card .report-heading")
         expect(toggle).to_have_attribute("aria-expanded", "true")
-        expect(title).to_have_text("ChatGPT cache overview")
+        expect(title).to_have_text("ChatGPT Chat cache overview")
 
         def read_geometry() -> dict[str, float]:
             return page.evaluate(
@@ -2525,6 +2529,7 @@ def test_cache_source_switcher_click_matrix_stays_within_expected_destinations(
         "chatgpt": "/cache/chatgpt/text/edge",
         "claude": "/cache/claude/text/edge",
         "claude_code": "/cache/claude_code",
+        "codex": "/cache/codex",
         "gemini": "/cache/gemini/text/edge",
         "grok_build": "/cache/grok_build",
         "grok": "/cache/grok/text/edge",
@@ -2598,7 +2603,7 @@ def test_cache_sidebars_reuse_the_chatgpt_base_contract(
     )
     try:
         cache_provider_labels = {
-            "chatgpt": "ChatGPT",
+            "chatgpt": "ChatGPT Chat",
             "claude": "Claude Chat",
             "gemini": "Gemini",
             "grok": "Grok Chat",
@@ -2613,7 +2618,7 @@ def test_cache_sidebars_reuse_the_chatgpt_base_contract(
             expect(aside.locator(":scope > .hero")).to_have_count(1)
             expect(aside.locator(":scope > .cache-page-content-mode-section")).to_have_count(1)
             expect(aside.locator("[data-cache-source-switcher]")).to_have_count(1)
-            expect(aside.locator("[data-cache-source-switcher-option]")).to_have_count(8)
+            expect(aside.locator("[data-cache-source-switcher-option]")).to_have_count(10)
             expect(aside.locator("[data-browser-session-panel]")).to_have_count(1)
             expect(aside.locator(".browser-session-panel-label")).to_have_text("Authorized browser")
             expect(aside.locator(".cache-settings-link")).to_have_count(1)
@@ -5458,7 +5463,7 @@ def test_cache_sidebar_text_media_switcher_defaults_to_text(
         expect(x_source_option).to_be_hidden()
         assert source_options.evaluate_all(
             "elements => elements.filter(element => !element.hidden).map(element => element.dataset.cacheSourceSwitcherOption)"
-        ) == ["chatgpt", "claude", "claude_code", "gemini", "grok_build", "grok", "x", "zhihu"]
+        ) == ["chatgpt", "claude", "claude_code", "codex", "gemini", "grok_build", "grok", "x", "zhihu"]
         if source_key == "chatgpt":
             expect(page.locator("#start_form_chatgpt > label")).to_have_count(0)
             expect(page.locator("[data-chatgpt-media-config]")).to_be_hidden()
@@ -5478,7 +5483,7 @@ def test_cache_sidebar_text_media_switcher_defaults_to_text(
         assert x_source_option.evaluate("element => !element.hidden")
         assert source_options.evaluate_all(
             "elements => elements.filter(element => !element.hidden).map(element => element.dataset.cacheSourceSwitcherOption)"
-        ) == ["chatgpt", "claude", "claude_code", "gemini", "grok_build", "grok", "x", "zhihu"]
+        ) == ["chatgpt", "claude", "claude_code", "codex", "gemini", "grok_build", "grok", "x", "zhihu"]
         if source_key == "chatgpt":
             expect(page.locator("#start_form_chatgpt > label")).to_have_count(0)
             expect(page.locator("[data-chatgpt-media-config]")).to_be_visible()
@@ -12290,7 +12295,7 @@ def test_text_source_selection_survives_global_search_form_submission(
         expect(menu).to_be_visible()
         expect(page.locator("[data-browser-source-filter-trigger]")).to_have_attribute(
             "aria-label",
-            "Source: ChatGPT",
+            "Source: ChatGPT Chat",
         )
         expect(menu.locator('[data-browser-source-filter-option="all"]')).to_have_count(0)
         expect(menu).not_to_contain_text("All chats")
@@ -12356,7 +12361,7 @@ def test_returning_to_text_restores_session_table(
         expect(page.locator('#browser_view_text')).to_be_checked()
         expect(page.locator('[data-browser-source-filter-trigger]').first).to_have_attribute(
             "aria-label",
-            "Source: ChatGPT",
+            "Source: ChatGPT Chat",
         )
         expect(page.locator('.browser-session-index-table[data-table-body]')).to_be_visible()
         assert "source=chatgpt" in page.url

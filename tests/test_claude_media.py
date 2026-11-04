@@ -1,6 +1,6 @@
 """Focused tests for authenticated Claude rendered-image caching.
 
-Code version: v1.3.0-codex.0
+Code version: v1.3.1-codex.0
 """
 
 from __future__ import annotations
@@ -177,7 +177,7 @@ def test_claude_safari_media_sync_saves_real_images_and_skips_known_bytes(
             if 'a[href], [role="link"]' in script:
                 return [{"href": "https://claude.ai/chat/chat-1", "title": "Rendered chat"}]
             if "scrollHeight" in script:
-                return {"moved": False, "scrollTop": 0, "scrollHeight": 0}
+                return {"moved": False, "scrollTop": 0, "scrollHeight": 0, "atEnd": True}
             if 'main [role="article"]' in script:
                 return [
                     {

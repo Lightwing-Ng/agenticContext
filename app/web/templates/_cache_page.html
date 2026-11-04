@@ -1,4 +1,4 @@
-{# Code version: v1.39.4-codex.0 #}
+{# Code version: v1.40.6-codex.0 #}
 <!doctype html>
 <html lang="en-US">
 <head>
@@ -13,11 +13,11 @@
     <script defer src="{{ url_for('static', filename='numeric-display.js', v='numeric-display-v1.1.0-codex.0') }}"></script>
     <script defer src="{{ url_for('static', filename='segmented-control.js', v='segmented-control-v1.0.4-codex.1') }}"></script>
     <script src="{{ url_for('static', filename='responsive.js', v='responsive-v1.0.0-codex.1') }}"></script>
-    <script defer src="{{ url_for('static', filename='waiting-modal.js', v='waiting-modal-v1.1.0-codex.1') }}"></script>
-    <script defer src="{{ url_for('static', filename='browser-session-status.js', v='browser-session-status-v1.14.0-claude.0') }}"></script>
-    <script defer src="{{ url_for('static', filename='browser-session-picker.js', v='browser-session-picker-v1.9.1-codex.0') }}"></script>
+    <script defer src="{{ url_for('static', filename='waiting-modal.js', v='waiting-modal-v1.2.0-codex.0') }}"></script>
+    <script defer src="{{ url_for('static', filename='browser-session-status.js', v='browser-session-status-v1.14.1-codex.0') }}"></script>
+    <script defer src="{{ url_for('static', filename='browser-session-picker.js', v='browser-session-picker-v1.10.0-codex.0') }}"></script>
     <script defer src="{{ url_for('static', filename='numeric-input-format.js', v='numeric-input-format-v1.1.0-codex.1') }}"></script>
-    <script defer src="{{ url_for('static', filename='cache-page.js', v='cache-page-v1.19.0-codex.0') }}"></script>
+    <script defer src="{{ url_for('static', filename='cache-page.js', v='cache-page-v1.22.0-codex.0') }}"></script>
     {% block head %}{% endblock %}
 </head>
 <body>
@@ -41,6 +41,7 @@
     data-cache-status-url="{{ url_for('cache.api_cache_status', source_key=cache_source.key) }}"
     data-cache-progress-strategy="{{ cache_source.progress_strategy }}"
     data-cache-page-content-mode="{{ cache_mode }}"
+    data-cache-content-modes="{{ cache_source.content_modes|join(',') }}"
     data-cache-browser="{{ cache_browser }}"
     data-cache-local="{{ 'true' if cache_source.is_local else 'false' }}"
 >
@@ -66,7 +67,7 @@
             <section class="hero" data-layout-role="sidebar-title">
                 <h1>{{ cache_source.group_label }}</h1>
             </section>
-            {% if cache_source.show_content_mode %}
+            {% if cache_source.show_content_mode and cache_source.content_modes|length > 1 %}
             <section class="sidebar-section cache-page-content-mode-section">
                 <div
                     class="segmented-control browser-content-mode-control cache-page-content-mode-control"
@@ -141,6 +142,7 @@
                                 class="trade-strategy-dropdown-option browser-source-filter-option{% if source.key == cache_source.key %} is-selected is-active{% endif %}"
                                 data-cache-source-switcher-option="{{ source.key }}"
                                 data-cache-source-text-available="{{ 'true' if source.show_content_mode or source.include_in_llm_switcher or source.group_key == 'llm' else 'false' }}"
+                                data-cache-source-content-modes="{{ source.content_modes|join(',') }}"
                                 data-cache-source-browsers="{{ (source.supported_browsers or ('edge', 'chrome', 'safari'))|join(',') }}"
                                 data-cache-source-switcher-path="{{ cache_source_switcher_path(cache_source.key, source.key) }}"
                                 role="option"
@@ -273,7 +275,7 @@
 
 {% include "_waiting_modal.html" %}
 {% block page_overlays %}{% endblock %}
-<script src="{{ url_for('static', filename='sidebar.js', v='sidebar-v1.30.0-codex.0') }}"></script>
+<script src="{{ url_for('static', filename='sidebar.js', v='sidebar-v1.31.0-codex.0') }}"></script>
 {% block tail %}{% endblock %}
 </body>
 </html>

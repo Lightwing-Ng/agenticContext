@@ -1,4 +1,4 @@
-"""Isolated Cache activity disclosure coverage. Code version: v1.2.1-codex.0."""
+"""Isolated Cache activity disclosure coverage. Code version: v1.2.2-codex.0."""
 
 from __future__ import annotations
 
@@ -631,7 +631,7 @@ def test_cache_activity_metadata_progress_and_queued_media_handoff(
     )
     queued = _queued_task("grok", content_mode="media")
     queued["message"] = (
-        "Queued. Safari is busy with the ChatGPT · Media cache. "
+        "Queued. Safari is busy with the ChatGPT Chat · Media cache. "
         "This task starts automatically when Safari is free."
     )
     activity = {"tasks": [metadata, queued]}
@@ -647,8 +647,8 @@ def test_cache_activity_metadata_progress_and_queued_media_handoff(
         trigger.click()
         _settle_disclosure(page)
         rows = panel.locator("[data-cache-activity-task]")
-        chatgpt_row = panel.locator('[data-cache-activity-task][data-task-id="chatgpt:media"]')
-        grok_row = panel.locator('[data-cache-activity-task][data-task-id="grok:media"]')
+        chatgpt_row = rows.filter(has_text="ChatGPT · Media")
+        grok_row = rows.filter(has_text="Grok · Media")
         expect(rows).to_have_count(2)
         expect(chatgpt_row).to_contain_text("Completing image prompt metadata.")
         expect(chatgpt_row.locator(".cache-activity-progress")).to_have_text(
@@ -747,6 +747,7 @@ def _assert_global_entry_geometry(geometry: dict, *, composer: bool) -> None:
         ("/agent/tunnel/chatgpt", False),
         ("/agent/edge/chatgpt", True),
         ("/jury/edge", True),
+        ("/iphone", False),
         ("/beta", False),
     ),
 )

@@ -1,4 +1,4 @@
-/* Code version: v1.30.0-codex.0 */
+/* Code version: v1.31.0-codex.0 */
 
 (function initializeSidebar() {
     "use strict";
@@ -15,8 +15,8 @@
     const dockLocationMemoryPrefix = "cachelikes:dock-location:v1:";
     const dockSections = new Set(["agent", "cache", "local-resources", "settings"]);
     const openclawCacheSources = ["chatgpt_openclaw", "gemini_openclaw", "claude_openclaw", "grok_openclaw", "zhipu_openclaw", "doubao_openclaw", "other_openclaw", "unknown_openclaw"];
-    const cacheSectionPaths = new Set(["/cache/x", "/cache/grok", "/cache/grok_build", "/cache/chatgpt", "/cache/gemini", "/cache/claude", "/cache/claude_code", "/cache/zhihu", ...openclawCacheSources.map((source) => `/cache/${source}`)]);
-    const cacheSelectionPathPattern = /^\/cache\/(?:(x|grok|chatgpt|gemini|claude|zhihu)(?:\/(text|media)\/(safari|edge|chrome))?|claude_code|grok_build|(?:chatgpt|gemini|claude|grok|zhipu|doubao|other|unknown)_openclaw)$/;
+    const cacheSectionPaths = new Set(["/cache/x", "/cache/grok", "/cache/grok_build", "/cache/chatgpt", "/cache/copilot", "/cache/gemini", "/cache/claude", "/cache/claude_code", "/cache/codex", "/cache/zhihu", ...openclawCacheSources.map((source) => `/cache/${source}`)]);
+    const cacheSelectionPathPattern = /^\/cache\/(?:(x|grok|chatgpt|copilot|gemini|claude|zhihu)(?:\/(text|media)\/(safari|edge|chrome))?|claude_code|codex|grok_build|(?:chatgpt|gemini|claude|grok|zhipu|doubao|other|unknown)_openclaw)$/;
     const reducedMotionMedia = window.matchMedia("(prefers-reduced-motion: reduce)");
     const sidebarGelAnimationNames = new Set([
         "workspace-sidebar-gel-open",
@@ -41,6 +41,7 @@
     const localResourceFilterNames = ["view", "source", "kind", "q", "sort", "session_view", "session_index", "media_view"];
     const agentRoutePattern = /^\/agent\/(?:safari|edge|chrome)\/(?:chatgpt|gemini|grok|claude)$/;
     const juryRoutePattern = /^\/jury(?:\/(?:edge|chrome))?$/;
+    const iphoneRoutePattern = /^\/iphone$/;
     const settingsCategoryPattern = /^#settings-(browser|downloads|llm|chatgpt|cloud|maintenance)$/;
     const dockLinks = sidebarDock
         ? Array.from(sidebarDock.querySelectorAll("[data-dock-section], [data-section-link]"))
@@ -85,7 +86,7 @@
         if (targetUrl.origin !== window.location.origin) return "";
 
         if (section === "agent") {
-            return targetUrl.pathname === "/agent" || agentRoutePattern.test(targetUrl.pathname) || juryRoutePattern.test(targetUrl.pathname)
+            return targetUrl.pathname === "/agent" || agentRoutePattern.test(targetUrl.pathname) || juryRoutePattern.test(targetUrl.pathname) || iphoneRoutePattern.test(targetUrl.pathname)
                 ? `${targetUrl.pathname}${targetUrl.search}${targetUrl.hash}`
                 : "";
         }
@@ -173,7 +174,7 @@
 
     function currentDockLocation(section) {
         if (section === "agent") {
-            return window.location.pathname === "/agent" || agentRoutePattern.test(window.location.pathname) || juryRoutePattern.test(window.location.pathname)
+            return window.location.pathname === "/agent" || agentRoutePattern.test(window.location.pathname) || juryRoutePattern.test(window.location.pathname) || iphoneRoutePattern.test(window.location.pathname)
                 ? `${window.location.pathname}${window.location.search}${window.location.hash}`
                 : "/agent";
         }
@@ -188,7 +189,7 @@
 
     function dockSectionForCurrentPath() {
         const normalizedPath = legacyCachePathMap.get(window.location.pathname) || window.location.pathname;
-        if (normalizedPath === "/agent" || agentRoutePattern.test(window.location.pathname) || juryRoutePattern.test(window.location.pathname)) return "agent";
+        if (normalizedPath === "/agent" || agentRoutePattern.test(window.location.pathname) || juryRoutePattern.test(window.location.pathname) || iphoneRoutePattern.test(window.location.pathname)) return "agent";
         if (cacheSelectionPathPattern.test(normalizedPath)) return "cache";
         if (window.location.pathname === "/browser") return "local-resources";
         if (window.location.pathname === "/settings") return "settings";
@@ -413,6 +414,7 @@
 
     window.addEventListener("hashchange", rememberCurrentDockLocation);
     window.addEventListener("popstate", rememberCurrentDockLocation);
+    window.addEventListener("pagehide", rememberCurrentDockLocation);
 
     sidebarToggle.addEventListener("click", () => {
         applySidebarStateWithMotion(!isSidebarOpen, { animate: true });

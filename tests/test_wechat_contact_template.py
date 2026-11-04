@@ -1,6 +1,6 @@
 """Contact identity metadata remains inside the existing compact disclosure.
 
-Code version: v1.0.1-codex.0
+Code version: v1.1.1-codex.0
 """
 
 from html.parser import HTMLParser
@@ -9,6 +9,8 @@ from types import SimpleNamespace
 
 from jinja2 import Environment, FileSystemLoader
 import pytest
+
+from app.web.presentation import format_wechat_source_clock
 
 
 class MessageDisclosure(HTMLParser):
@@ -45,6 +47,7 @@ class MessageDisclosure(HTMLParser):
 def test_contact_fields_are_escaped_and_do_not_add_a_closed_card_row(status, namespace):
     templates = Path(__file__).resolve().parents[1] / "app" / "web" / "templates"
     environment = Environment(loader=FileSystemLoader(templates), autoescape=True)
+    environment.filters["wechat_source_clock"] = format_wechat_source_clock
     context = {
         "kind": "group",
         "account_label": "Synthetic source",
@@ -59,7 +62,14 @@ def test_contact_fields_are_escaped_and_do_not_add_a_closed_card_row(status, nam
         "timestamp_label": "Unknown time",
         "time_basis": "Unavailable source time",
         "quality_flags": [],
-        "provenance": {"locator": {}, "server_id": None, "source_time": None},
+        "provenance": {
+            "locator": {
+                "member_path": "Synthetic/聊天记录.html",
+                "literal": "</dd><script>literal source text</script>",
+            },
+            "server_id": None,
+            "source_time": None,
+        },
         "contact": {"id": "wechat:contact:<synthetic>", "identity_status": status},
     }
     current = SimpleNamespace(
@@ -98,3 +108,7 @@ def test_contact_fields_are_escaped_and_do_not_add_a_closed_card_row(status, nam
     assert status.replace("_", " ") in "".join(parsed.metadata)
     assert "wechat:contact:&lt;synthetic&gt;" in rendered
     assert "wechat:contact:<synthetic>" not in rendered
+    assert "Synthetic/聊天记录.html" in "".join(parsed.metadata)
+    assert "\\u804a\\u5929" not in rendered
+    assert "&lt;script&gt;literal source text&lt;/script&gt;" in rendered
+    assert "<script>literal source text</script>" not in rendered

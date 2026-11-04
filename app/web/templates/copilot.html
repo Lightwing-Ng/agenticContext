@@ -1,0 +1,21 @@
+{# Code version: v1.0.0-codex.0 #}
+{% extends "_cache_page.html" %}
+{% from "_cache_page_components.html" import render_metric, render_progress_metric %}
+
+{% block secondary_actions %}
+<a class="secondary-button" href="{{ url_for('local_resources.browser', view='text', source='copilot', session_view='1', sort='newest') }}">Browse cached sessions</a>
+{% endblock %}
+
+{% block primary_metrics %}
+{{ render_metric("Sessions discovered", "discovered_tweets", snapshot.discovered_tweets, "discovered_tweets") }}
+{{ render_metric("Messages discovered", "discovered_images", snapshot.discovered_images, "discovered_images") }}
+{{ render_metric("Sessions cached", "downloaded_posts", snapshot.downloaded_posts, "downloaded_posts") }}
+{{ render_metric("Messages cached", "downloaded_tweets", snapshot.downloaded_tweets, "downloaded_tweets") }}
+{{ render_metric("Unchanged sessions", "skipped_tweets", snapshot.skipped_tweets, "skipped_tweets") }}
+{{ render_metric("Session failures", "failed_tweets", snapshot.failed_tweets, "failed_tweets") }}
+{% endblock %}
+
+{% block progress_metrics %}
+{{ render_progress_metric("Sessions queued", "queued_tweets", snapshot.queued_tweets, "progress_queued_tweets") }}
+{{ render_progress_metric("Sessions processed", "processed_tweets", snapshot.processed_tweets, "progress_processed_tweets") }}
+{% endblock %}

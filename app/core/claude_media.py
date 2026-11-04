@@ -1,6 +1,6 @@
 """Cache rendered first-party Claude images through an owned Safari session.
 
-Code version: v1.1.2-codex.0
+Code version: v1.2.2-codex.0
 """
 
 from __future__ import annotations
@@ -12,9 +12,10 @@ import os
 import re
 import tempfile
 import warnings
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
+from time import monotonic
 from typing import Any, Callable
 from urllib.parse import parse_qsl, urlsplit
 
@@ -24,8 +25,16 @@ from .browser_sessions import CLAUDE_HOME_URL, browser_descriptors, goto_with_re
 from .cache_timing import wait_for_cache_scan
 from .claude_history import (
     CLAUDE_RENDER_SETTLE_MILLISECONDS,
+    CLAUDE_TRANSCRIPT_IDLE_ROUNDS,
+    CLAUDE_TRANSCRIPT_SCROLL_TIMEOUT_SECONDS,
+    CLAUDE_TRANSCRIPT_STEP_MILLISECONDS,
     ClaudeConversationLink,
+    ClaudeConversationDiscoveryIncompleteError,
+    ClaudeSecurityVerificationError,
+    _expand_earlier_claude_messages,
     _prepare_claude_conversation_for_rendering,
+    _raise_if_claude_security_verification,
+    _scroll_claude_transcript,
     _wait_for_claude_ready,
     discover_claude_conversations,
 )
@@ -84,10 +93,11 @@ class ClaudeMediaSyncResult:
     failed_sessions: int = 0
     stopped: bool = False
     skipped_size: int = 0
+    discovery_incomplete: bool = False
 
     @property
     def incomplete(self) -> bool:
-        return self.failed_images > 0 or self.failed_sessions > 0
+        return self.discovery_incomplete or self.failed_images > 0 or self.failed_sessions > 0
 
 
 class ClaudeMediaSizeLimitError(RuntimeError):
@@ -199,6 +209,8 @@ def _candidate_from_rendered_image(
 def discover_claude_rendered_images(
     page: Any,
     conversation: ClaudeConversationLink,
+    *,
+    seen_references: set[str] | None = None,
 ) -> tuple[list[ClaudeImageCandidate], int]:
     """Inspect loaded message bodies only; skip avatars, external URLs, blobs, and links."""
 
@@ -212,11 +224,16 @@ def discover_claude_rendered_images(
                 const role = userRoot ? 'user' : assistantRoot ? 'assistant' : '';
                 const body = userRoot || assistantRoot;
                 if (!body || !role) return;
+                const transcriptIndex = Number.parseInt(
+                    article.closest('[data-testid="transcript-row"]')?.getAttribute('data-index') ?? '',
+                    10,
+                );
+                const stableMessageIndex = Number.isFinite(transcriptIndex) ? transcriptIndex : messageIndex;
                 [...body.querySelectorAll('img')].forEach((image, imageIndex) => {
                     images.push({
                         source_url: String(image.currentSrc || image.src || ''),
                         alt_text: String(image.getAttribute('alt') || ''),
-                        message_index: messageIndex,
+                        message_index: stableMessageIndex,
                         image_index: imageIndex,
                         role,
                     });
@@ -231,6 +248,13 @@ def discover_claude_rendered_images(
         if not isinstance(raw, dict):
             unsupported += 1
             continue
+        if seen_references is not None:
+            reference = hashlib.sha256(
+                json.dumps(raw, sort_keys=True, separators=(",", ":")).encode("utf-8")
+            ).hexdigest()
+            if reference in seen_references:
+                continue
+            seen_references.add(reference)
         candidate = _candidate_from_rendered_image(raw, conversation)
         if candidate is None:
             unsupported += 1
@@ -238,6 +262,61 @@ def discover_claude_rendered_images(
         candidates.setdefault(candidate.asset_id, candidate)
     return list(candidates.values()), unsupported
 
+
+
+def collect_claude_conversation_images(
+    page: Any,
+    conversation: ClaudeConversationLink,
+    should_stop: Callable[[], bool],
+    *,
+    timeout_seconds: float = CLAUDE_TRANSCRIPT_SCROLL_TIMEOUT_SECONDS,
+) -> tuple[list[ClaudeImageCandidate], int]:
+    """Inspect every mounted transcript window without treating a timeout as complete."""
+    if should_stop():
+        return [], 0
+    _raise_if_claude_security_verification(page)
+    _expand_earlier_claude_messages(page, should_stop)
+    if should_stop():
+        return [], 0
+    earlier_messages_remain = page.evaluate(
+        r"""() => [...document.querySelectorAll('main [role="feed"] button')]
+            .some(button => /load earlier messages/i.test(
+                button.innerText || button.getAttribute('aria-label') || ''
+            ))"""
+    )
+    if earlier_messages_remain is True:
+        raise RuntimeError("Claude media reached the load-earlier limit before exposing the full transcript.")
+    _prepare_claude_conversation_for_rendering(page)
+    deadline = monotonic() + max(0.0, timeout_seconds)
+    images: dict[str, ClaudeImageCandidate] = {}
+    seen_references: set[str] = set()
+    unsupported = 0
+    idle_rounds = 0
+    while True:
+        if should_stop():
+            break
+        _raise_if_claude_security_verification(page)
+        before = len(images)
+        candidates, skipped = discover_claude_rendered_images(
+            page, conversation, seen_references=seen_references,
+        )
+        unsupported += skipped
+        for candidate in candidates:
+            images.setdefault(candidate.source_fingerprint, candidate)
+        scroll_state = _scroll_claude_transcript(page)
+        at_bottom = bool(scroll_state.get("atBottom", not scroll_state.get("moved")))
+        idle_rounds = idle_rounds + 1 if at_bottom and len(images) == before else 0
+        if idle_rounds >= CLAUDE_TRANSCRIPT_IDLE_ROUNDS:
+            break
+        if monotonic() >= deadline:
+            raise RuntimeError("Claude media transcript traversal did not finish before the timeout.")
+        if wait_for_cache_scan(
+            CLAUDE_TRANSCRIPT_STEP_MILLISECONDS / 1_000,
+            should_stop,
+            wait=lambda seconds: page.wait_for_timeout(seconds * 1_000),
+        ):
+            break
+    return list(images.values()), unsupported
 
 def _validated_image_extension(content: bytes) -> str:
     """Decode the complete image before assigning a local raster extension."""
@@ -319,6 +398,25 @@ class ClaudeMediaCatalog:
     @property
     def cached_count(self) -> int:
         return len(self._present_ids)
+
+    def reuse_candidate(self, candidate: ClaudeImageCandidate) -> ClaudeImageCandidate:
+        """Keep prior file identities when a virtualized row receives its stable index."""
+        for record in self._records.values():
+            if (
+                record.get("conversation_id") == candidate.conversation_id
+                and record.get("source_fingerprint") == candidate.source_fingerprint
+            ):
+                message_index = record.get("message_index")
+                return replace(
+                    candidate,
+                    asset_id=str(record["asset_id"]),
+                    message_index=(
+                        message_index
+                        if isinstance(message_index, int) and message_index >= 0
+                        else candidate.message_index
+                    ),
+                )
+        return candidate
 
     def contains(self, candidate: ClaudeImageCandidate) -> bool:
         record = self._records.get(candidate.asset_id)
@@ -533,6 +631,7 @@ def sync_claude_media(
     processed_images = 0
     processed_sessions = 0
     stopped = False
+    discovery_incomplete = False
     with SafariContext(CLAUDE_HOME_URL, lock_blocking=False) as context:
         page = context.primary_page
         goto_with_retry(page, CLAUDE_HOME_URL, attempts=3, timeout_ms=90_000, should_stop=should_stop)
@@ -541,9 +640,14 @@ def sync_claude_media(
             conversations: list[ClaudeConversationLink] = []
         else:
             _wait_for_claude_ready(page)
-            conversations = discover_claude_conversations(page, should_stop=should_stop)
+            try:
+                conversations = discover_claude_conversations(page, should_stop=should_stop)
+            except ClaudeConversationDiscoveryIncompleteError as exc:
+                discovery_incomplete = True
+                conversations = exc.conversations
+                state.append_event(f"{exc} Scanning {len(conversations):,} verified sessions.")
             stopped = should_stop()
-            if not conversations and not stopped:
+            if not conversations and not stopped and not discovery_incomplete:
                 raise RuntimeError(
                     "Claude media discovery returned no rendered sessions. "
                     "The authenticated Chats page may not have loaded."
@@ -574,8 +678,12 @@ def sync_claude_media(
                     stopped = True
                     break
                 page.wait_for_timeout(CLAUDE_RENDER_SETTLE_MILLISECONDS)
-                _prepare_claude_conversation_for_rendering(page)
-                candidates, unsupported = discover_claude_rendered_images(page, conversation)
+                candidates, unsupported = collect_claude_conversation_images(
+                    page, conversation, should_stop,
+                )
+                candidates = [catalog.reuse_candidate(candidate) for candidate in candidates]
+            except ClaudeSecurityVerificationError:
+                raise
             except Exception as exc:
                 failed_sessions += 1
                 state.append_event(
@@ -672,6 +780,7 @@ def sync_claude_media(
         failed_sessions=failed_sessions,
         stopped=stopped,
         skipped_size=skipped_size,
+        discovery_incomplete=discovery_incomplete,
     )
     message = (
         f"{'Stopped' if stopped else 'Finished'} Claude rendered-image cache after "
@@ -686,7 +795,7 @@ def sync_claude_media(
     state.update(
         phase="stopped" if stopped else ("failed" if result.incomplete else "completed"),
         discovered_tweets=len(conversations),
-        discovery_complete=not stopped,
+        discovery_complete=not stopped and not discovery_incomplete,
         discovered_images=discovered_images,
         queued_tweets=discovered_images,
         processed_tweets=processed_images,

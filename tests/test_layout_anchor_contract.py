@@ -1,6 +1,6 @@
 """Static checks for the cross-project spatial layout contract.
 
-Code version: v0.2.0-codex.1
+Code version: v0.2.1-claude.0
 """
 
 from pathlib import Path
@@ -108,6 +108,7 @@ def test_production_templates_publish_shared_layout_roles() -> None:
         "agent.html",
         "beta.html",
         "browser.html",
+        "iphone.html",
         "settings.html",
         "settings_style_tokens.html",
     ):
@@ -124,6 +125,7 @@ def test_production_templates_publish_shared_layout_roles() -> None:
     assert 'data-layout-role="result-container"' in _read(TEMPLATE_ROOT / "_cache_page.html")
     assert 'data-layout-role="content-scrollport"' in _read(TEMPLATE_ROOT / "_cache_page.html")
     assert 'data-layout-role="content-scrollport"' in _read(TEMPLATE_ROOT / "browser.html")
+    assert 'data-layout-role="content-scrollport"' in _read(TEMPLATE_ROOT / "iphone.html")
     assert 'data-layout-role="content-scrollport"' in _read(TEMPLATE_ROOT / "settings.html")
     assert 'data-layout-role="content-scrollport"' in _read(TEMPLATE_ROOT / "settings_style_tokens.html")
     assert 'data-layout-role="pagination"' in _read(TEMPLATE_ROOT / "_pagination.html")

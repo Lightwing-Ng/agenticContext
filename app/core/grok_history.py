@@ -1,6 +1,6 @@
 """Grok text history collection and local persistence.
 
-Code version: v1.5.2-codex.0
+Code version: v1.5.3-codex.0
 """
 
 from __future__ import annotations
@@ -72,6 +72,14 @@ class GrokConversation:
     created_at: str
     updated_at: str
     url: str
+
+
+class GrokConversationDiscoveryIncompleteError(RuntimeError):
+    """Retain verified sessions when a later Grok catalog page cannot be trusted."""
+
+    def __init__(self, message: str, conversations: list[GrokConversation]) -> None:
+        super().__init__(message)
+        self.conversations = conversations
 
 
 @dataclass(frozen=True)
@@ -250,13 +258,13 @@ def _response_text(response: dict[str, Any]) -> str:
 
 
 def _conversation_from_payload(payload: dict[str, Any]) -> GrokConversation | None:
-    conversation_id = str(
+    conversation_id = (
         payload.get("conversationId")
         or payload.get("id")
         or payload.get("conversation_id")
         or ""
-    ).strip()
-    if not conversation_id:
+    )
+    if not isinstance(conversation_id, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", conversation_id):
         return None
     title = str(payload.get("title") or "").strip() or f"Grok session {conversation_id}"
     created_at = str(payload.get("createTime") or payload.get("createdAt") or "").strip()
@@ -389,41 +397,79 @@ def _grok_api_json(
     raise RuntimeError(f"Grok API request failed after retries: {path}")
 
 
-def list_grok_conversations(page: Any) -> list[GrokConversation]:
+def list_grok_conversations(
+    page: Any,
+    should_stop: Callable[[], bool] = lambda: False,
+) -> list[GrokConversation]:
     """Enumerate every non-project conversation using Grok's page token."""
 
     conversations: list[GrokConversation] = []
     seen_ids: set[str] = set()
     page_token = ""
     seen_tokens: set[str] = set()
+
+    def incomplete(reason: str) -> GrokConversationDiscoveryIncompleteError:
+        return GrokConversationDiscoveryIncompleteError(
+            f"Grok conversation discovery is incomplete. {reason} Existing cached history was preserved.",
+            list(conversations),
+        )
+
     for _ in range(GROK_CONVERSATION_PAGE_LIMIT):
+        if should_stop():
+            return conversations
         query = {
             "pageSize": str(GROK_CONVERSATIONS_PAGE_SIZE),
             "excludeProjects": "true",
         }
         if page_token:
             query["pageToken"] = page_token
-        payload = _grok_api_json(
-            page,
-            "/rest/app-chat/conversations?" + urlencode(query),
-        )
+        try:
+            payload = _grok_api_json(
+                page,
+                "/rest/app-chat/conversations?" + urlencode(query),
+            )
+        except Exception as exc:
+            if should_stop():
+                return conversations
+            raise incomplete("A conversation-list page could not be read.") from exc
         items = payload.get("conversations")
         if not isinstance(items, list):
-            raise RuntimeError("Grok returned an invalid conversation list; cached history was preserved.")
+            raise incomplete("The provider returned an invalid conversation list.")
+        malformed_items = False
+        repeated_items = False
         for raw_item in items:
             if not isinstance(raw_item, dict):
+                malformed_items = True
                 continue
             conversation = _conversation_from_payload(raw_item)
-            if conversation is None or conversation.conversation_id in seen_ids:
+            if conversation is None:
+                malformed_items = True
+                continue
+            if conversation.conversation_id in seen_ids:
+                repeated_items = True
                 continue
             seen_ids.add(conversation.conversation_id)
             conversations.append(conversation)
-        next_token = str(payload.get("nextPageToken") or "").strip()
-        if not next_token or next_token in seen_tokens or not items:
-            break
+        if malformed_items:
+            raise incomplete("A conversation-list entry had no valid stable identity.")
+        if repeated_items:
+            raise incomplete("The provider repeated sessions before catalog exhaustion.")
+        next_token = payload.get("nextPageToken")
+        if next_token is not None and not isinstance(next_token, str):
+            raise incomplete("The provider returned an invalid continuation token.")
+        if not next_token:
+            return conversations
+        if not next_token.strip():
+            raise incomplete("The provider returned an invalid continuation token.")
+        if next_token in seen_tokens:
+            raise incomplete("The provider repeated a continuation token before catalog exhaustion.")
+        if not items:
+            raise incomplete("An empty page still advertised a continuation token.")
         seen_tokens.add(next_token)
         page_token = next_token
-    return conversations
+    if should_stop():
+        return conversations
+    raise incomplete("The bounded page limit was reached before catalog exhaustion.")
 
 
 def _response_nodes(page: Any, conversation_id: str) -> list[dict[str, Any]]:
@@ -672,6 +718,7 @@ def sync_grok_history(
     unchanged_messages = 0
     failed_sessions = 0
     stopped = False
+    discovery_incomplete = False
 
     with ExitStack() as browser_stack:
         if descriptor.engine == "safari":
@@ -693,15 +740,24 @@ def sync_grok_history(
             page = context.pages[0] if context.pages else context.new_page()
             goto_with_retry(page, GROK_HOME_URL, attempts=3)
         page.wait_for_timeout(500)
-        conversations = list_grok_conversations(page)
+        try:
+            conversations = list_grok_conversations(page, should_stop)
+        except GrokConversationDiscoveryIncompleteError as exc:
+            discovery_incomplete = True
+            conversations = exc.conversations
+            state.append_event(f"{exc} Caching {len(conversations):,} verified sessions.")
+        stopped = should_stop()
         state.update(
             phase="downloading",
             discovered_tweets=len(conversations),
             queued_tweets=len(conversations),
-            discovery_complete=True,
+            discovery_complete=not stopped and not discovery_incomplete,
             message=f"Found {len(conversations):,} Grok sessions; loading text messages...",
         )
-        state.append_event(f"Found {len(conversations):,} Grok sessions across all API pages.")
+        state.append_event(
+            f"Found {len(conversations):,} verified Grok sessions; "
+            + ("catalog discovery remains incomplete." if discovery_incomplete else "catalog pagination is exhausted.")
+        )
 
         for index, conversation in enumerate(conversations):
             if should_stop():
@@ -748,6 +804,13 @@ def sync_grok_history(
             f"Stopped Grok history sync after {processed_sessions:,}/{len(conversations):,} sessions; "
             f"{store.cached_messages:,} messages remain cached."
         )
+    elif discovery_incomplete:
+        phase = "failed"
+        message = (
+            f"Grok history discovery is incomplete. Inspected {processed_sessions:,} verified sessions; "
+            f"{store.cached_conversations:,} sessions and {store.cached_messages:,} messages remain cached. "
+            "Retry the remaining conversation-list pages."
+        )
     else:
         phase = "failed" if failed_sessions else "completed"
         message = (
@@ -766,6 +829,7 @@ def sync_grok_history(
         discovered_images=discovered_messages,
         downloaded_images=0,
         failed_tweets=failed_sessions,
+        discovery_complete=not stopped and not discovery_incomplete,
         message=message,
     )
     state.append_event(message)
@@ -776,4 +840,5 @@ def sync_grok_history(
         "unchanged": unchanged_messages,
         "failed": failed_sessions,
         "stopped": stopped,
+        "incomplete": discovery_incomplete,
     }

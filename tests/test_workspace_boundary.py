@@ -5,7 +5,7 @@ break: path isolation, read-only refusal, read-receipt expiry, MCP response cont
 route compatibility, application-instance isolation, and shutdown behavior.
 """
 
-# Code version: v1.0.5-codex.0
+# Code version: v1.0.6-claude.0
 
 from __future__ import annotations
 
@@ -347,11 +347,13 @@ EXPECTED_ROUTES = (
     ("/api/agent/tunnel/status", {"GET"}),
     ("/api/browser-session", {"GET"}),
     ("/api/cache/<source_key>/status", {"GET"}),
+    ("/api/iphone/status", {"GET"}),
     ("/api/jury/status", {"GET"}),
     ("/api/settings/shadow-backup/status", {"GET"}),
     ("/api/status", {"GET"}),
     ("/browser", {"GET"}),
     ("/cache/<source_key>", {"GET"}),
+    ("/iphone", {"GET"}),
     ("/jury", {"GET"}),
     ("/mcp", {"GET", "POST"}),
     ("/settings", {"GET", "POST"}),
@@ -407,6 +409,7 @@ def test_two_applications_do_not_share_runtime_services(tmp_path: Path) -> None:
         "computer_use_agent_service",
         "agent_session_pool",
         "jury_service",
+        "iphone_service",
         "tunnel_mcp_service",
         "tunnel_runtime",
         "gemini_tunnel_gateway",
@@ -444,10 +447,15 @@ def test_runtime_shutdown_is_ordered_and_idempotent(
         "stop_at_exit",
         lambda: stopped.append("agent"),
     )
+    monkeypatch.setattr(
+        application.extensions["iphone_service"],
+        "stop_at_exit",
+        lambda: stopped.append("iphone"),
+    )
     shutdown = application.extensions["runtime_shutdown"]
     shutdown()
     shutdown()
-    assert stopped == ["mcp", "tunnel", "jury", "agent"]
+    assert stopped == ["mcp", "tunnel", "jury", "agent", "iphone"]
 
 
 def test_runtime_shutdown_continues_after_a_tunnel_runtime_error(

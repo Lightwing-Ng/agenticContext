@@ -1,6 +1,6 @@
 """Resolve WeChat identities while retaining account-specific contact observations.
 
-Code version: v1.2.0-codex.0
+Code version: v1.3.2-codex.0
 
 A contact identifies a platform identity, not an assumed real-world person.
 Syntax classifies identifiers; only explicit native evidence authorizes linking.
@@ -13,10 +13,8 @@ import hashlib
 from itertools import islice
 import json
 from pathlib import Path, PurePosixPath
-import posixpath
 import re
 import sqlite3
-from urllib.parse import unquote, urlsplit
 
 
 CANONICAL_AUTHORITIES = frozenset(
@@ -414,50 +412,6 @@ def _fallback(message, reason):
     }
 
 
-def _forwarded_safe_path(value, *, canonical=True):
-    if not value or "\\" in value or any(ord(char) < 32 for char in value):
-        raise ValueError("Unsafe ZIP member path.")
-    path = PurePosixPath(value)
-    if path.is_absolute() or ".." in path.parts or re.match(r"^[A-Za-z]:", value):
-        raise ValueError("Unsafe ZIP member path.")
-    if canonical and any(part in {"", "."} for part in value.rstrip("/").split("/")):
-        raise ValueError("Noncanonical ZIP member paths are ambiguous.")
-
-
-def _forwarded_local_reference(member_path, value):
-    parsed = urlsplit(value)
-    if parsed.scheme or parsed.netloc or parsed.query or parsed.fragment:
-        return None
-    relative = unquote(parsed.path)
-    try:
-        _forwarded_safe_path(relative, canonical=False)
-    except ValueError:
-        return None
-    resolved = posixpath.normpath(
-        posixpath.join(str(PurePosixPath(member_path).parent), relative)
-    )
-    try:
-        _forwarded_safe_path(resolved)
-    except ValueError:
-        return None
-    return resolved
-
-
-def _forwarded_native_avatar_id(value):
-    parsed = urlsplit(value)
-    if parsed.scheme or parsed.netloc or parsed.query or parsed.fragment:
-        return ""
-    decoded = unquote(parsed.path)
-    try:
-        _forwarded_safe_path(decoded, canonical=False)
-    except ValueError:
-        return ""
-    path = PurePosixPath(decoded)
-    if path.parent.name != "Portrait" or path.suffix.lower() != ".jpg":
-        return ""
-    return path.stem
-
-
 def _forwarded_projection(components):
     """Copy a bounded presentation tree without changing persisted hierarchy evidence."""
     projected, flat = [], []
@@ -507,7 +461,103 @@ def _forwarded_source_members(source):
     return result
 
 
-def _forwarded_member_context(source, conversation, locator):
+def _forwarded_avatar_reference(main, avatar):
+    """Preserve literal leading filename spaces without accepting remote references."""
+    from .wechat_html_export import _local_reference, _native_avatar_id
+
+    if (
+        not isinstance(avatar, str)
+        or any(
+            ord(character) < 32 or 127 <= ord(character) <= 159
+            for character in avatar
+        )
+        or not _native_avatar_id(avatar)
+    ):
+        return None
+    # urlsplit removes leading ASCII spaces before parsing. Encode one only once;
+    # the established resolver still validates and decodes the original path once.
+    preserved = "%20" + avatar[1:] if avatar.startswith(" ") else avatar
+    return _local_reference(main, preserved)
+
+
+def _legacy_forwarded_member_context(
+    source, conversation, locator, *, avatar_path, sender_native_id
+):
+    """Recover a legacy frame only from unique catalog, receipt, and avatar evidence."""
+    from .wechat_html_export import _local_reference, _native_avatar_id, _safe_path
+
+    if (
+        source.get("parser_version") not in {"v1.0.0", "v1.1.0"}
+        or not isinstance(avatar_path, str)
+        or not isinstance(sender_native_id, str)
+        or not sender_native_id
+        or _native_avatar_id(avatar_path) != sender_native_id
+        or locator["page"] < 1
+        or locator["message_ordinal"] <= locator["page_message_ordinal"]
+    ):
+        return None
+    catalog = source.get("source_conversation_catalog", [])
+    if not isinstance(catalog, list) or any(
+        not isinstance(entry, dict) for entry in catalog
+    ):
+        raise ValueError("Invalid HTML conversation evidence.")
+    peers = [
+        entry
+        for entry in catalog
+        if entry.get("index_avatar_native_id", "") == conversation["peer_id"]
+        and entry.get("conversation_kind") == conversation["kind"]
+    ]
+    if len(peers) != 1 or "declared_async_counts" in peers[0]:
+        return None
+    selected = peers[0]
+    counts = selected.get("counts", {})
+    asynchronous = counts.get("async_array_items") if isinstance(counts, dict) else None
+    if type(asynchronous) is not int or asynchronous <= 0:
+        return None
+    members = _forwarded_source_members(source)
+    path = locator["member_path"]
+    if path not in members or members[path]["size"] <= 0:
+        return None
+    claims = []
+    for entry in catalog:
+        main = entry.get("member_path")
+        if not isinstance(main, str):
+            continue
+        _safe_path(main)
+        if PurePosixPath(main).suffix.lower() != ".html" or main not in members:
+            continue
+        declared = entry.get("declared_async_counts")
+        if declared is not None:
+            data = declared.get("data_path") if isinstance(declared, dict) else None
+            data_path = (
+                _local_reference(main, data)
+                if isinstance(data, str) and data
+                else None
+            )
+        else:
+            frame = PurePosixPath(main).with_suffix("")
+            data_path = str(frame.with_name(frame.name + "_files") / "Data")
+        if data_path and path == f"{data_path}/msg-{locator['page']}.js":
+            claims.append((entry, main, data_path))
+    if len(claims) != 1 or claims[0][0] is not selected:
+        return None
+    _, main, data_path = claims[0]
+    portrait = _forwarded_avatar_reference(main, avatar_path)
+    if (
+        members[main]["size"] <= 0
+        or portrait is None
+        or PurePosixPath(portrait).parent
+        != PurePosixPath(data_path).parent / "Portrait"
+    ):
+        return None
+    return main, data_path
+
+
+def _forwarded_member_context(
+    source, conversation, locator, *, avatar_path="", sender_native_id=""
+):
+    from .wechat_html_export import _local_reference, _safe_path
+
     path = locator.get("member_path")
     page = locator.get("page")
     if (
@@ -520,7 +570,7 @@ def _forwarded_member_context(source, conversation, locator):
         or locator["page_message_ordinal"] < 1
     ):
         return None
-    _forwarded_safe_path(path)
+    _safe_path(path)
     matches = []
     for entry in source.get("source_conversation_catalog", []):
         if not isinstance(entry, dict):
@@ -532,14 +582,26 @@ def _forwarded_member_context(source, conversation, locator):
             continue
         main = entry.get("member_path", "")
         data = entry.get("declared_async_counts", {}).get("data_path", "")
-        data_path = _forwarded_local_reference(main, data) if data else None
+        data_path = _local_reference(main, data) if data else None
         expected = main if page == 0 else f"{data_path}/msg-{page}.js"
         if path == expected:
             matches.append((main, data_path))
-    return matches[0] if len(matches) == 1 else None
+    if len(matches) == 1:
+        return matches[0]
+    if matches:
+        return None
+    return _legacy_forwarded_member_context(
+        source,
+        conversation,
+        locator,
+        avatar_path=avatar_path,
+        sender_native_id=sender_native_id,
+    )
 
 
 def _forwarded_native_proof(source, conversation, members, component, parent_context):
+    from .wechat_html_export import _native_avatar_id
+
     if component.get("is_system", False) is not False or component.get("text_kind") in {
         "notice",
         "system_text",
@@ -557,16 +619,22 @@ def _forwarded_native_proof(source, conversation, members, component, parent_con
     # An exporter-generated unknown username is not an identity assertion.
     canonical = canonical_contact_id(native, authority="native_message_sender")
     avatar = component.get("avatar_path", "")
-    if not isinstance(avatar, str) or _forwarded_native_avatar_id(avatar) != native:
+    if not isinstance(avatar, str) or _native_avatar_id(avatar) != native:
         return None
     locator = component.get("source_locator")
     if not isinstance(locator, dict) or locator.get("member_path") not in members:
         return None
-    context = _forwarded_member_context(source, conversation, locator)
+    context = _forwarded_member_context(
+        source,
+        conversation,
+        locator,
+        avatar_path=avatar,
+        sender_native_id=native,
+    )
     if context is None or context != parent_context:
         return None
     main, data = context
-    portrait = _forwarded_local_reference(main, avatar)
+    portrait = _forwarded_avatar_reference(main, avatar)
     resource_root = (
         PurePosixPath(data).parent
         if data
@@ -833,7 +901,13 @@ class WechatContactRepository:
         if not isinstance(locator, dict):
             raise ValueError("An exact original parent locator is required.")
         member = members.get(locator.get("member_path"))
-        context = _forwarded_member_context(source, row, locator)
+        context = _forwarded_member_context(
+            source,
+            row,
+            locator,
+            avatar_path=provenance.get("avatar_path_metadata", ""),
+            sender_native_id=provenance.get("sender_native_id", ""),
+        )
         if (
             member is None
             or locator.get("member") != member

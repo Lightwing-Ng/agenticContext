@@ -7,7 +7,7 @@ touches a Flask request, a service, or an application instance, so route modules
 import it directly instead of receiving it through the application factory.
 """
 
-# Code version: v1.4.0-codex.0
+# Code version: v1.5.0-codex.0
 
 from __future__ import annotations
 
@@ -133,6 +133,75 @@ _STORED_HTML_SKIPPED_TAGS = frozenset({"iframe", "object", "script", "style", "s
 
 
 _STORED_HTML_SKIPPED_CLASSES = frozenset({"screen-reader-user-query-label"})
+
+
+_SOURCE_CLOCK_MONTHS = (
+    "Jan",
+    "Feb",
+    "Mar",
+    "Apr",
+    "May",
+    "Jun",
+    "Jul",
+    "Aug",
+    "Sep",
+    "Oct",
+    "Nov",
+    "Dec",
+)
+_SOURCE_CLOCK_ISO = re.compile(
+    r"(?P<year>[0-9]{4})-(?P<month>[0-9]{1,2})-(?P<day>[0-9]{1,2})[T ]"
+    r"(?P<hour>[0-9]{1,2}):(?P<minute>[0-9]{2})"
+    r"(?::(?P<second>[0-9]{2})(?P<fraction>\.[0-9]{1,6})?)?"
+    r"(?P<offset>Z|[+-][0-9]{2}:[0-9]{2})?"
+)
+
+
+def format_wechat_source_clock(value: str | None) -> str:
+    """Format a literal source clock without inferring precision or a timezone."""
+    from app.core.wechat_html_export import normalize_html_clock
+
+    if value is None:
+        return ""
+    original = str(value)
+    raw = original.strip()
+    normalized, precision = normalize_html_clock(raw)
+    fraction, offset = "", ""
+    if normalized:
+        stamp = datetime.fromisoformat(normalized)
+    else:
+        match = _SOURCE_CLOCK_ISO.fullmatch(raw)
+        if match is None:
+            return original
+        fields = match.groupdict()
+        fraction = fields["fraction"] or ""
+        offset = fields["offset"] or ""
+        if offset and offset != "Z":
+            hours, minutes = offset[1:].split(":")
+            if int(hours) > 23 or int(minutes) > 59:
+                return original
+        canonical = (
+            f"{int(fields['year']):04d}-{int(fields['month']):02d}-"
+            f"{int(fields['day']):02d}T{int(fields['hour']):02d}:{fields['minute']}"
+        )
+        if fields["second"] is not None:
+            canonical += ":" + fields["second"] + fraction
+        try:
+            stamp = datetime.fromisoformat(canonical + offset.replace("Z", "+00:00"))
+        except ValueError:
+            return original
+        if (stamp.year, stamp.month, stamp.day) == (1970, 1, 1):
+            return original
+        precision = "second" if fields["second"] is not None else "minute"
+    label = (
+        f"{stamp.day} {_SOURCE_CLOCK_MONTHS[stamp.month - 1]} {stamp.year:04d} "
+        f"{stamp.hour:02d}:{stamp.minute:02d}"
+    )
+    if precision == "second":
+        label += f":{stamp.second:02d}{fraction}"
+    if offset:
+        label += " UTC" + ("" if offset == "Z" else offset)
+    return label
 
 
 def format_agent_activity_time(value: str | None) -> str:
@@ -688,6 +757,7 @@ __all__ = [
     "build_browser_search_suggestions",
     "format_agent_activity_time",
     "format_media_size",
+    "format_wechat_source_clock",
     "is_excluded_system_directory",
     "reconcile_cached_snapshot",
     "render_agent_response",

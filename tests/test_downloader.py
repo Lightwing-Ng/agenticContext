@@ -1,6 +1,6 @@
 """Tests for yt-dlp output classification and retry boundaries.
 
-Code version: v1.4.0-codex.0
+Code version: v1.4.1-codex.0
 """
 
 from __future__ import annotations
@@ -141,7 +141,16 @@ def test_safari_cookie_source_is_independent_of_host_browser_registry(monkeypatc
     assert build_cookies_from_browser_arg(CrawlConfig(x_browser="safari")) == "safari"
 
 
-def test_transient_yt_dlp_failure_retries_then_returns_success(tmp_path: Path, monkeypatch) -> None:
+@pytest.mark.parametrize("failure_output", [
+    "timed out",
+    "ERROR: The downloaded file is empty",
+    "ERROR: [SSL: UNEXPECTED_EOF_WHILE_READING] EOF occurred in violation of protocol",
+])
+def test_retryable_yt_dlp_failure_retries_then_returns_success(
+    tmp_path: Path,
+    monkeypatch,
+    failure_output: str,
+) -> None:
     attempts_path = tmp_path / "attempts.txt"
     script_path = tmp_path / "fake_yt_dlp.py"
     script_path.write_text(
@@ -150,7 +159,7 @@ def test_transient_yt_dlp_failure_retries_then_returns_success(tmp_path: Path, m
         "count = int(path.read_text()) + 1 if path.exists() else 1\n"
         "path.write_text(str(count))\n"
         "if count == 1:\n"
-        "    print('timed out', file=sys.stderr)\n"
+        f"    print({failure_output!r}, file=sys.stderr)\n"
         "    sys.exit(1)\n"
         "print('done')\n"
     )
@@ -167,7 +176,8 @@ def test_transient_yt_dlp_failure_retries_then_returns_success(tmp_path: Path, m
     assert attempts_path.read_text() == "2"
 
 
-def test_non_transient_yt_dlp_failure_does_not_retry(tmp_path: Path) -> None:
+@pytest.mark.parametrize("failure_output", ["HTTP Error 404", "ERROR: The metadata file is empty"])
+def test_non_retryable_yt_dlp_failure_does_not_retry(tmp_path: Path, failure_output: str) -> None:
     attempts_path = tmp_path / "attempts.txt"
     script_path = tmp_path / "fake_yt_dlp.py"
     script_path.write_text(
@@ -175,7 +185,7 @@ def test_non_transient_yt_dlp_failure_does_not_retry(tmp_path: Path) -> None:
         "path = pathlib.Path(sys.argv[1])\n"
         "count = int(path.read_text()) + 1 if path.exists() else 1\n"
         "path.write_text(str(count))\n"
-        "print('HTTP Error 404', file=sys.stderr)\n"
+        f"print({failure_output!r}, file=sys.stderr)\n"
         "sys.exit(1)\n"
     )
 
@@ -188,6 +198,51 @@ def test_non_transient_yt_dlp_failure_does_not_retry(tmp_path: Path) -> None:
     assert result.returncode == 1
     assert attempts_path.read_text() == "1"
     assert not is_transient_retryable_output(result.stderr)
+
+
+@pytest.mark.parametrize("failure_output", [
+    "ERROR: The downloaded file is empty",
+    "ERROR: [SSL: UNEXPECTED_EOF_WHILE_READING] EOF occurred in violation of protocol",
+])
+def test_persistent_retry_only_failure_exhausts_retries_without_registering_cache(
+    tmp_path: Path,
+    monkeypatch,
+    failure_output: str,
+) -> None:
+    attempts_path = tmp_path / "attempts.txt"
+    script_path = tmp_path / "fake_yt_dlp.py"
+    script_path.write_text(
+        "import pathlib, sys\n"
+        "path = pathlib.Path(sys.argv[1])\n"
+        "count = int(path.read_text()) + 1 if path.exists() else 1\n"
+        "path.write_text(str(count))\n"
+        f"print({failure_output!r}, file=sys.stderr)\n"
+        "sys.exit(1)\n"
+    )
+    monkeypatch.setattr("app.core.downloader.DOWNLOAD_RETRY_DELAY_SECONDS", 0.01)
+    output_dir = tmp_path / "x"
+    cache = LocalTweetCacheIndex.build(output_dir)
+    tweet_url = "https://x.com/demo/status/1"
+    with patch(
+        "app.core.downloader.ensure_yt_dlp_available",
+        return_value=[sys.executable, str(script_path), str(attempts_path)],
+    ), patch.object(LocalTweetCacheIndex, "register") as register, pytest.raises(RuntimeError) as error:
+        download_tweet_media(
+            tweet_url,
+            output_dir,
+            CrawlConfig(x_browser="safari"),
+            TaskState("test"),
+            cache_index=cache,
+            timeout_seconds=10,
+        )
+
+    assert attempts_path.read_text() == "3"
+    assert failure_output in str(error.value)
+    assert not is_transient_retryable_output(failure_output)
+    register.assert_not_called()
+    assert not cache.contains_complete_cache(tweet_url)
+    assert cache.claim(tweet_url)
+    cache.release_claim(tweet_url)
 
 
 @pytest.mark.parametrize("reason", ["stopped", "timed_out"])

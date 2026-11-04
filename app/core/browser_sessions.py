@@ -1,6 +1,6 @@
 """Browser session probing helpers for supported cache sources."""
 
-# Code version: v1.27.16-codex.0
+# Code version: v1.28.2-codex.0
 
 from __future__ import annotations
 
@@ -20,8 +20,14 @@ from urllib.parse import urlsplit
 
 from . import browser_host
 from .browser.x_session import X_READY_SELECTORS, detect_account_handle
-from .config import CrawlConfig, default_edge_user_data_dir, is_macos_host, is_windows_host
-from .safari_automation import SafariContext
+from .config import (
+    CrawlConfig,
+    default_edge_user_data_dir,
+    is_macos_host,
+    is_windows_host,
+    normalize_copilot_entry_url,
+)
+from .safari_automation import SafariBusyError, SafariContext
 
 
 LOGGER = logging.getLogger(__name__)
@@ -86,6 +92,7 @@ CHATGPT_AUTH_HOSTS = frozenset({"auth.openai.com", "auth0.openai.com"})
 CLOUDFLARE_CHALLENGE_HOSTS = frozenset({"challenges.cloudflare.com"})
 GEMINI_HOME_URL = "https://gemini.google.com/app"
 CLAUDE_HOME_URL = "https://claude.ai/new"
+COPILOT_HOME_URL = "https://copilot.com/chat"
 ZHIHU_HOME_URL = "https://www.zhihu.com/"
 ZHIHU_AUTH_SESSION_URL = "https://www.zhihu.com/api/v4/me"
 CLAUDE_COMPOSER_SELECTOR = (
@@ -278,19 +285,40 @@ def open_zhihu_browser_for_login(
     config: CrawlConfig,
 ) -> dict[str, Any]:
     """Open Zhihu in the selected visible Chromium browser for manual sign-in."""
+    return _open_cache_browser_for_login("zhihu", "Zhihu", ZHIHU_HOME_URL, browser_name, config)
 
+
+def open_copilot_browser_for_login(
+    browser_name: str,
+    config: CrawlConfig,
+) -> dict[str, Any]:
+    """Open Copilot in the selected existing browser for manual sign-in."""
+    return _open_cache_browser_for_login(
+        "copilot", "Microsoft Copilot", normalize_copilot_entry_url(config.copilot_entry_url), browser_name, config,
+    )
+
+
+def _open_cache_browser_for_login(
+    platform: str,
+    label: str,
+    destination: str,
+    browser_name: str,
+    config: CrawlConfig,
+) -> dict[str, Any]:
+    """Open a fixed Cache provider home without changing its authenticated profile."""
     selected = str(browser_name or "").strip().lower()
     descriptor = browser_descriptors(config).get(selected)
-    if descriptor is None or descriptor.engine != "chromium":
-        raise ValueError("Zhihu sign-in requires Edge or Chrome.")
-    application = "Microsoft Edge" if selected == "edge" else "Google Chrome"
+    if descriptor is None or (platform == "zhihu" and descriptor.engine != "chromium"):
+        message = "Zhihu sign-in requires Edge or Chrome." if platform == "zhihu" else f"{label} sign-in requires a supported browser."
+        raise ValueError(message)
+    application = {"safari": "Safari", "edge": "Microsoft Edge", "chrome": "Google Chrome"}[selected]
     process_options: dict[str, Any] = {
         "stdin": subprocess.DEVNULL,
         "stdout": subprocess.DEVNULL,
         "stderr": subprocess.DEVNULL,
     }
     if is_macos_host():
-        command = ["/usr/bin/open", "-g", "-a", application, ZHIHU_HOME_URL]
+        command = ["/usr/bin/open", "-g", "-a", application, destination]
         process_options["start_new_session"] = True
     elif is_windows_host():
         from .browser_executables import resolve_windows_browser_executable
@@ -302,7 +330,7 @@ def open_zhihu_browser_for_login(
             executable,
             f"--user-data-dir={descriptor.user_data_dir}",
             f"--profile-directory={descriptor.profile_directory}",
-            ZHIHU_HOME_URL,
+            destination,
         ]
         creation_flags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0) | getattr(
             subprocess,
@@ -315,19 +343,19 @@ def open_zhihu_browser_for_login(
         executable = shutil.which("microsoft-edge" if selected == "edge" else "google-chrome")
         if not executable:
             raise RuntimeError(f"{application} could not be found on this host.")
-        command = [executable, ZHIHU_HOME_URL]
+        command = [executable, destination]
         process_options["start_new_session"] = True
     try:
         subprocess.Popen(command, **process_options)
     except OSError as exc:
-        raise RuntimeError(f"Could not open Zhihu in {application}: {exc}") from exc
+        raise RuntimeError(f"Could not open {label} in {application}: {exc}") from exc
     return {
         "opened": True,
-        "platform": "zhihu",
+        "platform": platform,
         "browser": selected,
         "application": application,
-        "url": ZHIHU_HOME_URL,
-        "message": f"Opened Zhihu in {application}. Sign in, then choose Recheck.",
+        "url": destination,
+        "message": f"Opened {label} in {application}. Sign in, then choose Recheck.",
     }
 
 
@@ -378,7 +406,7 @@ def probe_browser_session(
         raise ValueError(f"Unsupported browser: {browser_name}")
 
     platform_key = (platform_name or "").strip().lower()
-    if platform_key not in {"x", "grok", "chatgpt", "gemini", "claude", "zhihu"}:
+    if platform_key not in {"x", "grok", "chatgpt", "copilot", "gemini", "claude", "zhihu"}:
         raise ValueError(f"Unsupported platform: {platform_name}")
 
     result = {
@@ -396,6 +424,17 @@ def probe_browser_session(
         if platform_key == "chatgpt":
             result.update(
                 _probe_chatgpt_session(
+                    descriptor,
+                    config,
+                    silent=silent,
+                    prefer_initialized_debug_profile=prefer_initialized_debug_profile,
+                )
+            )
+        elif platform_key == "copilot":
+            from .copilot_history import probe_copilot_session
+
+            result.update(
+                probe_copilot_session(
                     descriptor,
                     config,
                     silent=silent,
@@ -447,6 +486,17 @@ def probe_browser_session(
                     prefer_initialized_debug_profile=prefer_initialized_debug_profile,
                 )
             )
+    except SafariBusyError:
+        result.update(
+            logged_in=None,
+            busy=True,
+            retry_after_seconds=2,
+            message=(
+                "Safari is finishing another browser check. "
+                "This account check will retry automatically."
+            ),
+        )
+        return result
     except Exception as exc:  # pragma: no cover - depends on local browser state
         result["logged_in"] = None
         result["message"] = f"Could not verify the account: {type(exc).__name__}: {exc}"

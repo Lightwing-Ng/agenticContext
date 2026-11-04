@@ -1,20 +1,22 @@
 """Route-level coverage for Cache tasks that run together or wait in the queue.
 
-Code version: v1.0.0-claude.0
+Code version: v1.0.2-codex.1
 """
 
 from __future__ import annotations
 
 from collections.abc import Iterator
 from contextlib import ExitStack
+from dataclasses import replace
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import pytest
 from flask import Flask
 from flask.testing import FlaskClient
 
 from app.core.config import CrawlConfig
+from app.core.state import TaskSnapshot
 from app.web.app import create_app
 
 
@@ -93,6 +95,78 @@ def _finish(application: Flask, source: str, mode: str) -> None:
     runtime.service._release_task_lock()
 
 
+@pytest.mark.parametrize("phase", ["starting", "collecting", "downloading", "stopping"])
+def test_active_chatgpt_media_status_does_not_read_the_local_store(
+    cache_app: Flask, phase: str
+) -> None:
+    runtimes = cache_app.extensions["cache_runtimes"]
+    text_state = runtimes["chatgpt"]["text"].state
+    text_state.update(downloaded_posts=12, downloaded_tweets=345)
+    runtime = runtimes["chatgpt"]["media"]
+    runtime.state.update(
+        running=True,
+        phase=phase,
+        message="Reading existing cache.",
+        downloaded_posts=7,
+        downloaded_tweets=29,
+    )
+    hydrate = Mock(side_effect=AssertionError("Active status must not read media files."))
+    runtimes["chatgpt"]["media"] = replace(runtime, hydrate_snapshot=hydrate)
+
+    with patch(
+        "app.web.cache_routes.chatgpt_history_counts",
+        side_effect=AssertionError("Active status must not read text history."),
+    ) as history_counts:
+        client = cache_app.test_client()
+        payload = _status(client, "chatgpt", "media")
+        legacy = client.get("/api/chatgpt/status?content_mode=media")
+        assert legacy.status_code == 200
+        assert legacy.get_json() == payload
+        page = client.get("/cache/chatgpt/media/safari")
+        assert page.status_code == 200
+
+    assert payload["running"] is True
+    assert payload["phase"] == phase
+    assert payload["message"] == "Reading existing cache."
+    assert payload["downloaded_tweets"] == 29
+    assert payload["cached_sessions"] == 12
+    assert payload["cached_messages"] == 345
+    hydrate.assert_not_called()
+    history_counts.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "phase", ["idle", "queued", "starting", "collecting", "downloading", "stopping", "stopped", "finished"],
+)
+def test_chatgpt_text_status_keeps_persisted_totals_in_every_phase(cache_app: Flask, phase: str) -> None:
+    runtimes = cache_app.extensions["cache_runtimes"]
+    runtime = runtimes["chatgpt"]["text"]
+    runtime.state.update(
+        running=phase not in {"idle", "stopped", "finished"},
+        phase=phase,
+        message="Waiting for Safari." if phase == "queued" else "Task status.",
+    )
+    hydrated = TaskSnapshot(
+        version="test",
+        output_dir="/persisted/chatgpt",
+        downloaded_posts=12,
+        downloaded_tweets=345,
+    )
+    hydrate = Mock(return_value=hydrated)
+    runtimes["chatgpt"]["text"] = replace(runtime, hydrate_snapshot=hydrate)
+
+    payload = _status(cache_app.test_client(), "chatgpt", "text")
+
+    assert payload["phase"] == phase
+    assert payload["cached_sessions"] == 12
+    assert payload["cached_messages"] == 345
+    if phase in {"idle", "queued", "stopped", "finished"}:
+        assert payload["output_dir"] == "/persisted/chatgpt"
+    if phase != "idle":
+        assert payload["message"] == ("Waiting for Safari." if phase == "queued" else "Task status.")
+    hydrate.assert_called_once_with()
+
+
 def test_second_safari_task_queues_and_starts_when_the_first_finishes(cache_app: Flask) -> None:
     client = cache_app.test_client()
 
@@ -152,7 +226,7 @@ def test_tasks_on_different_browsers_and_stores_run_together(cache_app: Flask) -
         ("chatgpt:media", "queued"),
     ]
     states = cache_app.extensions["cache_task_coordinator"].task_states()
-    assert states["chatgpt:media"]["blocked_by"] == "ChatGPT · Text"
+    assert states["chatgpt:media"]["blocked_by"] == "ChatGPT Chat · Text"
     assert states["x:media"]["browser"] == "chrome"
 
 
@@ -180,7 +254,7 @@ def test_stopping_a_queued_task_removes_it_and_leaves_the_running_task_alone(cac
     stopped = _status(client, "chatgpt", "text")
     assert stopped["running"] is False
     assert stopped["phase"] == "stopped"
-    assert stopped["message"] == "The ChatGPT · Text cache left the queue before it started."
+    assert stopped["message"] == "The ChatGPT Chat · Text cache left the queue before it started."
     assert _activity(client) == [("x:media", "starting")]
     # The mode a stop form names is the only one it stops.
     client.post("/cache/x/stop", data={"cache_content_mode": "text"})
@@ -245,8 +319,8 @@ def test_targeted_refresh_fails_at_once_instead_of_queueing(cache_app: Flask) ->
 
     assert response.status_code == 409
     assert response.get_json()["error"] == (
-        "Safari is busy with the ChatGPT · Text cache. "
-        "Start the ChatGPT · Media cache after it finishes."
+        "Safari is busy with the ChatGPT Chat · Text cache. "
+        "Start the ChatGPT Chat · Media cache after it finishes."
     )
     media = _status(client, "chatgpt", "media")
     assert media["running"] is False

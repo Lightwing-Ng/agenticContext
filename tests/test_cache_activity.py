@@ -1,6 +1,6 @@
 """Active and queued Cache tasks remain visible independently of the selected source.
 
-Code version: v1.2.0-codex.0
+Code version: v1.2.1-codex.0
 """
 
 from unittest.mock import Mock, patch
@@ -84,7 +84,7 @@ def test_activity_lists_every_running_source_and_mode_with_its_registered_mode()
     assert tasks[1] == {
         "id": "chatgpt:text",
         "source": "chatgpt",
-        "label": "ChatGPT",
+        "label": "ChatGPT Chat",
         "content_mode": "text",
         "phase": "downloading",
         "message": "Caching items.",
@@ -152,7 +152,7 @@ def test_activity_reports_prompt_metadata_sessions_with_a_safe_stage_message():
     assert response.get_json() == {"tasks": [{
         "id": "chatgpt:media",
         "source": "chatgpt",
-        "label": "ChatGPT",
+        "label": "ChatGPT Chat",
         "content_mode": "media",
         "phase": "enriching",
         "message": "Completing image prompt metadata.",

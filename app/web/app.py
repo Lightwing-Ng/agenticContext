@@ -7,10 +7,10 @@ small typed context that surface actually needs.
 
 Domain request handling lives in the route modules, not here. The Agent surface is
 registered first because it owns the access gate and the exclusive-browser rule that the
-Tunnel, Jury, and Cache blueprints borrow through :class:`AgentSurface`.
+Tunnel, Jury, iPhone, and Cache blueprints borrow through :class:`AgentSurface`.
 """
 
-# Code version: v2.9.0-codex.0
+# Code version: v2.10.2-codex.0
 
 from __future__ import annotations
 
@@ -31,6 +31,7 @@ from app.core.agent import (
     AgentSourceCache,
     ComputerUseAgentService,
     ComputerUseSettingsStore,
+    IPhoneService,
     JuryService,
     ProjectRegistry,
     ProjectSelectionStore,
@@ -59,8 +60,10 @@ from app.core.providers import (
     ChatGPTDownloadService,
     ClaudeHistoryService,
     ClaudeCodeHistoryService,
-    OPENCLAW_SOURCE_LABELS,
+    CodexHistoryService,
     OpenClawHistoryService,
+    OPENCLAW_SOURCE_LABELS,
+    CopilotHistoryService,
     GeminiHistoryService,
     GrokDownloadService,
     GrokHistoryService,
@@ -70,7 +73,9 @@ from app.core.providers import (
     build_chatgpt_text_snapshot,
     build_claude_initial_snapshot,
     build_claude_code_initial_snapshot,
+    build_codex_initial_snapshot,
     build_openclaw_initial_snapshot,
+    build_copilot_initial_snapshot,
     build_claude_media_initial_snapshot,
     build_gemini_initial_snapshot,
     build_gemini_media_initial_snapshot,
@@ -99,6 +104,7 @@ from app.web.cache_routes import (
 )
 from app.web.cache_sources import get_cache_source_label
 from app.web.config_store import SavedConfigStore
+from app.web.iphone_routes import IphoneRouteContext, register_iphone_routes
 from app.web.jury_routes import JuryRouteContext, register_jury_routes
 from app.web.local_resource_routes import (
     LocalResourceRouteContext,
@@ -351,20 +357,17 @@ def create_app(
             "coordinator": cache_task_coordinator,
         }
 
-    state = TaskState(version=APP_VERSION)
+    # Cache inventories are optional data, including cloud-only files. Read them only
+    # on their own routes so one unavailable archive cannot hold the server startup.
+    state = TaskState(version=APP_VERSION, snapshot_factory=TaskSnapshot)
     service = CacheLikesService(state, **cache_task("x", "media"))
-    # A source's second mode starts from an empty snapshot. Its page reads the store when
-    # it is requested, so startup does not scan that cache or fail on an unreadable one.
     x_text_state = TaskState(version=APP_VERSION, snapshot_factory=TaskSnapshot)
     x_text_service = CacheLikesService(x_text_state, **cache_task("x", "text"))
-    grok_state = TaskState(version=APP_VERSION, snapshot_factory=build_grok_initial_snapshot)
+    grok_state = TaskState(version=APP_VERSION, snapshot_factory=TaskSnapshot)
     grok_service = GrokDownloadService(grok_state, **cache_task("grok", "media"))
     grok_history_state = TaskState(
         version=APP_VERSION,
-        snapshot_factory=lambda version: build_grok_history_snapshot(
-            version=version,
-            local_store_root=media_catalog.local_store_root,
-        ),
+        snapshot_factory=TaskSnapshot,
     )
     grok_history_service = GrokHistoryService(
         grok_history_state,
@@ -372,7 +375,7 @@ def create_app(
         **cache_task("grok", "text"),
     )
     app.extensions["grok_history_service"] = grok_history_service
-    chatgpt_state = TaskState(version=APP_VERSION, snapshot_factory=build_chatgpt_initial_snapshot)
+    chatgpt_state = TaskState(version=APP_VERSION, snapshot_factory=TaskSnapshot)
     chatgpt_service = ChatGPTDownloadService(chatgpt_state, **cache_task("chatgpt", "media"))
     app.extensions["chatgpt_service"] = chatgpt_service
     chatgpt_text_state = TaskState(version=APP_VERSION, snapshot_factory=TaskSnapshot)
@@ -382,7 +385,7 @@ def create_app(
     )
     gemini_state = TaskState(
         version=APP_VERSION,
-        snapshot_factory=lambda version: build_gemini_initial_snapshot(version, media_catalog.local_store_root),
+        snapshot_factory=TaskSnapshot,
     )
     gemini_service = GeminiHistoryService(
         gemini_state,
@@ -390,6 +393,16 @@ def create_app(
         **cache_task("gemini", "text"),
     )
     app.extensions["gemini_service"] = gemini_service
+    copilot_state = TaskState(
+        version=APP_VERSION,
+        snapshot_factory=TaskSnapshot,
+    )
+    copilot_service = CopilotHistoryService(
+        copilot_state,
+        media_catalog.local_store_root,
+        **cache_task("copilot", "text"),
+    )
+    app.extensions["copilot_history_service"] = copilot_service
     gemini_media_state = TaskState(version=APP_VERSION, snapshot_factory=TaskSnapshot)
     gemini_media_service = GeminiHistoryService(
         gemini_media_state,
@@ -398,10 +411,7 @@ def create_app(
     )
     claude_state = TaskState(
         version=APP_VERSION,
-        snapshot_factory=lambda version: build_claude_initial_snapshot(
-            version,
-            media_catalog.local_store_root,
-        ),
+        snapshot_factory=TaskSnapshot,
     )
     claude_service = ClaudeHistoryService(
         claude_state,
@@ -416,6 +426,13 @@ def create_app(
         **cache_task("claude_code", "text"),
     )
     app.extensions["claude_code_history_service"] = claude_code_service
+    codex_state = TaskState(version=APP_VERSION, snapshot_factory=TaskSnapshot)
+    codex_service = CodexHistoryService(
+        codex_state,
+        media_catalog.local_store_root,
+        **cache_task("codex", "text"),
+    )
+    app.extensions["codex_history_service"] = codex_service
     grok_build_state = TaskState(version=APP_VERSION, snapshot_factory=TaskSnapshot)
     grok_build_service = GrokBuildHistoryService(
         grok_build_state,
@@ -431,10 +448,7 @@ def create_app(
     )
     zhihu_state = TaskState(
         version=APP_VERSION,
-        snapshot_factory=lambda version: build_zhihu_history_initial_snapshot(
-            version,
-            media_catalog.local_store_root,
-        ),
+        snapshot_factory=TaskSnapshot,
     )
     zhihu_service = ZhihuHistoryService(
         zhihu_state,
@@ -463,6 +477,16 @@ def create_app(
         Path(computer_use_runtime_root or effective_local_store_root / "agent") / "jury",
     )
     app.extensions["jury_service"] = jury_service
+    # Construction only records the state directory; the runtime starts on first API use.
+    iphone_service = IPhoneService(
+        external_operations_enabled=lambda: app.config["AGENT_EXTERNAL_OPERATIONS_ENABLED"],
+        state_dir=(
+            Path(computer_use_runtime_root) / "iphone"
+            if computer_use_runtime_root is not None
+            else None
+        ),
+    )
+    app.extensions["iphone_service"] = iphone_service
 
     if tunnel_credentials_path is not None:
         effective_tunnel_credentials_path = Path(tunnel_credentials_path).expanduser()
@@ -492,9 +516,11 @@ def create_app(
     )
     tunnel_mcp_service = TunnelMcpService(
         lambda: computer_use_settings.settings,
+        iphone_service=iphone_service,
         registry=project_registry,
         selection_store=project_selection_store,
         runtime_root=effective_tunnel_runtime_root,
+        local_store_root=media_catalog.local_store_root,
     )
     tunnel_runtime = TunnelRuntime(
         credentials_loader=lambda: load_tunnel_credentials(effective_tunnel_credentials_path),
@@ -527,6 +553,7 @@ def create_app(
         for label, service in (
             ("jury_service", jury_service),
             ("agent_session_pool", agent_session_pool),
+            ("iphone_service", iphone_service),
         ):
             try:
                 service.stop_at_exit()
@@ -589,6 +616,15 @@ def create_app(
                 ),
             ),
         },
+        "copilot": {
+            "text": CacheRuntimeAdapter(
+                state=copilot_state,
+                service=copilot_service,
+                hydrate_snapshot=lambda: build_copilot_initial_snapshot(
+                    APP_VERSION, media_catalog.local_store_root,
+                ),
+            ),
+        },
         "gemini": {
             "text": CacheRuntimeAdapter(
                 state=gemini_state,
@@ -612,6 +648,15 @@ def create_app(
                 state=grok_build_state,
                 service=grok_build_service,
                 hydrate_snapshot=lambda: build_grok_build_initial_snapshot(
+                    APP_VERSION, media_catalog.local_store_root,
+                ),
+            ),
+        },
+        "codex": {
+            "text": CacheRuntimeAdapter(
+                state=codex_state,
+                service=codex_service,
+                hydrate_snapshot=lambda: build_codex_initial_snapshot(
                     APP_VERSION, media_catalog.local_store_root,
                 ),
             ),
@@ -724,7 +769,16 @@ def create_app(
         """Block browser cross-site writes and require an Origin for LAN writes."""
         fetch_site = request.headers.get("Sec-Fetch-Site", "").strip().lower()
         if fetch_site == "cross-site":
-            abort(403)
+            # External links may carry cross-site metadata through document redirects.
+            is_user_document_navigation = (
+                request.method == "GET"
+                and not request.path.startswith(("/api/", "/mcp"))
+                and request.headers.get("Sec-Fetch-Mode", "").strip().lower() == "navigate"
+                and request.headers.get("Sec-Fetch-Dest", "").strip().lower() == "document"
+                and request.headers.get("Sec-Fetch-User", "").strip() == "?1"
+            )
+            if not is_user_document_navigation:
+                abort(403)
         origin = request.headers.get("Origin", "").strip()
         if origin and not request_origin_matches_host():
             abort(403)
@@ -761,6 +815,9 @@ def create_app(
     @app.after_request
     def apply_local_security_headers(response: Response) -> Response:
         """Prevent framing, MIME sniffing, and storage of Agent credentials or state."""
+        response.vary.update(
+            ("Sec-Fetch-Site", "Sec-Fetch-Mode", "Sec-Fetch-Dest", "Sec-Fetch-User")
+        )
         response.headers.setdefault("X-Content-Type-Options", "nosniff")
         response.headers.setdefault("X-Frame-Options", "DENY")
         response.headers.setdefault("Referrer-Policy", "same-origin")
@@ -782,6 +839,8 @@ def create_app(
             or request.path.startswith("/api/agent")
             or request.path.startswith("/jury")
             or request.path.startswith("/api/jury")
+            or request.path.startswith("/iphone")
+            or request.path.startswith("/api/iphone")
             or request.path == "/api/browser-session"
         ):
             response.headers["Cache-Control"] = (
@@ -832,6 +891,17 @@ def create_app(
             jury_service=jury_service,
             require_local_agent_request=agent_surface.require_local_agent_request,
             available_agent_browser_keys=agent_surface.available_agent_browser_keys,
+            external_agent_operations_enabled=agent_surface.external_agent_operations_enabled,
+            reject_external_agent_operation=agent_surface.reject_external_agent_operation,
+        ),
+    )
+
+    register_iphone_routes(
+        app,
+        IphoneRouteContext(
+            settings_store=computer_use_settings,
+            iphone_service=iphone_service,
+            require_local_agent_request=agent_surface.require_local_agent_request,
             external_agent_operations_enabled=agent_surface.external_agent_operations_enabled,
             reject_external_agent_operation=agent_surface.reject_external_agent_operation,
         ),

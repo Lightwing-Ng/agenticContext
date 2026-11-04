@@ -1,23 +1,26 @@
 """Focused tests for ChatGPT project image caching."""
 
-# Code version: v1.43.0-codex.0
+# Code version: v1.44.3-codex.0
 
 from __future__ import annotations
 
 from contextlib import nullcontext
 from dataclasses import replace
+from hashlib import sha256
 from io import BytesIO
 import json
 from pathlib import Path
 from queue import Queue
-from threading import Event, Lock
+from threading import BoundedSemaphore, Event, Lock
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 import pytest
 from PIL import Image
 
+from app.core import chatgpt_cache_io
 from app.core.browser_sessions import probe_browser_session
+from app.core.chatgpt_cache_io import ChatGPTCacheReadTimeoutError
 from app.core.chatgpt_downloader import (
     ChatGPTHistoryStore,
     ChatGPTImageSizeLimitError,
@@ -25,6 +28,7 @@ from app.core.chatgpt_downloader import (
     ChatGPTImageCandidate,
     ChatGPTImageCatalog,
     ChatGPTCatalogEntry,
+    build_chatgpt_initial_snapshot,
     chatgpt_conversation_id,
     chatgpt_target_dir,
     collect_chatgpt_project_index_images,
@@ -675,7 +679,7 @@ def test_chatgpt_project_index_rejects_partial_results_after_retries() -> None:
     context = type("InterruptedContext", (), {"request": _InterruptedRequest()})()
     state = TaskState("test")
 
-    with patch("app.core.chatgpt_downloader.time.sleep") as sleep, pytest.raises(
+    with patch("app.core.chatgpt_downloader.wait_for_cache_scan", return_value=False) as wait, pytest.raises(
         RuntimeError,
         match="stopped before pagination completed",
     ):
@@ -689,7 +693,7 @@ def test_chatgpt_project_index_rejects_partial_results_after_retries() -> None:
         )
 
     assert context.request.calls == 4
-    assert len(sleep.call_args_list) == 2
+    assert len(wait.call_args_list) == 2
     assert state.snapshot()["discovered_images"] == 1
 
 
@@ -1837,6 +1841,326 @@ def test_chatgpt_prompt_backfill_rechecks_sibling_images_when_one_lacks_prompt(t
     api_get.assert_called_once()
 
 
+def test_chatgpt_status_and_startup_do_not_read_or_repair_historical_media(tmp_path: Path) -> None:
+    target_dir = tmp_path / "images"
+    target_dir.mkdir()
+    image_path = target_dir / "legacy.jpg"
+    image_path.write_bytes(PNG_PAYLOAD)
+    entry = ChatGPTCatalogEntry(
+        file_id="file_legacy",
+        relative_path=image_path.name,
+        content_sha256="legacy",
+        content_bytes=len(PNG_PAYLOAD),
+        source_url="https://chatgpt.com/backend-api/estuary/content?id=file_legacy",
+        conversation_url="https://chatgpt.com/c/legacy",
+        alt_text="",
+        width=1,
+        height=1,
+        first_seen_at="",
+        last_seen_at="",
+    )
+    catalog = ChatGPTImageCatalog(target_dir, {entry.file_id: entry})
+    catalog.entries_by_file_id["file_missing"] = replace(
+        entry, file_id="file_missing", relative_path="missing.png",
+    )
+    catalog.save()
+    catalog_before = catalog.catalog_path.read_bytes()
+    real_open = Path.open
+
+    def open_without_media(path, *args, **kwargs):
+        if path == image_path:
+            pytest.fail("A status snapshot must not open cached image contents.")
+        return real_open(path, *args, **kwargs)
+
+    with patch.object(Path, "open", open_without_media):
+        snapshot = build_chatgpt_initial_snapshot("test", target_dir=target_dir)
+        with patch(
+            "app.core.chatgpt_downloader.ChatGPTHistoryStore",
+            side_effect=AssertionError("Media startup must not load unrelated text history."),
+        ):
+            result = sync_chatgpt_images(
+                TaskState("test"), target_dir=target_dir, should_stop=lambda: True,
+            )
+
+    assert snapshot.downloaded_images == 1
+    assert result.stopped and result.cached_count == 1
+    assert image_path.read_bytes() == PNG_PAYLOAD
+    assert not image_path.with_suffix(".png").exists()
+    assert catalog.catalog_path.read_bytes() == catalog_before
+
+
+@pytest.mark.parametrize("operation", ["build", "prune", "summarize"])
+@pytest.mark.parametrize("timeout_source", ["worker_deadline", "operating_system"])
+def test_chatgpt_cache_read_timeout_preserves_images_and_catalog(
+    tmp_path: Path, operation: str, timeout_source: str,
+) -> None:
+    image_path = tmp_path / "image.png"
+    image_path.write_bytes(PNG_PAYLOAD)
+    entry = ChatGPTCatalogEntry(
+        file_id="file_cached",
+        relative_path=image_path.name,
+        content_sha256="cached",
+        content_bytes=len(PNG_PAYLOAD),
+        source_url="https://chatgpt.com/backend-api/estuary/content?id=file_cached",
+        conversation_url="https://chatgpt.com/c/cached",
+        alt_text="",
+        width=1,
+        height=1,
+        first_seen_at="",
+        last_seen_at="",
+    )
+    catalog = ChatGPTImageCatalog(tmp_path, {entry.file_id: entry})
+    catalog.save()
+    catalog_before = catalog.catalog_path.read_bytes()
+    original_open = Path.open
+
+    def open_with_os_timeout(path: Path, *args, **kwargs):
+        if path == image_path:
+            raise TimeoutError("The operating system timed out reading cached media.")
+        return original_open(path, *args, **kwargs)
+
+    timeout_patch = (
+        patch.object(Path, "open", open_with_os_timeout)
+        if timeout_source == "operating_system"
+        else patch(
+            "app.core.chatgpt_downloader.read_cached_image",
+            side_effect=ChatGPTCacheReadTimeoutError("Cached image read timed out."),
+        )
+    )
+    with timeout_patch, pytest.raises(ChatGPTCacheReadTimeoutError):
+        if operation == "build":
+            ChatGPTImageCatalog.build(tmp_path)
+        elif operation == "prune":
+            catalog.prune_incomplete_entries()
+        else:
+            catalog.summarize()
+
+    assert image_path.read_bytes() == PNG_PAYLOAD
+    assert catalog.catalog_path.read_bytes() == catalog_before
+    assert entry.file_id in catalog.entries_by_file_id
+
+
+def test_chatgpt_startup_reports_local_image_check_before_browser_launch(tmp_path: Path) -> None:
+    state = TaskState("test")
+
+    def blocked_catalog(*_args, **_kwargs):
+        assert state.snapshot()["message"] == "Loading the existing ChatGPT image catalog."
+        raise ChatGPTCacheReadTimeoutError("Cached image read timed out.")
+
+    with patch("app.core.chatgpt_downloader.ChatGPTImageCatalog.build", blocked_catalog), patch(
+        "app.core.chatgpt_downloader._launch_chatgpt_browser_context",
+    ) as launch, pytest.raises(ChatGPTCacheReadTimeoutError):
+        sync_chatgpt_images(state, target_dir=tmp_path)
+
+    launch.assert_not_called()
+
+
+@pytest.mark.parametrize("operation", ["normalize", "prune"])
+def test_chatgpt_repair_reads_all_entries_before_mutating_files(tmp_path: Path, operation: str) -> None:
+    first_path = tmp_path / ("first.jpg" if operation == "normalize" else "first.png")
+    first_payload = PNG_PAYLOAD if operation == "normalize" else b"invalid-image"
+    first_path.write_bytes(first_payload)
+    blocked_path = tmp_path / "blocked.png"
+    blocked_path.write_bytes(PNG_PAYLOAD)
+    entries = {
+        file_id: ChatGPTCatalogEntry(
+            file_id=file_id,
+            relative_path=path.name,
+            content_sha256=file_id,
+            content_bytes=path.stat().st_size,
+            source_url=f"https://chatgpt.com/backend-api/estuary/content?id={file_id}",
+            conversation_url="https://chatgpt.com/c/repair",
+            alt_text="",
+            width=0,
+            height=0,
+            first_seen_at="",
+            last_seen_at="",
+        )
+        for file_id, path in (("file_first", first_path), ("file_second", blocked_path))
+    }
+    catalog = ChatGPTImageCatalog(tmp_path, entries)
+    catalog.save()
+    catalog_before = catalog.catalog_path.read_bytes()
+
+    def read_until_blocked(path: Path, size: int = -1) -> bytes:
+        if path == blocked_path:
+            raise ChatGPTCacheReadTimeoutError("Cached image read timed out.")
+        payload = path.read_bytes()
+        return payload if size < 0 else payload[:size]
+
+    with patch("app.core.chatgpt_downloader.read_cached_image", read_until_blocked), pytest.raises(
+        ChatGPTCacheReadTimeoutError,
+    ):
+        if operation == "normalize":
+            ChatGPTImageCatalog.build(tmp_path)
+        else:
+            catalog.prune_incomplete_entries()
+
+    assert first_path.read_bytes() == first_payload
+    assert blocked_path.read_bytes() == PNG_PAYLOAD
+    assert catalog.catalog_path.read_bytes() == catalog_before
+    assert set(catalog.entries_by_file_id) == {"file_first", "file_second"}
+    if operation == "normalize":
+        assert not first_path.with_suffix(".png").exists()
+
+
+@pytest.mark.parametrize("engine", ["chromium", "safari"])
+def test_chatgpt_new_download_persists_when_old_cache_reads_exhaust_the_pool(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, engine: str,
+) -> None:
+    target_dir = tmp_path / "media" / "chatgpt" / "demo-project"
+    target_dir.mkdir(parents=True)
+    old_path = target_dir / "old.png"
+    old_path.write_bytes(PNG_PAYLOAD)
+    candidate = ChatGPTImageCandidate(
+        source_url="https://chatgpt.com/backend-api/estuary/content?id=file_new",
+        file_id="file_new",
+        conversation_url="https://chatgpt.com/c/same-conversation",
+    )
+    old_entry = ChatGPTCatalogEntry(
+        file_id="file_old",
+        relative_path=old_path.name,
+        content_sha256="old",
+        content_bytes=len(PNG_PAYLOAD),
+        source_url="https://chatgpt.com/backend-api/estuary/content?id=file_old",
+        conversation_url=candidate.conversation_url,
+        alt_text="",
+        width=0,
+        height=0,
+        first_seen_at="",
+        last_seen_at="",
+    )
+    catalog = ChatGPTImageCatalog(target_dir, {old_entry.file_id: old_entry})
+    catalog.save()
+    monkeypatch.setattr(chatgpt_cache_io, "_READ_SLOTS", BoundedSemaphore(0))
+    context = _FakeContext()
+    if engine == "safari":
+        context = SafariContext(candidate.conversation_url)
+        page = SafariPage(context, window_id=123)
+        context.pages.append(page)
+
+        def stream_to_path(_url, destination_path, _should_stop, **_kwargs):
+            destination_path.write_bytes(PNG_PAYLOAD)
+            return "image/png", False
+
+        monkeypatch.setattr(page, "download_to_path", stream_to_path)
+
+    assert download_chatgpt_image(context, catalog, target_dir, candidate)
+
+    assert old_path.read_bytes() == PNG_PAYLOAD
+    assert (target_dir / "img_file_new.png").read_bytes() == PNG_PAYLOAD
+    rows = read_parquet_rows(catalog.catalog_path)
+    assert rows is not None
+    persisted = {row["file_id"]: row for row in rows}
+    assert set(persisted) == {"file_old", "file_new"}
+    assert persisted["file_new"]["visual_signature"]
+    assert not persisted["file_old"]["visual_signature"]
+
+
+def test_chatgpt_incoming_comparison_timeout_does_not_lose_a_valid_download(tmp_path: Path) -> None:
+    candidate = ChatGPTImageCandidate(
+        source_url="https://chatgpt.com/backend-api/estuary/content?id=file_incoming",
+        file_id="file_incoming",
+        conversation_url="https://chatgpt.com/c/incoming",
+    )
+    catalog = ChatGPTImageCatalog(tmp_path)
+    with patch.object(
+        catalog,
+        "_entry_visual_record_unlocked",
+        side_effect=ChatGPTCacheReadTimeoutError("Cached image read timed out."),
+    ):
+        assert download_chatgpt_image(_FakeContext(), catalog, tmp_path, candidate)
+
+    assert (tmp_path / "img_file_incoming.png").read_bytes() == PNG_PAYLOAD
+    rows = read_parquet_rows(catalog.catalog_path)
+    assert rows and rows[0]["file_id"] == "file_incoming"
+
+
+@pytest.mark.parametrize("old_state", ["missing", "truncated", "invalid_signature", "thumbnail", "timeout"])
+def test_chatgpt_unusable_old_duplicate_cannot_delete_a_new_download(
+    tmp_path: Path, old_state: str,
+) -> None:
+    old_path = tmp_path / "old.png"
+    old_payload = {
+        "truncated": PNG_PAYLOAD[:8],
+        "invalid_signature": b"x" * len(PNG_PAYLOAD),
+    }.get(old_state, PNG_PAYLOAD)
+    if old_state != "missing":
+        old_path.write_bytes(old_payload)
+    candidate = ChatGPTImageCandidate(
+        source_url="https://chatgpt.com/backend-api/estuary/content?id=file_new",
+        file_id="file_new",
+        conversation_url="https://chatgpt.com/c/same-conversation",
+    )
+    old_entry = ChatGPTCatalogEntry(
+        file_id="file_old",
+        relative_path=old_path.name,
+        content_sha256=sha256(PNG_PAYLOAD).hexdigest(),
+        content_bytes=len(PNG_PAYLOAD),
+        source_url=(
+            "https://chatgpt.com/backend-api/estuary/content?id=file_old"
+            + ("&encoding=thumbnail" if old_state == "thumbnail" else "")
+        ),
+        conversation_url=candidate.conversation_url,
+        alt_text="",
+        width=2_048,
+        height=2_048,
+        first_seen_at="",
+        last_seen_at="",
+        visual_signature="persisted-higher-quality-image",
+    )
+    ChatGPTImageCatalog(tmp_path, {old_entry.file_id: old_entry}).save()
+    catalog = ChatGPTImageCatalog.build(tmp_path, repair=False)
+    read_guard = (
+        patch(
+            "app.core.chatgpt_downloader.read_cached_image",
+            side_effect=ChatGPTCacheReadTimeoutError("Old cached image read timed out."),
+        )
+        if old_state == "timeout"
+        else nullcontext()
+    )
+    with read_guard:
+        assert download_chatgpt_image(_FakeContext(), catalog, tmp_path, candidate)
+
+    assert (tmp_path / "img_file_new.png").read_bytes() == PNG_PAYLOAD
+    if old_state == "missing":
+        assert not old_path.exists()
+    else:
+        assert old_path.read_bytes() == old_payload
+    rows = read_parquet_rows(catalog.catalog_path)
+    assert rows and {row["file_id"] for row in rows} == {"file_old", "file_new"}
+
+
+def test_chatgpt_catalog_persists_bounded_legacy_analysis_before_deduplication(tmp_path: Path) -> None:
+    image_path = tmp_path / "legacy.png"
+    image_path.write_bytes(PNG_PAYLOAD)
+    entry = ChatGPTCatalogEntry(
+        file_id="file_legacy",
+        relative_path=image_path.name,
+        content_sha256="legacy",
+        content_bytes=len(PNG_PAYLOAD),
+        source_url="https://chatgpt.com/backend-api/estuary/content?id=file_legacy",
+        conversation_url="https://chatgpt.com/c/legacy",
+        alt_text="",
+        width=0,
+        height=0,
+        first_seen_at="",
+        last_seen_at="",
+    )
+    ChatGPTImageCatalog(tmp_path, {entry.file_id: entry}).save()
+    catalog = ChatGPTImageCatalog.build(tmp_path)
+    rows = read_parquet_rows(catalog.catalog_path)
+    assert rows and rows[0]["visual_signature"]
+    assert (rows[0]["width"], rows[0]["height"]) == (1, 1)
+
+    def analyze_without_rereading(paths, **_kwargs):
+        assert paths == {}
+        return {}
+
+    with patch("app.core.chatgpt_downloader.analyze_image_paths", analyze_without_rereading):
+        assert catalog.deduplicate_visual_duplicates().removed_count == 0
+
+
 def test_chatgpt_catalog_prunes_missing_entries_during_load(tmp_path: Path) -> None:
     target_dir = tmp_path / "media" / "chatgpt" / "demo-project"
     candidate = ChatGPTImageCandidate(
@@ -1931,6 +2255,15 @@ def test_chatgpt_catalog_prunes_cached_thumbnail_encodings_during_load(tmp_path:
         },
     )
     catalog.save()
+
+    metadata_only = ChatGPTImageCatalog.build(target_dir, repair=False)
+    with patch(
+        "app.core.chatgpt_downloader.read_cached_image",
+        side_effect=AssertionError("A known thumbnail must not be checked as an original image."),
+    ):
+        assert metadata_only.complete_entry("file_thumbnail") is None
+        assert metadata_only.claim_download("file_thumbnail")
+    assert thumbnail_path.read_bytes() == thumbnail_payload
 
     repaired = ChatGPTImageCatalog.build(target_dir)
 
@@ -2544,6 +2877,8 @@ def test_chatgpt_history_api_collects_all_sessions_outside_the_media_project() -
         @classmethod
         def get(cls, url: str, **_kwargs):
             cls.calls.append(url)
+            if "offset=101" in url:
+                return _HistoryResponse({"items": []})
             if "offset=0" in url:
                 return _HistoryResponse(
                     {
@@ -3439,7 +3774,7 @@ def test_chatgpt_project_index_iterator_does_not_start_workers_after_stop(tmp_pa
     worker.assert_not_called()
 
 
-def test_chatgpt_project_index_iterator_skips_complete_files_before_worker_start(tmp_path: Path) -> None:
+def test_chatgpt_project_index_iterator_reports_complete_files_without_redownloading(tmp_path: Path) -> None:
     target_dir = tmp_path / "demo-project"
     target_dir.mkdir()
     existing_path = target_dir / "img_file_existing.png"
@@ -3501,6 +3836,83 @@ def test_chatgpt_project_index_iterator_skips_complete_files_before_worker_start
     assert [result.candidate_file_id for result in results if result.already_cached] == [
         "file_existing"
     ]
+
+
+@pytest.mark.parametrize("old_file_exists", [False, True])
+@pytest.mark.parametrize("stop_after_new_download", [False, True])
+def test_chatgpt_project_index_downloads_new_images_before_checking_old_files(
+    tmp_path: Path, old_file_exists: bool, stop_after_new_download: bool,
+) -> None:
+    old_path = tmp_path / "old.png"
+    if old_file_exists:
+        old_path.write_bytes(PNG_PAYLOAD)
+    old_entry = ChatGPTCatalogEntry(
+        file_id="file_old",
+        relative_path=old_path.name,
+        content_sha256="old",
+        content_bytes=len(PNG_PAYLOAD),
+        source_url="https://chatgpt.com/backend-api/estuary/content?id=file_old",
+        conversation_url="https://chatgpt.com/c/old-session",
+        alt_text="",
+        width=0,
+        height=0,
+        first_seen_at="",
+        last_seen_at="",
+    )
+    catalog = ChatGPTImageCatalog(tmp_path, {old_entry.file_id: old_entry})
+    candidates = [
+        ChatGPTImageCandidate(
+            source_url=old_entry.source_url,
+            file_id=old_entry.file_id,
+            conversation_url=old_entry.conversation_url,
+        ),
+        ChatGPTImageCandidate(
+            source_url="https://chatgpt.com/backend-api/estuary/content?id=file_new",
+            file_id="file_new",
+            conversation_url="https://chatgpt.com/c/new-session",
+        ),
+    ]
+    new_path = tmp_path / "img_file_new.png"
+    stop = Event()
+    events: list[str] = []
+    assignments: list[list[str]] = []
+    original_complete_entry = catalog.complete_entry
+
+    def check_entry(file_id: str):
+        if file_id == old_entry.file_id:
+            assert new_path.read_bytes() == PNG_PAYLOAD
+            events.append("check-old")
+        return original_complete_entry(file_id)
+
+    def worker(pending, _descriptor, active_catalog, destination, _should_stop, result_queue):
+        assignments.append([candidate.file_id for candidate in pending])
+        for candidate in pending:
+            assert download_chatgpt_image(_FakeContext(), active_catalog, destination, candidate)
+            events.append(f"download-{candidate.file_id}")
+            if stop_after_new_download:
+                stop.set()
+            result_queue.put(ChatGPTImageDownloadWorkResult(candidate.file_id, downloaded=True))
+
+    with patch.object(catalog, "complete_entry", side_effect=check_entry), patch(
+        "app.core.chatgpt_downloader._chatgpt_index_image_worker", side_effect=worker,
+    ):
+        results = list(_iter_chatgpt_index_image_results(
+            candidates, object(), catalog, tmp_path, stop.is_set, worker_count=1,
+        ))
+
+    assert events[0] == "download-file_new"
+    assert results[0].candidate_file_id == "file_new"
+    assert results[0].downloaded
+    assert new_path.read_bytes() == PNG_PAYLOAD
+    if stop_after_new_download:
+        assert assignments == [["file_new"]]
+        assert events == ["download-file_new"]
+        assert len(results) == 1
+    else:
+        assert results[1].candidate_file_id == old_entry.file_id
+        assert results[1].already_cached is old_file_exists
+        assert results[1].downloaded is not old_file_exists
+        assert assignments == ([["file_new"]] if old_file_exists else [["file_new"], ["file_old"]])
 
 
 def test_chatgpt_project_index_worker_refreshes_authorization_before_download(tmp_path: Path) -> None:
@@ -3575,6 +3987,48 @@ def test_chatgpt_project_index_worker_retries_transient_startup_failure(tmp_path
     assert launch_context.call_count == 2
     sleep.assert_called_once()
     assert result_queue.get_nowait().downloaded is True
+
+
+def test_chatgpt_project_index_defers_unreadable_cache_and_downloads_new_images(tmp_path: Path) -> None:
+    candidates = [
+        ChatGPTImageCandidate(
+            source_url=f"https://chatgpt.com/backend-api/estuary/content?id={file_id}",
+            file_id=file_id,
+            conversation_url="https://chatgpt.com/c/project-conversation",
+        )
+        for file_id in ("file_blocked", "file_new")
+    ]
+    catalog = ChatGPTImageCatalog(tmp_path, {
+        "file_blocked": ChatGPTCatalogEntry(
+            file_id="file_blocked",
+            relative_path="blocked.png",
+            content_sha256="blocked",
+            content_bytes=len(PNG_PAYLOAD),
+            source_url=candidates[0].source_url,
+            conversation_url=candidates[0].conversation_url,
+            alt_text="",
+            width=1,
+            height=1,
+            first_seen_at="",
+            last_seen_at="",
+        ),
+    })
+
+    def worker(pending, _descriptor, _catalog, _target_dir, _should_stop, result_queue):
+        assert [candidate.file_id for candidate in pending] == ["file_new"]
+        result_queue.put(ChatGPTImageDownloadWorkResult("file_new", downloaded=True))
+
+    with patch.object(
+        catalog, "complete_entry", side_effect=ChatGPTCacheReadTimeoutError("Timed out."),
+    ), patch("app.core.chatgpt_downloader._chatgpt_index_image_worker", worker):
+        results = list(_iter_chatgpt_index_image_results(
+            candidates, object(), catalog, tmp_path, lambda: False, worker_count=1,
+        ))
+
+    assert [result.candidate_file_id for result in results] == ["file_new", "file_blocked"]
+    assert results[0].downloaded
+    assert results[1].error == "Timed out."
+    assert not results[1].skipped and not results[1].downloaded
 
 
 def test_chatgpt_project_index_iterator_bounds_worker_cleanup_wait(tmp_path: Path) -> None:
@@ -3677,7 +4131,7 @@ def test_chatgpt_safari_index_worker_downloads_through_parallel_tabs(tmp_path: P
     active_downloads = 0
     downloads: list[tuple[str, object, dict[str, str]]] = []
 
-    def download(_context, _catalog, _target_dir, candidate, max_file_size_bytes=0, page=None):
+    def download(_context, _catalog, _target_dir, candidate, max_file_size_bytes=0, page=None, should_stop=None):
         nonlocal active_downloads
         with active_lock:
             active_downloads += 1
@@ -3750,7 +4204,7 @@ def test_chatgpt_safari_index_worker_continues_when_an_extra_tab_cannot_open(
         if page is broken_tab:
             raise RuntimeError("ChatGPT startup timed out after 60 seconds while opening the page.")
 
-    def download(_context, _catalog, _target_dir, _candidate, max_file_size_bytes=0, page=None):
+    def download(_context, _catalog, _target_dir, _candidate, max_file_size_bytes=0, page=None, should_stop=None):
         download_pages.append(page)
         return True
 

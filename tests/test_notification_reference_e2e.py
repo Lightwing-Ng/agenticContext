@@ -1,15 +1,18 @@
 """Production waiting-notice and catalog reference parity.
 
-Code version: v1.1.0-codex.0
+Code version: v1.2.0-codex.0
 """
 
 from __future__ import annotations
 
+from base64 import b64decode
+from io import BytesIO
 import json
 from pathlib import Path
 import re
 
 import pytest
+from PIL import Image
 from playwright.sync_api import Browser, Locator, Page, Route, expect
 
 from tests import test_sidebar_e2e
@@ -17,6 +20,158 @@ from tests import test_sidebar_e2e
 
 disposable_browser = test_sidebar_e2e.disposable_browser
 sidebar_server_url = test_sidebar_e2e.sidebar_server_url
+
+
+def _waiting_spinner_frame(cdp, screenshot_path):
+    """Capture painted progress without waiting for a rotating locator to settle."""
+    result = cdp.send(
+        "Runtime.evaluate",
+        {
+            "expression": """(() => {
+            const modal = document.querySelector('#cache_wait_modal');
+            const spinner = modal.querySelector('.suggestion-loading-spinner');
+            const style = getComputedStyle(spinner);
+            const box = spinner.getBoundingClientRect();
+            const animation = spinner.getAnimations()[0];
+            return {hidden:modal.hidden, size:[parseFloat(style.width),parseFloat(style.height)],
+                box:{left:box.left,top:box.top,width:box.width,height:box.height},
+                transform:style.transform, animation:style.animationName,
+                playState:animation?.playState || null, time:animation?.currentTime ?? null,
+                documentOverflow:document.documentElement.scrollWidth-innerWidth};
+        })()""",
+            "returnByValue": True,
+        },
+    )
+    metrics = result["result"]["value"]
+    screenshot = b64decode(
+        cdp.send("Page.captureScreenshot", {"format": "png"})["data"]
+    )
+    screenshot_path.write_bytes(screenshot)
+    box = metrics["box"]
+    center_x = box["left"] + box["width"] / 2
+    center_y = box["top"] + box["height"] / 2
+    crop = (
+        Image.open(BytesIO(screenshot))
+        .convert("RGB")
+        .crop(
+            (
+                round(center_x - 26),
+                round(center_y - 26),
+                round(center_x + 26),
+                round(center_y + 26),
+            )
+        )
+    )
+    metrics["paintedBluePixels"] = sum(
+        blue > 120 and blue > red + 50 and blue > green + 20
+        for red, green, blue in crop.getdata()
+    )
+    return metrics
+
+
+@pytest.mark.parametrize(
+    ("width", "scheme", "motion"),
+    [(831, "light", "no-preference"), (390, "dark", "reduce")],
+    ids=["normal", "reduced"],
+)
+def test_wechat_filter_wait_spinner_paints_without_an_external_mask(
+    disposable_browser, sidebar_server_url, tmp_path, width, scheme, motion
+):
+    """The real form-submit handler paints progress without its external mask."""
+    context = disposable_browser.new_context(
+        viewport={"width": width, "height": 900},
+        color_scheme=scheme,
+        reduced_motion=motion,
+    )
+    page = context.new_page()
+    cdp = context.new_cdp_session(page)
+    page.route("**/static/images/loading.spinner.svg*", lambda route: route.abort())
+    try:
+        page.goto(
+            sidebar_server_url + "/browser?view=text&source=wechat",
+            wait_until="networkidle",
+        )
+        page.evaluate("""() => {
+            window.waitSpinnerSubmissions = [];
+            window.addEventListener('submit', event => {
+                if (event.target.id !== 'browser_filter_form') return;
+                // The document's production waiting listener runs before this window guard.
+                event.preventDefault();
+                window.waitSpinnerSubmissions.push({method:event.target.method,
+                    fields:Object.fromEntries(new FormData(event.target))});
+            });
+        }""")
+        if page.locator("#sidebar_toggle").get_attribute("aria-expanded") != "true":
+            page.locator("#sidebar_toggle").click()
+            expect(page.locator("#sidebar_toggle")).to_have_attribute(
+                "aria-expanded", "true"
+            )
+        page.get_by_role(
+            "button", name=re.compile(r"^Filter by conversation type:")
+        ).click()
+        page.get_by_role("option", name="Group chats", exact=True).click()
+        expect(page.locator("#cache_wait_modal")).to_be_visible()
+        submissions = page.evaluate("window.waitSpinnerSubmissions")
+        assert len(submissions) == 1
+        assert submissions[0]["method"] == "get"
+        assert submissions[0]["fields"]["source"] == "wechat"
+        assert submissions[0]["fields"]["chat_kind"] == "group"
+        expect(page.locator("#cache_wait_modal_title")).to_have_text(
+            "Updating Local resources"
+        )
+        page.evaluate("""() => {
+            const spinner = document.querySelector('#cache_wait_modal .suggestion-loading-spinner');
+            window.waitSpinnerOriginalMarkup = spinner.outerHTML;
+            spinner.outerHTML = '<span class="suggestion-loading-spinner workspace-modal-icon" aria-hidden="true"></span>';
+        }""")
+        old_mask = _waiting_spinner_frame(
+            cdp, tmp_path / "spinner-old-mask-control.png"
+        )
+        assert old_mask["paintedBluePixels"] < 5, old_mask
+        page.evaluate("""() => {
+            document.querySelector('#cache_wait_modal .suggestion-loading-spinner').outerHTML
+                = window.waitSpinnerOriginalMarkup;
+        }""")
+        first = _waiting_spinner_frame(cdp, tmp_path / "spinner-first.png")
+        assert first["hidden"] is False
+        assert first["size"] == [36, 36]
+        assert first["documentOverflow"] <= 1
+        assert first["paintedBluePixels"] >= 80, first
+        if motion != "reduce":
+            page.wait_for_function(
+                """previous => {
+                const spinner = document.querySelector('#cache_wait_modal .suggestion-loading-spinner');
+                return spinner.getAnimations()[0]?.currentTime > previous;
+            }""",
+                arg=first["time"],
+            )
+        second = _waiting_spinner_frame(cdp, tmp_path / "spinner-second.png")
+        assert second["paintedBluePixels"] >= 80, second
+        if motion == "reduce":
+            assert first["animation"] == second["animation"] == "none"
+            assert first["transform"] == second["transform"] == "none"
+        else:
+            assert (
+                first["animation"] == second["animation"] == "ticker-suggestion-loading"
+            )
+            assert first["playState"] == second["playState"] == "running"
+            assert second["time"] > first["time"]
+            assert second["transform"] != first["transform"]
+        (tmp_path / "spinner-metrics.json").write_text(
+            json.dumps(
+                {
+                    "submission": submissions[0],
+                    "oldMaskControl": old_mask,
+                    "first": first,
+                    "second": second,
+                },
+                indent=2,
+            )
+            + "\n"
+        )
+    finally:
+        context.close()
+
 
 FIXTURE_MEDIA_ID = "notification-reference-fixture"
 FIXTURE_MEDIA = {

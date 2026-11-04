@@ -1,6 +1,6 @@
 """Unit tests for the Safari-backed browser automation surface."""
 
-# Code version: v2.17.0-codex.0
+# Code version: v2.17.1-codex.0
 
 from __future__ import annotations
 
@@ -22,6 +22,7 @@ from app.core.safari_automation import (
     SafariContext,
     SafariNativeActivationError,
     SafariPage,
+    _safari_process_identity,
     retry_pending_safari_context_cleanup,
     run_applescript,
     safari_navigation_matches,
@@ -1804,6 +1805,12 @@ def test_safari_context_creates_a_standard_visible_background_window() -> None:
     assert script.index("set previousFrontmostProcessName") < script.index("launch")
     assert "set targetDocument to make new document" in script
     assert "(document of candidateWindow) is targetDocument" in script
+    lookup_loops = script.split("repeat with candidateWindow in every window")[1:]
+    assert len(lookup_loops) == 2
+    for lookup_loop in lookup_loops:
+        assert lookup_loop.index("if (count of tabs of candidateWindow) > 0 then") < lookup_loop.index(
+            "if (document of candidateWindow) is targetDocument then"
+        )
     # A loop item is positional ("item 1 of every window"). Restoring the user's front window
     # while Safari is frontmost would retarget it, so both lookups bind the window by its ID.
     assert "set targetWindow to candidateWindow" not in script
@@ -2456,6 +2463,9 @@ def test_safari_context_blocks_an_interrupted_creation_until_inventory_recovers(
         "app.core.safari_automation.time.time_ns",
         return_value=int((SAFARI_CONTEXT_CREATION_SETTLE_SECONDS + 1) * 1_000_000_000),
     ), patch(
+        "app.core.safari_automation._safari_window_inert_state",
+        return_value={"read_error": True},
+    ), patch(
         "app.core.safari_automation.time.sleep",
     ):
         with pytest.raises(RuntimeError, match="creation was interrupted"):
@@ -2533,6 +2543,9 @@ def test_safari_context_requires_two_safe_inventories_after_creation_settles(
         "app.core.safari_automation._safari_window_inventory",
         side_effect=({}, {456: 1}),
     ), patch(
+        "app.core.safari_automation._safari_window_inert_state",
+        return_value={"read_error": True},
+    ), patch(
         "app.core.safari_automation.time.sleep",
     ) as sleep:
         with pytest.raises(RuntimeError, match="creation was interrupted"):
@@ -2540,6 +2553,133 @@ def test_safari_context_requires_two_safe_inventories_after_creation_settles(
 
     sleep.assert_called_once()
     assert json.loads(state_path.read_text(encoding="utf-8"))["state"] == "creating"
+
+
+@pytest.mark.parametrize("identity", ("123:old-session", None, RuntimeError("identity unavailable")))
+def test_safari_creation_records_only_a_verified_running_process(identity) -> None:
+    context = SafariContext("https://chatgpt.com/")
+    context._context_lock_handle = object()
+    options = {"side_effect": identity} if isinstance(identity, Exception) else {"return_value": identity}
+    with patch(
+        "app.core.safari_automation._safari_window_inventory", return_value={},
+    ), patch(
+        "app.core.safari_automation._safari_process_identity", **options,
+    ) as identify, patch.object(context, "_write_context_lease_state") as write:
+        if isinstance(identity, Exception):
+            with pytest.raises(RuntimeError, match="identity unavailable"):
+                context._begin_context_window_creation()
+            write.assert_not_called()
+        else:
+            context._begin_context_window_creation()
+            payload = write.call_args.args[0]
+            assert payload["state"] == "creating"
+            assert payload.get("safari_process_identity") == identity
+            assert ("safari_process_identity" in payload) is (identity is not None)
+    identify.assert_called_once_with(allow_not_running=True)
+
+
+@pytest.mark.parametrize("allow_not_running", (False, True))
+def test_safari_process_identity_distinguishes_explicit_absence(allow_not_running: bool) -> None:
+    with patch(
+        "app.core.safari_automation.run_applescript", return_value="not-running",
+    ), patch("app.core.safari_automation.subprocess.run") as process:
+        if allow_not_running:
+            assert _safari_process_identity(allow_not_running=True) is None
+        else:
+            with pytest.raises(RuntimeError, match="identity is unavailable"):
+                _safari_process_identity()
+    process.assert_not_called()
+
+
+@pytest.mark.parametrize("identity", (
+    "123:old-session", "456:new-session", None, RuntimeError("identity unavailable"),
+))
+def test_safari_creation_lease_requires_verified_process_change_before_reset(identity) -> None:
+    context = SafariContext("https://chatgpt.com/")
+    context._context_lock_handle = object()
+    payload = {
+        "version": SAFARI_CONTEXT_LEASE_VERSION,
+        "state": "creating",
+        "ownership_token": "f" * 32,
+        "owner_pid": 321,
+        "baseline_windows": [{"window_id": 10, "tab_count": 2}],
+        "creation_started_at_ns": 1,
+        "safari_process_identity": "123:old-session",
+    }
+    options = {"side_effect": identity} if isinstance(identity, Exception) else {"return_value": identity}
+    with patch.object(context, "_read_context_lease_state", return_value=payload), patch.object(
+        context, "_clear_context_lease_state",
+    ) as clear, patch.object(context, "_log_uncertain_creation_windows"), patch(
+        "app.core.safari_automation._safari_process_identity", **options,
+    ), patch(
+        "app.core.safari_automation._safari_window_inventory", return_value={20: 2},
+    ) as inventory, patch(
+        "app.core.safari_automation.time.time_ns",
+        return_value=int((SAFARI_CONTEXT_CREATION_SETTLE_SECONDS + 1) * 1_000_000_000),
+    ), patch("app.core.safari_automation._close_safari_window_id") as close:
+        if identity == "456:new-session":
+            context._reconcile_context_lease_state()
+            clear.assert_called_once()
+            inventory.assert_not_called()
+        else:
+            with pytest.raises(RuntimeError, match="creation was interrupted"):
+                context._reconcile_context_lease_state()
+            clear.assert_not_called()
+    close.assert_not_called()
+
+
+@pytest.mark.parametrize("late_candidates", (False, True))
+def test_safari_uncertain_creation_diagnostics_are_bounded_and_keep_lease(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture, late_candidates: bool,
+) -> None:
+    lock_path = tmp_path / "safari-context.lock"
+    state_path = tmp_path / "safari-context.lock.state"
+    payload = {
+        "version": SAFARI_CONTEXT_LEASE_VERSION,
+        "state": "creating",
+        "ownership_token": "f" * 32,
+        "owner_pid": 321,
+        "baseline_windows": [{"window_id": 10, "tab_count": 2}],
+        "creation_started_at_ns": 1,
+    }
+    state_path.write_text(json.dumps(payload), encoding="utf-8")
+    context = SafariContext("https://chatgpt.com/private-session", lock_blocking=False)
+    candidates = {20: 0, 21: 0, 22: 0, 23: 0, 24: 1}
+    inventory = {10: 2, **candidates}
+    inventories = [{10: 2}, inventory] if late_candidates else [inventory]
+    inert_state = {
+        "exists": True, "tab_count": 0, "visible": False,
+        "miniaturized": False, "has_document": False, "read_error": False,
+    }
+    with patch(
+        "app.core.safari_automation.SAFARI_CONTEXT_LOCK_PATH", lock_path,
+    ), patch(
+        "app.core.safari_automation._safari_window_inventory", side_effect=inventories,
+    ), patch(
+        "app.core.safari_automation._safari_window_inert_state", return_value=inert_state,
+    ) as diagnose, patch(
+        "app.core.safari_automation.time.time_ns",
+        return_value=int((SAFARI_CONTEXT_CREATION_SETTLE_SECONDS + 1) * 1_000_000_000),
+    ), patch(
+        "app.core.safari_automation.time.sleep",
+    ), patch(
+        "app.core.safari_automation._close_safari_window_id",
+    ) as close:
+        with pytest.raises(RuntimeError, match="creation was interrupted"):
+            context._acquire_context_lock()
+
+    assert [call.args[0] for call in diagnose.call_args_list] == [20, 21, 22, 23]
+    summary = next(record for record in caplog.records if hasattr(record, "candidate_windows"))
+    assert summary.candidate_windows == [
+        {"window_id": window_id, "tab_count": tab_count}
+        for window_id, tab_count in candidates.items()
+    ]
+    diagnostics = [record for record in caplog.records if hasattr(record, "inert_state")]
+    assert len(diagnostics) == 4
+    assert all(record.inert_state == inert_state for record in diagnostics)
+    assert "private-session" not in str([record.__dict__ for record in caplog.records])
+    close.assert_not_called()
+    assert json.loads(state_path.read_text(encoding="utf-8")) == payload
 
 
 def test_safari_context_rejects_a_future_creation_timestamp(
@@ -2676,6 +2816,8 @@ def test_safari_context_non_numeric_window_result_remains_fail_closed(
             "windows:10:0",
         ),
     ), patch(
+        "app.core.safari_automation._safari_process_identity", return_value=None,
+    ), patch(
         "app.core.safari_automation.time.time_ns",
         side_effect=lambda: clock_ns[0],
     ), patch(
@@ -2712,9 +2854,12 @@ def test_safari_context_unknown_creation_timeout_remains_fail_closed(
             "windows:10:0",
             RuntimeError("Safari automation timed out after 20 seconds."),
             "windows:10:0\n456:1",
+            "exists:true|tab_count:1|visible:false|miniaturized:false|has_document:true",
             "windows:10:0",
             "windows:10:0",
         ),
+    ), patch(
+        "app.core.safari_automation._safari_process_identity", return_value=None,
     ), patch(
         "app.core.safari_automation.time.time_ns",
         side_effect=lambda: clock_ns[0],

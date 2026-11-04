@@ -1,6 +1,6 @@
 """Grok media sync helpers."""
 
-# Code version: v1.19.5-codex.0
+# Code version: v1.19.6-codex.0
 
 from __future__ import annotations
 
@@ -953,17 +953,24 @@ class GrokMediaCatalog:
         self.hash_to_relative_path: dict[str, str] = {}
         self.first_seen_by_relative_path: dict[str, str] = {}
         self.media_kind_by_relative_path: dict[str, str] = {}
+        self.rebuild_pending = False
         self.dirty = False
         self._lock = RLock()
 
     @classmethod
-    def build(cls, target_dir: Path) -> GrokMediaCatalog:
-        """Load the persisted Grok catalog or rebuild it from local files."""
+    def build(cls, target_dir: Path, *, repair: bool = True) -> GrokMediaCatalog:
+        """Read the inventory, repairing media only for an explicit sync."""
         catalog = cls(target_dir)
         _require_safe_grok_media_path(target_dir, catalog.catalog_path)
-        target_dir.mkdir(parents=True, exist_ok=True)
+        if repair:
+            target_dir.mkdir(parents=True, exist_ok=True)
         if catalog._load():
-            catalog.flush()
+            if repair:
+                catalog.flush()
+            return catalog
+
+        if not repair:
+            catalog.rebuild_pending = True
             return catalog
 
         catalog._rebuild_from_disk()
@@ -2292,13 +2299,34 @@ class GrokWorkQueue:
 
 
 def build_grok_initial_snapshot(version: str, target_dir: Path | None = None) -> TaskSnapshot:
-    """Hydrate the Grok page with existing local cache metrics."""
+    """Read saved Grok metrics without downloading or repairing cloud-only media."""
     resolved_target_dir = target_dir or GROK_TARGET_DIR
     snapshot = TaskSnapshot(version=version, account_name="Grok", output_dir=str(resolved_target_dir))
-    catalog = GrokMediaCatalog.build(resolved_target_dir)
+    catalog = GrokMediaCatalog.build(resolved_target_dir, repair=False)
     cached_count, cached_images, cached_videos = catalog.summarize()
+    if catalog.rebuild_pending:
+        snapshot.performance_metrics["cache_inventory_pending"] = True
+        # Directory metadata remains readable for cloud placeholders. Keep approximate
+        # file totals without fetching payloads to validate signatures or deduplicate.
+        if resolved_target_dir.is_dir():
+            for file_path in resolved_target_dir.iterdir():
+                if file_path.name.startswith(".") or not derive_identity_from_filename(file_path.name):
+                    continue
+                media_kind = classify_existing_file(file_path)
+                if not media_kind:
+                    continue
+                _require_safe_grok_media_path(resolved_target_dir, file_path)
+                if not file_path.is_file() or file_path.stat().st_size <= 0:
+                    continue
+                cached_count += 1
+                cached_images += media_kind == "image"
+                cached_videos += media_kind == "video"
     if cached_count == 0:
-        snapshot.message = "Ready. No Grok media has been cached yet."
+        snapshot.message = (
+            "Ready. Grok media statistics will be verified during the next sync."
+            if catalog.rebuild_pending
+            else "Ready. No Grok media has been cached yet."
+        )
         return snapshot
 
     snapshot.downloaded_posts = cached_count
@@ -2309,6 +2337,8 @@ def build_grok_initial_snapshot(version: str, target_dir: Path | None = None) ->
         f"Ready. Found existing Grok cache: {cached_count} assets, "
         f"{cached_images} images, {cached_videos} videos."
     )
+    if catalog.rebuild_pending:
+        snapshot.message += " Media integrity and unique totals will be verified during the next sync."
     return snapshot
 
 

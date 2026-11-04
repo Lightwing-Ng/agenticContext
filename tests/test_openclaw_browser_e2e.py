@@ -99,7 +99,7 @@ def test_archive_selector_browse_and_reader_remain_separate(
         expect(page.locator("#start_button")).to_have_text("Read archived sessions")
         expect(page.locator("[data-browser-session-panel]")).to_have_count(0)
         page.get_by_role("button", name="Cache source: ChatGPT OpenClaw", exact=True).click()
-        expect(page.get_by_role("option", name="ChatGPT", exact=True)).to_be_visible()
+        expect(page.get_by_role("option", name="ChatGPT Chat", exact=True)).to_be_visible()
         expect(page.get_by_role("option", name="ChatGPT OpenClaw", exact=True)).to_be_visible()
         expect(page.get_by_role("option", name="Doubao OpenClaw", exact=True)).to_have_count(1)
         _assert_no_horizontal_overflow(page)

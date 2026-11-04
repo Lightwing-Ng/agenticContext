@@ -1,6 +1,6 @@
 """Focused tests for Grok text-history persistence and API pagination."""
 
-# Code version: v1.5.2-codex.0
+# Code version: v1.5.3-codex.0
 
 import json
 import re
@@ -353,6 +353,7 @@ def test_grok_text_sync_uses_owned_safari_page_and_caches_messages(
         "unchanged": 0,
         "failed": 0,
         "stopped": False,
+        "incomplete": False,
     }
     assert context.request.request_from_page.call_count == 3
     cached = query_chat_history(tmp_path, source="grok", session_view=True)

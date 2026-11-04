@@ -459,7 +459,7 @@ def test_chatgpt_session_prefers_actual_message_time_over_newer_provider_revisio
     assert [item.last_seen_at for item in page.items] == ["2026-10-18T12:00:00Z", ""]
 
 
-@pytest.mark.parametrize("source", ["claude", "gemini", "claude_code", "grok", "grok_build"])
+@pytest.mark.parametrize("source", ["claude", "gemini", "codex", "claude_code", "grok", "grok_build"])
 def test_other_sources_ignore_chatgpt_provider_revision_for_session_time(tmp_path: Path, source: str) -> None:
     row = dict(
         _history_row(

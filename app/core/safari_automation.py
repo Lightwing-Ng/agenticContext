@@ -1,6 +1,6 @@
 """Minimal Safari automation primitives backed by Apple Events."""
 
-# Code version: v2.17.1-codex.0
+# Code version: v2.18.0-codex.0
 
 from __future__ import annotations
 
@@ -15,9 +15,10 @@ import subprocess
 import tempfile
 import time
 from collections.abc import Callable
+from contextvars import ContextVar, copy_context
 from dataclasses import dataclass, field
 from pathlib import Path
-from threading import RLock
+from threading import Event, RLock
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -209,6 +210,98 @@ if not nativeFocusReady then error "Safari native activation refused: document-u
 logger = logging.getLogger(__name__)
 
 
+class SafariCacheCancelled(BaseException):
+    """Unwind a stopped Cache worker without treating cancellation as a failure."""
+
+
+@dataclass
+class _SafariCacheAcquisitionScope:
+    should_stop: Callable[[], bool]
+    wait: Callable[[float], object]
+    on_wait: Callable[[str], None]
+    timeout_seconds: float = 60.0
+    active: Event = field(default_factory=Event)
+    guard: RLock = field(default_factory=RLock)
+    deadline: float | None = None
+    notified: bool = False
+
+    def check_active(self) -> None:
+        if not self.active.is_set() or self.should_stop():
+            raise SafariCacheCancelled()
+
+    def wait_for_lease(self, error: BlockingIOError) -> None:
+        self.check_active()
+        with self.guard:
+            now = time.monotonic()
+            if self.deadline is None:
+                self.deadline = now + self.timeout_seconds
+            remaining = self.deadline - now
+            if remaining <= 0:
+                raise SafariBusyError(
+                    "Safari remained busy after the Cache task's bounded acquisition wait."
+                ) from error
+            if not self.notified:
+                self.on_wait(
+                    "Waiting for Safari to finish another browser check. "
+                    "The cache task will continue automatically when Safari is free."
+                )
+                self.notified = True
+        self.wait(min(0.25, remaining))
+        self.check_active()
+        if time.monotonic() >= self.deadline:
+            raise SafariBusyError(
+                "Safari remained busy after the Cache task's bounded acquisition wait."
+            ) from error
+
+
+_SAFARI_CACHE_ACQUISITION_SCOPE: ContextVar[_SafariCacheAcquisitionScope | None] = ContextVar(
+    "safari_cache_acquisition_scope", default=None,
+)
+
+
+@contextlib.contextmanager
+def safari_cache_acquisition_scope(
+    should_stop: Callable[[], bool],
+    wait: Callable[[float], object],
+    on_wait: Callable[[str], None],
+    *,
+    timeout_seconds: float = 60.0,
+):
+    """Bound only Safari lease contention for one admitted Cache worker's lifetime."""
+    scope = _SafariCacheAcquisitionScope(should_stop, wait, on_wait, timeout_seconds)
+    scope.active.set()
+    token = _SAFARI_CACHE_ACQUISITION_SCOPE.set(scope)
+    try:
+        yield
+    finally:
+        scope.active.clear()
+        _SAFARI_CACHE_ACQUISITION_SCOPE.reset(token)
+
+
+def has_safari_cache_acquisition_scope() -> bool:
+    """Report whether the current worker already owns bounded acquisition recovery."""
+    return _SAFARI_CACHE_ACQUISITION_SCOPE.get() is not None
+
+
+def inherit_safari_cache_context(target: Callable[..., Any]) -> Callable[..., Any]:
+    """Carry one Cache acquisition scope into a child worker, never beyond its job."""
+    if _SAFARI_CACHE_ACQUISITION_SCOPE.get() is None:
+        return target
+    inherited = copy_context()
+
+    def run(*args: Any, **kwargs: Any) -> Any:
+        try:
+            return inherited.run(target, *args, **kwargs)
+        except SafariCacheCancelled:
+            return None
+
+    return run
+
+
+class SafariBusyError(RuntimeError):
+    """Report transient contention for Safari's cross-process context lease."""
+
+
 class SafariNativeActivationError(RuntimeError):
     """Describe whether a failed trusted activation may already have reached Safari."""
 
@@ -262,8 +355,36 @@ def safari_navigation_matches(target_url: str, current_url: str) -> bool:
     if current_host == target_host and current_path == target_path:
         return True
 
-    authentication_hosts = {"auth.openai.com", "auth0.openai.com"}
+    legacy_x_likes = re.fullmatch(r"/([A-Za-z0-9_]{1,15})/likes/?", target.path)
+    if (
+        target.scheme == "https"
+        and target_host == current_host == "x.com"
+        and legacy_x_likes is not None
+        and legacy_x_likes.group(1).casefold() != "i"
+        and re.fullmatch(r"/i/history/likes/?", current.path)
+    ):
+        # The collector separately verifies the account and selected Likes navigation.
+        return True
+
     chatgpt_hosts = {"chatgpt.com", "www.chatgpt.com"}
+    if (
+        target.scheme == "https"
+        and current_host == target_host
+        and target_host in chatgpt_hosts
+    ):
+        project_path_pattern = (
+            r"/g/(g-p-[0-9a-fA-F]{32}(?:-[A-Za-z0-9_-]+)?)(?:/project)?"
+        )
+        target_project = re.fullmatch(project_path_pattern, target.path)
+        current_project = re.fullmatch(project_path_pattern, current.path)
+        if (
+            target_project is not None
+            and current_project is not None
+            and target_project.group(1) == current_project.group(1)
+        ):
+            return True
+
+    authentication_hosts = {"auth.openai.com", "auth0.openai.com"}
     authentication_paths = ("/auth", "/login", "/i/flow/login", "/account/login")
     return (
         (target.hostname or "").casefold() in chatgpt_hosts
@@ -371,12 +492,17 @@ return "windows:" & serializedWindowRows
     return inventory
 
 
-def _safari_process_identity() -> str:
+def _safari_process_identity(*, allow_not_running: bool = False) -> str | None:
     """Identify the current Safari process across PID reuse and relaunches."""
     raw_pid = run_applescript(
-        'tell application "System Events" to get unix id of application process "Safari"',
+        'tell application "System Events"\n'
+        'if not (exists application process "Safari") then return "not-running"\n'
+        'return unix id of application process "Safari"\n'
+        'end tell',
         retry_transient=False,
     ).strip()
+    if allow_not_running and raw_pid == "not-running":
+        return None
     if not raw_pid.isdigit() or int(raw_pid) <= 0:
         raise RuntimeError("Safari process identity is unavailable.")
     try:
@@ -2571,6 +2697,15 @@ class SafariContext:
                     "Safari is still verifying an uncertain prior window creation. "
                     "No new task window was opened."
                 )
+            recorded_process = payload.get("safari_process_identity")
+            if isinstance(recorded_process, str) and recorded_process:
+                try:
+                    current_process = _safari_process_identity(allow_not_running=True)
+                except RuntimeError:
+                    current_process = None
+                if current_process is not None and current_process != recorded_process:
+                    self._clear_context_lease_state()
+                    return
         current_inventory = _safari_window_inventory()
         if payload["state"] in {"owned", "idle"}:
             window_id = payload.get("window_id")
@@ -2642,19 +2777,47 @@ class SafariContext:
                     self._write_idle_context_lease_state(window_id)
                 return
         else:
-            if self._uncertain_creation_candidates(current_inventory, baseline):
+            uncertain_candidates = self._uncertain_creation_candidates(current_inventory, baseline)
+            if uncertain_candidates:
+                self._log_uncertain_creation_windows(current_inventory, uncertain_candidates)
                 raise RuntimeError(
                     "Safari may still have a task window whose creation was interrupted. "
                     "Close that window before starting another Safari task."
                 )
             time.sleep(SAFARI_CONTEXT_INVENTORY_STABILITY_SECONDS)
             stable_inventory = _safari_window_inventory()
-            if self._uncertain_creation_candidates(stable_inventory, baseline):
+            uncertain_candidates = self._uncertain_creation_candidates(stable_inventory, baseline)
+            if uncertain_candidates:
+                self._log_uncertain_creation_windows(stable_inventory, uncertain_candidates)
                 raise RuntimeError(
                     "Safari may still have a task window whose creation was interrupted. "
                     "Close that window before starting another Safari task."
                 )
         self._clear_context_lease_state()
+
+    @staticmethod
+    def _log_uncertain_creation_windows(inventory: dict[int, int], candidate_ids: set[int]) -> None:
+        """Record bounded, content-free diagnostics without changing ownership decisions."""
+        ordered_ids = sorted(candidate_ids)
+        logger.warning(
+            "Safari interrupted creation has unverified candidate windows.",
+            extra={
+                "candidate_windows": [
+                    {"window_id": window_id, "tab_count": inventory[window_id]}
+                    for window_id in ordered_ids
+                ],
+                "diagnostic_window_limit": 4,
+            },
+        )
+        for window_id in ordered_ids[:4]:
+            logger.warning(
+                "Safari interrupted creation candidate fixed-property diagnostic.",
+                extra={
+                    "window_id": window_id,
+                    "tab_count": inventory[window_id],
+                    "inert_state": _safari_window_inert_state(window_id),
+                },
+            )
 
     @staticmethod
     def _uncertain_creation_candidates(
@@ -2674,17 +2837,19 @@ class SafariContext:
         if self._context_lock_handle is None:
             return
         inventory = _safari_window_inventory()
+        process_identity = _safari_process_identity(allow_not_running=True)
         self._creation_baseline_inventory = inventory
-        self._write_context_lease_state(
-            {
-                "version": SAFARI_CONTEXT_LEASE_VERSION,
-                "state": "creating",
-                "ownership_token": self._ownership_token,
-                "owner_pid": os.getpid(),
-                "baseline_windows": self._serialized_window_inventory(inventory),
-                "creation_started_at_ns": time.time_ns(),
-            }
-        )
+        payload = {
+            "version": SAFARI_CONTEXT_LEASE_VERSION,
+            "state": "creating",
+            "ownership_token": self._ownership_token,
+            "owner_pid": os.getpid(),
+            "baseline_windows": self._serialized_window_inventory(inventory),
+            "creation_started_at_ns": time.time_ns(),
+        }
+        if process_identity is not None:
+            payload["safari_process_identity"] = process_identity
+        self._write_context_lease_state(payload)
         self._durable_lease_started = True
 
     def _mark_context_window_owned(self, window_id: int) -> None:
@@ -2829,6 +2994,9 @@ class SafariContext:
         """Serialize Safari contexts so no task can repurpose another task's window."""
         if self._context_lock_handle is not None:
             return
+        scope = _SAFARI_CACHE_ACQUISITION_SCOPE.get()
+        if scope is not None:
+            scope.check_active()
         _attempted_cleanup, pending_cleanup = retry_pending_safari_context_cleanup()
         if pending_cleanup:
             raise RuntimeError(
@@ -2837,18 +3005,31 @@ class SafariContext:
             )
         handle = SAFARI_CONTEXT_LOCK_PATH.open("a+")
         try:
-            lock_file(handle, blocking=self.lock_blocking)
-        except BlockingIOError as exc:
+            while True:
+                if scope is not None:
+                    scope.check_active()
+                try:
+                    lock_file(handle, blocking=self.lock_blocking and scope is None)
+                    if scope is not None:
+                        scope.check_active()
+                    break
+                except BlockingIOError as exc:
+                    if scope is None:
+                        raise SafariBusyError(
+                            "Safari is busy with another active browser task. Try again after it finishes."
+                        ) from exc
+                    scope.wait_for_lease(exc)
+        except BaseException:
             handle.close()
-            raise RuntimeError(
-                "Safari is busy with another active browser task. Try again after it finishes."
-            ) from exc
+            raise
         self._context_lock_handle = handle
         try:
             if hasattr(os, "fchmod"):
                 os.fchmod(handle.fileno(), 0o600)
             self._reconcile_context_lease_state()
-        except Exception:
+            if scope is not None:
+                scope.check_active()
+        except BaseException:
             self._context_lock_handle = None
             try:
                 unlock_file(handle)
@@ -2907,6 +3088,7 @@ class SafariContext:
                         "No task page was opened."
                     )
                 if current_inventory[adopted_window_id] == 0:
+                    idle_lease = self._read_context_lease_state()
                     try:
                         tab_index = self._create_tab(
                             adopted_window_id,
@@ -2914,10 +3096,23 @@ class SafariContext:
                             expect_empty_window=True,
                         )
                     except RuntimeError as exc:
-                        if (
-                            "Safari idle task tab did not become addressable." not in str(exc)
-                            or not self._retire_unaddressable_idle_window(adopted_window_id)
+                        timeout_message = (
+                            "Safari automation timed out after "
+                            f"{SAFARI_APPLESCRIPT_TIMEOUT_SECONDS:g} seconds."
+                        )
+                        if "Safari idle task tab did not become addressable." in str(exc):
+                            retired = self._retire_unaddressable_idle_window(adopted_window_id)
+                        elif (
+                            str(exc) == timeout_message
+                            and isinstance(idle_lease, dict)
+                            and idle_lease.get("state") == "idle"
                         ):
+                            retired = self._retire_unaddressable_idle_window(
+                                adopted_window_id, timed_out_lease=idle_lease,
+                            )
+                        else:
+                            raise
+                        if not retired:
                             raise
                         return self._create_page(url)
                     page = SafariPage(self, adopted_window_id, tab_index=tab_index)
@@ -2944,11 +3139,15 @@ class SafariContext:
             raise
         return page
 
-    def _retire_unaddressable_idle_window(self, window_id: int) -> bool:
+    def _retire_unaddressable_idle_window(
+        self, window_id: int, *, timed_out_lease: dict[str, Any] | None = None,
+    ) -> bool:
         """Replace only an absent shell or an inert shell retained in the new baseline."""
         if self._context_lock_handle is None or not self._durable_lease_started:
             return False
         payload = self._read_context_lease_state()
+        if timed_out_lease is not None and payload != timed_out_lease:
+            return False
         if (
             not isinstance(payload, dict)
             or payload.get("version") != SAFARI_CONTEXT_LEASE_VERSION
@@ -2965,6 +3164,10 @@ class SafariContext:
             return False
         recorded_process = payload.get("safari_process_identity")
         if recorded_process is None or recorded_process != _safari_process_identity():
+            return False
+        # A timed-out tab creation may have completed late. Require an unchanged
+        # lease and an inert shell before the normal zero-tab close guards run.
+        if timed_out_lease is not None and not _safari_window_is_inert_ghost(window_id):
             return False
         inventory = _safari_window_inventory()
         if window_id in inventory:
@@ -3013,10 +3216,12 @@ tell application "Safari"
         set targetDocument to make new document
         repeat with candidateWindow in every window
             try
-                if (document of candidateWindow) is targetDocument then
-                    set targetWindowId to id of candidateWindow
-                    set targetWindow to first window whose id is targetWindowId
-                    exit repeat
+                if (count of tabs of candidateWindow) > 0 then
+                    if (document of candidateWindow) is targetDocument then
+                        set targetWindowId to id of candidateWindow
+                        set targetWindow to first window whose id is targetWindowId
+                        exit repeat
+                    end if
                 end if
             end try
         end repeat
@@ -3030,10 +3235,12 @@ tell application "Safari"
         if targetWindow is missing value and targetDocument is not missing value then
             repeat with candidateWindow in every window
                 try
-                    if (document of candidateWindow) is targetDocument then
-                        set targetWindowId to id of candidateWindow
-                        set targetWindow to first window whose id is targetWindowId
-                        exit repeat
+                    if (count of tabs of candidateWindow) > 0 then
+                        if (document of candidateWindow) is targetDocument then
+                            set targetWindowId to id of candidateWindow
+                            set targetWindow to first window whose id is targetWindowId
+                            exit repeat
+                        end if
                     end if
                 end try
             end repeat

@@ -1,4 +1,4 @@
-/* Code version: v1.2.0-codex.0 */
+/* Code version: v1.3.0-codex.0 */
 
 (function initializeBrowserChatEffects() {
     "use strict";
@@ -83,13 +83,36 @@
             const scaleY = cssHeight > 0 ? layerBounds.height / cssHeight : 1;
             const scrollTop = scrollport.scrollTop;
             const rectangles = entries.map(({ message }) => message.getBoundingClientRect());
-            entries.forEach(({ effect }, index) => {
+            const movingDisclosures = Array.from(
+                scrollport.querySelectorAll("details[data-wechat-forwarded][data-collapse-motion]"),
+                (details) => ({ details, bounds: details.getBoundingClientRect() }),
+            );
+            entries.forEach(({ message, effect }, index) => {
                 const bounds = rectangles[index];
-                if (entries[index].message.closest("details:not([open])")
-                    || !entries[index].message.getClientRects().length || bounds.width <= 0 || bounds.height <= 0) {
+                if (message.closest("details:not([open])")
+                    || !message.getClientRects().length || bounds.width <= 0 || bounds.height <= 0) {
                     effect.hidden = true;
                     return;
                 }
+                const ancestors = movingDisclosures.filter(({ details }) => details.contains(message));
+                let clipPath = "";
+                if (ancestors.length) {
+                    const clip = ancestors.reduce((intersection, { bounds: ancestor }) => ({
+                        left: Math.max(intersection.left, ancestor.left),
+                        top: Math.max(intersection.top, ancestor.top),
+                        right: Math.min(intersection.right, ancestor.right),
+                        bottom: Math.min(intersection.bottom, ancestor.bottom),
+                    }), { left: -Infinity, top: -Infinity, right: Infinity, bottom: Infinity });
+                    if (bounds.right <= clip.left || bounds.left >= clip.right
+                        || bounds.bottom <= clip.top || bounds.top >= clip.bottom
+                        || clip.left >= clip.right || clip.top >= clip.bottom) {
+                        effect.hidden = true;
+                        return;
+                    }
+                    // Match the unfolding content clip while retaining shadow bleed inside it.
+                    clipPath = `inset(${(clip.top - bounds.top) / scaleY}px ${(bounds.right - clip.right) / scaleX}px ${(bounds.bottom - clip.bottom) / scaleY}px ${(clip.left - bounds.left) / scaleX}px)`;
+                }
+                if (effect.style.clipPath !== clipPath) effect.style.clipPath = clipPath;
                 // Scroll-content coordinates stay valid while the timeline supplies the offset.
                 effect.style.left = `${(bounds.left - layerBounds.left) / scaleX}px`;
                 effect.style.top = `${(bounds.top - layerBounds.top) / scaleY + scrollTop}px`;
@@ -128,6 +151,13 @@
         if (typeof MutationObserver === "function") {
             const observer = new MutationObserver(scheduleMaterialUpdate);
             observer.observe(document.documentElement, { attributes: true });
+            // Settling can remove a motion clip without changing the final card dimensions.
+            const disclosureObserver = new MutationObserver(scheduleUpdate);
+            disclosureObserver.observe(scrollport, {
+                attributes: true,
+                subtree: true,
+                attributeFilter: ["data-collapse-motion"],
+            });
         }
         document.fonts?.ready?.then(scheduleUpdate).catch(() => {});
         updateEffects();

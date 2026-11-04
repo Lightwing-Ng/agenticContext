@@ -1,6 +1,6 @@
 """Regression tests for the process-wide pytest runtime boundary.
 
-Code version: v1.2.0-codex.1
+Code version: v1.2.1-codex.0
 """
 
 from __future__ import annotations
@@ -33,7 +33,7 @@ def test_grok_snapshot_resolves_its_default_target_at_call_time(monkeypatch, tmp
     snapshot = grok_downloader.build_grok_initial_snapshot("v-test")
 
     assert snapshot.output_dir == str(target_dir)
-    assert target_dir.is_dir()
+    assert not target_dir.exists()
 
 
 def test_runtime_helpers_preserve_production_defaults_when_unconfigured(monkeypatch, tmp_path) -> None:

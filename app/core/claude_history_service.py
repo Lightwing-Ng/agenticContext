@@ -1,6 +1,6 @@
 """Background service for Claude session history sync.
 
-Code version: v1.2.0-claude.0
+Code version: v1.2.1-codex.0
 """
 
 from __future__ import annotations
@@ -121,8 +121,13 @@ class ClaudeHistoryService(CooperativeCacheWorker):
                     )
                     return
                 if result.incomplete:
+                    discovery_summary = (
+                        "Session discovery did not reach the end of the main Chats list. "
+                        if result.discovery_incomplete else ""
+                    )
                     self._state.finish_error(
                         "Claude rendered-image cache is incomplete. Cached files were preserved; "
+                        f"{discovery_summary}"
                         f"{result.failed_images:,} images and {result.failed_sessions:,} sessions failed. "
                         f"{skip_summary}"
                     )
@@ -159,10 +164,14 @@ class ClaudeHistoryService(CooperativeCacheWorker):
                     f"Claude history sync stopped. Cached {result['messages']:,} messages."
                 )
                 return
-            if result["failed"]:
+            if result["failed"] or result.get("incomplete"):
+                detail = (
+                    "Session discovery did not reach the end of the main Chats list."
+                    if result.get("incomplete") else f"{result['failed']:,} sessions failed."
+                )
                 self._state.finish_error(
                     "Claude history sync is incomplete. Cached history was preserved; "
-                    f"{result['failed']:,} sessions failed."
+                    + detail
                 )
                 return
             completion_message = (

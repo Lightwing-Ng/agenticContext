@@ -1,6 +1,6 @@
 # Cache handoff and operating runbook
 
-Documentation version: `v1.25.1-codex.0`
+Documentation version: `v1.32.1-codex.0`
 
 This is the authoritative handoff document for the second Dock item, `Cache`.
 Read it before changing Cache routes, source switching, Text/Media behavior, local
@@ -24,12 +24,18 @@ Cache is the execution surface. Its canonical source pages are:
 | X | `/cache/x` | Liked-post media | None |
 | Grok Chat | `/cache/grok` | Browser Grok media assets | Grok Chat sessions and messages |
 | Grok Build | `/cache/grok_build` | Local CLI transcripts | Visible user and assistant text, separate from Grok Chat |
-| ChatGPT | `/cache/chatgpt` | ChatGPT images | ChatGPT sessions and messages |
+| ChatGPT Chat | `/cache/chatgpt` | ChatGPT images | ChatGPT sessions and messages |
 | Gemini | `/cache/gemini` | Rendered Gemini images in Safari | Gemini sessions and messages |
 | Claude Chat | `/cache/claude` | Browser chat sessions and messages | Claude Chat sessions and messages |
 | Claude Code | `/cache/claude_code` | Local Desktop or CLI transcripts | User and assistant text, separate from Chat |
-| OpenClaw provider archives | `/cache/chatgpt_openclaw` and each `<provider>_openclaw` source | Preserved local transcripts | Provider-attributed text, separate from browser and CLI histories |
+| Codex | `/cache/codex` | Local app or CLI transcripts | User and assistant text, separate from ChatGPT Chat |
+| Microsoft Copilot | `/cache/copilot/text/safari` | Authenticated rendered chat history | User and assistant messages, separate from every other provider |
 | Zhihu | `/cache/zhihu` | Upvoted answers or one answerer's answers | One rich-text session per answer plus source links |
+| OpenClaw provider archives | `/cache/chatgpt_openclaw` and each `<provider>_openclaw` source | Preserved local transcripts | Provider-attributed text, separate from native browser and CLI histories |
+
+The OpenClaw archive's preservation, attribution, source keys, and uninstall-review
+contract are defined in [OpenClaw migration](OPENCLAW_MIGRATION.md). Archive imports
+do not require the OpenClaw runtime or a browser.
 
 The OpenClaw archive's preservation, attribution, source keys, and uninstall-review
 contract are defined in [OpenClaw migration](OPENCLAW_MIGRATION.md). Archive imports
@@ -42,54 +48,8 @@ separate Agent route; it resolves into the Cache namespace.
 
 `Local resources` owns `/browser`. It is the review and export surface, not the place
 where a source sync is started. Its text source filter accepts `all`, `chatgpt`,
-`claude`, `claude_code`, `gemini`, `grok`, `grok_build`, `wechat`, and `zhihu`.
-
-### Claude Code local import
-
-Select `Claude Code` in the Cache source menu, choose `Local session folder`, and
-press `Read local sessions`. The folder is also saved under Settings > LLM settings.
-This text-only source needs no browser authorization and does not acquire a browser
-lease. A remembered Media selection cannot change its import or status mode.
-
-On macOS, an installed Desktop Code registry makes
-`~/Library/Application Support/Claude` the default. Its `claude-code-sessions`
-metadata maps explicit `cliSessionId` values to matching main transcripts under
-`~/.claude/projects`. Choosing `~/.claude`, its `projects` folder, or one project
-folder instead reads the main transcripts within that scope. The desktop registry
-is not a web Chat export. Missing mapped transcripts and malformed records are
-reported as incomplete; existing cached messages are retained.
-
-The importer stores visible user and assistant text, timestamps, model labels,
-and titles in `local_store/llm/claude_code/history.parquet`. It excludes tool
-payloads, internal reasoning, subagents, and metadata-only messages. Source files
-are never modified. Stable message identities support repeat imports without
-duplicates, and an unchanged import leaves the cache file unchanged.
-
-Local resources labels the legacy `claude` source `Claude Chat` and the new
-`claude_code` source `Claude Code`. The latter supports sessions, search, saved
-prompts, and Markdown export, with no fabricated web conversation link. Code
-does not appear among Media sources.
-
-### Grok Build local import
-
-Select `Grok Build` in the Cache source menu, choose `Local session folder`, and
-press `Read local sessions`. The folder defaults to `GROK_HOME` when configured,
-otherwise `~/.grok`, and is also saved under Settings > LLM settings. A selected
-sessions, workspace, or individual session folder narrows the import scope. The
-source is text-only and acquires no browser lease. Grok Chat retains its browser
-Text and Media routes.
-
-The importer reads visible user and assistant messages from the native local
-session records and uses session metadata for titles, model labels, and times.
-It excludes internal reasoning, tool payloads, system context, and subagent
-sessions. Source files stay read only. The independent typed cache is
-`local_store/llm/grok_build/history.parquet`; repeat imports preserve stable
-message identities, and partial or malformed inputs cannot delete cached history.
-
-Local resources exposes Grok Chat and Grok Build separately for session browsing,
-search, saved prompts, and Markdown export. Local transcripts have no fabricated
-web conversation link. The Dock remembers both `/cache/grok_build` and the local
-`source=grok_build` filter across visits to Agent and Settings.
+`claude`, `claude_code`, `codex`, `copilot`, `gemini`, `grok`, `grok_build`, `wechat`, and
+`zhihu`, plus the preserved OpenClaw provider sources.
 
 ### WeChat text archives
 
@@ -135,27 +95,34 @@ and an isolated application instance.
 
 #### Contact identity and name observations
 
-Each utterance carries `messaging.contact`. The optional private
+Every reviewed utterance also carries `messaging.contact`. The optional private
 `messaging/wechat/contacts.sqlite3` sidecar stores canonical native usernames separately from
-source-account remarks, snapshot-specific nicknames, public aliases, and room display names.
-Exact internal usernames share a contact across devices and source accounts; OpenIM identities
-also require their application realm. A contact represents a platform identity, not proof that
-different accounts belong to one person. Source-account partitions remain independent, and case
-and original identifier bytes are preserved.
+source-account remarks, snapshot-specific nicknames, mutable public aliases, and room display
+names. Exact internal usernames share a contact across devices and source accounts; OpenIM
+identities additionally require their application realm. A contact represents a platform identity,
+not proof that two different accounts belong to one person. Source account partitions remain
+independent. Case and original identifier bytes are preserved.
 
-Only explicit native evidence authorizes a global identity. An export's `WeChat ID` field may
-have ambiguous semantics. Database-local numeric keys require their owning lookup table; MD5
-account directories and chat table names are location hashes. Exporter placeholders remain
-unresolved. Unknown utterances receive separate provisional contacts, retaining original source
-identifiers for review. System identity requires parsed system-message evidence.
+Only explicit native evidence authorizes a global identity. Export fields named `WeChat ID` may
+have ambiguous semantics and must not be promoted to stable sender identities by name or syntax.
+Database-local numeric keys require their owning lookup table; MD5 account directories and chat
+table names are validated location hashes. Known exporter-generated placeholders remain unresolved.
+Unknown utterances have separate provisional contact IDs, with their original source identifiers
+retained for later review. System identity requires parsed system-message evidence.
 
-Per-message corroboration is an overlay. A binding requires matching source, message ID, UTF-8
-body SHA-256, exact timestamp string, and original record ID. It never rewrites the original
-sender, name, timestamp, body, or account. Clock equality alone does not establish a timezone or
-owner, and message times do not establish name-validity dates. Collapsed metadata and Markdown
-exports retain contact references and the original source display name. Missing or invalid
-sidecars leave text browsing available with provisional objects; the paginated observation API
-retains access to the complete name history when the current profile display is capped.
+Per-message corroboration is an overlay, never a rewrite of the original sender, name, timestamp,
+body, or source account. A saved binding is accepted only when its source, message ID, UTF-8 body
+SHA-256, exact timestamp string, and original record ID still match. Cross-source clock equality
+alone does not establish an export timezone or owner. Name observations retain provenance, and
+message times do not become asserted name-validity dates. The existing collapsed source metadata
+shows the contact ID and identity status; Markdown export retains these references and the original
+source display name. Missing or invalid sidecars leave text browsing available with provisional
+objects. Complete historical name observations remain accessible through the paginated repository
+API even when the current page's profile list is capped.
+
+Contact regression coverage lives in `tests/test_wechat_contacts.py`,
+`tests/test_wechat_contact_browser.py`, and `tests/test_wechat_contact_template.py`. All fixtures
+are synthetic; production reconciliation audits and contact databases stay outside Git.
 
 #### Local viewer display names
 
@@ -206,6 +173,217 @@ of messages absent from the inputs. Backup deletion and cloud eviction require t
 retention decision; these helpers perform neither operation. Keep production reconciliation
 receipts, account identifiers, and contact databases outside Git.
 
+### Microsoft Copilot browser history
+
+Choose `Microsoft Copilot` and the already signed-in Safari session, then press
+`Start`. The text-only source also supports the existing Chrome and Edge transports.
+The worker reads the initial catalog from Copilot's `/chat/all` loader and follows
+every `GetConversationPageHistoryList` continuation through the authenticated
+same-origin `/chat` action. An explicitly empty `syncState` proves exhaustion of
+that current catalog. It does not establish coverage of every legacy Copilot or
+Bing history surface. Sidebar links and a stationary viewport do not establish
+catalog exhaustion.
+Each `/chat/conversation/<id>` transcript is read from its rendered messages.
+The configured entry URL's query is preserved throughout navigation and pagination
+because it can affect Microsoft's merged-history eligibility. The worker sends no
+prompt and does not change sign-in.
+Safari participates in the shared Cache queue and owns only its temporary task window.
+
+Complete sessions are atomically persisted to
+`local_store/llm/copilot/history.parquet`. Stable provider message identities preserve
+repeat-import idempotence, and unreadable, empty, interrupted, or shorter captures
+preserve the prior session. Missing provider timestamps remain unknown; local capture
+metadata is not presented as a message date. Catalog and transcript completion are
+persisted separately in `llm/copilot/sync-state.parquet`. Legacy caches without this
+evidence remain unverified after reload. The UI shows `Partial` without a full-history
+percentage until discovery is verified; it shows `Scanning` during discovery.
+After discovery, failed or stopped synchronization remains `Partial` even when
+every session has been attempted. Only a verified successful finish can show 100%.
+Reload and status reconciliation compare the completion manifest with the durable
+session count; missing or inconsistent history cannot retain a completion claim.
+Repeated cursors, stalled pagination, unsupported responses, omitted previously cached
+sessions, and bounded traversal report incomplete collection and preserve the archive.
+Success requires verified current-catalog exhaustion and every discovered transcript
+to be processed without failure. A known page count is not an independently reported
+cross-product account total. Media binaries and non-chat Copilot tasks are outside
+this text source.
+
+Local resources exposes the `Microsoft Copilot` filter, session search, saved prompts,
+original conversation links, and Markdown export using the existing history surface.
+
+#### Live acceptance and unresolved legacy coverage, 21 Oct 2026
+
+Application v1.43.1 is the current acceptance baseline. After the user confirmed that
+the interrupted Safari task window had been closed, its ownership journal was backed
+up. Recovery held the global Safari lock, verified that the recorded owner process
+was dead, and cleared the stale journal. A normal real `Start` then succeeded; the
+former window-ownership failure is resolved.
+
+The authenticated current catalog traversed two pages to an empty `syncState` and
+contained 17 unique sessions. Two sessions were read, exposing four messages, before
+the operator deliberately requested `Stop` to avoid presenting this as a completed
+backup of the user's reported hundreds of sessions. The durable archive remains
+17 sessions and 74 messages, with SHA-256
+`f352eb310dfc8fc0a4edd17b6a2bf0e67e831821f8f0b643940cda00ec83fb6e`.
+This acceptance proves the current catalog and normal worker lifecycle; legacy
+coverage and a real complete transcript run remain unresolved.
+
+The user's Microsoft Privacy Dashboard downloads were preserved byte-for-byte under
+`local_store/recovery/copilot-official-exports-20261021T052937Z`, with hashes and row
+counts in `manifest.json`. `copilot-activity-history.csv` contains 74 data rows and
+16 distinct `Conversation` labels. Those labels are titles, including reused titles,
+and must not be treated as stable session IDs. The Windows-apps export contains zero
+data rows. These exports provide no additional evidence for hundreds of sessions.
+
+The user subsequently located older records in the existing macOS Edge Copilot
+sidebar, rather than the ordinary webpage. Native accessibility inspection identified
+an inner document at `copilot.microsoft.com/chats/<short-id>` and 357 visible
+conversation links under `Our conversations together`. The raw directory was
+preserved at
+`local_store/recovery/edge-copilot-sidebar-20261021T054515Z/visible-history-catalog.json`
+(42,468 bytes; SHA-256
+`7eed63e2de8f6230c5fc638a52fd656568106d33e3cec47ff54bec07f1f51d3f`).
+Its `discovery_complete` value remains `false`: 357 is the observed directory size,
+not a verified full-history total. Entries contain titles, ordinals, and the initial
+accessibility indexes; those indexes are temporary UI references, not provider
+conversation identities. Raising the native Edge window allowed the first entry's
+two-message transcript to load. Its assistant answer was preserved through the
+native `Copy message` control as `recent-assistant-original.md` in the same recovery
+directory (879 characters, 1,577 bytes; SHA-256
+`91810286b6d6d6f73367d04aea1c47ade16ed940fa24c6dadfb7c6e5e876dbbc`).
+Entries 18, 200, and 357 changed the legacy conversation path but exposed only the
+composer after settling, with no transcript or error; their scoped accessibility
+snapshots are retained. This observation does not establish deletion. The directory
+backup preserves titles, not 357 transcripts.
+The legacy source's body extraction, catalog exhaustion, and full available-history
+cache remain unfinished. The 17-session current-web catalog cannot represent this
+separately observed sidebar history.
+
+A bounded, read-only investigation of Edge's ordinary HTTP disk cache recovered
+19 exact native catalog responses from `/c/api/conversations`. The raw gzip and
+decoded JSON, source checks, and SHA-256 manifests are preserved under
+`local_store/recovery/edge-copilot-http-cache-20261021T061142Z`. Their 377 physical
+records contain 357 distinct native IDs; repeated IDs have identical records.
+`merged-legacy-catalog.v1.json` retains original observations. Two current AX titles
+have no exact match in this cached catalog, so no fuzzy identity reconciliation is
+performed. Cached pagination order remains unproven.
+The validated typed directory is also preserved in
+`local_store/llm/copilot/legacy-catalog.parquet` (SHA-256
+`c934dc7297ff2859bdbd16afd4abe5f8da2760df72563833c6c2b8bab073241f`).
+It is separate from message history. Application v1.43.2 retains Partial on sync
+and reload whenever this legacy evidence remains unverified, while still caching
+available current-web messages. Invalid directory evidence cannot permit a full
+completion claim. The message archive hash is unchanged.
+One retained native history response has two messages for entry 1. Eleven other
+HTTP 200 responses have empty results, including exact native IDs for sampled
+entries 18, 200, and 357. Their original bytes are preserved as negative observations,
+not proof of deletion. No additional older message body has been recovered.
+
+Final v1.43.2 verification passed the Copilot modules and web-app regression suite,
+the legacy catalog's final 17 focused checks, Ruff, and scoped whitespace checks.
+The complete gate remains blocked before its test stages by the existing
+`streamlit 1.46.1` requirement `pillow<12` versus installed `pillow 12.3.0`; a fresh
+dependency check reproduced that conflict. Live API and rendered UI readback show
+357 discovered directory entries, 17 cached sessions, 74 cached messages, and Partial.
+The Copilot message archive and all eight other provider history hashes stayed
+unchanged. Final numbered-copy scans retained all 542 protected `local_store`/`logs`
+files and found no candidates outside those boundaries; the shared-docs root had
+none. The temporary localhost clipboard receiver and its agent-created tab were
+closed. The existing Edge sidebar and signed-in official privacy page were preserved.
+
+Microsoft's [Bing release notes from 19 May 2023](https://blogs.bing.com/search/2023/5/Bing-Preview-Release-Notes-Chat-History,-Charts,-Export,-and-more/)
+documented per-conversation export controls and answer export to PDF, text, or Word.
+The current per-conversation menu has no export command. The actual sidebar path
+`Settings > Privacy > Export or delete history` opens Microsoft's privacy dashboard
+at `https://account.microsoft.com/privacy/copilot`. After the user signed in, its
+`Copilot apps > Export all activity history` downloaded a CSV with the same 74 rows,
+96,622 bytes, and SHA-256 as the previously preserved export. Its title values match
+only sidebar entries 1 through 17; entries 10 and 14 reuse one title, so title matching
+does not prove session identity. No title from entries 18 through 357 occurs in the
+CSV. Thus the verified bulk export does not preserve those 340 older transcripts.
+Do not equate the ordinary
+tab's save or print action with preserving sidebar message bodies. Preserve the
+existing signed-in sidebar while inspecting its available controls.
+Microsoft's [migration guidance](https://support.microsoft.com/en-us/microsoft-365-copilot/troubleshoot-content-copilot-app)
+documents possible migration delays and in-app links to older content; it does not
+diagnose this account or establish that its missing records were deleted.
+
+The transport follow-up reuses the first-party context from merged route
+`store` values and successful query `storePatch` values: `eligibility`, `hostContext`,
+and `sessionID`. It aligns `X-Client-Eligibility` and `x-host-context` with the observed
+frontend request, without reading authentication tokens or cookies. Fresh real
+acceptance of that context/header addition is still required.
+
+### Claude Code local import
+
+Select `Claude Code` in the Cache source menu, choose `Local session folder`, and
+press `Read local sessions`. The folder is also saved under Settings > LLM settings.
+This text-only source needs no browser authorization and does not acquire a browser
+lease. A remembered Media selection cannot change its import or status mode.
+
+On macOS, an installed Desktop Code registry makes
+`~/Library/Application Support/Claude` the default. Its `claude-code-sessions`
+metadata maps explicit `cliSessionId` values to matching main transcripts under
+`~/.claude/projects`. Choosing `~/.claude`, its `projects` folder, or one project
+folder instead reads the main transcripts within that scope. The desktop registry
+is not a web Chat export. Missing mapped transcripts and malformed records are
+reported as incomplete; existing cached messages are retained.
+
+The importer stores visible user and assistant text, timestamps, model labels,
+and titles in `local_store/llm/claude_code/history.parquet`. It excludes tool
+payloads, internal reasoning, subagents, and metadata-only messages. Source files
+are never modified. Stable message identities support repeat imports without
+duplicates, and an unchanged import leaves the cache file unchanged.
+
+Local resources labels the legacy `claude` source `Claude Chat` and the new
+`claude_code` source `Claude Code`. The latter supports sessions, search, saved
+prompts, and Markdown export, with no fabricated web conversation link. Code
+does not appear among Media sources.
+
+### Codex local import
+
+Select `Codex` in the Cache source menu and press `Read local sessions`.
+`Local session folder` defaults to `CODEX_HOME` when configured, otherwise
+`~/.codex`, and is also saved under Settings > LLM settings. Choosing the Codex
+home reads its `sessions` and `archived_sessions` transcript trees; a selected
+session tree narrows the scope. The source is text-only and acquires no browser
+lease. ChatGPT Chat retains its existing browser Text and Media routes.
+
+The importer reads explicit user and assistant message records, keeping session
+identity, timestamps, model metadata, and source-file provenance. It excludes
+system and developer instructions, tool payloads, internal reasoning, duplicate
+event notifications, and subagent transcripts. Source files are read only.
+Cached history is cumulative and independently stored in
+`local_store/llm/codex/history.parquet`; repeat imports retain stable message
+identities and leave unchanged cache bytes and modification time intact.
+Malformed transcripts report an incomplete import while retaining prior data.
+
+Local resources supports Codex session browsing, search, saved prompts, and
+Markdown export. Local sessions have no fabricated web conversation links or
+remote refresh action. The cached-page reload remains available. Codex does not
+appear among Media sources.
+
+### Grok Build local import
+
+Select `Grok Build` in the Cache source menu, choose `Local session folder`, and
+press `Read local sessions`. The folder defaults to `GROK_HOME` when configured,
+otherwise `~/.grok`, and is also saved under Settings > LLM settings. A selected
+sessions, workspace, or individual session folder narrows the import scope. The
+source is text-only and acquires no browser lease. Grok Chat retains its browser
+Text and Media routes.
+
+The importer reads visible user and assistant messages from the native local
+session records and uses session metadata for titles, model labels, and times.
+It excludes internal reasoning, tool payloads, system context, and subagent
+sessions. Source files stay read only. The independent typed cache is
+`local_store/llm/grok_build/history.parquet`; repeat imports preserve stable
+message identities, and partial or malformed inputs cannot delete cached history.
+
+Local resources exposes Grok Chat and Grok Build separately for session browsing,
+search, saved prompts, and Markdown export. Local transcripts have no fabricated
+web conversation link. The Dock remembers both `/cache/grok_build` and the local
+`source=grok_build` filter across visits to Agent and Settings.
+
 ## 2. Shared Text/Media contract
 
 The Cache pages for ChatGPT, Grok, Gemini, and Claude render the shared blue sliding control at
@@ -226,7 +404,7 @@ the top of the Cache sidebar:
   independently of Media asset counters. Responses for a previously selected mode
   are discarded after a mode change.
 - The `all` source view is an aggregate view. It must include the ChatGPT, Gemini, Grok Chat, Grok Build,
-  Claude Chat, Claude Code, and Zhihu history files.
+  Claude Chat, Claude Code, Codex, Microsoft Copilot, and Zhihu history files.
 
 The control is shared markup in `app/web/templates/_cache_page.html`, behavior in
 `app/web/static/cache-page.js`, and styling in `app/web/static/style.css`. Changes to
@@ -248,6 +426,32 @@ deletion tombstones. The mode reads files without modifying media, catalogs, or 
 List and Grid return to session covers; filters, pagination, and the Local resources
 Dock preserve the explicit mode.
 
+ChatGPT project Media follows the first-party gallery pagination contract: the
+initial recent-image request uses `limit=25`, and each `after` cursor request uses
+`limit=20`. A later failed or malformed page retains its verified candidates for
+normal image processing. The run remains incomplete with `discovery_complete=False`;
+it never treats that prefix as the complete image index or silently launches a full
+legacy session scan. Optional prompt backfill is deferred until index discovery
+finishes, so a second browser startup cannot obscure a partial run's image progress.
+Existing images are reused by file ID. A later `Start` refreshes
+discovery from the beginning; no pagination cursor or authentication header is persisted.
+
+Safari accepts ChatGPT's observed same-project landing redirect between the bare
+`/g/g-p-<32-hex-id>[-slug]` path and its `/project` path. This exception requires the
+same complete project component and the same canonical HTTPS authority; different
+projects, conversation paths, credentials, ports, and foreign hosts remain outside
+the alias rule. It prevents a ready project landing page from causing a false
+startup timeout during optional prompt backfill.
+
+On 22 Oct 2026, a real Safari Media run under v1.43.4 completed discovery of 1,636
+project sessions and 2,493 image candidates, processed every candidate, and reported
+zero media or task failures. It reported 104 successful file registrations; normal
+visual deduplication left 103 additional catalog entries, for 2,342 cached images
+compared with 2,239 before the run. Every prior catalog entry and its content hash
+was preserved. Prompt backfill honored its bounded time budget and deferred the remaining
+metadata without losing image work. The later v1.43.5 landing-redirect fix has its
+own isolated navigation checks; it does not require another full media download.
+
 ChatGPT Text writes `local_store/llm/chatgpt/history.parquet`, independent of the
 Media project directory. Schema v2 adds nullable `provider_revision` metadata.
 Discovery captures `update_time`; only an equal non-empty persisted revision with
@@ -258,6 +462,21 @@ opening the media catalog. Failed or rate-limited mapping fetches and empty disc
 as incomplete instead of a complete successful synchronization. Existing files in the former
 `local_store/media/llm/chatgpt` location are preserved; no automatic migration occurs.
 After a cooperative stop, unattempted sessions are pending rather than failed.
+
+A recovery can install `local_store/llm/chatgpt/history-preservation.json` with
+`{"version":1,"mode":"preserve-existing"}`. While present, normal Text sync preserves
+all existing fields, appends missing messages, and stores changed bodies under a
+deterministic `:recovered:online:<hash>` key. It also skips replacement of existing
+titles. Invalid or unreadable guard data blocks writes rather than falling back to
+replacement. Keep this guard with the recovered archive; removing it restores the
+ordinary per-conversation replacement behavior. Recovery source/branch provenance and
+raw provider/export mappings remain in the recovery manifest, not in message bodies.
+Completed outbound voice transcripts with both typed voice metadata flags and only
+`audio_transcription` parts directed `out` may be retained despite `end_turn=false`.
+The ordinary hidden/channel/recipient restrictions still apply. Such nodes can be
+earlier stages of one reply; separate node counts do not establish separate turns.
+Official exports lacking these provider fields retain unverified visibility in the
+recovery provenance rather than acquiring a claim of final-response status.
 The failure counter includes only attempted mapping requests that failed or were
 rate-limited; incomplete discovery and deferred work remain incomplete.
 ChatGPT throttling (HTTP 429) outlasts the short in-request backoff, so a history-list
@@ -447,6 +666,7 @@ The current persistent cache layout is:
 | `local_store/llm/grok_build/history.parquet` | Local Grok Build runtime | Typed local Build messages, independently cached |
 | `local_store/llm/claude/history.parquet` | Claude Text runtime | Typed Claude messages |
 | `local_store/llm/claude_code/history.parquet` | Local Claude Code runtime | Typed local Code messages, independently cached |
+| `local_store/llm/codex/history.parquet` | Local Codex runtime | Typed local app and CLI messages, independently cached |
 | `local_store/llm/zhihu/history.parquet` | Zhihu Text runtime | One answer per typed row; rich-text source and source links retained |
 | `local_store/prompt/prompts.parquet` | Prompt manager | Saved prompt content snapshots plus source-message pointers, or a `media-prompt:` content key for a media prompt whose conversation has no cached text |
 | `local_store/.cache_task.lock` | Cache runtimes | Gate a starting task passes and a backup or history repair holds |

@@ -1,0 +1,536 @@
+{
+  "schemaVersion": 1,
+  "verifiedAt": "2026-10-06T16:03:42.458905+00:00",
+  "method": "Curated app/publisher identities from Apple public Search, reverified by stable track ID Lookup. Store metadata does not prove installation.",
+  "documentation": "https://performance-partners.apple.com/search-api",
+  "apps": [
+    {
+      "name": "微信",
+      "aliases": [
+        "WeChat"
+      ],
+      "bundleId": "com.tencent.xin",
+      "trackId": 414478124,
+      "storeName": "微信",
+      "publisher": "WeChat",
+      "country": "cn",
+      "storeUrl": "https://apps.apple.com/cn/app/id414478124",
+      "sourceUrl": "https://itunes.apple.com/lookup?id=414478124%2C333206289%2C387682726%2C414245413%2C1044283059%2C741292507%2C1142110895%2C440948110%2C736536022%2C350962117%2C444934666%2C414603431%2C590338362%2C452186370%2C461703208%2C554499054%2C423084029%2C507161324%2C379395415%2C453691481%2C564818797%2C547166701%2C1484048379%2C930368978%2C1401729613%2C1087897068%2C392899425%2C398453262%2C423514795%2C391965015%2C515651240%2C399608199%2C492180369%2C303191318%2C423525686&country=cn&entity=software",
+      "verifiedAt": "2026-10-06T16:03:38.326034+00:00"
+    },
+    {
+      "name": "支付宝",
+      "aliases": [
+        "Alipay"
+      ],
+      "bundleId": "com.alipay.iphoneclient",
+      "trackId": 333206289,
+      "storeName": "支付宝-你的AI生活伙伴",
+      "publisher": "Alipay (Hangzhou) Technology Co., Ltd.",
+      "country": "cn",
+      "storeUrl": "https://apps.apple.com/cn/app/id333206289",
+      "sourceUrl": "https://itunes.apple.com/lookup?id=414478124%2C333206289%2C387682726%2C414245413%2C1044283059%2C741292507%2C1142110895%2C440948110%2C736536022%2C350962117%2C444934666%2C414603431%2C590338362%2C452186370%2C461703208%2C554499054%2C423084029%2C507161324%2C379395415%2C453691481%2C564818797%2C547166701%2C1484048379%2C930368978%2C1401729613%2C1087897068%2C392899425%2C398453262%2C423514795%2C391965015%2C515651240%2C399608199%2C492180369%2C303191318%2C423525686&country=cn&entity=software",
+      "verifiedAt": "2026-10-06T16:03:38.326049+00:00"
+    },
+    {
+      "name": "淘宝",
+      "aliases": [
+        "Taobao"
+      ],
+      "bundleId": "com.taobao.taobao4iphone",
+      "trackId": 387682726,
+      "storeName": "淘宝-万能的淘宝！",
+      "publisher": "浙江淘宝网络有限公司",
+      "country": "cn",
+      "storeUrl": "https://apps.apple.com/cn/app/id387682726",
+      "sourceUrl": "https://itunes.apple.com/lookup?id=414478124%2C333206289%2C387682726%2C414245413%2C1044283059%2C741292507%2C1142110895%2C440948110%2C736536022%2C350962117%2C444934666%2C414603431%2C590338362%2C452186370%2C461703208%2C554499054%2C423084029%2C507161324%2C379395415%2C453691481%2C564818797%2C547166701%2C1484048379%2C930368978%2C1401729613%2C1087897068%2C392899425%2C398453262%2C423514795%2C391965015%2C515651240%2C399608199%2C492180369%2C303191318%2C423525686&country=cn&entity=software",
+      "verifiedAt": "2026-10-06T16:03:38.326053+00:00"
+    },
+    {
+      "name": "京东",
+      "aliases": [
+        "JD",
+        "Jingdong"
+      ],
+      "bundleId": "com.360buy.jdmobile",
+      "trackId": 414245413,
+      "storeName": "京东-又好又便宜",
+      "publisher": "Beijing Jingdong Century Trading Co., Ltd.",
+      "country": "cn",
+      "storeUrl": "https://apps.apple.com/cn/app/id414245413",
+      "sourceUrl": "https://itunes.apple.com/lookup?id=414478124%2C333206289%2C387682726%2C414245413%2C1044283059%2C741292507%2C1142110895%2C440948110%2C736536022%2C350962117%2C444934666%2C414603431%2C590338362%2C452186370%2C461703208%2C554499054%2C423084029%2C507161324%2C379395415%2C453691481%2C564818797%2C547166701%2C1484048379%2C930368978%2C1401729613%2C1087897068%2C392899425%2C398453262%2C423514795%2C391965015%2C515651240%2C399608199%2C492180369%2C303191318%2C423525686&country=cn&entity=software",
+      "verifiedAt": "2026-10-06T16:03:38.326057+00:00"
+    },
+    {
+      "name": "拼多多",
+      "aliases": [
+        "Pinduoduo"
+      ],
+      "bundleId": "com.xunmeng.pinduoduo",
+      "trackId": 1044283059,
+      "storeName": "拼多多 - 多多买菜，百亿补贴",
+      "publisher": "上海寻梦信息技术有限公司",
+      "country": "cn",
+      "storeUrl": "https://apps.apple.com/cn/app/id1044283059",
+      "sourceUrl": "https://itunes.apple.com/lookup?id=414478124%2C333206289%2C387682726%2C414245413%2C1044283059%2C741292507%2C1142110895%2C440948110%2C736536022%2C350962117%2C444934666%2C414603431%2C590338362%2C452186370%2C461703208%2C554499054%2C423084029%2C507161324%2C379395415%2C453691481%2C564818797%2C547166701%2C1484048379%2C930368978%2C1401729613%2C1087897068%2C392899425%2C398453262%2C423514795%2C391965015%2C515651240%2C399608199%2C492180369%2C303191318%2C423525686&country=cn&entity=software",
+      "verifiedAt": "2026-10-06T16:03:38.326061+00:00"
+    },
+    {
+      "name": "小红书",
+      "aliases": [
+        "RED",
+        "Xiaohongshu"
+      ],
+      "bundleId": "com.xingin.discover",
+      "trackId": 741292507,
+      "storeName": "小红书 - 你的生活兴趣社区",
+      "publisher": "Xingin",
+      "country": "cn",
+      "storeUrl": "https://apps.apple.com/cn/app/id741292507",
+      "sourceUrl": "https://itunes.apple.com/lookup?id=414478124%2C333206289%2C387682726%2C414245413%2C1044283059%2C741292507%2C1142110895%2C440948110%2C736536022%2C350962117%2C444934666%2C414603431%2C590338362%2C452186370%2C461703208%2C554499054%2C423084029%2C507161324%2C379395415%2C453691481%2C564818797%2C547166701%2C1484048379%2C930368978%2C1401729613%2C1087897068%2C392899425%2C398453262%2C423514795%2C391965015%2C515651240%2C399608199%2C492180369%2C303191318%2C423525686&country=cn&entity=software",
+      "verifiedAt": "2026-10-06T16:03:38.326064+00:00"
+    },
+    {
+      "name": "抖音",
+      "aliases": [
+        "Douyin"
+      ],
+      "bundleId": "com.ss.iphone.ugc.Aweme",
+      "trackId": 1142110895,
+      "storeName": "抖音",
+      "publisher": "Beijing Douyin Technology Co., Ltd.",
+      "country": "cn",
+      "storeUrl": "https://apps.apple.com/cn/app/id1142110895",
+      "sourceUrl": "https://itunes.apple.com/lookup?id=414478124%2C333206289%2C387682726%2C414245413%2C1044283059%2C741292507%2C1142110895%2C440948110%2C736536022%2C350962117%2C444934666%2C414603431%2C590338362%2C452186370%2C461703208%2C554499054%2C423084029%2C507161324%2C379395415%2C453691481%2C564818797%2C547166701%2C1484048379%2C930368978%2C1401729613%2C1087897068%2C392899425%2C398453262%2C423514795%2C391965015%2C515651240%2C399608199%2C492180369%2C303191318%2C423525686&country=cn&entity=software",
+      "verifiedAt": "2026-10-06T16:03:38.326067+00:00"
+    },
+    {
+      "name": "快手",
+      "aliases": [
+        "Kuaishou"
+      ],
+      "bundleId": "com.jiangjia.gif",
+      "trackId": 440948110,
+      "storeName": "快手",
+      "publisher": "Beijing Kwai Technology Co., Ltd.",
+      "country": "cn",
+      "storeUrl": "https://apps.apple.com/cn/app/id440948110",
+      "sourceUrl": "https://itunes.apple.com/lookup?id=414478124%2C333206289%2C387682726%2C414245413%2C1044283059%2C741292507%2C1142110895%2C440948110%2C736536022%2C350962117%2C444934666%2C414603431%2C590338362%2C452186370%2C461703208%2C554499054%2C423084029%2C507161324%2C379395415%2C453691481%2C564818797%2C547166701%2C1484048379%2C930368978%2C1401729613%2C1087897068%2C392899425%2C398453262%2C423514795%2C391965015%2C515651240%2C399608199%2C492180369%2C303191318%2C423525686&country=cn&entity=software",
+      "verifiedAt": "2026-10-06T16:03:38.326071+00:00"
+    },
+    {
+      "name": "哔哩哔哩",
+      "aliases": [
+        "bilibili",
+        "B站"
+      ],
+      "bundleId": "tv.danmaku.bilianime",
+      "trackId": 736536022,
+      "storeName": "哔哩哔哩-弹幕番剧直播高清视频",
+      "publisher": "bilibili",
+      "country": "cn",
+      "storeUrl": "https://apps.apple.com/cn/app/id736536022",
+      "sourceUrl": "https://itunes.apple.com/lookup?id=414478124%2C333206289%2C387682726%2C414245413%2C1044283059%2C741292507%2C1142110895%2C440948110%2C736536022%2C350962117%2C444934666%2C414603431%2C590338362%2C452186370%2C461703208%2C554499054%2C423084029%2C507161324%2C379395415%2C453691481%2C564818797%2C547166701%2C1484048379%2C930368978%2C1401729613%2C1087897068%2C392899425%2C398453262%2C423514795%2C391965015%2C515651240%2C399608199%2C492180369%2C303191318%2C423525686&country=cn&entity=software",
+      "verifiedAt": "2026-10-06T16:03:38.326074+00:00"
+    },
+    {
+      "name": "微博",
+      "aliases": [
+        "Weibo"
+      ],
+      "bundleId": "com.sina.weibo",
+      "trackId": 350962117,
+      "storeName": "微博",
+      "publisher": "SINA Corporation",
+      "country": "cn",
+      "storeUrl": "https://apps.apple.com/cn/app/id350962117",
+      "sourceUrl": "https://itunes.apple.com/lookup?id=414478124%2C333206289%2C387682726%2C414245413%2C1044283059%2C741292507%2C1142110895%2C440948110%2C736536022%2C350962117%2C444934666%2C414603431%2C590338362%2C452186370%2C461703208%2C554499054%2C423084029%2C507161324%2C379395415%2C453691481%2C564818797%2C547166701%2C1484048379%2C930368978%2C1401729613%2C1087897068%2C392899425%2C398453262%2C423514795%2C391965015%2C515651240%2C399608199%2C492180369%2C303191318%2C423525686&country=cn&entity=software",
+      "verifiedAt": "2026-10-06T16:03:38.326077+00:00"
+    },
+    {
+      "name": "QQ",
+      "aliases": [
+        "腾讯QQ"
+      ],
+      "bundleId": "com.tencent.mqq",
+      "trackId": 444934666,
+      "storeName": "QQ",
+      "publisher": "Tencent Technology (Shenzhen) Company Limited",
+      "country": "cn",
+      "storeUrl": "https://apps.apple.com/cn/app/id444934666",
+      "sourceUrl": "https://itunes.apple.com/lookup?id=414478124%2C333206289%2C387682726%2C414245413%2C1044283059%2C741292507%2C1142110895%2C440948110%2C736536022%2C350962117%2C444934666%2C414603431%2C590338362%2C452186370%2C461703208%2C554499054%2C423084029%2C507161324%2C379395415%2C453691481%2C564818797%2C547166701%2C1484048379%2C930368978%2C1401729613%2C1087897068%2C392899425%2C398453262%2C423514795%2C391965015%2C515651240%2C399608199%2C492180369%2C303191318%2C423525686&country=cn&entity=software",
+      "verifiedAt": "2026-10-06T16:03:38.326081+00:00"
+    },
+    {
+      "name": "QQ音乐",
+      "aliases": [
+        "QQ Music"
+      ],
+      "bundleId": "com.tencent.QQMusic",
+      "trackId": 414603431,
+      "storeName": "QQ音乐 - 听我想听",
+      "publisher": "Tencent Technology (Shenzhen) Company Limited",
+      "country": "cn",
+      "storeUrl": "https://apps.apple.com/cn/app/id414603431",
+      "sourceUrl": "https://itunes.apple.com/lookup?id=414478124%2C333206289%2C387682726%2C414245413%2C1044283059%2C741292507%2C1142110895%2C440948110%2C736536022%2C350962117%2C444934666%2C414603431%2C590338362%2C452186370%2C461703208%2C554499054%2C423084029%2C507161324%2C379395415%2C453691481%2C564818797%2C547166701%2C1484048379%2C930368978%2C1401729613%2C1087897068%2C392899425%2C398453262%2C423514795%2C391965015%2C515651240%2C399608199%2C492180369%2C303191318%2C423525686&country=cn&entity=software",
+      "verifiedAt": "2026-10-06T16:03:38.326084+00:00"
+    },
+    {
+      "name": "网易云音乐",
+      "aliases": [
+        "NetEase Cloud Music"
+      ],
+      "bundleId": "com.netease.cloudmusic",
+      "trackId": 590338362,
+      "storeName": "网易云音乐-数亿音乐畅听",
+      "publisher": "杭州网易云音乐科技有限公司",
+      "country": "cn",
+      "storeUrl": "https://apps.apple.com/cn/app/id590338362",
+      "sourceUrl": "https://itunes.apple.com/lookup?id=414478124%2C333206289%2C387682726%2C414245413%2C1044283059%2C741292507%2C1142110895%2C440948110%2C736536022%2C350962117%2C444934666%2C414603431%2C590338362%2C452186370%2C461703208%2C554499054%2C423084029%2C507161324%2C379395415%2C453691481%2C564818797%2C547166701%2C1484048379%2C930368978%2C1401729613%2C1087897068%2C392899425%2C398453262%2C423514795%2C391965015%2C515651240%2C399608199%2C492180369%2C303191318%2C423525686&country=cn&entity=software",
+      "verifiedAt": "2026-10-06T16:03:38.326087+00:00"
+    },
+    {
+      "name": "百度地图",
+      "aliases": [
+        "Baidu Maps"
+      ],
+      "bundleId": "com.baidu.map",
+      "trackId": 452186370,
+      "storeName": "百度地图-想出门，先问百度地图",
+      "publisher": "Beijing Baidu Netcom Science & Technology Co.,Ltd",
+      "country": "cn",
+      "storeUrl": "https://apps.apple.com/cn/app/id452186370",
+      "sourceUrl": "https://itunes.apple.com/lookup?id=414478124%2C333206289%2C387682726%2C414245413%2C1044283059%2C741292507%2C1142110895%2C440948110%2C736536022%2C350962117%2C444934666%2C414603431%2C590338362%2C452186370%2C461703208%2C554499054%2C423084029%2C507161324%2C379395415%2C453691481%2C564818797%2C547166701%2C1484048379%2C930368978%2C1401729613%2C1087897068%2C392899425%2C398453262%2C423514795%2C391965015%2C515651240%2C399608199%2C492180369%2C303191318%2C423525686&country=cn&entity=software",
+      "verifiedAt": "2026-10-06T16:03:38.326090+00:00"
+    },
+    {
+      "name": "高德地图",
+      "aliases": [
+        "Amap",
+        "AutoNavi"
+      ],
+      "bundleId": "com.autonavi.amap",
+      "trackId": 461703208,
+      "storeName": "高德地图-高德打车,导航公交地铁出行",
+      "publisher": "AutoNavi Information Technology Co. Ltd.",
+      "country": "cn",
+      "storeUrl": "https://apps.apple.com/cn/app/id461703208",
+      "sourceUrl": "https://itunes.apple.com/lookup?id=414478124%2C333206289%2C387682726%2C414245413%2C1044283059%2C741292507%2C1142110895%2C440948110%2C736536022%2C350962117%2C444934666%2C414603431%2C590338362%2C452186370%2C461703208%2C554499054%2C423084029%2C507161324%2C379395415%2C453691481%2C564818797%2C547166701%2C1484048379%2C930368978%2C1401729613%2C1087897068%2C392899425%2C398453262%2C423514795%2C391965015%2C515651240%2C399608199%2C492180369%2C303191318%2C423525686&country=cn&entity=software",
+      "verifiedAt": "2026-10-06T16:03:38.326093+00:00"
+    },
+    {
+      "name": "滴滴出行",
+      "aliases": [
+        "滴滴",
+        "DiDi"
+      ],
+      "bundleId": "com.xiaojukeji.didi",
+      "trackId": 554499054,
+      "storeName": "滴滴-打车骑车顺风车火车票租车代驾送货",
+      "publisher": "滴滴出行(北京)网络平台技术有限公司",
+      "country": "cn",
+      "storeUrl": "https://apps.apple.com/cn/app/id554499054",
+      "sourceUrl": "https://itunes.apple.com/lookup?id=414478124%2C333206289%2C387682726%2C414245413%2C1044283059%2C741292507%2C1142110895%2C440948110%2C736536022%2C350962117%2C444934666%2C414603431%2C590338362%2C452186370%2C461703208%2C554499054%2C423084029%2C507161324%2C379395415%2C453691481%2C564818797%2C547166701%2C1484048379%2C930368978%2C1401729613%2C1087897068%2C392899425%2C398453262%2C423514795%2C391965015%2C515651240%2C399608199%2C492180369%2C303191318%2C423525686&country=cn&entity=software",
+      "verifiedAt": "2026-10-06T16:03:38.326097+00:00"
+    },
+    {
+      "name": "美团",
+      "aliases": [
+        "Meituan"
+      ],
+      "bundleId": "com.meituan.imeituan",
+      "trackId": 423084029,
+      "storeName": "美团-问美团，都安排",
+      "publisher": "美团",
+      "country": "cn",
+      "storeUrl": "https://apps.apple.com/cn/app/id423084029",
+      "sourceUrl": "https://itunes.apple.com/lookup?id=414478124%2C333206289%2C387682726%2C414245413%2C1044283059%2C741292507%2C1142110895%2C440948110%2C736536022%2C350962117%2C444934666%2C414603431%2C590338362%2C452186370%2C461703208%2C554499054%2C423084029%2C507161324%2C379395415%2C453691481%2C564818797%2C547166701%2C1484048379%2C930368978%2C1401729613%2C1087897068%2C392899425%2C398453262%2C423514795%2C391965015%2C515651240%2C399608199%2C492180369%2C303191318%2C423525686&country=cn&entity=software",
+      "verifiedAt": "2026-10-06T16:03:38.326100+00:00"
+    },
+    {
+      "name": "饿了么",
+      "aliases": [
+        "淘宝闪购",
+        "Ele.me"
+      ],
+      "bundleId": "me.ele.ios.eleme",
+      "trackId": 507161324,
+      "storeName": "淘宝闪购-点外卖更优惠",
+      "publisher": "Shanghai Rajax Information Technology Co., Ltd.",
+      "country": "cn",
+      "storeUrl": "https://apps.apple.com/cn/app/id507161324",
+      "sourceUrl": "https://itunes.apple.com/lookup?id=414478124%2C333206289%2C387682726%2C414245413%2C1044283059%2C741292507%2C1142110895%2C440948110%2C736536022%2C350962117%2C444934666%2C414603431%2C590338362%2C452186370%2C461703208%2C554499054%2C423084029%2C507161324%2C379395415%2C453691481%2C564818797%2C547166701%2C1484048379%2C930368978%2C1401729613%2C1087897068%2C392899425%2C398453262%2C423514795%2C391965015%2C515651240%2C399608199%2C492180369%2C303191318%2C423525686&country=cn&entity=software",
+      "verifiedAt": "2026-10-06T16:03:38.326103+00:00"
+    },
+    {
+      "name": "携程旅行",
+      "aliases": [
+        "携程",
+        "Ctrip"
+      ],
+      "bundleId": "ctrip.com",
+      "trackId": 379395415,
+      "storeName": "携程旅行-订酒店机票火车票",
+      "publisher": "Shanghai Ctrip Commerce Co.,Ltd",
+      "country": "cn",
+      "storeUrl": "https://apps.apple.com/cn/app/id379395415",
+      "sourceUrl": "https://itunes.apple.com/lookup?id=414478124%2C333206289%2C387682726%2C414245413%2C1044283059%2C741292507%2C1142110895%2C440948110%2C736536022%2C350962117%2C444934666%2C414603431%2C590338362%2C452186370%2C461703208%2C554499054%2C423084029%2C507161324%2C379395415%2C453691481%2C564818797%2C547166701%2C1484048379%2C930368978%2C1401729613%2C1087897068%2C392899425%2C398453262%2C423514795%2C391965015%2C515651240%2C399608199%2C492180369%2C303191318%2C423525686&country=cn&entity=software",
+      "verifiedAt": "2026-10-06T16:03:38.326107+00:00"
+    },
+    {
+      "name": "飞猪",
+      "aliases": [
+        "飞猪旅行",
+        "Fliggy"
+      ],
+      "bundleId": "com.taobao.travel",
+      "trackId": 453691481,
+      "storeName": "飞猪旅行-机票酒店火车票门票轻松预订",
+      "publisher": "Hangzhou Taomei Aviation Service Co., Ltd.",
+      "country": "cn",
+      "storeUrl": "https://apps.apple.com/cn/app/id453691481",
+      "sourceUrl": "https://itunes.apple.com/lookup?id=414478124%2C333206289%2C387682726%2C414245413%2C1044283059%2C741292507%2C1142110895%2C440948110%2C736536022%2C350962117%2C444934666%2C414603431%2C590338362%2C452186370%2C461703208%2C554499054%2C423084029%2C507161324%2C379395415%2C453691481%2C564818797%2C547166701%2C1484048379%2C930368978%2C1401729613%2C1087897068%2C392899425%2C398453262%2C423514795%2C391965015%2C515651240%2C399608199%2C492180369%2C303191318%2C423525686&country=cn&entity=software",
+      "verifiedAt": "2026-10-06T16:03:38.326110+00:00"
+    },
+    {
+      "name": "铁路12306",
+      "aliases": [
+        "12306"
+      ],
+      "bundleId": "cn.12306.rails12306",
+      "trackId": 564818797,
+      "storeName": "铁路12306",
+      "publisher": "中国铁道科学研究院集团有限公司",
+      "country": "cn",
+      "storeUrl": "https://apps.apple.com/cn/app/id564818797",
+      "sourceUrl": "https://itunes.apple.com/lookup?id=414478124%2C333206289%2C387682726%2C414245413%2C1044283059%2C741292507%2C1142110895%2C440948110%2C736536022%2C350962117%2C444934666%2C414603431%2C590338362%2C452186370%2C461703208%2C554499054%2C423084029%2C507161324%2C379395415%2C453691481%2C564818797%2C547166701%2C1484048379%2C930368978%2C1401729613%2C1087897068%2C392899425%2C398453262%2C423514795%2C391965015%2C515651240%2C399608199%2C492180369%2C303191318%2C423525686&country=cn&entity=software",
+      "verifiedAt": "2026-10-06T16:03:38.326113+00:00"
+    },
+    {
+      "name": "百度网盘",
+      "aliases": [
+        "Baidu Netdisk"
+      ],
+      "bundleId": "com.baidu.netdisk",
+      "trackId": 547166701,
+      "storeName": "百度网盘",
+      "publisher": "Beijing Duyou Science and Technology Co.,Ltd.",
+      "country": "cn",
+      "storeUrl": "https://apps.apple.com/cn/app/id547166701",
+      "sourceUrl": "https://itunes.apple.com/lookup?id=414478124%2C333206289%2C387682726%2C414245413%2C1044283059%2C741292507%2C1142110895%2C440948110%2C736536022%2C350962117%2C444934666%2C414603431%2C590338362%2C452186370%2C461703208%2C554499054%2C423084029%2C507161324%2C379395415%2C453691481%2C564818797%2C547166701%2C1484048379%2C930368978%2C1401729613%2C1087897068%2C392899425%2C398453262%2C423514795%2C391965015%2C515651240%2C399608199%2C492180369%2C303191318%2C423525686&country=cn&entity=software",
+      "verifiedAt": "2026-10-06T16:03:38.326116+00:00"
+    },
+    {
+      "name": "腾讯会议",
+      "aliases": [
+        "Tencent Meeting"
+      ],
+      "bundleId": "com.tencent.meeting",
+      "trackId": 1484048379,
+      "storeName": "腾讯会议-多人实时视频会议软件",
+      "publisher": "Tencent Technology (Shanghai) Company Limited",
+      "country": "cn",
+      "storeUrl": "https://apps.apple.com/cn/app/id1484048379",
+      "sourceUrl": "https://itunes.apple.com/lookup?id=414478124%2C333206289%2C387682726%2C414245413%2C1044283059%2C741292507%2C1142110895%2C440948110%2C736536022%2C350962117%2C444934666%2C414603431%2C590338362%2C452186370%2C461703208%2C554499054%2C423084029%2C507161324%2C379395415%2C453691481%2C564818797%2C547166701%2C1484048379%2C930368978%2C1401729613%2C1087897068%2C392899425%2C398453262%2C423514795%2C391965015%2C515651240%2C399608199%2C492180369%2C303191318%2C423525686&country=cn&entity=software",
+      "verifiedAt": "2026-10-06T16:03:38.326120+00:00"
+    },
+    {
+      "name": "钉钉",
+      "aliases": [
+        "DingTalk"
+      ],
+      "bundleId": "com.laiwang.DingTalk",
+      "trackId": 930368978,
+      "storeName": "钉钉",
+      "publisher": "DingTalk Technology Co., Ltd.",
+      "country": "cn",
+      "storeUrl": "https://apps.apple.com/cn/app/id930368978",
+      "sourceUrl": "https://itunes.apple.com/lookup?id=414478124%2C333206289%2C387682726%2C414245413%2C1044283059%2C741292507%2C1142110895%2C440948110%2C736536022%2C350962117%2C444934666%2C414603431%2C590338362%2C452186370%2C461703208%2C554499054%2C423084029%2C507161324%2C379395415%2C453691481%2C564818797%2C547166701%2C1484048379%2C930368978%2C1401729613%2C1087897068%2C392899425%2C398453262%2C423514795%2C391965015%2C515651240%2C399608199%2C492180369%2C303191318%2C423525686&country=cn&entity=software",
+      "verifiedAt": "2026-10-06T16:03:38.326123+00:00"
+    },
+    {
+      "name": "飞书",
+      "aliases": [
+        "Feishu"
+      ],
+      "bundleId": "com.bytedance.ee.lark",
+      "trackId": 1401729613,
+      "storeName": "飞书 - 字节跳动旗下 AI 工作平台",
+      "publisher": "Beijing Feishu Technology Co., Ltd.",
+      "country": "cn",
+      "storeUrl": "https://apps.apple.com/cn/app/id1401729613",
+      "sourceUrl": "https://itunes.apple.com/lookup?id=414478124%2C333206289%2C387682726%2C414245413%2C1044283059%2C741292507%2C1142110895%2C440948110%2C736536022%2C350962117%2C444934666%2C414603431%2C590338362%2C452186370%2C461703208%2C554499054%2C423084029%2C507161324%2C379395415%2C453691481%2C564818797%2C547166701%2C1484048379%2C930368978%2C1401729613%2C1087897068%2C392899425%2C398453262%2C423514795%2C391965015%2C515651240%2C399608199%2C492180369%2C303191318%2C423525686&country=cn&entity=software",
+      "verifiedAt": "2026-10-06T16:03:38.326126+00:00"
+    },
+    {
+      "name": "企业微信",
+      "aliases": [
+        "WeCom"
+      ],
+      "bundleId": "com.tencent.ww",
+      "trackId": 1087897068,
+      "storeName": "企业微信",
+      "publisher": "Tencent Technology (Shenzhen) Company Limited",
+      "country": "cn",
+      "storeUrl": "https://apps.apple.com/cn/app/id1087897068",
+      "sourceUrl": "https://itunes.apple.com/lookup?id=414478124%2C333206289%2C387682726%2C414245413%2C1044283059%2C741292507%2C1142110895%2C440948110%2C736536022%2C350962117%2C444934666%2C414603431%2C590338362%2C452186370%2C461703208%2C554499054%2C423084029%2C507161324%2C379395415%2C453691481%2C564818797%2C547166701%2C1484048379%2C930368978%2C1401729613%2C1087897068%2C392899425%2C398453262%2C423514795%2C391965015%2C515651240%2C399608199%2C492180369%2C303191318%2C423525686&country=cn&entity=software",
+      "verifiedAt": "2026-10-06T16:03:38.326132+00:00"
+    },
+    {
+      "name": "招商银行",
+      "aliases": [
+        "招行",
+        "CMB",
+        "China Merchants Bank"
+      ],
+      "bundleId": "com.cmbchina.MPBBank",
+      "trackId": 392899425,
+      "storeName": "招商银行",
+      "publisher": "招商银行",
+      "country": "cn",
+      "storeUrl": "https://apps.apple.com/cn/app/id392899425",
+      "sourceUrl": "https://itunes.apple.com/lookup?id=414478124%2C333206289%2C387682726%2C414245413%2C1044283059%2C741292507%2C1142110895%2C440948110%2C736536022%2C350962117%2C444934666%2C414603431%2C590338362%2C452186370%2C461703208%2C554499054%2C423084029%2C507161324%2C379395415%2C453691481%2C564818797%2C547166701%2C1484048379%2C930368978%2C1401729613%2C1087897068%2C392899425%2C398453262%2C423514795%2C391965015%2C515651240%2C399608199%2C492180369%2C303191318%2C423525686&country=cn&entity=software",
+      "verifiedAt": "2026-10-06T16:03:38.326135+00:00"
+    },
+    {
+      "name": "掌上生活",
+      "aliases": [
+        "招商银行信用卡",
+        "CMB Life"
+      ],
+      "bundleId": "com.cmbchina.cmblife",
+      "trackId": 398453262,
+      "storeName": "掌上生活-招商银行信用卡",
+      "publisher": "招商银行",
+      "country": "cn",
+      "storeUrl": "https://apps.apple.com/cn/app/id398453262",
+      "sourceUrl": "https://itunes.apple.com/lookup?id=414478124%2C333206289%2C387682726%2C414245413%2C1044283059%2C741292507%2C1142110895%2C440948110%2C736536022%2C350962117%2C444934666%2C414603431%2C590338362%2C452186370%2C461703208%2C554499054%2C423084029%2C507161324%2C379395415%2C453691481%2C564818797%2C547166701%2C1484048379%2C930368978%2C1401729613%2C1087897068%2C392899425%2C398453262%2C423514795%2C391965015%2C515651240%2C399608199%2C492180369%2C303191318%2C423525686&country=cn&entity=software",
+      "verifiedAt": "2026-10-06T16:03:38.326138+00:00"
+    },
+    {
+      "name": "中国工商银行",
+      "aliases": [
+        "工行",
+        "工商银行",
+        "ICBC"
+      ],
+      "bundleId": "com.icbc.iphoneclient",
+      "trackId": 423514795,
+      "storeName": "中国工商银行",
+      "publisher": "Industrial and Commercial Bank of China",
+      "country": "cn",
+      "storeUrl": "https://apps.apple.com/cn/app/id423514795",
+      "sourceUrl": "https://itunes.apple.com/lookup?id=414478124%2C333206289%2C387682726%2C414245413%2C1044283059%2C741292507%2C1142110895%2C440948110%2C736536022%2C350962117%2C444934666%2C414603431%2C590338362%2C452186370%2C461703208%2C554499054%2C423084029%2C507161324%2C379395415%2C453691481%2C564818797%2C547166701%2C1484048379%2C930368978%2C1401729613%2C1087897068%2C392899425%2C398453262%2C423514795%2C391965015%2C515651240%2C399608199%2C492180369%2C303191318%2C423525686&country=cn&entity=software",
+      "verifiedAt": "2026-10-06T16:03:38.326141+00:00"
+    },
+    {
+      "name": "中国建设银行",
+      "aliases": [
+        "建行",
+        "建设银行",
+        "CCB"
+      ],
+      "bundleId": "com.ccb.ccbDemo",
+      "trackId": 391965015,
+      "storeName": "中国建设银行",
+      "publisher": "中国建设银行",
+      "country": "cn",
+      "storeUrl": "https://apps.apple.com/cn/app/id391965015",
+      "sourceUrl": "https://itunes.apple.com/lookup?id=414478124%2C333206289%2C387682726%2C414245413%2C1044283059%2C741292507%2C1142110895%2C440948110%2C736536022%2C350962117%2C444934666%2C414603431%2C590338362%2C452186370%2C461703208%2C554499054%2C423084029%2C507161324%2C379395415%2C453691481%2C564818797%2C547166701%2C1484048379%2C930368978%2C1401729613%2C1087897068%2C392899425%2C398453262%2C423514795%2C391965015%2C515651240%2C399608199%2C492180369%2C303191318%2C423525686&country=cn&entity=software",
+      "verifiedAt": "2026-10-06T16:03:38.326144+00:00"
+    },
+    {
+      "name": "中国农业银行",
+      "aliases": [
+        "农行",
+        "农业银行",
+        "ABC"
+      ],
+      "bundleId": "com.bankabc.iphonerelease",
+      "trackId": 515651240,
+      "storeName": "中国农业银行",
+      "publisher": "中国农业银行",
+      "country": "cn",
+      "storeUrl": "https://apps.apple.com/cn/app/id515651240",
+      "sourceUrl": "https://itunes.apple.com/lookup?id=414478124%2C333206289%2C387682726%2C414245413%2C1044283059%2C741292507%2C1142110895%2C440948110%2C736536022%2C350962117%2C444934666%2C414603431%2C590338362%2C452186370%2C461703208%2C554499054%2C423084029%2C507161324%2C379395415%2C453691481%2C564818797%2C547166701%2C1484048379%2C930368978%2C1401729613%2C1087897068%2C392899425%2C398453262%2C423514795%2C391965015%2C515651240%2C399608199%2C492180369%2C303191318%2C423525686&country=cn&entity=software",
+      "verifiedAt": "2026-10-06T16:03:38.326147+00:00"
+    },
+    {
+      "name": "中国银行",
+      "aliases": [
+        "中行",
+        "Bank of China",
+        "BOC"
+      ],
+      "bundleId": "com.boc.BOCMBCI",
+      "trackId": 399608199,
+      "storeName": "中国银行",
+      "publisher": "中国银行股份有限公司",
+      "country": "cn",
+      "storeUrl": "https://apps.apple.com/cn/app/id399608199",
+      "sourceUrl": "https://itunes.apple.com/lookup?id=414478124%2C333206289%2C387682726%2C414245413%2C1044283059%2C741292507%2C1142110895%2C440948110%2C736536022%2C350962117%2C444934666%2C414603431%2C590338362%2C452186370%2C461703208%2C554499054%2C423084029%2C507161324%2C379395415%2C453691481%2C564818797%2C547166701%2C1484048379%2C930368978%2C1401729613%2C1087897068%2C392899425%2C398453262%2C423514795%2C391965015%2C515651240%2C399608199%2C492180369%2C303191318%2C423525686&country=cn&entity=software",
+      "verifiedAt": "2026-10-06T16:03:38.326150+00:00"
+    },
+    {
+      "name": "雪球",
+      "aliases": [
+        "Xueqiu",
+        "Snowball Finance"
+      ],
+      "bundleId": "com.xueqiu",
+      "trackId": 492180369,
+      "storeName": "雪球 - 基金股票私募交流交易平台",
+      "publisher": "Snowball Finance Inc.",
+      "country": "cn",
+      "storeUrl": "https://apps.apple.com/cn/app/id492180369",
+      "sourceUrl": "https://itunes.apple.com/lookup?id=414478124%2C333206289%2C387682726%2C414245413%2C1044283059%2C741292507%2C1142110895%2C440948110%2C736536022%2C350962117%2C444934666%2C414603431%2C590338362%2C452186370%2C461703208%2C554499054%2C423084029%2C507161324%2C379395415%2C453691481%2C564818797%2C547166701%2C1484048379%2C930368978%2C1401729613%2C1087897068%2C392899425%2C398453262%2C423514795%2C391965015%2C515651240%2C399608199%2C492180369%2C303191318%2C423525686&country=cn&entity=software",
+      "verifiedAt": "2026-10-06T16:03:38.326153+00:00"
+    },
+    {
+      "name": "同花顺",
+      "aliases": [
+        "Tonghuashun",
+        "Royalflush"
+      ],
+      "bundleId": "cn.com.10jqka.IHexin",
+      "trackId": 303191318,
+      "storeName": "同花顺-炒股、股票",
+      "publisher": "Zhejiang Royalflush Cloud Software Co., Ltd.",
+      "country": "cn",
+      "storeUrl": "https://apps.apple.com/cn/app/id303191318",
+      "sourceUrl": "https://itunes.apple.com/lookup?id=414478124%2C333206289%2C387682726%2C414245413%2C1044283059%2C741292507%2C1142110895%2C440948110%2C736536022%2C350962117%2C444934666%2C414603431%2C590338362%2C452186370%2C461703208%2C554499054%2C423084029%2C507161324%2C379395415%2C453691481%2C564818797%2C547166701%2C1484048379%2C930368978%2C1401729613%2C1087897068%2C392899425%2C398453262%2C423514795%2C391965015%2C515651240%2C399608199%2C492180369%2C303191318%2C423525686&country=cn&entity=software",
+      "verifiedAt": "2026-10-06T16:03:38.326156+00:00"
+    },
+    {
+      "name": "东方财富",
+      "aliases": [
+        "Eastmoney"
+      ],
+      "bundleId": "com.eastmoney.iphone",
+      "trackId": 423525686,
+      "storeName": "东方财富-股票、炒股、理财",
+      "publisher": "东方财富信息股份有限公司",
+      "country": "cn",
+      "storeUrl": "https://apps.apple.com/cn/app/id423525686",
+      "sourceUrl": "https://itunes.apple.com/lookup?id=414478124%2C333206289%2C387682726%2C414245413%2C1044283059%2C741292507%2C1142110895%2C440948110%2C736536022%2C350962117%2C444934666%2C414603431%2C590338362%2C452186370%2C461703208%2C554499054%2C423084029%2C507161324%2C379395415%2C453691481%2C564818797%2C547166701%2C1484048379%2C930368978%2C1401729613%2C1087897068%2C392899425%2C398453262%2C423514795%2C391965015%2C515651240%2C399608199%2C492180369%2C303191318%2C423525686&country=cn&entity=software",
+      "verifiedAt": "2026-10-06T16:03:38.326159+00:00"
+    },
+    {
+      "name": "富途牛牛",
+      "aliases": [
+        "富途",
+        "富途牛牛",
+        "Futu",
+        "Futu NiuNiu"
+      ],
+      "bundleId": "cn.futu.FutuTraderPhone",
+      "trackId": 592031984,
+      "storeName": "富途牛牛 - 港股美股 Crypto 期權 ETF 實時報價",
+      "publisher": "Shenzhen Futu Network Technology Company Limited",
+      "country": "hk",
+      "storeUrl": "https://apps.apple.com/hk/app/id592031984",
+      "sourceUrl": "https://itunes.apple.com/lookup?id=592031984&country=hk&entity=software",
+      "verifiedAt": "2026-10-06T16:03:42.458905+00:00"
+    }
+  ]
+}

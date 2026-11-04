@@ -1,6 +1,6 @@
 """Tests for browser-independent X parsing and session helpers.
 
-Code version: v1.14.2-codex.0
+Code version: v1.14.3-codex.0
 """
 
 from __future__ import annotations
@@ -44,6 +44,7 @@ from app.core.browser_sessions import (
     sync_playwright_or_error,
 )
 from app.core.config import CrawlConfig
+from app.core.safari_automation import SafariBusyError
 from app.core.scraper import (
     build_likes_request_template,
     build_x_likes_url,
@@ -265,6 +266,26 @@ def test_safari_housekeeping_failure_does_not_report_x_as_signed_out(macos_host)
     assert result["message"] == (
         "Could not verify the account: RuntimeError: "
         "Safari housekeeping failed for 1 window(s)."
+    )
+    assert "busy" not in result
+    assert "retry_after_seconds" not in result
+
+
+def test_safari_probe_lock_contention_requests_retry_without_signout(macos_host) -> None:
+    with patch(
+        "app.core.browser_sessions._probe_safari_x_session",
+        side_effect=SafariBusyError("Safari is busy with another active browser task."),
+    ):
+        result = probe_browser_session("x", "safari", CrawlConfig())
+
+    assert result["logged_in"] is None
+    assert result["can_download"] is False
+    assert result["account_name"] == ""
+    assert result["busy"] is True
+    assert result["retry_after_seconds"] == 2
+    assert result["message"] == (
+        "Safari is finishing another browser check. "
+        "This account check will retry automatically."
     )
 
 

@@ -1,4 +1,4 @@
-"""Evidence-convergent browser-only fact-checking. Code version: v1.8.2-claude.0."""
+"""Evidence-convergent browser-only fact-checking. Code version: v1.8.3-codex.0."""
 
 from __future__ import annotations
 
@@ -417,7 +417,14 @@ class JuryService:
         self.stops: dict[str, Event] = {}
         self.shutdowns: dict[str, Event] = {}
         self.threads: dict[str, Thread] = {}
-        self._load()
+        self._archive_loaded = False
+
+    def _ensure_archive_loaded(self) -> None:
+        """Read preserved deliberations only when a Jury operation needs them."""
+        with self.lock:
+            if not self._archive_loaded:
+                self._load()
+                self._archive_loaded = True
 
     def _load(self) -> None:
         if _path_crosses_link_like_component(self.root) or not self.root.exists():
@@ -461,7 +468,7 @@ class JuryService:
                                 "no messages were resent."
                             ),
                         )
-                self.records[path.stem] = record
+                self.records.setdefault(path.stem, record)
             except (OSError, ValueError):
                 continue
 
@@ -478,6 +485,7 @@ class JuryService:
         from .safari_automation import verify_safari_context_cleanup_ready
 
         verify_safari_context_cleanup_ready()
+        self._ensure_archive_loaded()
         with self.lock:
             recorded = [
                 record
@@ -635,6 +643,7 @@ class JuryService:
             type(max_rounds) is not int or not 2 <= max_rounds <= 6
         ):
             raise ValueError("Choose two to six discussion rounds.")
+        self._ensure_archive_loaded()
         with self.lock:
             if self._shutdown_started:
                 raise RuntimeError(
@@ -1194,12 +1203,14 @@ class JuryService:
             self._save(record)
 
     def status(self, session_id: str) -> dict:
+        self._ensure_archive_loaded()
         with self.lock:
             if session_id not in self.records:
                 raise ValueError("Unknown jury session.")
             return deepcopy(self.records[session_id])
 
     def sessions(self, browser: str) -> dict:
+        self._ensure_archive_loaded()
         with self.lock:
             keys = ("session_id", "browser", "question", "title", "phase", "running", "started_at")
             records = []
@@ -1224,6 +1235,7 @@ class JuryService:
     def dismiss_failed(self, session_id: str) -> dict:
         """Delete one fully cleaned failed Jury record from the local archive."""
         normalized_id = str(session_id or "").strip()
+        self._ensure_archive_loaded()
         with self.lock:
             if normalized_id not in self.records:
                 raise ValueError("Unknown jury session.")
@@ -1250,6 +1262,7 @@ class JuryService:
             return {"session_id": normalized_id}
 
     def stop(self, session_id: str) -> dict:
+        self._ensure_archive_loaded()
         with self.lock:
             if session_id not in self.records:
                 raise ValueError("Unknown jury session.")

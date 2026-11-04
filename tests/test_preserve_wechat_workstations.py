@@ -1,0 +1,197 @@
+"""Verify source-preserving workstation relocation. Code version: v1.0.0-codex.0."""
+
+from __future__ import annotations
+
+import importlib.util
+import json
+import os
+from pathlib import Path
+
+import pytest
+
+
+@pytest.fixture
+def tool(monkeypatch):
+    path = Path(__file__).resolve().parents[1] / "scripts/preserve_wechat_workstations.py"
+    spec = importlib.util.spec_from_file_location("preserve_wechat_workstations", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    monkeypatch.setattr(module, "open_handles", lambda paths: {})
+    return module
+
+
+def write(root, relative, content=b"immutable evidence"):
+    target = root / relative
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_bytes(content)
+    return target
+
+
+def test_dry_run_keeps_pinned_artifacts_and_runtime_databases(tool, tmp_path):
+    root, target = tmp_path / "wechat", tmp_path / "workstation"
+    artifact = "repair_audits/native/artifact.json"
+    write(root, artifact)
+    write(root, "storage_backups/run/history.sqlite3")
+    write(root, "history.sqlite3")
+    write(root, "contact_activity/published.sqlite3")
+    write(root, "contact_activity/.contact-analysis-old.sqlite3")
+    write(root, "text_observations.json", json.dumps({
+        "schema_version": 1, "observations": [{"source": {"path": artifact}}],
+    }).encode())
+    report = tool.preserve(root, target)
+    assert report["entries"][artifact]["defer_reason"] == "runtime_pinned_artifact"
+    assert "history.sqlite3" not in report["entries"]
+    assert "contact_activity/published.sqlite3" not in report["entries"]
+    assert "contact_activity/.contact-analysis-old.sqlite3" in report["entries"]
+    assert not target.exists()
+    assert not (root / tool.LOCATOR).exists()
+
+
+def test_rename_preserves_inode_and_checksums_and_is_idempotent(tool, tmp_path):
+    root, target = tmp_path / "wechat", tmp_path / "workstation"
+    source = write(root, "storage_backups/run/history.sqlite3")
+    inode, mtime = source.stat().st_ino, source.stat().st_mtime_ns
+    report = tool.preserve(root, target, apply=True)
+    moved = target / source.relative_to(root)
+    assert not source.exists()
+    assert (moved.stat().st_ino, moved.stat().st_mtime_ns) == (inode, mtime)
+    entry = report["moved_entries"]["storage_backups/run/history.sqlite3"]
+    assert entry["status"] == "moved_verified"
+    assert entry["sha256"] == tool.hash_local(moved, tool.identity(moved))
+    again = tool.preserve(root, target, apply=True)
+    assert again["moved_entries"] == report["moved_entries"]
+    locator = json.loads((root / tool.LOCATOR).read_text())
+    assert locator["cloud_upload_verified"] is False
+    assert locator["locations"]["storage_backups/run/history.sqlite3"]["path"] == str(moved)
+
+
+def test_placeholder_is_never_opened_hashed_or_moved(tool, tmp_path, monkeypatch):
+    root, target = tmp_path / "wechat", tmp_path / "workstation"
+    source = write(root, "contacts 2.sqlite3")
+    identity = tool.identity
+    def metadata(path):
+        value = identity(path)
+        if path == source:
+            value["flags"] |= tool.DATALESS
+        return value
+    monkeypatch.setattr(tool, "identity", metadata)
+    monkeypatch.setattr(tool, "hash_local", lambda *args: pytest.fail("A placeholder was read"))
+    report = tool.preserve(root, target, apply=True)
+    assert source.exists()
+    assert report["entries"][source.name]["defer_reason"] == "cloud_placeholder_requires_separate_preservation"
+    assert not (target / source.name).exists()
+
+
+@pytest.mark.parametrize("process,lock,allow,expected", [
+    ("python3", "", True, False), ("fileproviderd", "W", True, False),
+    ("fileproviderd", "", False, False), ("fileproviderd", "", True, True),
+    ("fileproviderd", " ", True, True),
+])
+def test_open_handles_require_exact_provider_exception(tool, process, lock, allow, expected):
+    handles = [{"process": process, "lock": lock}]
+    assert tool.permitted_handles(handles, allow) is expected
+
+
+def test_existing_destination_is_never_overwritten(tool, tmp_path):
+    root, target = tmp_path / "wechat", tmp_path / "workstation"
+    source = write(root, "imports/source/evidence.json", b"source")
+    destination = write(target, "imports/source/evidence.json", b"different")
+    with pytest.raises(FileExistsError):
+        tool.preserve(root, target, apply=True)
+    assert source.read_bytes() == b"source"
+    assert destination.read_bytes() == b"different"
+
+
+def test_source_changes_before_hash_blocks_rename(tool, tmp_path, monkeypatch):
+    root, target = tmp_path / "wechat", tmp_path / "workstation"
+    source = write(root, "recovery/receipt.json")
+    original = tool.hash_local
+    def changed(path, expected):
+        source.write_bytes(b"changed evidence")
+        return original(path, expected)
+    monkeypatch.setattr(tool, "hash_local", changed)
+    with pytest.raises(ValueError, match="changed"):
+        tool.preserve(root, target, apply=True)
+    assert source.exists()
+    assert not (target / source.relative_to(root)).exists()
+
+
+def test_interrupted_rename_resumes_from_sealed_receipt(tool, tmp_path):
+    root, target = tmp_path / "wechat", tmp_path / "workstation"
+    source = write(root, "recovery/receipt.json")
+    before = tool.identity(source)
+    checksum = tool.hash_local(source, before)
+    target.mkdir()
+    moved = target / "recovery/receipt.json"
+    moved.parent.mkdir()
+    os.rename(source, moved)
+    tool.atomic_json(target / tool.RECEIPT, {
+        "version": tool.VERSION, "source_root": str(root), "destination_root": str(target),
+        "entries": {"recovery/receipt.json": {"status": "sealed_before_rename",
+                    "source_identity": before, "sha256": checksum}},
+    })
+    report = tool.preserve(root, target, apply=True)
+    assert report["moved_entries"]["recovery/receipt.json"]["status"] == "moved_verified"
+    assert not source.exists()
+
+
+def test_symlink_in_candidate_tree_is_rejected(tool, tmp_path):
+    root, target = tmp_path / "wechat", tmp_path / "workstation"
+    root.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (root / "storage_backups").symlink_to(outside, target_is_directory=True)
+    with pytest.raises(ValueError, match="symbolic link"):
+        tool.preserve(root, target, apply=True)
+
+
+def test_open_database_protects_its_closed_journal(tool, tmp_path, monkeypatch):
+    root, target = tmp_path / "wechat", tmp_path / "workstation"
+    source = write(root, "contact_activity/.contact-analysis-live.sqlite3")
+    journal = write(root, "contact_activity/.contact-analysis-live.sqlite3-journal")
+    monkeypatch.setattr(tool, "open_handles", lambda paths: {
+        str(source): [{"process": "python3", "pid": 123, "fd": "4"}],
+    })
+    report = tool.preserve(root, target, apply=True)
+    assert source.exists() and journal.exists()
+    assert report["entries"][str(journal.relative_to(root))]["defer_reason"] == "database_family_requires_review"
+    assert not report["moved_entries"]
+
+
+def test_missing_preserved_destination_is_not_reported_as_success(tool, tmp_path):
+    root, target = tmp_path / "wechat", tmp_path / "workstation"
+    source = write(root, "recovery/receipt.json")
+    tool.preserve(root, target, apply=True)
+    (target / source.relative_to(root)).unlink()
+    with pytest.raises(FileNotFoundError):
+        tool.preserve(root, target, apply=True)
+
+
+def test_size_limit_defers_large_files_and_keeps_database_family_together(tool, tmp_path):
+    root, target = tmp_path / "wechat", tmp_path / "workstation"
+    large = write(root, "storage_backups/run/history.sqlite3", b"a" * 32)
+    journal = write(root, "storage_backups/run/history.sqlite3-journal", b"journal")
+    small = write(root, "recovery/receipt.json", b"receipt")
+    report = tool.preserve(root, target, apply=True, max_file_bytes=16)
+    assert large.exists() and journal.exists()
+    assert not small.exists()
+    assert report["entries"]["storage_backups/run/history.sqlite3"]["defer_reason"] == "requires_compressed_preservation"
+    assert report["entries"]["storage_backups/run/history.sqlite3-journal"]["defer_reason"] == "database_family_requires_review"
+    unlimited = tool.preserve(root, target, apply=True)
+    assert not large.exists() and not journal.exists()
+    assert len(unlimited["moved_entries"]) == 3
+
+
+def test_cli_forwards_optional_size_limit(tool, tmp_path, monkeypatch, capsys):
+    observed = {}
+    def inspect(root, destination, **kwargs):
+        observed.update(kwargs)
+        return {"dry_run": True}
+    monkeypatch.setattr(tool, "preserve", inspect)
+    monkeypatch.setattr(tool.sys, "argv", [
+        "preserve_wechat_workstations", "--archive-root", str(tmp_path / "wechat"),
+        "--destination", str(tmp_path / "workstation"), "--max-file-bytes", "104857600",
+    ])
+    tool.main()
+    assert observed["max_file_bytes"] == 104857600
+    assert json.loads(capsys.readouterr().out)["dry_run"] is True

@@ -1,10 +1,189 @@
 # Safari Cache acceptance
 
-Document version: `v1.1.8-codex.0`
-Application version: `v1.33.2`
-Reviewed: 26 Sep 2026
+Document version: `v2.0.0-codex.0`
+Application version under acceptance: `v1.45.0` (module revisions listed below)
+Reviewed: 22 Oct 2026
+Current acceptance status: Partial; eight bounded selections passed, three require external prerequisites
 
-## Scope
+## Current scope
+
+The current acceptance matrix covers six providers and eleven supported selections,
+with Safari explicitly selected: X, Grok, ChatGPT, Gemini, and Claude each support
+Text and Media; Microsoft Copilot supports Text only. Gemini is included in the
+current scope. Its current regional restriction is an acceptance blocker, not a
+reason to remove its supported routes from the matrix.
+
+Reads use the existing authenticated Safari session. Acceptance must not send AI
+prompts, create provider content, or replace the user's signed-in session. Each
+result must distinguish an authorized production-cache run from a disposable-store
+probe, and retain separate evidence for authorization, discovery, persistence,
+terminal task status, and owned-window cleanup. A ready account, a working route,
+an existing counter, or a successful isolated test does not establish a complete
+live cache run.
+
+The current record below is the acceptance authority for 22 Oct 2026. The dated
+historical section retains earlier evidence and limitations; its four-provider,
+eight-selection scope, Gemini exclusion, application versions, counts, and prior
+acceptance conclusions do not describe the current run.
+
+## Current capability boundaries
+
+| Provider | Text | Media |
+| --- | --- | --- |
+| X | Text from the signed-in account's Likes timeline | Images and videos from liked posts |
+| Grok | Conversation history | Generated library images and videos |
+| ChatGPT | Account conversation history | Original assistant-generated images; uploaded files and video are outside this collector |
+| Gemini | Supported conversation history; currently blocked by the provider's regional restriction | Supported first-party generated raster images; currently blocked by the same regional restriction |
+| Claude | Rendered conversation messages | Supported first-party raster images rendered in message bodies; other attachments and video are excluded |
+| Microsoft Copilot | Paginated all-chats catalog and complete rendered text sessions | Not supported; excluded from the eleven-selection count |
+
+## Current repair coverage
+
+The following repairs are part of this acceptance round. Their presence in source
+and isolated checks remains separate from served-runtime and real Safari proof.
+
+- Shared Safari acquisition waits within a scoped 60-second deadline and observes
+  cooperative Stop while another operation owns Safari. Child workers inherit the
+  scope. Contention must not replay an entire sync, steal an active window, or
+  become a false authentication failure; an expired acquisition remains a failure.
+- ChatGPT original-image downloads carry Stop through metadata resolution, the
+  original and refreshed byte streams, and retry waits. Interrupted partial bytes
+  remain resumable and do not become complete catalog entries. Account-history
+  discovery requires explicit catalog exhaustion; unproven continuation preserves
+  verified partial sessions while reporting incomplete coverage in Text and the
+  all-session Media path. Project API and DOM pagination also reject unread or
+  stalled continuations, while an explicitly empty project can complete. Real
+  account pages report `total` as a page-relative hint: offsets 0, 100, and 200
+  returned totals 101, 201, and 301; rereading offset 0 returned 101 again. The
+  collector therefore validates consecutive offset/limit readback and explicit
+  exhaustion rather than requiring a fixed total. An empty page that still
+  advertises additional sessions remains incomplete.
+- Grok Text validates conversation identities and pagination evidence. Repeated
+  cursors or sessions, malformed pages, unread continuations, empty pages with a
+  continuation token, and the page limit cannot become successful exhaustion.
+  Verified partial sessions remain cacheable, while incomplete discovery prevents
+  a successful service outcome even when those sessions have no download errors.
+- Claude Media traverses each discovered conversation's virtualized transcript,
+  expands earlier messages, and stops immediately at human verification. Chats
+  discovery reads and scrolls the main list, excludes sidebar shortcuts, resets
+  to its top, and requires a stable end. The existing 12-move/45-second discovery
+  bounds remain; reaching a bound without exhaustion preserves verified sessions
+  and produces incomplete Text and Media outcomes. Zero eligible images alone
+  cannot prove an authenticated image download.
+
+Current module revisions: `safari_automation.py` v2.18.0,
+`cache_service_support.py` v1.2.0, `service.py` v1.11.2,
+`chatgpt_downloader.py` v1.52.6, `grok_history.py` v1.5.3,
+`grok_history_service.py` v1.1.1, `claude_history.py` v1.4.1,
+`claude_media.py` v1.2.2, `claude_history_service.py` v1.2.1, and
+`copilot_history_service.py` v1.2.1 (all with the `-codex.0` suffix).
+
+## Current observations: 22 Oct 2026
+
+Account checks reached ready for X, Grok, ChatGPT, Claude, and Microsoft Copilot.
+These five provider checks establish authorization readiness only. Gemini's DOM
+explicitly reports that the service is unavailable in the current region; its
+current account and collection acceptance is blocked before caching. This is not
+an observed logout and does not authorize repeated login or challenge attempts.
+
+The originally requested, bounded Grok Media job discovered 100 of 100 candidates
+and reported complete discovery. One remote HTTP 404 correctly caused a failed
+terminal task outcome. That observed failure must remain visible; complete
+candidate discovery does not imply that every requested media item was cached.
+A later isolated Media acceptance successfully downloaded one image and one video.
+That bounded success does not resolve the original job's unavailable asset.
+
+The initial Microsoft Copilot check exposed 17 sessions. The later isolated
+acceptance exhausted two catalog pages and persisted all 18 currently listed
+sessions and 84 messages with no failures. A preserved legacy Edge
+catalog contains 357 sessions whose transcript coverage has not been reconciled.
+Exhausting the current Safari catalog does not establish a complete backup of
+those legacy sessions. Production legacy coverage remains unreconciled; all
+existing records were retained.
+
+## Current live acceptance matrix
+
+Results below separate bounded functional acceptance from account-wide backup
+coverage. A Blocked entry records an observed provider restriction. A successful
+traversal with zero eligible images does not establish a media transfer.
+
+| Provider | Mode | Current readiness | Final live result | Required evidence or unresolved boundary |
+| --- | --- | --- | --- | --- |
+| X | Text | Ready | Passed, bounded | 92 liked posts persisted; finished with zero failures; user windows preserved and lease idle. An earlier two-round probe returned no URLs; the final eight-round rendered-page read succeeded. |
+| X | Media | Ready | Passed, bounded | 96 post URLs discovered; one original image and two videos downloaded within the three-file budget. Original and thumbnail images decoded; both videos validated with ffprobe. Zero failures; user windows preserved and lease idle. |
+| Grok | Text | Ready | Passed, bounded | Current non-project catalog returned 196 sessions; one selected session persisted 30 messages. Zero failures; user windows preserved and lease idle. |
+| Grok | Media | Ready | Passed, bounded; production job partial | One image and one video downloaded and decoded from 100 visible candidates. The original 100-candidate production job retains its one remote HTTP 404 failure. User windows preserved and lease idle. |
+| ChatGPT | Text | Ready | Passed, bounded persistence | Current conversation catalog exhausted at 3,135 sessions and an explicit empty page. One selected session and its message persisted; finished with zero failures. User windows preserved and lease idle. Existing production history remains separate. |
+| ChatGPT | Media | Ready | Passed, supplied session | One existing session yielded 14 image references and seven deduplicated original PNG files. All seven decoded; finished with zero failures; user windows preserved and lease idle. |
+| Gemini | Text | Blocked: provider regional restriction | Blocked | Real worker failed explicitly with the regional restriction before discovery; zero writes; user windows preserved and lease idle. |
+| Gemini | Media | Blocked: provider regional restriction | Blocked | Real worker failed explicitly with the same regional restriction before discovery; zero writes; user windows preserved and lease idle. |
+| Claude | Text | Ready | Passed, bounded | Final main-list discovery returned 12 sessions; one selected session persisted eight messages. Zero failures; user windows preserved and lease idle. |
+| Claude | Media | Ready | Traversal passed; transfer unverified | Final scanner exhausted the current 12-session main list and inspected all 12 sessions. Zero eligible body images and zero failures; a supported existing image sample is still required. User windows preserved and lease idle. |
+| Microsoft Copilot | Text | Ready | Passed, current catalog | Two catalog pages exhausted; all 18 sessions and 84 messages persisted. Zero failures; user windows preserved and lease idle. The 357-session legacy Edge catalog remains unreconciled in production. |
+
+## Current verification and handoff status
+
+| Verification layer | Result | Evidence and limitation |
+| --- | --- | --- |
+| Final consolidated Safari/provider regression | Passed | 1,125 tests and 10 subtests across 36 files; final product/test source unchanged during the run. Includes worker admission/Stop, browser probes, queues/concurrency, provider parsing/persistence, and Claude DOM regressions in isolated Chromium. |
+| Static and JavaScript checks | Passed | Full Ruff; 30 documents with zero errors and three separately excluded shared references; syntax checks for 40 JavaScript files; 45 Node tests; final diff whitespace check. |
+| Complete repository quality gate in the host environment | Failed at environment checks | Existing Streamlit 1.46.1 requires Pillow below 12, while the runtime has Pillow 12.3.0. The shared interpreter was not changed. |
+| Complete repository quality gate in a clean environment | Failed at dependency audit | Clean Python 3.13 venv passes pip check. pip-audit reports 24 non-withdrawn Pillow 12.3.0 advisories; official PyPI/OSV metadata agrees. Fixed version 13.0.0 is excluded by current requirements. Audit was not skipped and the dependency contract was not changed. |
+| Broad non-E2E Python selection | Failed | 4,705 passed, five failed, 23 skipped, two deselected, and 871 subtests passed. Combined line/branch coverage is 76.47%; branch coverage alone is 67.39%. The combined measure exceeds the 55% gate threshold, but the test selection is not green. |
+| Complete Python selection | Interrupted | After 569 completed cases, two tunnel restoration assertions had failed. Both pass alone and with a short preceding workspace-switch sequence; the longer sequence cause remains unresolved. No retries, assertions, timeouts, or product behavior were changed to conceal this. |
+| Served-runtime adoption | Verified | Python 3.13 serving child PID 30787 started on 22 Oct 2026 at 21:23:41 UTC+08, after the final Python edit. All 11 mode-specific status endpoints report v1.45.0. All 11 Safari pages return HTTP 200 with matching source/mode/browser. Served cache-page, browser-session-status, and browser-session-picker JavaScript bytes match the workspace. |
+| Production history preservation | Verified | Final SHA-256 readback matches the initial files for all six canonical histories: X 2,512 rows; Grok 1,841; ChatGPT 83,374; Gemini 10,436; Claude 322; Copilot 74. Acceptance writes use isolated stores. |
+| Numbered-copy housekeeping | Passed with retained conflicts | 558 candidates: 556 protected local_store/logs entries and two different-content source copies. All retained. No recoverable cleanup was applicable; no file was deleted. |
+
+The five non-E2E failures reproduce at exact nodes in untouched Web facade imports
+(`form_config.py` to `config`, `presentation.py` to `chatgpt_display`) and old asset
+version assertions (`sidebar`, `style`, and `cache-page`). These failures remain
+visible and are outside the backend Safari repair. A passing focused suite does
+not imply a green complete repository gate.
+
+Commands used the clean interpreter at
+`/tmp/agenticcontext-quality-20261022-6l67yylq/venv/bin/python` with `TZ=UTC`.
+The broad selection used `scripts/test.sh --ignore-glob='*e2e*'` and the normal
+`not live` marker, with branch coverage enabled and the 55% threshold retained.
+The full `scripts/check.sh` was attempted in both environments. The final focused
+selection and exact failures are retained in that evidence directory alongside
+`pytest-final-safari.log`, `non-e2e-summary.json`, `source-drift.json`, and
+`audit-verification.json`. None of those isolated browser checks used Safari or a
+user browser profile; real Safari evidence is recorded separately above.
+
+This acceptance round's backend repairs touch `app/core/safari_automation.py`,
+`cache_service_support.py`, `service.py`, `chatgpt_downloader.py`, `grok_history.py`,
+`grok_history_service.py`, `claude_history.py`, `claude_media.py`,
+`claude_history_service.py`, and `copilot_history_service.py`, their focused tests,
+and this document. Existing unrelated dirty work is retained. No commit or sibling
+project edit was made. The numbered source copies `app/core/downloader 2.py` and
+`tests/test_downloader 2.py` have different content from their primaries and no open
+handles at the audit; their contents are preserved for review.
+
+Eight of eleven supported selections now have bounded real functional success
+evidence. Acceptance remains partial: Gemini Text and Media are region-blocked,
+and Claude Media still lacks a supported real image sample. Current-catalog success also does not reconcile
+Copilot's legacy catalog or restore the unavailable Grok video.
+
+Final native-state limitation: after all cache probes completed, both X and Grok
+account refreshes returned ready. A subsequent extra Safari window inventory read
+timed out. Computer Use then explicitly reported that macOS was locked and could
+not be automatically unlocked. Further UI reads stopped and manual unlock was
+requested. The per-worker preserved-window readbacks above remain valid; no final
+post-lock window snapshot is claimed. The ownership journal is idle and all six
+production history hashes still match. The original user window was not closed.
+
+## Historical record: 26 Sep 2026
+
+Historical document version: `v1.1.8-codex.0`
+Historical application version: `v1.33.2`
+Historical review date: 26 Sep 2026
+
+Everything in this section records the earlier acceptance round. Its scope and
+results are retained for provenance and are not current acceptance evidence for
+22 Oct 2026.
+
+### Scope
 
 The requested matrix is ChatGPT, X, Grok, and Claude, each in Text and Media mode,
 with Safari explicitly selected. Gemini is excluded. Provider reads use the
@@ -12,7 +191,7 @@ existing authenticated Safari session; probes must not send prompts or modify
 provider content. Bounded acceptance writes use disposable local stores rather
 than modifying the production cache.
 
-## Changes
+### Changes
 
 - X now exposes both modes, dispatches Text without a media download, and reads
   persisted text counters independently of media counters.
@@ -40,7 +219,7 @@ than modifying the production cache.
   checks durable ownership before any recovery action. Navigation is ready only
   when the native address and the current DOM address agree.
 
-## Capability boundaries
+### Capability boundaries
 
 | Provider | Text | Media |
 | --- | --- | --- |
@@ -49,7 +228,7 @@ than modifying the production cache.
 | Grok | Conversation history | Generated library images and videos |
 | Claude | Rendered conversation messages | First-party raster images rendered in message bodies; other attachments and video are excluded |
 
-## Verification record
+### Verification record
 
 Route and frontend acceptance covers all eight selections. Browser checks cover
 914 × 791, 390 × 844 with touch, and 914 × 500 with touch, including source/mode
@@ -74,7 +253,7 @@ documentation-link checks (29 documents, zero errors), and `git diff --check`
 also passed. Three sibling-document references are reported separately by the
 documentation checker. No native Windows run or full quality-gate result is claimed.
 
-### Real Safari probes
+#### Real Safari probes
 
 Claude Text discovery follow-up, 26 Sep 2026: the production job started at
 16:40:26 HKT and failed before discovering any sessions. The production history
@@ -161,7 +340,7 @@ isolated desktop and narrow-browser checks pass. While verification was pending,
 reloading the live Cache page retained its cached requirement and showed Recheck
 with Start disabled, preserving the no-retry rule.
 
-### Completion audit
+#### Completion audit
 
 The task is not fully accepted yet. Seven of eight requested provider/mode
 combinations have bounded real Safari success evidence. Claude Media still needs
@@ -178,7 +357,7 @@ service-state coverage, and preservation checks for already cached images. Its
 three-file Claude regression group passed 41 tests. Live
 adoption of that final patch is pending a v1.33.2 listener readback.
 
-## Changed components
+### Changed components
 
 - Source and mode selection: `app/web/cache_sources.py`, `app/web/cache_routes.py`,
   `app/web/static/cache-page.js`, `app/web/templates/_cache_page.html`, and
@@ -206,7 +385,7 @@ adoption of that final patch is pending a v1.33.2 listener readback.
   and the existing provider, Safari, service, route, and sidebar test modules.
 - Shared applicability record: `../shared_docs/SHARED_UI_SYNC.md`.
 
-## Housekeeping and scope
+### Housekeeping and scope
 
 Preserve authenticated windows, browser profiles, and production caches. Numbered
 copies in those protected locations are not cleanup targets. No sibling project

@@ -1,6 +1,6 @@
 """Focused regression tests for the local web console."""
 
-# Code version: v1.153.1-codex.0
+# Code version: v1.155.4-codex.0
 
 from __future__ import annotations
 
@@ -303,7 +303,7 @@ class WebAppTests(unittest.TestCase):
         self.assertEqual(labels, sorted(labels, key=str.casefold))
         self.assertEqual(
             {source.key for source in CACHE_SOURCE_VIEWS},
-            {"chatgpt", "claude", "claude_code", "gemini", "grok_build", "grok", "x", "zhihu", *OPENCLAW_SOURCE_LABELS},
+            {"chatgpt", "claude", "claude_code", "codex", "gemini", "grok_build", "grok", "copilot", "x", "zhihu", *OPENCLAW_SOURCE_LABELS},
         )
         regular_sources = [source for source in CACHE_SOURCE_VIEWS if source.key not in OPENCLAW_SOURCE_LABELS]
         self.assertEqual(len({source.template_name for source in regular_sources}), len(regular_sources))
@@ -318,17 +318,18 @@ class WebAppTests(unittest.TestCase):
         self.assertEqual(
             {source.key: source.start_button_label for source in CACHE_SOURCE_VIEWS if source.is_local},
             {
-                "claude_code": "Read local sessions", "grok_build": "Read local sessions",
+                "claude_code": "Read local sessions", "codex": "Read local sessions",
+                "grok_build": "Read local sessions",
                 **dict.fromkeys(OPENCLAW_SOURCE_LABELS, "Read archived sessions"),
             },
         )
         self.assertEqual(
             {source.key for source in CACHE_SOURCE_VIEWS if source.show_content_mode},
-            {"chatgpt", "claude", "gemini", "grok", "x", "zhihu"},
+            {"chatgpt", "claude", "copilot", "gemini", "grok", "x", "zhihu"},
         )
         self.assertEqual(
             {source.key for source in CACHE_SOURCE_VIEWS if source.browser_panel_label == "Authorized browser"},
-            {"chatgpt", "claude", "gemini", "grok", "zhihu"},
+            {"chatgpt", "claude", "copilot", "gemini", "grok", "zhihu"},
         )
 
     def test_cache_source_switcher_uses_one_complete_registry_on_gemini(self) -> None:
@@ -539,7 +540,7 @@ class WebAppTests(unittest.TestCase):
                 })
                 self.assertEqual(response.status_code, 302)
                 body = client.get("/settings").get_data(as_text=True)
-                for label in ("ChatGPT · Text", "ChatGPT · Media", "Claude Chat · Text", "Gemini · Text", "Grok Chat · Text", "Grok Chat · Media"):
+                for label in ("ChatGPT Chat · Text", "ChatGPT Chat · Media", "Claude Chat · Text", "Gemini · Text", "Grok Chat · Text", "Grok Chat · Media"):
                     self.assertIn(label, body)
                 with patch("app.core.chatgpt_service.ChatGPTDownloadService.start") as start:
                     response = client.post("/cache/chatgpt/start", data={"chatgpt_content_mode": "text"})
@@ -686,7 +687,7 @@ class WebAppTests(unittest.TestCase):
             with self.subTest(media_setting=field_name):
                 self.assertNotIn(f'name="{field_name}"', index_body)
                 self.assertIn(f'name="{field_name}"', settings_body)
-        for body, provider_label in ((grok_body, "Grok Chat"), (chatgpt_body, "ChatGPT")):
+        for body, provider_label in ((grok_body, "Grok Chat"), (chatgpt_body, "ChatGPT Chat")):
             self.assertIn('href="/settings#settings-llm"', body)
             self.assertIn(f">Open {provider_label} settings</a>", body)
             self.assertNotIn('class="cache-common-config', body)
@@ -714,7 +715,7 @@ class WebAppTests(unittest.TestCase):
         self.assertIn("Zhihu answers cache overview", zhihu_body)
         self.assertIn("--cache-source-mark: url('/static/images/zhihu.svg')", zhihu_body)
         self.assertNotIn('data-browser-option="safari"', zhihu_body)
-        self.assertIn("ChatGPT cache overview", chatgpt_body)
+        self.assertIn("ChatGPT Chat cache overview", chatgpt_body)
         self.assertIn("workspace-header cache-workspace-header", chatgpt_body)
         self.assertIn("cache-overview-title-card", chatgpt_body)
         self.assertIn("cache-workspace-content", chatgpt_body)
@@ -729,7 +730,7 @@ class WebAppTests(unittest.TestCase):
             'chatgpt-page.js?v=chatgpt-page-v1.4.1-codex.0',
             chatgpt_body,
         )
-        self.assertIn('data-browser-session-account-label="ChatGPT"', chatgpt_body)
+        self.assertIn('data-browser-session-account-label="ChatGPT Chat"', chatgpt_body)
         self.assertIn('data-browser-session-hide-ready-message="true"', chatgpt_body)
         self.assertIn(
             'class="browser-session-status-field-label">Account:</span>',
@@ -769,7 +770,7 @@ class WebAppTests(unittest.TestCase):
         self.assertNotIn('class="status-copy chatgpt-sidebar-note"', chatgpt_body)
         self.assertIn('id="status_progress_value"', chatgpt_body)
         self.assertIn('id="progress_processed_label"', chatgpt_body)
-        self.assertIn('cache-page.js?v=cache-page-v1.19.0-codex.0', chatgpt_body)
+        self.assertIn('cache-page.js?v=cache-page-v1.22.0-codex.0', chatgpt_body)
         self.assertIn('numeric-display.js?v=numeric-display-v1.1.0-codex.0', chatgpt_body)
         self.assertIn('segmented-control.js?v=segmented-control-v1.0.4-codex.1', chatgpt_body)
         self.assertIn('data-cache-content-mode', chatgpt_body)
@@ -804,8 +805,8 @@ class WebAppTests(unittest.TestCase):
                 stop_form_end = body.index(">", stop_form_start)
                 self.assertIn("hidden", body[stop_form_start:stop_form_end])
                 self.assertIn(">Start</button>", body)
-        self.assertIn('browser-session-status.js?v=browser-session-status-v1.14.0-claude.0', chatgpt_body)
-        self.assertIn('browser-session-picker.js?v=browser-session-picker-v1.9.1-codex.0', chatgpt_body)
+        self.assertIn('browser-session-status.js?v=browser-session-status-v1.14.1-codex.0', chatgpt_body)
+        self.assertIn('browser-session-picker.js?v=browser-session-picker-v1.10.0-codex.0', chatgpt_body)
         chatgpt_form_identifier = chatgpt_body.index('id="start_form_chatgpt"')
         chatgpt_form_start = chatgpt_body.rfind("<form", 0, chatgpt_form_identifier)
         chatgpt_form_end = chatgpt_body.index("</form>", chatgpt_form_start)
@@ -920,7 +921,7 @@ class WebAppTests(unittest.TestCase):
                 self.assertNotIn('aria-haspopup', dock_markup)
                 self.assertNotIn('aria-expanded', dock_markup)
                 self.assertNotIn('class="browser-picker-option-icon"', dock_markup)
-                self.assertIn('src="/static/sidebar.js?v=sidebar-v1.30.0-codex.0"', body)
+                self.assertIn('src="/static/sidebar.js?v=sidebar-v1.31.0-codex.0"', body)
                 self.assertIn('src="/static/responsive.js?v=responsive-v1.0.0-codex.1"', body)
                 expected_style_version = (
                     "style-v2.159.1-codex.0"
@@ -947,8 +948,8 @@ class WebAppTests(unittest.TestCase):
             'const dockSections = new Set(["agent", "cache", "local-resources", "settings"]);',
             'const agentRoutePattern = /^\\/agent\\/(?:safari|edge|chrome)\\/(?:chatgpt|gemini|grok|claude)$/;',
             'const localResourceFilterNames = ["view", "source", "kind", "q", "sort", "session_view", "session_index", "media_view"];',
-            'const cacheSectionPaths = new Set(["/cache/x", "/cache/grok", "/cache/grok_build", "/cache/chatgpt", "/cache/gemini", "/cache/claude", "/cache/claude_code", "/cache/zhihu", ...openclawCacheSources.map((source) => `/cache/${source}`)]);',
-            'const cacheSelectionPathPattern = /^\\/cache\\/(?:(x|grok|chatgpt|gemini|claude|zhihu)(?:\\/(text|media)\\/(safari|edge|chrome))?|claude_code|grok_build|(?:chatgpt|gemini|claude|grok|zhipu|doubao|other|unknown)_openclaw)$/;',
+            'const cacheSectionPaths = new Set(["/cache/x", "/cache/grok", "/cache/grok_build", "/cache/chatgpt", "/cache/copilot", "/cache/gemini", "/cache/claude", "/cache/claude_code", "/cache/codex", "/cache/zhihu", ...openclawCacheSources.map((source) => `/cache/${source}`)]);',
+            'const cacheSelectionPathPattern = /^\\/cache\\/(?:(x|grok|chatgpt|copilot|gemini|claude|zhihu)(?:\\/(text|media)\\/(safari|edge|chrome))?|claude_code|codex|grok_build|(?:chatgpt|gemini|claude|grok|zhipu|doubao|other|unknown)_openclaw)$/;',
             'if (targetUrl.pathname === "/browser") return "/cache/chatgpt";',
             'const legacyCachePathMap = new Map([',
             'window.sessionStorage.getItem(dockLocationMemoryKey(section))',
@@ -1030,7 +1031,7 @@ class WebAppTests(unittest.TestCase):
         self.assertIn("Cached media browser", browser_body)
         self.assertIn('data-browser-source-filter', browser_body)
         self.assertEqual(browser_body.count('data-browser-source-filter-option='), 6)
-        self.assertIn('browser-source-filter.js?v=browser-source-filter-v1.6.0-codex.0', browser_body)
+        self.assertIn('browser-source-filter.js?v=browser-source-filter-v1.6.1-codex.0', browser_body)
         self.assertIn('class="trade-strategy-select form-select trade-strategy-trigger browser-source-filter-trigger"', browser_body)
 
         self.assertIn('class="trade-strategy-dropdown-option browser-source-filter-option', browser_body)
@@ -1070,7 +1071,7 @@ class WebAppTests(unittest.TestCase):
         self.assertIn('name="chatgpt_scan_wait_seconds"', settings_body)
         self.assertIn('name="max_media_file_size_mib"', settings_body)
         self.assertIn('class="path-display-input"', settings_body)
-        self.assertEqual(settings_body.count("path-display-input"), 6)
+        self.assertEqual(settings_body.count("path-display-input"), 7)
         self.assertNotIn('class="cache-common-config-scope"', settings_body)
         self.assertNotIn("All cache sources", settings_body)
         self.assertIn('data-number-max="8"', settings_body)
@@ -1083,9 +1084,9 @@ class WebAppTests(unittest.TestCase):
         self.assertIn('class="shadow-backup-destination-control settings-directory-control settings-directory-control-readonly"', settings_body)
         self.assertIn('class="shadow-backup-destination-control settings-directory-control"', settings_body)
         self.assertIn('class="secondary-button settings-directory-choose-button shadow-backup-choose-button"', settings_body)
-        self.assertEqual(settings_body.count('class="icon settings-directory-choose-icon"'), 4)
+        self.assertEqual(settings_body.count('class="icon settings-directory-choose-icon"'), 5)
         self.assertNotIn("Choose folder…", settings_body)
-        self.assertEqual(settings_body.count("data-settings-directory-picker"), 4)
+        self.assertEqual(settings_body.count("data-settings-directory-picker"), 5)
         self.assertIn('data-shadow-backup-status-spinner', settings_body)
         self.assertIn('data-shadow-backup-status-copy', settings_body)
         self.assertNotIn('id="shadow_backup_phase"', settings_body)
@@ -1351,7 +1352,7 @@ class WebAppTests(unittest.TestCase):
         self.assertNotIn('<p class="workspace-kicker">Task</p>', local_body)
         self.assertNotIn('<p class="workspace-kicker">Live result</p>', local_body)
         self.assertIn('settings-directory-picker.js?v=settings-directory-picker-v2.2.1-codex.0', local_body)
-        self.assertIn('browser-session-status.js?v=browser-session-status-v1.14.0-claude.0', local_body)
+        self.assertIn('browser-session-status.js?v=browser-session-status-v1.14.1-codex.0', local_body)
         self.assertIn('pagination-motion.js?v=pagination-motion-v1.1.0-codex.1', local_body)
         self.assertIn('vendor/katex/katex.min.css?v=katex-v0.18.7', local_body)
         self.assertIn('style-v2.157.0-codex.0', local_body)
@@ -1362,7 +1363,7 @@ class WebAppTests(unittest.TestCase):
         self.assertIn('class="agent-new-session-icon" aria-hidden="true"', local_body)
         self.assertIn('agent-sidebar-trailing-control', local_body)
         self.assertIn('selection-list.css?v=selection-list-v1.0.0-codex.0', local_body)
-        self.assertIn('computer-use-agent.js?v=computer-use-agent-v3.74.0-codex.0', local_body)
+        self.assertIn('computer-use-agent.js?v=computer-use-agent-v3.74.3-codex.0', local_body)
         onboarding_start = local_body.index('data-agent-tunnel-provider-panel="chatgpt"')
         onboarding_end = local_body.index(
             'data-agent-tunnel-provider-panel="gemini"', onboarding_start
@@ -4098,7 +4099,7 @@ class WebAppTests(unittest.TestCase):
             'name="conversation_url" value=""',
             'name="project_url" value=""',
             'name="session_title" value=""',
-            'computer-use-agent-v3.74.0-codex.0',
+            'computer-use-agent-v3.74.3-codex.0',
             'data-agent-effort-field',
             'data-agent-effort-input',
             'data-agent-combobox-icon="/static/images/plus.circle.svg"',
@@ -5957,7 +5958,7 @@ class WebAppTests(unittest.TestCase):
             self.assertIn("style-v2.159.1-codex.0", body)
             self.assertIn("/static/images/photo.stack.svg", body)
             self.assertIn('pagination-motion.js?v=pagination-motion-v1.1.0-codex.1', body)
-            self.assertIn('local-media-browser.js?v=local-media-browser-v1.43.1-codex.0', body)
+            self.assertIn('local-media-browser.js?v=local-media-browser-v1.44.1-codex.0', body)
             self.assertIn('data-media-source-link', body)
             self.assertIn('data-media-copy-source-url', body)
             self.assertIn('data-media-reveal', body)
@@ -7036,13 +7037,17 @@ class WebAppTests(unittest.TestCase):
                 self.assertIn(fragment, script)
 
     def test_browser_content_mode_defaults_to_text_and_remembers_the_blue_segment(self) -> None:
-        script = LOCAL_MEDIA_BROWSER_SCRIPT_PATH.read_text(encoding="utf-8")
+        script = LOCAL_MEDIA_BROWSER_SCRIPT_PATH.with_name(
+            "browser-sidebar-filters.js"
+        ).read_text(encoding="utf-8")
 
         for fragment in (
             'const contentModeStorageKey = "cachelikes:browser-content-mode:v1";',
             'window.sessionStorage.getItem(contentModeStorageKey)',
             'window.sessionStorage.setItem(contentModeStorageKey, mode);',
-            'if (!currentUrl.searchParams.has("view") && rememberedContentMode)',
+            'if (currentUrl.pathname === navigationUrl.pathname',
+            '&& !currentUrl.searchParams.has("view") && rememberedContentMode)',
+            'if (event.target.form !== filterForm) return;',
             'const checkedContentMode = contentModeInputs.find((input) => input.checked)?.value || "text";',
             'rememberContentMode(event.target.value);',
             'function navigateToContentMode(mode) {',
@@ -7051,11 +7056,11 @@ class WebAppTests(unittest.TestCase):
             'const formData = new FormData(filterForm);',
             'formData.set("view", mode);',
             'const selectedSource = String(formData.get("source") || "").trim().toLowerCase();',
-            '["x", "chatgpt", "claude", "claude_code", "gemini", "grok", "grok_build", "zhihu"].includes(selectedSource)',
+            '["x", "chatgpt", "copilot", "codex", "claude", "claude_code", "gemini", "grok", "grok_build", "wechat", "zhihu"].includes(selectedSource)',
             'formData.set("source", "chatgpt");',
             'workspace.dataset.browserNavigationSkeleton = "1";',
             'document.documentElement.setAttribute("aria-busy", "true");',
-            'event.target.matches("select[name=\'answerer\'], select[name=\'project\']")',
+            'event.target.matches("select[name=\'answerer\'], select[name=\'project\'], select[name=\'account\'], select[name=\'chat_kind\']")',
             'for (const name of ["session", "session_page"])',
             'const fallbackTimer = window.setTimeout(commitNavigation, 120);',
             'window.requestAnimationFrame(() => {',
@@ -7116,7 +7121,7 @@ class WebAppTests(unittest.TestCase):
         self.assertIn('data-option-count="3"', body)
         self.assertIn('data-segmented-active-index="0"', body)
         self.assertIn('name="source" value="chatgpt"', body)
-        self.assertIn('aria-label="Source: ChatGPT"', body)
+        self.assertIn('aria-label="Source: ChatGPT Chat"', body)
         self.assertNotIn('data-browser-source-filter-option="all"', body)
         self.assertNotIn("All chats", body)
         self.assertIn('/browser?view=text&amp;source=chatgpt', body)

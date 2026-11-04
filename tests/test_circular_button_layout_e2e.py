@@ -1,4 +1,4 @@
-"""Round-action sizing and shared-shell anchor checks. Code version: v1.0.1-codex.0."""
+"""Round-action sizing and shared-shell anchor checks. Code version: v1.1.0-codex.0."""
 
 import pytest
 from playwright.sync_api import expect
@@ -31,6 +31,25 @@ def _geometry(page):
             const hit = document.elementFromPoint(
                 toggle.x + toggle.width / 2, toggle.centerY
             );
+            const coarsePointer = matchMedia('(hover: none) and (pointer: coarse)').matches;
+            const touchTargets = coarsePointer ? [
+                '[data-layout-role="sidebar-toggle"]',
+                '[data-layout-role="global-theme-anchor"]',
+            ].map(selector => {
+                const node = document.querySelector(selector);
+                const rect = node.getBoundingClientRect();
+                const style = getComputedStyle(node, '::before');
+                const centerX = rect.left + rect.width / 2;
+                const centerY = rect.top + rect.height / 2;
+                return {
+                    width: style.width,
+                    height: style.height,
+                    edgeHits: [[-21, 0], [21, 0], [0, -21], [0, 21]].map(([x, y]) => {
+                        const hit = document.elementFromPoint(centerX + x, centerY + y);
+                        return hit === node || node.contains(hit);
+                    }),
+                };
+            }) : [];
             return {
                 toggle,
                 sidebar: box('[data-layout-role="sidebar-shell"]'),
@@ -38,6 +57,8 @@ def _geometry(page):
                 title: box('[data-layout-role="title-heading"]'),
                 textLines,
                 toggleHit: Boolean(hit?.closest('[data-layout-role="sidebar-toggle"]')),
+                coarsePointer,
+                touchTargets,
                 documentOverflow: document.documentElement.scrollWidth - innerWidth,
             };
         }"""
@@ -68,7 +89,7 @@ def test_circular_actions_keep_size_and_shell_anchors(
         page.goto(f"{sidebar_server_url}{route}", wait_until="domcontentloaded")
         toggle = page.locator('[data-layout-role="sidebar-toggle"]')
         theme = page.locator('[data-layout-role="global-theme-anchor"]')
-        expected_size = 44 if width <= 900 else 30
+        expected_size = 32
         for control in (toggle, theme):
             expect(control).to_have_css("width", f"{expected_size}px")
             expect(control).to_have_css("height", f"{expected_size}px")
@@ -106,6 +127,13 @@ def test_circular_actions_keep_size_and_shell_anchors(
                     geometry["theme"]["centerY"], abs=1
                 )
             assert geometry["toggleHit"]
+            assert geometry["coarsePointer"] is touch
+            if touch:
+                assert len(geometry["touchTargets"]) == 2
+                for target in geometry["touchTargets"]:
+                    assert target["width"] == "44px"
+                    assert target["height"] == "44px"
+                    assert all(target["edgeHits"])
             assert geometry["documentOverflow"] <= 1
             assert all(
                 item["right"] <= geometry["theme"]["x"] + 1

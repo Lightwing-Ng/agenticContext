@@ -1,6 +1,6 @@
 """Read cached text sessions for the local browser."""
 
-# Code version: v1.28.0-codex.0
+# Code version: v1.29.0-codex.0
 
 from __future__ import annotations
 
@@ -13,6 +13,7 @@ from typing import Any, Callable, Iterable
 from urllib.parse import urlsplit, urlunsplit
 
 from .agent_source_cache import agent_source_cache_path
+from .codex_history import CODEX_HISTORY_FILENAME
 from .openclaw_history import OPENCLAW_HISTORY_FILENAME, OPENCLAW_SOURCE_LABELS
 
 from .local_media_browser import (
@@ -23,6 +24,7 @@ from .local_media_browser import (
 )
 from .resource_persistence import (
     CHATGPT_HISTORY_FILENAME,
+    COPILOT_HISTORY_FILENAME,
     CLAUDE_HISTORY_FILENAME,
     GEMINI_HISTORY_FILENAME,
     GROK_HISTORY_FILENAME,
@@ -36,7 +38,7 @@ from .zhihu_answers import normalize_zhihu_rich_text
 CHAT_HISTORY_PAGE_SIZE = 100
 CHAT_HISTORY_SESSION_PAGE_SIZE = 100
 CHAT_HISTORY_SOURCE_VALUES = frozenset(
-    {"all", "x", "chatgpt", "claude", "claude_code", "gemini", "grok", "grok_build", "zhihu", "wechat"}
+    {"all", "x", "chatgpt", "copilot", "codex", "claude", "claude_code", "gemini", "grok", "grok_build", "zhihu", "wechat"}
 ) | frozenset(OPENCLAW_SOURCE_LABELS)
 CHAT_HISTORY_SORT_VALUES = frozenset({"newest", "oldest", "name"})
 CHATGPT_NO_PROJECT_FILTER = "__no_project__"
@@ -166,6 +168,8 @@ def chat_history_path(local_store_root: Path | str, source: str = "gemini") -> P
         **dict.fromkeys(OPENCLAW_SOURCE_LABELS, OPENCLAW_HISTORY_FILENAME),
         "x": X_HISTORY_FILENAME,
         "chatgpt": CHATGPT_HISTORY_FILENAME,
+        "copilot": COPILOT_HISTORY_FILENAME,
+        "codex": CODEX_HISTORY_FILENAME,
         "claude": CLAUDE_HISTORY_FILENAME,
         "claude_code": CLAUDE_HISTORY_FILENAME,
         "gemini": GEMINI_HISTORY_FILENAME,
@@ -274,7 +278,9 @@ def _message_from_row(row: dict[str, Any], source: str) -> ChatHistoryMessage | 
     )
     stable_digest = hashlib.sha256(f"{source}:{message_key}".encode("utf-8")).hexdigest()[:24]
     first_seen_at = str(row.get("first_seen_at") or "").strip()
-    persisted_last_seen_at = str(row.get("last_seen_at") or first_seen_at).strip()
+    persisted_last_seen_at = str(
+        row.get("last_seen_at") or ("" if source == "copilot" else first_seen_at)
+    ).strip()
     first_seen_value = _timestamp_value(first_seen_at)
     persisted_last_seen_value = _timestamp_value(persisted_last_seen_at)
     gemini_capture_fallback = (
@@ -293,7 +299,7 @@ def _message_from_row(row: dict[str, Any], source: str) -> ChatHistoryMessage | 
         source=source,
         conversation_id=conversation_id,
         conversation_url=(
-            "" if source in {"claude_code", "grok_build", *OPENCLAW_SOURCE_LABELS} else _safe_external_url(row.get("conversation_url"))
+            "" if source in {"claude_code", "codex", "grok_build", *OPENCLAW_SOURCE_LABELS} else _safe_external_url(row.get("conversation_url"))
         ),
         conversation_title=str(row.get("conversation_title") or "Untitled session").strip(),
         message_key=message_key,
@@ -326,6 +332,8 @@ def load_chat_history_messages(
         else (
             ("x", chat_history_path(local_store_root, "x")),
             ("chatgpt", chat_history_path(local_store_root, "chatgpt")),
+            ("copilot", chat_history_path(local_store_root, "copilot")),
+            ("codex", chat_history_path(local_store_root, "codex")),
             ("claude", chat_history_path(local_store_root, "claude")),
             ("claude_code", chat_history_path(local_store_root, "claude_code")),
             ("gemini", chat_history_path(local_store_root, "gemini")),
@@ -1055,6 +1063,9 @@ def build_chat_history_markdown(page: ChatHistoryPage, *, message_count: int | N
     exported_count = session.message_count if message_count is None else message_count
     source_label = {
         **OPENCLAW_SOURCE_LABELS,
+        "chatgpt": "ChatGPT Chat",
+        "copilot": "Microsoft Copilot",
+        "codex": "Codex",
         "claude": "Claude Chat",
         "claude_code": "Claude Code",
         "grok": "Grok Chat",
@@ -1132,6 +1143,31 @@ def build_chat_history_markdown(page: ChatHistoryPage, *, message_count: int | N
             if context['quality_flags']:
                 lines.append(f"- Source limitations: {', '.join(context['quality_flags'])}")
             lines.append("")
+            if message.source == "wechat":
+                from .wechat_session_export import forwarded_export_items
+
+                forwarded = forwarded_export_items(context.get("forwarded_record"))
+                if forwarded:
+                    lines.extend(("#### Forwarded statements", ""))
+                    for child in forwarded:
+                        speaker = (
+                            child["viewer_display_name"]
+                            or child["sender_label"]
+                            or "Unknown original sender"
+                        )
+                        clock = child["timestamp_label"] or "Unknown time"
+                        position = ".".join(map(str, child["component_path"]))
+                        lines.extend((
+                            f"##### {position}. {speaker} · {clock}",
+                            "",
+                            child["text"],
+                            "",
+                            f"- Sender ID: {child['sender_id'] or 'Unavailable in source'}",
+                            f"- Time basis: {child['time_basis']}",
+                            f"- Original source clock: {json.dumps(child['source_clock'], ensure_ascii=False)}",
+                            f"- Source record: {json.dumps(child['provenance'], ensure_ascii=False)}",
+                            "",
+                        ))
         for link_index, source_link in enumerate(message.source_links, start=1):
             lines.append(f"Source link {link_index}: {source_link}")
         if message.source_links:

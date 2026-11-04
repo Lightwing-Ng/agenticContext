@@ -1,6 +1,6 @@
 """Presentation registry for cache source pages."""
 
-# Code version: v1.14.0-codex.0
+# Code version: v1.15.1-codex.0
 
 from __future__ import annotations
 
@@ -46,6 +46,7 @@ class CacheSourceView:
     settings_category: str = ""
     settings_link_label: str = ""
     supported_browsers: tuple[str, ...] = ()
+    content_modes: tuple[str, ...] = ("text", "media")
     is_local: bool = False
 
     @property
@@ -85,6 +86,36 @@ class CacheSourceView:
 
 
 _CACHE_SOURCE_VIEWS = (
+    CacheSourceView(
+        key="copilot",
+        label="Microsoft Copilot",
+        view_endpoint="cache_source",
+        template_name="copilot.html",
+        icon_filename="images/copilot.ico",
+        document_title=f"{PRODUCT_NAME} Microsoft Copilot",
+        overview_title="Microsoft Copilot cache overview",
+        browser_panel_label="Authorized browser",
+        browser_empty_message="No signed-in Microsoft Copilot account detected",
+        browser_config_field="copilot_browser",
+        require_browser_ready=True,
+        start_form_id="start_form_copilot",
+        start_button_label="Start",
+        start_wait_title="Starting Microsoft Copilot cache",
+        start_wait_copy="Preparing the selected browser session and caching Copilot conversations.",
+        stop_wait_title="Stopping Microsoft Copilot cache",
+        stop_wait_copy="Finishing the current Copilot conversation before stopping.",
+        progress_strategy="queue",
+        progress_aria_label="Microsoft Copilot cache progress",
+        group_key="llm",
+        group_label="Chats",
+        preserve_icon_color=True,
+        show_content_mode=True,
+        show_progress_value=True,
+        show_progress_detail=True,
+        supported_browsers=("safari", "chrome", "edge"),
+        content_modes=("text",),
+        show_shared_settings_link=False,
+    ),
     CacheSourceView(
         key="claude",
         label="Claude Chat",
@@ -131,6 +162,32 @@ _CACHE_SOURCE_VIEWS = (
         stop_wait_copy="Finishing the current session before stopping.",
         progress_strategy="queue",
         progress_aria_label="Claude Code import progress",
+        group_key="llm",
+        group_label="Chats",
+        show_progress_value=True,
+        show_progress_detail=True,
+        is_local=True,
+    ),
+    CacheSourceView(
+        key="codex",
+        label="Codex",
+        view_endpoint="cache_source",
+        template_name="codex.html",
+        icon_filename="images/ChatGPT-Logo.svg",
+        document_title=f"{PRODUCT_NAME} Codex",
+        overview_title="Codex local cache",
+        browser_panel_label="Local transcripts",
+        browser_empty_message="",
+        browser_config_field="",
+        require_browser_ready=False,
+        start_form_id="start_form_codex",
+        start_button_label="Read local sessions",
+        start_wait_title="Reading Codex sessions",
+        start_wait_copy="Reading saved conversations from the selected local folder.",
+        stop_wait_title="Stopping local import",
+        stop_wait_copy="Finishing the current session before stopping.",
+        progress_strategy="queue",
+        progress_aria_label="Codex import progress",
         group_key="llm",
         group_label="Chats",
         show_progress_value=True,
@@ -240,12 +297,12 @@ _CACHE_SOURCE_VIEWS = (
     ),
     CacheSourceView(
         key="chatgpt",
-        label="ChatGPT",
+        label="ChatGPT Chat",
         view_endpoint="chatgpt",
         template_name="chatgpt.html",
         icon_filename="images/ChatGPT-Logo.svg",
-        document_title=f"{PRODUCT_NAME} ChatGPT",
-        overview_title="ChatGPT cache overview",
+        document_title=f"{PRODUCT_NAME} ChatGPT Chat",
+        overview_title="ChatGPT Chat cache overview",
         browser_panel_label="Authorized browser",
         browser_empty_message="The ChatGPT account in the selected browser is ready.",
         browser_config_field="chatgpt_browser",
@@ -331,6 +388,7 @@ _OPENCLAW_SOURCE_VIEWS = tuple(
         show_progress_value=True,
         show_progress_detail=True,
         preserve_icon_color=key == "gemini_openclaw",
+        content_modes=("text",),
         is_local=True,
     )
     for key, label in OPENCLAW_SOURCE_LABELS.items()

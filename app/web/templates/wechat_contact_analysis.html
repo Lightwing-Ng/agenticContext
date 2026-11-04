@@ -1,0 +1,65 @@
+{# Code version: v1.5.3-codex.0 #}
+<!doctype html>
+<html lang="en-US">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+    <title>{{ analysis.contact.display_name }} · Contact analysis · Local resources</title>
+    <link rel="icon" type="image/svg+xml" href="{{ url_for('static', filename='images/favicon.svg', v=version ~ '-favicon-v1.0.1-codex.1') }}">
+    <script src="{{ url_for('static', filename='language-rendering.js', v='language-rendering-v1.0.0-codex.1') }}"></script>
+    <script src="{{ url_for('static', filename='theme-mode.js', v='theme-mode-v1.0.0-codex.1') }}"></script>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css', v=version ~ '-style-v2.159.1-codex.0') }}">
+    {% include "_cache_activity_assets.html" %}
+    <link rel="stylesheet" href="{{ url_for('static', filename='browser-search.css', v='browser-search-v1.4.5-claude.0') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='wechat-kind-badge.css', v='wechat-kind-badge-v1.0.0-codex.0') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='wechat-contact-analysis.css', v='wechat-contact-analysis-v1.5.0-codex.0') }}">
+    <script src="{{ url_for('static', filename='responsive.js', v='responsive-v1.0.0-codex.1') }}"></script>
+    <script defer src="{{ url_for('static', filename='numeric-display.js', v='numeric-display-v1.1.0-codex.0') }}"></script>
+    <script defer src="{{ url_for('static', filename='scrollable-data-table.js', v='scrollable-data-table-v1.0.0-codex.0') }}"></script>
+    <script defer src="{{ url_for('static', filename='select-controller.js', v='select-controller-v1.0.1') }}"></script>
+    <script defer src="{{ url_for('static', filename='segmented-control.js', v='segmented-control-v1.0.4-codex.1') }}"></script>
+    <script defer src="{{ url_for('static', filename='browser-source-filter.js', v='browser-source-filter-v1.6.1-codex.0') }}"></script>
+    <script defer src="{{ url_for('static', filename='browser-sidebar-filters.js', v='browser-sidebar-filters-v1.0.0-codex.0') }}"></script>
+    <script defer src="{{ url_for('static', filename='browser-filter-select.js', v='browser-filter-select-v1.2.0-codex.1') }}"></script>
+    <script defer src="{{ url_for('static', filename='pagination-motion.js', v='pagination-motion-v1.1.0-codex.1') }}"></script>
+    <script defer src="{{ url_for('static', filename='disclosure-motion.js', v='disclosure-motion-v1.1.0-codex.0') }}"></script>
+    <script defer src="{{ url_for('static', filename='wechat-contact-navigation.js', v='wechat-contact-navigation-v1.1.2-codex.0') }}"></script>
+    <script defer src="{{ url_for('static', filename='waiting-modal.js', v='waiting-modal-v1.2.0-codex.0') }}"></script>
+    <script defer src="{{ url_for('static', filename='wechat-contact-analysis.js', v='wechat-contact-analysis-v1.2.1-codex.0') }}"></script>
+</head>
+<body>
+{% include "_sidebar_bootstrap.html" %}
+{% set ready = analysis.status|default('ready') == 'ready' %}
+<main class="page wechat-contact-analysis-page"{% if analysis.status|default('ready') == 'indexing' %} inert{% endif %}>
+    <form action="{{ contact_form_url }}" method="get" id="wechat_contact_filter_form" data-local-resource-context-form hidden>
+        {% if return_url %}<input type="hidden" name="return_to" value="{{ return_url }}">{% endif %}
+    </form>
+    <div class="ambient ambient-left" aria-hidden="true"></div>
+    <div class="ambient ambient-right" aria-hidden="true"></div>
+    <button type="button" class="circular-icon-button sidebar-toggle" id="sidebar_toggle" data-layout-role="sidebar-toggle" aria-label="Toggle sidebar" aria-expanded="false"><span class="icon sidebar-toggle-icon" aria-hidden="true"></span></button>
+    <div class="app-shell is-sidebar-open" id="app_shell">
+        {% include "_theme_toggle.html" %}
+        <button type="button" class="sidebar-backdrop" id="sidebar_backdrop" aria-label="Close sidebar" aria-hidden="true" tabindex="-1" hidden></button>
+        {% set selected_source = namespace(label="ChatGPT", icon="images/ChatGPT-Logo.svg", icon_style="mask") %}
+        {% include "_local_resource_sidebar.html" %}
+        <section class="panel chart-panel workspace browser-workspace wechat-contact-workspace" id="browser_workspace" aria-label="WeChat contact analysis">
+            <div class="workspace-header browser-workspace-header workspace-mobile-summary-shell" data-mobile-summary-fixed>
+                <div class="report-card workspace-summary-card workspace-article-card browser-summary-card" data-layout-role="title-rail">
+                    <div class="report-heading-row browser-heading-row" data-layout-role="title-heading"><div class="browser-heading-copy"><h2 class="report-heading" lang="zh-CN" data-contact-analysis-name tabindex="-1">{{ analysis.contact.display_name }}</h2><span class="wechat-contact-username" data-contact-analysis-username title="{{ analysis.contact.id }}">{{ analysis.contact.username }}</span></div></div>
+                </div>
+                <div class="report-card workspace-content-card browser-content-card browser-text-summary-card wechat-contact-content" data-layout-role="content-scrollport" data-wechat-contact-analysis="{{ analysis.contact.id }}" data-contact-analysis data-contact-analysis-state="{{ analysis.status|default('ready') }}" aria-busy="{{ 'true' if analysis.status|default('ready') == 'indexing' else 'false' }}">
+                    {% include "_wechat_contact_analysis_content.html" %}
+                </div>
+            </div>
+        </section>
+    </div>
+    {% set dock_section = 'local-resources' %}
+    {% include "_sidebar_dock.html" %}
+    {% include "_cache_activity.html" %}
+</main>
+{% with wait_modal_initially_open=analysis.status|default('ready') == 'indexing', wait_modal_title='Loading statements', wait_modal_copy='Please wait while verified statements are collected across source accounts.' %}
+{% include "_waiting_modal.html" %}
+{% endwith %}
+<script src="{{ url_for('static', filename='sidebar.js', v='sidebar-v1.31.0-codex.0') }}"></script>
+</body>
+</html>

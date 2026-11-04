@@ -1,11 +1,12 @@
-{# Code version: v1.1.0-codex.1 #}
+{# Code version: v1.2.0-claude.0 #}
+{% set agent_mode_index = {'agentic': 0, 'jury': 1, 'iphone': 2}.get(current_agent_mode, 0) %}
 <section class="sidebar-section agent-mode-section">
     <nav
         class="segmented-control agent-mode-control"
         aria-label="Agent modes"
-        data-option-count="2"
-        data-segmented-active-index="{{ 0 if current_agent_mode == 'agentic' else 1 }}"
-        style="--segmented-option-count: 2; --segmented-active-index: {{ 0 if current_agent_mode == 'agentic' else 1 }};"
+        data-option-count="3"
+        data-segmented-active-index="{{ agent_mode_index }}"
+        style="--segmented-option-count: 3; --segmented-active-index: {{ agent_mode_index }};"
     >
         <a
             href="{{ agent_entry_url() }}"
@@ -21,5 +22,12 @@
             aria-checked="{{ 'true' if current_agent_mode == 'jury' else 'false' }}"
             {% if current_agent_mode == 'jury' %}aria-current="page"{% endif %}
         ><span>Jurors</span></a>
+        <a
+            href="/iphone"
+            class="segmented-control-option agent-mode-option{% if current_agent_mode == 'iphone' %} is-active{% endif %}"
+            role="radio"
+            aria-checked="{{ 'true' if current_agent_mode == 'iphone' else 'false' }}"
+            {% if current_agent_mode == 'iphone' %}aria-current="page"{% endif %}
+        ><span>iPhone</span></a>
     </nav>
 </section>

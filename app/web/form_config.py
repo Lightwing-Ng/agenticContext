@@ -6,7 +6,7 @@ place. Nothing here reads a service or an application instance; it reads the req
 form and returns a validated configuration.
 """
 
-# Code version: v1.3.0-codex.0
+# Code version: v1.5.0-codex.0
 
 from __future__ import annotations
 
@@ -14,6 +14,7 @@ from pathlib import Path
 
 from flask import request
 
+from app.core.config import normalize_copilot_entry_url
 from app.core.foundation import (
     MAX_CHATGPT_SCAN_WAIT_SECONDS,
     MAX_CHATGPT_STARTUP_TIMEOUT_SECONDS,
@@ -96,6 +97,12 @@ def parse_form_config(
         chatgpt_browser=(request.form.get("chatgpt_browser", source.chatgpt_browser) or source.chatgpt_browser)
         .strip()
         .lower(),
+        copilot_browser=(request.form.get("copilot_browser", source.copilot_browser) or source.copilot_browser)
+        .strip()
+        .lower(),
+        copilot_entry_url=normalize_copilot_entry_url(
+            request.form.get("copilot_entry_url", source.copilot_entry_url)
+        ),
         gemini_browser=(request.form.get("gemini_browser", source.gemini_browser) or source.gemini_browser)
         .strip()
         .lower(),
@@ -105,6 +112,10 @@ def parse_form_config(
         claude_code_directory=Path(
             (request.form.get("claude_code_directory") or str(source.claude_code_directory)).strip()
             or str(source.claude_code_directory)
+        ).expanduser(),
+        codex_directory=Path(
+            (request.form.get("codex_directory") or str(source.codex_directory)).strip()
+            or str(source.codex_directory)
         ).expanduser(),
         zhihu_browser=(request.form.get("zhihu_browser", source.zhihu_browser) or source.zhihu_browser)
         .strip()

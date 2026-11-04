@@ -1,6 +1,6 @@
 """Durable local-resource boundary for catalogs, history, and backups."""
 
-# Code version: v1.4.0-codex.0
+# Code version: v1.5.0-codex.0
 
 from ..chat_history_browser import (
     attach_media_references,
@@ -9,6 +9,7 @@ from ..chat_history_browser import (
     query_chat_history,
 )
 from ..wechat_archive import import_wechat_archive, wechat_archive_path
+from ..wechat_resources import resolve_resource_for_reveal
 from ..local_media_browser import (
     DISPLAY_TIMEZONE,
     LocalMediaCatalog,
@@ -68,5 +69,6 @@ __all__ = [
     "wechat_archive_path",
     "resolve_browser_media_path",
     "resolve_local_media_path",
+    "resolve_resource_for_reveal",
     "reveal_media_path",
 ]

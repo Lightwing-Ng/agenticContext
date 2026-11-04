@@ -5,13 +5,14 @@ for a browser, an Agent, or a cache worker. Serialization of one stored item int
 public shape lives here too, so a template global and a JSON response cannot drift.
 """
 
-# Code version: v1.11.0-codex.0
+# Code version: v1.20.0-codex.0
 
 from __future__ import annotations
 
 from dataclasses import dataclass
+import re
 from typing import Any
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit
 
 from flask import (
     Blueprint,
@@ -19,9 +20,11 @@ from flask import (
     Response,
     abort,
     jsonify,
+    redirect,
     render_template,
     request,
     send_file,
+    stream_with_context,
     url_for,
 )
 
@@ -36,23 +39,74 @@ from app.core.storage import (
     local_file_manager_label,
     media_route_relative_path,
     normalize_browser_filters,
+    open_directory_path,
     prompt_content_key,
     prompt_pointer_key,
     query_chat_history,
     resolve_browser_media_path,
+    resolve_resource_for_reveal,
     reveal_media_path,
 )
-from app.web.cache_sources import CACHE_SOURCE_VIEWS, LOCAL_RESOURCE_TEXT_SOURCE_VIEWS, get_cache_source_label
+from app.web.cache_sources import get_cache_source_label
+from app.web.local_resource_navigation import (
+    local_resource_source_context,
+    wechat_contact_sidebar_context,
+)
 from app.web.presentation import (
     build_browser_search_suggestions,
     cached_message_source_links,
     format_media_size,
+    format_wechat_source_clock,
     render_cached_message,
     render_prompt_markdown,
 )
 
 
 LOCAL_RESOURCES_BLUEPRINT_NAME = "local_resources"
+_WECHAT_CONTACT_ID = re.compile(r"wechat:contact:[0-9a-f]{64}")
+
+
+def _wechat_contact_return_url(value: str) -> str:
+    """Keep a contact's return destination within the existing local chat page."""
+    fallback = url_for(
+        "local_resources.browser", view="text", source="wechat", session_view="1"
+    )
+    if not isinstance(value, str) or len(value) > 4096 or "\\" in value:
+        return fallback
+    if any(ord(character) < 32 or ord(character) == 127 for character in value):
+        return fallback
+    try:
+        parsed = urlsplit(value)
+    except ValueError:
+        return fallback
+    if (
+        parsed.scheme
+        or parsed.netloc
+        or parsed.path != url_for("local_resources.browser")
+    ):
+        return fallback
+    return value
+
+
+def wechat_contact_analysis_url(contact: dict | None, message_id: str = "") -> str:
+    """Link verified objects while leaving source-local names and system rows alone."""
+    if (
+        not isinstance(contact, dict)
+        or contact.get("platform") != "wechat"
+        or contact.get("identity_status") != "verified"
+        or not isinstance(contact.get("id"), str)
+        or _WECHAT_CONTACT_ID.fullmatch(contact["id"]) is None
+    ):
+        return ""
+    return_url = request.full_path.rstrip("?")
+    if message_id:
+        return_url += "#" + quote("wechat_message_" + message_id, safe="-_")
+    return url_for(
+        "local_resources.wechat_contact_analysis",
+        contact_id=contact["id"],
+        sort="oldest",
+        return_to=return_url,
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -141,6 +195,226 @@ def register_local_resource_routes(app: Flask, context: LocalResourceRouteContex
     """Register the Local resources pages, media transport, and prompt API."""
     blueprint = Blueprint(LOCAL_RESOURCES_BLUEPRINT_NAME, __name__)
     app.template_global("browser_media_url")(browser_media_url)
+    app.template_global("wechat_contact_analysis_url")(wechat_contact_analysis_url)
+    app.template_filter("wechat_source_clock")(format_wechat_source_clock)
+
+    @blueprint.get("/browser/wechat/contacts/<contact_id>")
+    def wechat_contact_analysis(contact_id: str):
+        """Project all proven source occurrences of one contact into a standard table."""
+        from app.core.local_media_browser import build_local_store_pagination
+        from app.core.wechat_contact_analysis import (
+            ContactAnalysisSourceChanged,
+            query_contact_analysis,
+        )
+
+        query = request.args.get("q", "").replace("\x00", "").strip()[:120]
+        sort = "newest" if request.args.get("sort") == "newest" else "oldest"
+        try:
+            analysis = query_contact_analysis(
+                context.media_catalog.local_store_root,
+                contact_id,
+                query=query,
+                sort=sort,
+                page=request.args.get("page", "1"),
+                page_size=50,
+                background=True,
+            )
+        except ValueError:
+            abort(404)
+        except ContactAnalysisSourceChanged:
+            analysis = {
+                "status": "indexing",
+                "contact": {
+                    "id": contact_id,
+                    "display_name": "Contact analysis",
+                    "username": "",
+                },
+                "items": [],
+                "counts": {
+                    "messages": 0,
+                    "conversations": 0,
+                    "source_accounts": 0,
+                    "sources": 0,
+                },
+                "total_count": 0,
+                "total_pages": 1,
+                "current_page": 1,
+                "page_size": 50,
+            }
+        if analysis is None:
+            abort(404)
+        return_url = _wechat_contact_return_url(request.args.get("return_to", ""))
+        canonical_contact_id = analysis["contact"]["id"]
+        if canonical_contact_id != contact_id:
+            return redirect(
+                url_for(
+                    "local_resources.wechat_contact_analysis",
+                    contact_id=canonical_contact_id,
+                    q=query or None,
+                    sort=sort,
+                    page=request.args.get("page", "1"),
+                    return_to=return_url,
+                )
+            )
+        for item in analysis["items"]:
+            item["source_url"] = url_for(
+                "local_resources.wechat_message_source", message_id=item["id"]
+            )
+            for observation in item.get("observations", ()):
+                observation["source_url"] = url_for(
+                    "local_resources.wechat_message_source",
+                    message_id=observation["id"],
+                )
+        analysis["conversation_count"] = analysis["counts"]["conversations"]
+        analysis["account_count"] = analysis["counts"]["source_accounts"]
+
+        def page_url(page):
+            return url_for(
+                "local_resources.wechat_contact_analysis",
+                contact_id=contact_id,
+                q=query or None,
+                sort=sort,
+                page=page,
+                return_to=return_url,
+            )
+
+        template_context = {
+            "analysis": analysis,
+            "contact_filters": {"q": query, "sort": sort},
+            "return_url": return_url,
+            "contact_form_url": url_for(
+                "local_resources.wechat_contact_analysis", contact_id=contact_id
+            ),
+            "contact_page_url": page_url,
+            "pagination_items": build_local_store_pagination(
+                analysis["total_pages"], analysis["current_page"]
+            ),
+            "version": APP_VERSION,
+        }
+        if request.accept_mimetypes.best == "application/json":
+            payload = {
+                "status": analysis["status"],
+                "contact_id": analysis["contact"]["id"],
+                "display_name": analysis["contact"]["display_name"],
+                "username": analysis["contact"]["username"],
+            }
+            if analysis["status"] != "indexing":
+                payload["html"] = render_template(
+                    "_wechat_contact_analysis_content.html", **template_context
+                )
+            response = jsonify(payload)
+            response.cache_control.no_store = True
+        else:
+            template_context.update(
+                wechat_contact_sidebar_context(
+                    context.media_catalog.local_store_root, return_url
+                )
+            )
+            response = app.make_response(
+                render_template("wechat_contact_analysis.html", **template_context)
+            )
+        response.vary.add("Accept")
+        if analysis["status"] == "indexing":
+            response.status_code = 202
+        elif analysis["status"] == "error":
+            response.status_code = 503
+        return response
+
+    @blueprint.get("/browser/wechat/contacts/<contact_id>/export.csv")
+    def wechat_contact_csv(contact_id: str):
+        """Stream every filtered statement without writing an export to local storage."""
+        from app.core.wechat_contact_analysis import (
+            ContactAnalysisSourceChanged,
+            contact_analysis_export_context,
+            export_contact_analysis_items,
+        )
+        from app.web.wechat_contact_csv import contact_csv_chunks, contact_csv_filename
+
+        query = request.args.get("q", "").replace("\x00", "").strip()[:120]
+        sort = "newest" if request.args.get("sort") == "newest" else "oldest"
+        try:
+            analysis = contact_analysis_export_context(
+                context.media_catalog.local_store_root,
+                contact_id,
+            )
+            if analysis is None:
+                abort(404)
+            if analysis["status"] != "ready":
+                abort(
+                    503,
+                    description="Contact statements are not ready. Please try again shortly.",
+                )
+            items = export_contact_analysis_items(
+                context.media_catalog.local_store_root,
+                contact_id,
+                query=query,
+                sort=sort,
+                source_fingerprint=analysis["source_fingerprint"],
+            )
+            first = next(items, None)
+        except ValueError:
+            abort(404)
+        except ContactAnalysisSourceChanged:
+            abort(
+                503,
+                description="Source records are updating. Please try again shortly.",
+            )
+        filename = contact_csv_filename(analysis["contact"])
+        response = Response(
+            stream_with_context(
+                contact_csv_chunks(
+                    items,
+                    first=first,
+                    contact=analysis["contact"],
+                    source_url=lambda item: url_for(
+                        "local_resources.wechat_message_source",
+                        message_id=item["id"],
+                        _external=True,
+                    ),
+                )
+            ),
+            mimetype="text/csv",
+            headers={
+                "Content-Disposition": (
+                    f'attachment; filename="wechat-contact-{contact_id[-12:]}.csv"; '
+                    f"filename*=UTF-8''{quote(filename, safe='')}"
+                ),
+                "X-Content-Type-Options": "nosniff",
+            },
+        )
+        response.cache_control.no_store = True
+        response.call_on_close(items.close)
+        return response
+
+    @blueprint.get("/browser/wechat/messages/<message_id>")
+    def wechat_message_source(message_id: str):
+        """Open the exact source message, including its original account and page."""
+        from app.core.wechat_contact_analysis import (
+            ContactAnalysisSourceChanged,
+            message_source_location,
+        )
+
+        try:
+            location = message_source_location(
+                context.media_catalog.local_store_root, message_id
+            )
+        except ContactAnalysisSourceChanged:
+            abort(503, description="Source records are updating. Please try again shortly.")
+        if location is None:
+            abort(404)
+        return redirect(
+            url_for(
+                "local_resources.browser",
+                view="text",
+                source="wechat",
+                account=location["account_key"],
+                chat_kind=location["kind"],
+                session=location["conversation_id"],
+                page=location["page"],
+                sort="newest",
+                _anchor=location.get("anchor_id") or "wechat_message_" + message_id,
+            )
+        )
 
     @blueprint.get("/browser")
     def browser():
@@ -244,14 +518,7 @@ def register_local_resource_routes(app: Flask, context: LocalResourceRouteContex
         )
         return render_template(
             "browser.html",
-            local_resource_media_sources=tuple(
-                source for source in CACHE_SOURCE_VIEWS
-                if source.key in {"x", "grok", "chatgpt", "claude", "gemini"}
-            ),
-            local_resource_text_sources=tuple(
-                source for source in LOCAL_RESOURCE_TEXT_SOURCE_VIEWS
-                if source.key in {"x", "grok", "grok_build", "chatgpt", "claude", "claude_code", "gemini", "zhihu", "wechat"} or source.key.endswith("_openclaw")
-            ),
+            **local_resource_source_context(),
             media_page=media_page,
             text_page=text_page,
             prompt_page=prompt_page,
@@ -327,6 +594,42 @@ def register_local_resource_routes(app: Flask, context: LocalResourceRouteContex
                 )
             },
         )
+
+    @blueprint.get("/browser/wechat/session/<session_id>/export.csv")
+    def browser_wechat_session_csv(session_id: str):
+        """Download the complete scoped timeline in chronological order."""
+        from app.core.wechat_session_export import (
+            WechatSessionExport,
+            WechatSessionSourceChanged,
+        )
+        from app.web.wechat_session_csv import session_csv_chunks, session_csv_filename
+
+        try:
+            export = WechatSessionExport(
+                context.media_catalog.local_store_root,
+                session_id,
+                account=request.args.get("account", ""),
+                kind=request.args.get("chat_kind", "all"),
+            )
+        except ValueError:
+            abort(404)
+        except (OSError, WechatSessionSourceChanged):
+            abort(503, description="Source records are updating. Please try again shortly.")
+        filename = session_csv_filename(export.conversation)
+        response = Response(
+            stream_with_context(session_csv_chunks(export)),
+            mimetype="text/csv",
+            headers={
+                "Content-Disposition": (
+                    f'attachment; filename="wechat-conversation-{session_id[-12:]}.csv"; '
+                    f"filename*=UTF-8''{quote(filename, safe='')}"
+                ),
+                "X-Content-Type-Options": "nosniff",
+            },
+        )
+        response.cache_control.no_store = True
+        response.call_on_close(export.close)
+        return response
 
     @blueprint.get("/browser/media/<path:relative_path>")
     def browser_media(relative_path: str):
@@ -476,6 +779,22 @@ def register_local_resource_routes(app: Flask, context: LocalResourceRouteContex
         except OSError as exc:
             return jsonify({"error": f"Unable to open {local_file_manager_label()}: {exc}"}), 500
         return jsonify({"revealed": True, "file_manager": local_file_manager_label()})
+
+    @blueprint.post("/api/browser/wechat/resources/<message_id>/reveal")
+    def reveal_wechat_resource(message_id: str):
+        if not is_loopback_address(request.remote_addr):
+            return jsonify({"error": "WeChat resources can only be opened from this computer."}), 403
+        try:
+            destination = resolve_resource_for_reveal(context.media_catalog.local_store_root, message_id)
+            if destination["status"] == "folder":
+                open_directory_path(destination["path"])
+            else:
+                reveal_media_path(destination["path"])
+        except LookupError as exc:
+            return jsonify({"error": str(exc)}), 404
+        except (OSError, ValueError):
+            return jsonify({"error": f"Unable to open {local_file_manager_label()}. The local file or folder may have moved."}), 409
+        return jsonify({"revealed": True, "target_kind": destination["status"], "file_manager": local_file_manager_label()})
 
     app.register_blueprint(blueprint)
 

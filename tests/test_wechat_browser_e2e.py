@@ -1,13 +1,15 @@
 """Account and conversation-type filters share desktop and narrow UI contracts.
 
-Code version: v1.3.2-codex.0
+Code version: v1.7.1-codex.0
 """
 
 from __future__ import annotations
 
-from io import BytesIO
+import csv
+from io import BytesIO, StringIO
 import math
 import re
+import sqlite3
 from threading import Thread
 from unittest.mock import patch
 
@@ -17,7 +19,7 @@ from playwright.sync_api import expect
 from werkzeug.serving import make_server
 
 from app.core.config import CrawlConfig
-from app.core.wechat_archive import import_wechat_archive
+from app.core.wechat_archive import import_wechat_archive, wechat_archive_path
 from app.web.app import create_app
 from app.web.config_store import SavedConfigStore
 from tests import test_sidebar_e2e
@@ -95,14 +97,118 @@ def _assert_wechat_effect_geometry(page):
     return geometry
 
 
+def _assert_conversation_kind_badges(page, selector, theme):
+    """Keep compact opaque badges legible without restyling source provenance."""
+    badges = page.locator(selector)
+    assert badges.count() > 0
+    badges.evaluate_all("""async badges => {
+        const transitions = badges.flatMap(badge => badge.getAnimations())
+            .filter(animation => animation instanceof CSSTransition
+                && Number.isFinite(animation.effect.getComputedTiming().endTime));
+        await Promise.all(transitions.map(animation => animation.finished));
+    }""")
+    metrics = badges.evaluate_all("""badges => badges.map(badge => {
+        const style = getComputedStyle(badge);
+        const bounds = badge.getBoundingClientRect();
+        const region = badge.closest('td, .wechat-conversation-labels');
+        const regionBounds = region.getBoundingClientRect();
+        const source = badge.closest('tr, header').querySelector('.wechat-source-label');
+        const sourceStyle = getComputedStyle(source);
+        let opacity = 1;
+        for (let parent = badge; parent; parent = parent.parentElement) {
+            opacity *= parseFloat(getComputedStyle(parent).opacity);
+        }
+        return {
+            foreground: style.color,
+            background: style.backgroundColor,
+            opacity,
+            radius: style.borderRadius,
+            padding: [style.paddingTop, style.paddingRight,
+                style.paddingBottom, style.paddingLeft],
+            fontSize: style.fontSize,
+            sharedFontSize: getComputedStyle(document.documentElement)
+                .getPropertyValue('--font-ui-xs').trim(),
+            themeMuted: getComputedStyle(document.documentElement)
+                .getPropertyValue('--theme-muted').trim(),
+            themeBackground: getComputedStyle(document.documentElement)
+                .getPropertyValue('--theme-background').trim(),
+            fontWeight: style.fontWeight,
+            insideRegion: bounds.left >= regionBounds.left - 1
+                && bounds.right <= regionBounds.right + 1,
+            sourceColor: sourceStyle.color,
+            sourceBackground: sourceStyle.backgroundColor,
+            sourceOpacity: sourceStyle.opacity,
+        };
+    })""")
+
+    def opaque_rgb(value):
+        if value.startswith("#"):
+            assert len(value) == 7
+            return [int(value[index : index + 2], 16) / 255 for index in (1, 3, 5)]
+        channels = [float(number) for number in re.findall(r"[\d.]+", value)]
+        assert len(channels) == 3 or channels[3] == 1
+        if value.startswith("color(srgb "):
+            return channels[:3]
+        assert value.startswith("rgb(") or value.startswith("rgba(")
+        return [channel / 255 for channel in channels[:3]]
+
+    def luminance(rgb):
+        channels = [
+            value / 12.92 if value <= 0.04045 else ((value + 0.055) / 1.055) ** 2.4
+            for value in rgb
+        ]
+        return sum(
+            channel * weight
+            for channel, weight in zip(channels, (0.2126, 0.7152, 0.0722))
+        )
+
+    for metric in metrics:
+        foreground_rgb = opaque_rgb(metric["foreground"])
+        background_rgb = opaque_rgb(metric["background"])
+        muted_rgb = opaque_rgb(metric["themeMuted"])
+        surface_rgb = opaque_rgb(metric["themeBackground"])
+        foreground = luminance(foreground_rgb)
+        background = luminance(background_rgb)
+        contrast = (max(foreground, background) + 0.05) / (
+            min(foreground, background) + 0.05
+        )
+        assert contrast >= 4.5
+        assert metric["opacity"] == 1
+        assert metric["radius"] == "2px"
+        assert metric["padding"] == ["2px", "6px", "2px", "6px"]
+        assert metric["fontSize"] == metric["sharedFontSize"]
+        assert metric["fontWeight"] == "500"
+        assert metric["insideRegion"]
+        assert opaque_rgb(metric["sourceColor"]) == muted_rgb
+        if theme == "light":
+            expected_fill = [
+                muted * 0.16 + surface * 0.84
+                for muted, surface in zip(muted_rgb, surface_rgb)
+            ]
+            assert background > 0.7
+            assert background_rgb == pytest.approx(expected_fill, abs=0.00001)
+            assert foreground_rgb == muted_rgb
+        else:
+            assert theme == "dark"
+            assert background_rgb == muted_rgb
+            assert foreground_rgb == surface_rgb
+        assert metric["sourceBackground"] == "rgba(0, 0, 0, 0)"
+        assert metric["sourceOpacity"] == "1"
+    assert page.evaluate("document.documentElement.scrollWidth <= window.innerWidth")
+
+
 @pytest.fixture(scope="module")
 def wechat_server(tmp_path_factory):
     sandbox = tmp_path_factory.mktemp("wechat-browser")
     archive = make_archive(sandbox / "archive", repeated=106)
     store = sandbox / "store"
-    import_wechat_archive(
-        archive, store, source_kinds={"xlsx-2": "group", "xlsx-3": "group"}
-    )
+    import_wechat_archive(archive, store, source_kinds={"xlsx-2": "group"})
+    with sqlite3.connect(wechat_archive_path(store)) as connection:
+        connection.execute(
+            "UPDATE conversations SET peer_id=?, title=? "
+            "WHERE account_key=? AND kind='direct'",
+            ("gh_fixture_news", "Official fixture", "account:wxid_account_b"),
+        )
     with patch(
         "app.web.app.SavedConfigStore.load",
         return_value=SavedConfigStore(CrawlConfig()),
@@ -140,6 +246,50 @@ def test_filters_pagination_and_human_message_variants(
         page.goto(
             wechat_server + "/browser?view=text&source=wechat", wait_until="networkidle"
         )
+        expect(page.locator(".wechat-conversation-share")).to_have_count(0)
+        badges = page.locator(".wechat-conversation-kind .wechat-kind-badge")
+        expect(badges).to_have_count(6)
+        assert sorted(badges.all_text_contents()) == sorted(
+            [
+                "Group chat",
+                "Private chat",
+                "Group chat",
+                "Official account",
+                "Group chat",
+                "Unclassified chat",
+            ]
+        )
+        _assert_conversation_kind_badges(
+            page, ".wechat-conversation-kind .wechat-kind-badge", color_scheme
+        )
+        assert page.locator("html").get_attribute("data-theme-override") is None
+        opposite_theme = "dark" if color_scheme == "light" else "light"
+        for manual_theme in (opposite_theme, color_scheme):
+            page.locator("#global_theme_toggle").click()
+            expect(page.locator("html")).to_have_attribute(
+                "data-theme-override", manual_theme
+            )
+            expect(page.locator("#global_theme_toggle")).to_have_attribute(
+                "data-effective-theme", manual_theme
+            )
+            _assert_conversation_kind_badges(
+                page, ".wechat-conversation-kind .wechat-kind-badge", manual_theme
+            )
+        if page.locator("#sidebar_toggle").get_attribute("aria-expanded") == "true":
+            page.locator("#sidebar_toggle").click()
+        page.get_by_role("link", name="Official fixture", exact=True).click()
+        expect(page.locator(".wechat-conversation-context")).to_have_attribute(
+            "data-wechat-conversation-kind", "direct"
+        )
+        expect(
+            page.locator(".wechat-conversation-labels .wechat-kind-badge")
+        ).to_have_text("Official account")
+        _assert_conversation_kind_badges(
+            page, ".wechat-conversation-labels .wechat-kind-badge", color_scheme
+        )
+        page.get_by_role("link", name="All conversations", exact=True).click()
+        if page.locator("#sidebar_toggle").get_attribute("aria-expanded") != "true":
+            page.locator("#sidebar_toggle").click()
         if (
             width < 600
             and page.locator("#sidebar_toggle").get_attribute("aria-expanded") != "true"
@@ -155,6 +305,7 @@ def test_filters_pagination_and_human_message_variants(
         expect(page).to_have_url(
             re.compile(r"account=(?:account%3A|account:)wxid_account_a")
         )
+        page.wait_for_load_state("networkidle")
         if (
             width < 600
             and page.locator("#sidebar_toggle").get_attribute("aria-expanded") != "true"
@@ -181,6 +332,71 @@ def test_filters_pagination_and_human_message_variants(
             )
         page.get_by_role("link", name="Same title", exact=True).click()
         expect(page.locator(".wechat-chat--group")).to_be_visible()
+        share = page.get_by_role("link", name="Export conversation as CSV", exact=True)
+        expect(share).to_be_visible()
+        if width < 600:
+            sidebar_toggle = page.locator("#sidebar_toggle")
+            sidebar_toggle.click()
+            expect(sidebar_toggle).to_have_attribute("aria-expanded", "true")
+            expect(share).to_be_hidden()
+            expect(page.locator("#global_theme_toggle")).to_be_visible()
+            sidebar_toggle.click()
+            expect(sidebar_toggle).to_have_attribute("aria-expanded", "false")
+            expect(share).to_be_visible()
+        expect(share).to_have_attribute("title", "Export conversation as CSV")
+        expect(page.get_by_role("link", name="Export text", exact=True)).to_have_count(
+            0
+        )
+        expect(page.locator(".wechat-conversation-actions a")).to_have_count(0)
+        back = page.get_by_role("link", name="All conversations", exact=True)
+        expect(
+            page.locator(".browser-content-toolbar > .wechat-conversation-back")
+        ).to_have_count(1)
+        expect(back).to_have_attribute("title", "Back to all conversations")
+        expect(back).to_have_text("")
+        expect(back.locator(".icon")).to_have_attribute("aria-hidden", "true")
+        back_geometry = back.evaluate("""element => {
+            const box = element.getBoundingClientRect();
+            const icon = element.querySelector('.icon');
+            const iconBox = icon.getBoundingClientRect();
+            return {
+                size: [box.width, box.height],
+                iconSize: [iconBox.width, iconBox.height],
+                mask: getComputedStyle(icon).maskImage,
+            };
+        }""")
+        assert back_geometry["size"] == [32, 32], back_geometry
+        assert back_geometry["iconSize"] == [18, 18], back_geometry
+        assert back_geometry["mask"].endswith('/static/images/arrow.left.svg")')
+        back.focus()
+        expect(back).to_be_focused()
+        share_geometry = share.evaluate("""element => {
+            const share = element.getBoundingClientRect();
+            const icon = element.querySelector('.icon').getBoundingClientRect();
+            const theme = document.querySelector('#global_theme_toggle').getBoundingClientRect();
+            const title = document.querySelector('.browser-heading-copy').getBoundingClientRect();
+            return {
+                size: [share.width, share.height],
+                iconSize: [icon.width, icon.height],
+                centerDifference: Math.abs(share.top + share.height / 2 - theme.top - theme.height / 2),
+                gap: theme.left - share.right,
+                titleClearsActions: title.right <= share.left + 1,
+            };
+        }""")
+        assert share_geometry["size"] == [32, 32], share_geometry
+        assert share_geometry["iconSize"] == [18, 18], share_geometry
+        assert share_geometry["centerDifference"] <= 1, share_geometry
+        assert share_geometry["gap"] == pytest.approx(10, abs=1), share_geometry
+        assert share_geometry["titleClearsActions"], share_geometry
+        page.locator("#global_theme_toggle").focus()
+        page.keyboard.press("Tab")
+        expect(share).to_be_focused()
+        expect(
+            page.locator(".wechat-conversation-labels .wechat-kind-badge")
+        ).to_have_text("Group chat")
+        _assert_conversation_kind_badges(
+            page, ".wechat-conversation-labels .wechat-kind-badge", color_scheme
+        )
         expect(page.locator(".wechat-message")).to_have_count(100)
         assert page.locator(".wechat-message--sent").count() == 50
         assert page.locator(".wechat-message--received").count() == 50
@@ -195,13 +411,117 @@ def test_filters_pagination_and_human_message_variants(
         page.screenshot(path=f"test-results/wechat-{width}-{color_scheme}.png")
         page.get_by_role("link", name="Message page 2", exact=True).click()
         expect(page.locator(".wechat-message")).to_have_count(6)
+        expect(page.locator(".wechat-conversation-context strong")).to_have_count(0)
+        expect(
+            page.get_by_role("heading", name="Same title", exact=True)
+        ).to_have_count(1)
+        with page.expect_download() as download_info:
+            page.get_by_role(
+                "link", name="Export conversation as CSV", exact=True
+            ).click()
+        download = download_info.value
+        assert download.suggested_filename.endswith(".csv")
+        body = download.path().read_bytes()
+        assert body.startswith(b"\xef\xbb\xbf")
+        reader = csv.DictReader(StringIO(body.decode("utf-8-sig"), newline=""))
+        assert reader.fieldnames == ["Time", "Speaker ID", "Statement"]
+        rows = list(reader)
+        assert len(rows) == 106
+        assert {row["Time"] for row in rows} == {"2021-08-07 18:59:03 UTC+08:00"}
+        assert {row["Speaker ID"] for row in rows} == {
+            "Same display name (wxid_peer)",
+            "Same display name (wxid_account_a)",
+        }
+        assert all("wxid_account_a group" in row["Statement"] for row in rows)
         assert (
             re.search(r"account=(?:account%3A|account:)wxid_account_a", page.url)
             and "chat_kind=group" in page.url
         )
-        page.get_by_role("link", name="All conversations", exact=True).click()
+        page.get_by_role("link", name="All conversations", exact=True).press("Enter")
         expect(page.locator("tr[data-chat-session-id]")).to_have_count(1)
+        expect(page.locator(".wechat-conversation-share")).to_have_count(0)
+        assert (
+            re.search(r"account=(?:account%3A|account:)wxid_account_a", page.url)
+            and "chat_kind=group" in page.url
+            and "sort=newest" in page.url
+            and "session=" not in page.url
+        )
         assert errors == []
+    finally:
+        context.close()
+
+
+@pytest.mark.parametrize("width", [1280, 1024, 901, 900, 858, 390])
+def test_conversation_back_stays_before_search_within_desktop_toolbar(
+    disposable_browser, wechat_server, width
+):
+    """Keep Back beside desktop search and reachable in the compact layout."""
+    context = disposable_browser.new_context(
+        viewport={"width": width, "height": 937}, reduced_motion="reduce"
+    )
+    page = context.new_page()
+    try:
+        page.goto(
+            wechat_server
+            + "/browser?view=text&source=wechat&account=account:wxid_account_a"
+            + "&chat_kind=group&sort=newest&session_view=1",
+            wait_until="networkidle",
+        )
+        toggle = page.locator("#sidebar_toggle")
+        if toggle.get_attribute("aria-expanded") == "true":
+            toggle.click()
+        page.get_by_role("link", name="Same title", exact=True).click()
+        back = page.get_by_role("link", name="All conversations", exact=True)
+        expect(
+            page.locator(".browser-content-toolbar > .wechat-conversation-back")
+        ).to_have_count(1)
+        expect(page.locator(".wechat-conversation-actions")).to_have_count(0)
+        page.evaluate("document.fonts.ready")
+        for expanded in (False, True, False):
+            desired = "true" if expanded else "false"
+            if toggle.get_attribute("aria-expanded") != desired:
+                toggle.click()
+            expect(toggle).to_have_attribute("aria-expanded", desired)
+            if expanded and width <= 900:
+                expect(back).to_be_hidden()
+                continue
+            expect(back).to_be_visible()
+            metrics = back.evaluate("""async element => {
+                await new Promise(requestAnimationFrame);
+                await new Promise(requestAnimationFrame);
+                const box = element.getBoundingClientRect();
+                const icon = element.querySelector('.icon').getBoundingClientRect();
+                const toggle = document.querySelector('#sidebar_toggle').getBoundingClientRect();
+                const search = document.querySelector('.browser-search-control').getBoundingClientRect();
+                const toolbar = element.closest('.browser-content-toolbar').getBoundingClientRect();
+                const actions = element.nextElementSibling.getBoundingClientRect();
+                const center = {x: box.x + box.width / 2, y: box.y + box.height / 2};
+                return {
+                    size: [box.width, box.height],
+                    iconSize: [icon.width, icon.height],
+                    centerXDifference: Math.abs(center.x - toggle.x - toggle.width / 2),
+                    centerYDifference: Math.abs(center.y - search.y - search.height / 2),
+                    toolbarLeftDifference: Math.abs(box.left - toolbar.left),
+                    actionsGap: actions.left - box.right,
+                    centerHit: document.elementFromPoint(center.x, center.y)?.closest('a') === element,
+                    inViewport: box.left >= 0 && box.top >= 0
+                        && box.right <= innerWidth && box.bottom <= innerHeight,
+                    documentOverflow: document.documentElement.scrollWidth - innerWidth,
+                };
+            }""")
+            assert metrics["size"] == [32, 32], metrics
+            assert metrics["iconSize"] == [18, 18], metrics
+            if width > 900:
+                assert metrics["toolbarLeftDifference"] <= 1, metrics
+                assert metrics["actionsGap"] == pytest.approx(12, abs=1), metrics
+            else:
+                assert metrics["centerXDifference"] <= 1, metrics
+            assert metrics["centerYDifference"] <= 1, metrics
+            assert metrics["centerHit"], metrics
+            assert metrics["inViewport"], metrics
+            assert metrics["documentOverflow"] <= 1, metrics
+            back.focus()
+            expect(back).to_be_focused()
     finally:
         context.close()
 
@@ -301,7 +621,7 @@ def test_partial_message_shadow_does_not_draw_blank_body_below_scrollport(
 
 @pytest.mark.parametrize("width", [1280, 812, 390])
 @pytest.mark.parametrize("color_scheme", ["light", "dark"])
-def test_exported_group_messages_align_left_and_reuse_name_metric(
+def test_exported_group_messages_align_left_with_compact_context(
     disposable_browser, wechat_server, width, color_scheme
 ):
     context = disposable_browser.new_context(
@@ -357,26 +677,27 @@ def test_exported_group_messages_align_left_and_reuse_name_metric(
         assert compact["bodyAfterHeader"]
         assert abs(compact["emptyFooter"]) <= 1
         assert compact["nextCardGap"] == pytest.approx(12, abs=1)
-        metric = page.locator(".wechat-conversation-name")
-        expect(metric.locator(".metric-label")).to_have_text("Group chat")
-        expect(metric.locator("strong")).to_have_text("Group Name is not type evidence")
+        expect(
+            page.locator(".wechat-conversation-labels .wechat-kind-badge")
+        ).to_have_text("Group chat")
+        expect(page.locator(".wechat-conversation-context strong")).to_have_count(0)
+        expect(
+            page.get_by_role(
+                "heading", name="Group Name is not type evidence", exact=True
+            )
+        ).to_have_count(1)
         geometry = page.evaluate("""() => {
             const list = document.querySelector('.wechat-message-list');
             const message = list.querySelector('.wechat-message--unknown');
             const style = getComputedStyle(list);
             const expectedLeft = list.getBoundingClientRect().left
                 + parseFloat(style.paddingLeft) + parseFloat(style.borderLeftWidth);
-            const name = document.querySelector('.wechat-conversation-name strong');
-            const reference = document.querySelector('.browser-metric-grid .metric-card strong');
-            const roles = ['fontSize', 'fontWeight', 'lineHeight', 'backgroundImage', 'color'];
             return {
                 leftOffset: Math.abs(message.getBoundingClientRect().left - expectedLeft),
-                sameMetricStyle: roles.every(role => getComputedStyle(name)[role] === getComputedStyle(reference)[role]),
                 fits: document.documentElement.scrollWidth <= innerWidth,
             };
         }""")
         assert geometry["leftOffset"] <= 1
-        assert geometry["sameMetricStyle"]
         assert geometry["fits"]
         scrollport = page.locator("[data-chat-scrollport]")
         offsets = None
