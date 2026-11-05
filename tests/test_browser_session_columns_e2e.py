@@ -1,4 +1,4 @@
-"""Container-sized cached session column contracts. Code version: v1.0.2-codex.0."""
+"""Container-sized cached session column contracts. Code version: v1.0.3-codex.0."""
 
 from collections.abc import Iterator
 from threading import Thread
@@ -119,10 +119,21 @@ def _session_table_geometry(page: Page) -> dict:
 
 
 def _assert_session_columns(page: Page, *, zhihu: bool) -> dict:
-    # ResizeObserver schedules the separate header's measured widths for a frame.
-    page.evaluate("""() => new Promise(resolve => {
-        requestAnimationFrame(() => requestAnimationFrame(resolve));
-    })""")
+    # ResizeObserver may need multiple frames after container-query breakpoints.
+    page.wait_for_function("""() => {
+        const shell = document.querySelector('.browser-session-index-shell');
+        const header = shell?.querySelector('[data-table-header]');
+        const body = shell?.querySelector('[data-table-body]');
+        if (!header || !body || !header.rows.length || !body.rows.length) return false;
+        const bounds = node => node.getBoundingClientRect();
+        const aligned = (left, right) => Math.abs(left.left - right.left) <= 1
+            && Math.abs(left.width - right.width) <= 1;
+        if (!aligned(bounds(header), bounds(body))) return false;
+        const headings = [...header.rows[0].cells];
+        const cells = [...body.rows[0].cells];
+        return headings.length === cells.length
+            && headings.every((heading, index) => aligned(bounds(heading), bounds(cells[index])));
+    }""")
     geometry = _session_table_geometry(page)
     container_width = geometry["body"]["width"]
     if container_width > 800:
