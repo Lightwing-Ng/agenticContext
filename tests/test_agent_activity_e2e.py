@@ -1,4 +1,4 @@
-"""Activity disclosure and status glyph regressions. Code version: v1.1.1-codex.0."""
+"""Activity disclosure and status glyph regressions. Code version: v1.1.2-codex.0."""
 
 import pytest
 from playwright.sync_api import expect
@@ -267,7 +267,7 @@ def test_running_status_markers_share_breathing_contract(
     page.route("**/api/agent/sources**", lambda route: route.fulfill(json=fixtures._chatgpt_catalog_sessions()))
     try:
         page.goto(f"{sidebar_server_url}/agent/edge/chatgpt")
-        status = page.locator("[data-agent-response-status-spinner]")
+        status = page.locator("[data-agent-response-status-spinner].cache-phase-live-marker")
         activity = page.locator('#agent_activity_list [data-status="running"] .cache-phase-live-marker')
         expect(status).to_be_visible()
         expect(activity).to_be_visible()
