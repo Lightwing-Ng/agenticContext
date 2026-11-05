@@ -1,6 +1,6 @@
 """Record bounded metadata only after an original Jury navigation timeout.
 
-Code version: v1.0.1-codex.0
+Code version: v1.0.2-codex.0
 """
 
 from __future__ import annotations
@@ -15,6 +15,7 @@ import time
 from urllib.parse import urlsplit
 
 from playwright._impl._sync_base import mapping
+from playwright.sync_api import Error as PlaywrightError
 
 
 DIRECTORY = Path(os.environ.get("COVERAGE_FILE", "test-results/.coverage")).parent
@@ -28,7 +29,7 @@ def record(kind, nodeid, value):
         output.write(
             json.dumps(
                 {
-                    "version": "v1.0.1-codex.0",
+                    "version": "v1.0.2-codex.0",
                     "pid": os.getpid(),
                     "kind": kind,
                     "nodeid": nodeid,
@@ -85,6 +86,16 @@ def bounded_call(owner, coroutine, method, nodeid):
 
 def send(channel, method, nodeid, params=None):
     return bounded_call(channel, channel._impl_obj.send(method, params), method, nodeid)
+
+
+def native_execution_terminated(error):
+    # CDP's execution budget can end evaluation before the Python transport
+    # deadline. Classify only its exact native error, never an arbitrary failure.
+    return isinstance(error, PlaywrightError) and str(error).partition("\n")[0] in {
+        "Protocol error (Runtime.evaluate): Execution was terminated",
+        ": Protocol error (Runtime.evaluate): Execution was terminated",
+        "CDPSession.send: Protocol error (Runtime.evaluate): Execution was terminated",
+    }
 
 
 def record_resource_tree(channel, nodeid, kind):
@@ -162,7 +173,10 @@ def _capture(page, url, nodeid, error):
             record(
                 "runtime_unresponsive",
                 nodeid,
-                {"error_type": type(runtime_error).__name__},
+                {
+                    "error_type": type(runtime_error).__name__,
+                    "native_execution_terminated": native_execution_terminated(runtime_error),
+                },
             )
             scripts = {}
             stack = []

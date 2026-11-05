@@ -1,6 +1,6 @@
 """Real-renderer regressions for bounded Jury failure diagnostics.
 
-Code version: v1.0.0-codex.0
+Code version: v1.0.1-codex.0
 """
 
 import json
@@ -8,7 +8,7 @@ from pathlib import Path
 import time
 
 import pytest
-from playwright.sync_api import Page, TimeoutError as PlaywrightTimeoutError
+from playwright.sync_api import Error as PlaywrightError, Page, TimeoutError as PlaywrightTimeoutError
 
 from tests import test_sidebar_e2e as fixtures
 
@@ -93,9 +93,57 @@ def test_original_timeout_survives_diagnostics_and_context_closes(
             )
         else:
             assert any(
-                row["kind"] == "cdp_deadline" and row["method"] == "Runtime.evaluate"
+                (
+                    row["kind"] == "cdp_deadline" and row["method"] == "Runtime.evaluate"
+                ) or (
+                    row["kind"] == "runtime_unresponsive"
+                    and row["native_execution_terminated"] is True
+                )
                 for row in records
             )
             assert any(row["kind"] == "runtime_unresponsive" for row in records)
     finally:
         context.close()
+
+
+@pytest.mark.integration
+@pytest.mark.slow
+def test_native_renderer_execution_timeout_has_explicit_evidence(disposable_browser):
+    import asyncio
+
+    from tests.jury_navigation_diagnostics import native_execution_terminated
+
+    context = disposable_browser.new_context()
+    page = context.new_page()
+    loop_started = []
+    page.on(
+        "console",
+        lambda message: loop_started.append(True)
+        if message.text == "jury-native-execution-loop-start"
+        else None,
+    )
+    try:
+        channel = context.new_cdp_session(page)
+        began = time.monotonic()
+        with pytest.raises(PlaywrightError) as raised:
+            # The real engine budget, not an outer transport deadline, must end
+            # this evaluation and expose CDP's explicit termination evidence.
+            # The safety deadline prevents a broken engine from hanging this
+            # negative test; its Python TimeoutError still fails the contract.
+            channel._sync(
+                asyncio.wait_for(
+                    channel._impl_obj.send("Runtime.evaluate", {
+                        "expression": 'console.log("jury-native-execution-loop-start"); while (true) {}',
+                        "timeout": 500,
+                    }),
+                    timeout=8,
+                )
+            )
+        assert loop_started
+        assert time.monotonic() - began < 8
+        assert native_execution_terminated(raised.value)
+        assert not native_execution_terminated(RuntimeError(str(raised.value)))
+        assert not native_execution_terminated(PlaywrightError("Unrelated protocol error"))
+    finally:
+        context.close()
+    assert context not in disposable_browser.contexts
