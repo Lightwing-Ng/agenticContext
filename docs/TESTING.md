@@ -1,8 +1,29 @@
 # Testing guide
 
-Documentation version: `v1.41.0-codex.0`
+Documentation version: `v1.42.0-codex.0`
 
 ## Supported commands
+
+CI runs four deterministic file shards on each existing Linux and Windows platform.
+The partition balances end-to-end browser files and other files separately by source
+size; every discovered test file belongs to exactly one shard. Each shard retains the
+ordinary static checks, default `not live` marker, and browser setup. The paired
+`AGENTIC_CONTEXT_TEST_SHARD` (1 through 4) and
+`AGENTIC_CONTEXT_TEST_SHARD_COUNT=4` variables enable this CI-only mode and permit
+partial coverage below 55%; incomplete shard settings or additional test filters fail.
+Without these variables, the launchers still run the complete suite with the existing
+55% branch-coverage threshold.
+
+The required Linux and Windows checks are the final aggregate jobs. Each requires all
+four successful shard jobs and exactly four artifacts bound to the current commit,
+run, attempt, platform, file inventory, selected files, and coverage hashes. Raw branch
+coverage uses relative application paths and is combined before enforcing the same
+55% global threshold. Missing, stale, duplicate, altered, or non-branch artifacts fail
+the aggregate; shard percentages are never averaged. Job timeouts, test markers,
+platform coverage, and coverage requirements are unchanged. One unusually large test
+module remains indivisible, so capacity improvements still require live CI evidence.
+Re-run the complete workflow when retrying: artifacts are named by run attempt, and
+successful shards from an earlier attempt cannot fill gaps in a newer attempt.
 
 Install the project dependencies with the supported Python 3.13 or newer workflow:
 

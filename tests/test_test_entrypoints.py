@@ -1,8 +1,9 @@
 """Behavioral checks for the POSIX test and quality entrypoints.
 
-Code version: v1.3.2-codex.1
+Code version: v1.3.3-codex.0
 """
 
+from importlib.metadata import version
 import os
 from pathlib import Path
 import shutil
@@ -62,7 +63,7 @@ def test_requirements_checker_rejects_an_installed_version_outside_the_constrain
         timeout=10,
     )
     assert result.returncode == 1
-    assert "pytest 9.0.3 does not satisfy <1" in result.stderr
+    assert f"pytest {version('pytest')} does not satisfy <1" in result.stderr
 
     requirements.write_text("pytest>=9,<10\n", encoding="utf-8")
     result = subprocess.run(
