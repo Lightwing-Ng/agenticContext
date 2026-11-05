@@ -1,4 +1,6 @@
-"""Search lens alignment on isolated Local resources pages. Code version: v1.1.0-claude.0."""
+"""Search lens alignment on isolated Local resources pages. Code version: v1.1.1-codex.0."""
+
+from urllib.parse import parse_qs, urlsplit
 
 import pytest
 from playwright.sync_api import Browser, Page, expect
@@ -81,14 +83,24 @@ def test_search_lens_stays_concentric_with_and_without_session_scope(
         page.evaluate("document.fonts.ready")
         _assert_search_lens_center(page)
         page.locator(".browser-session-table-title").click()
+        page.wait_for_load_state("domcontentloaded")
         expect(page.locator("[data-browser-session-tag]")).to_be_visible()
         _assert_search_lens_center(page)
         page.locator("#browser_search_input").fill("timestamp")
         page.locator("#browser_search_input").press("Enter")
+        # The matching count already exists on the previous document; wait for this submission.
+        page.wait_for_url(
+            lambda url: parse_qs(urlsplit(url).query).get("q") == ["timestamp"],
+            wait_until="domcontentloaded",
+        )
         expect(page.locator("[data-chat-message-id]")).to_have_count(1)
         expect(page.locator("[data-browser-session-tag]")).to_be_visible()
         _assert_search_lens_center(page)
         page.locator("[data-browser-session-scope-remove]").click()
+        page.wait_for_url(
+            lambda url: "session" not in parse_qs(urlsplit(url).query),
+            wait_until="domcontentloaded",
+        )
         expect(page.locator("[data-browser-session-tag]")).to_have_count(0)
         expect(page.locator("[data-chat-message-id]")).to_have_count(1)
         expect(page.locator("#browser_search_input")).to_have_value("timestamp")
