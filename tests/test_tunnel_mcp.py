@@ -1,6 +1,6 @@
 """Tunnel MCP adapter and /mcp route tests.
 
-Code version: v2.14.4-codex.0
+Code version: v2.14.5-codex.0
 """
 
 from __future__ import annotations
@@ -3653,12 +3653,76 @@ def test_project_reads_and_git_observation_are_lock_free(
     service: TunnelMcpService,
     registry: ProjectRegistry,
     workspace: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     git(workspace, "init", "-q")
     commit_all(workspace)
     main = registry.resolve("main")
     lock = service._project_lock(main)
     results: dict[str, dict] = {}
+    causes: list[dict[str, Any]] = []
+    stage_functions = {
+        "app.core.tunnel_mcp": {
+            "_run_tool", "_revalidate_project", "_binding", "_workspace_for",
+            "_execute_action", "_tool_read_files",
+        },
+        "app.core.tunnel_projects": {
+            "project_transaction_lock", "projects", "resolve",
+            "_root_filesystem_identity", "project_availability",
+        },
+        "app.core.platform_lock": {"lock_file", "unlock_file"},
+        "app.core.owner_only_files": {
+            "ensure_owner_only", "owner_only_problem", "_apply_boundary",
+            "_windows_problem", "current_user_sid", "set_protected_dacl", "dacl_text",
+        },
+        "app.core.workspace.paths": {
+            "_open_windows_directory_identity", "_windows_directory_identity",
+        },
+        "app.core.workspace.controller": {"__init__", "_verify_root_identity"},
+        "app.core.windows_file_metadata": {"file_change_time"},
+    }
+    original_run_tool = service._run_tool
+
+    def observed_run_tool(tool, arguments):
+        try:
+            return original_run_tool(tool, arguments)
+        except OSError as exc:
+            try:
+                stages = []
+                traceback = exc.__traceback__
+                while traceback is not None and len(stages) < 12:
+                    frame = traceback.tb_frame
+                    module = frame.f_globals.get("__name__")
+                    function = frame.f_code.co_name
+                    if function in stage_functions.get(module, ()):
+                        stages.append({
+                            "module": module,
+                            "function": function,
+                            "line": traceback.tb_lineno,
+                        })
+                    traceback = traceback.tb_next
+                error_type = type(exc).__name__
+                causes.append({
+                    "tool": tool.name if tool.name in {"read_files", "show_changes"} else "other",
+                    "project": (
+                        arguments.get("project")
+                        if arguments.get("project") in {"main", "ref"} else "other"
+                    ),
+                    "type": error_type if error_type in {
+                        "PermissionError", "FileNotFoundError", "NotADirectoryError",
+                        "IsADirectoryError", "BlockingIOError", "OwnerOnlyFileError",
+                    } else "OSError",
+                    "errno": exc.errno if type(exc.errno) is int else None,
+                    "winerror": (
+                        exc.winerror if type(getattr(exc, "winerror", None)) is int else None
+                    ),
+                    "stages": stages,
+                })
+            except Exception:
+                pass
+            raise
+
+    monkeypatch.setattr(service, "_run_tool", observed_run_tool)
 
     def run(name: str, tool: str, arguments: dict, project: str) -> None:
         results[name] = call(service, tool, arguments, project=project)
@@ -3680,6 +3744,24 @@ def test_project_reads_and_git_observation_are_lock_free(
         other.join(timeout=10)
         observation.join(timeout=10)
         reader.join(timeout=10)
+        if any(result.get("isError") for result in results.values()):
+            summaries = {}
+            for name in ("ref", "changes", "main"):
+                result = results.get(name, {})
+                structured = result.get("structuredContent", {})
+                code = structured.get("code")
+                summaries[name] = {
+                    "isError": result.get("isError"),
+                    "ok": structured.get("ok"),
+                    "code": (
+                        code if isinstance(code, str) and re.fullmatch(r"[a-z_]{1,64}", code)
+                        else "other"
+                    ),
+                }
+            print("Tunnel lock-free failure diagnostic: " + json.dumps({
+                "results": summaries,
+                "causes": causes[:3],
+            }, sort_keys=True))
         assert results["ref"]["isError"] is False
         assert results["changes"]["isError"] is False
         assert results["main"]["isError"] is False
