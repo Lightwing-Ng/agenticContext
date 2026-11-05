@@ -1,6 +1,6 @@
 """Browser-mediated Computer Use agent for signed-in Web AI sessions.
 
-Code version: v3.85.1-codex.0
+Code version: v3.85.2-codex.0
 """
 
 from __future__ import annotations
@@ -5804,6 +5804,8 @@ def _run_web_action_loop(
     def event_observation_payload(
         action_payload: dict[str, Any],
         observation: dict[str, Any],
+        *,
+        prepared_metadata: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Attach local receipt provenance only to the owner-only event chain."""
         event_payload = dict(observation)
@@ -5813,6 +5815,16 @@ def _run_web_action_loop(
                 include_read_receipt=bool(observation.get("ok")),
             )
         )
+        if (
+            observation.get("ok")
+            and str(action_payload.get("action") or "").strip().lower() == "delete"
+            and prepared_metadata is not None
+        ):
+            # A successful delete consumes authorization. Keep its prior verified
+            # receipt only in the private audit event, never in controller state.
+            for key in ("read_receipt", "delete_digest"):
+                if key in prepared_metadata:
+                    event_payload[key] = prepared_metadata[key]
         return event_payload
 
     screen_lock_checked_at: float | None = None
@@ -6475,6 +6487,7 @@ def _run_web_action_loop(
         action_capability = _registered_action_capability(action_name)
         action_capability_key = action_capability.key if action_capability is not None else ""
         action_id = ""
+        action_metadata: dict[str, Any] = {}
         if action_capability is None:
             record_page_observation(
                 "provider_turn",
@@ -6483,14 +6496,14 @@ def _run_web_action_loop(
                 data={"turn": action_turn, "action": action_name or "unknown"},
             )
         elif event_chain is not None:
+            action_metadata = controller.action_event_metadata(
+                action, include_read_receipt=False,
+            )
             action_id, _action_event = event_chain.begin_action(
                 action_capability_key,
                 turn=action_turn,
                 action_name=action_name or "unknown",
-                data=controller.action_event_metadata(
-                    action,
-                    include_read_receipt=False,
-                ),
+                data=action_metadata,
             )
             if _action_event is None:
                 raise RuntimeError(
@@ -6758,7 +6771,9 @@ def _run_web_action_loop(
             raise
         activity[-1]["status"] = "completed" if observation.get("ok") else "failed"
         if event_chain is not None and action_id:
-            audit_observation = event_observation_payload(action, observation)
+            audit_observation = event_observation_payload(
+                action, observation, prepared_metadata=action_metadata,
+            )
             persisted_observation = event_chain.observation(
                 action_id,
                 action_capability_key,

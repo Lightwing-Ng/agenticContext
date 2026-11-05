@@ -1,6 +1,6 @@
 """Durable local compute jobs for approved optimization entrypoints.
 
-Code version: v1.6.3-codex.0
+Code version: v1.6.4-codex.0
 """
 
 from __future__ import annotations
@@ -674,6 +674,41 @@ def _process_identity(pid: int) -> str:
     except (OSError, UnicodeError):
         pass
     return _ps_process_identity(pid)
+
+
+
+def _windows_process_liveness(pid: int) -> bool | None:
+    """Distinguish a confirmed exit from an unreadable Windows process identity."""
+    if pid <= 0:
+        return False
+    if pid > 0xFFFFFFFF:
+        return None
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+        kernel32.OpenProcess.restype = wintypes.HANDLE
+        kernel32.GetExitCodeProcess.argtypes = [
+            wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD),
+        ]
+        kernel32.GetExitCodeProcess.restype = wintypes.BOOL
+        kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+        kernel32.CloseHandle.restype = wintypes.BOOL
+        handle = kernel32.OpenProcess(0x1000, False, pid)
+        if not handle:
+            # ERROR_INVALID_PARAMETER identifies a PID that no longer exists.
+            return False if ctypes.get_last_error() == 87 else None
+        try:
+            exit_code = wintypes.DWORD()
+            if not kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code)):
+                return None
+            return exit_code.value == 259
+        finally:
+            kernel32.CloseHandle(handle)
+    except (AttributeError, OSError, TypeError, ValueError):
+        return None
 
 
 def _ps_process_identity(pid: int) -> str:
@@ -1634,7 +1669,7 @@ def _reconcile_scanned_compute_job_metadata(
                     "Active compute-job worker liveness could not be verified safely."
                 ) from exc
         elif not definitely_stale and os.name == "nt":
-            definitely_stale = not bool(observed_identity)
+            definitely_stale = _windows_process_liveness(pid) is False
         if not definitely_stale:
             raise ComputeJobError(
                 "Active compute-job worker liveness could not be verified safely."

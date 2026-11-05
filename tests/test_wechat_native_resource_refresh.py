@@ -1,6 +1,6 @@
 """Explicit native metadata refresh preserves every verified conversation scope.
 
-Code version: v1.1.0-codex.0
+Code version: v1.1.1-codex.0
 """
 
 from __future__ import annotations
@@ -231,12 +231,14 @@ class _ResourceBubbles(HTMLParser):
             self.article = None
 
 
+@pytest.mark.parametrize("platform_model", ["host", "windows"])
 def test_explicit_refresh_adds_a_second_scope_without_losing_first_bubbles_or_source_rows(
-    two_native_scopes, monkeypatch
+    two_native_scopes, monkeypatch, platform_model,
 ):
     fixture = two_native_scopes
     before = fixture.history.read_bytes(), fixture.original.read_bytes()
     path_open, connect = Path.open, sqlite3.connect
+    streams, synchronized = {}, []
 
     def no_payload_open(path, *args, **kwargs):
         assert path.suffix.casefold() not in {
@@ -249,11 +251,35 @@ def test_explicit_refresh_adds_a_second_scope_without_losing_first_bubbles_or_so
             ".zip",
             ".gz",
         }
-        return path_open(path, *args, **kwargs)
+        stream = path_open(path, *args, **kwargs)
+        streams[stream.fileno()] = stream
+        return stream
 
     def no_backup_open(path, *args, **kwargs):
         assert "/DB/message_2.sqlite" not in str(path)
         return connect(path, *args, **kwargs)
+
+    if platform_model == "windows":
+        host_os = refresh.os
+
+        class WindowsOS:
+            name = "nt"
+
+            def __getattr__(self, name):
+                return getattr(host_os, name)
+
+            def open(self, path, *args, **kwargs):
+                if Path(path).is_dir():
+                    raise PermissionError("The Windows CRT cannot open a directory descriptor.")
+                return host_os.open(path, *args, **kwargs)
+
+            def fsync(self, descriptor):
+                stream = streams[descriptor]
+                assert stream.writable(), "The Windows CRT requires writable file sync handles."
+                synchronized.append(Path(stream.name))
+                return host_os.fsync(descriptor)
+
+        monkeypatch.setattr(refresh, "os", WindowsOS())
 
     monkeypatch.setattr(Path, "open", no_payload_open)
     monkeypatch.setattr(sqlite3, "connect", no_backup_open)
@@ -375,3 +401,29 @@ def test_explicit_refresh_adds_a_second_scope_without_losing_first_bubbles_or_so
     )
     assert repository.query(session=outside)["resource_index_status"] == "stale"
     assert (fixture.history.read_bytes(), fixture.original.read_bytes()) == before
+    if platform_model == "windows":
+        assert any(path.name.endswith("-rollback.sqlite3") for path in synchronized)
+        assert len(synchronized) >= 3
+
+
+@pytest.mark.parametrize("platform_name", ["nt", "posix"])
+def test_publication_syncs_directories_only_where_the_host_supports_them(tmp_path, monkeypatch, platform_name):
+    from unittest.mock import MagicMock
+
+    native = SimpleNamespace(
+        name=platform_name,
+        O_RDONLY=0,
+        open=MagicMock(return_value=73),
+        fsync=MagicMock(),
+        close=MagicMock(),
+    )
+    monkeypatch.setattr(refresh, "os", native)
+    refresh._sync_directory(tmp_path)
+    if platform_name == "nt":
+        native.open.assert_not_called()
+        native.fsync.assert_not_called()
+        native.close.assert_not_called()
+    else:
+        native.open.assert_called_once_with(tmp_path, native.O_RDONLY)
+        native.fsync.assert_called_once_with(73)
+        native.close.assert_called_once_with(73)

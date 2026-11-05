@@ -1,4 +1,4 @@
-"""Concurrent session admission and independent lifecycle checks. Code version: v1.6.6-codex.0."""
+"""Concurrent session admission and independent lifecycle checks. Code version: v1.6.7-codex.0."""
 
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
@@ -890,3 +890,56 @@ def test_session_catalog_preserves_project_filter_metadata(sessions):
     catalog = pool.catalog('edge', 'chatgpt', str(workspace))
     item = next(item for item in catalog['sessions'] if item['session_id'] == session_id)
     assert item['project_url'] == project
+
+
+@pytest.mark.parametrize("liveness", [True, False, None])
+def test_windows_writer_admission_requires_positive_worker_exit_proof(tmp_path, monkeypatch, liveness):
+    from types import SimpleNamespace
+
+    metadata = {
+        "state": "running", "pid": 123, "process_identity": "unverifiable-birth",
+        "updated_at": "2026-01-01T00:00:00+00:00",
+        "containment_kind": "windows-job-object",
+    }
+    monkeypatch.setattr(compute_jobs, "os", SimpleNamespace(name="nt"))
+    monkeypatch.setattr(compute_jobs, "_process_identity", lambda _pid: "")
+    monkeypatch.setattr(compute_jobs, "_windows_process_liveness", lambda _pid: liveness)
+    monkeypatch.setattr(compute_jobs, "_update_metadata_file", lambda _path, update: update(dict(metadata)))
+    if liveness is False:
+        result = compute_jobs._reconcile_scanned_compute_job_metadata(tmp_path / "metadata.json", metadata)
+        assert result["state"] == "interrupted"
+    else:
+        with pytest.raises(compute_jobs.ComputeJobError, match="liveness could not be verified"):
+            compute_jobs._reconcile_scanned_compute_job_metadata(tmp_path / "metadata.json", metadata)
+    assert metadata["state"] == "running"
+
+
+@pytest.mark.parametrize(
+    "probe,expected",
+    [("alive", True), ("exited", False), ("missing", False), ("denied", None), ("query_failed", None)],
+)
+def test_native_windows_worker_probe_distinguishes_unknown_from_exited(monkeypatch, probe, expected):
+    import ctypes
+    from types import SimpleNamespace
+    from unittest.mock import MagicMock
+
+    def exit_code(_handle, pointer):
+        pointer._obj.value = 259 if probe == "alive" else 0
+        return probe != "query_failed"
+
+    kernel = SimpleNamespace(
+        OpenProcess=MagicMock(return_value=0 if probe in {"missing", "denied"} else 73),
+        GetExitCodeProcess=MagicMock(side_effect=exit_code),
+        CloseHandle=MagicMock(),
+    )
+    monkeypatch.setattr(ctypes, "WinDLL", lambda *_args, **_kwargs: kernel, raising=False)
+    monkeypatch.setattr(ctypes, "get_last_error", lambda: 87 if probe == "missing" else 5, raising=False)
+    assert compute_jobs._windows_process_liveness(123) is expected
+    kernel.OpenProcess.assert_called_once_with(0x1000, False, 123)
+    if probe in {"missing", "denied"}:
+        kernel.GetExitCodeProcess.assert_not_called()
+        kernel.CloseHandle.assert_not_called()
+    else:
+        kernel.CloseHandle.assert_called_once_with(73)
+    assert compute_jobs._windows_process_liveness(0x100000000) is None
+    assert kernel.OpenProcess.call_count == 1

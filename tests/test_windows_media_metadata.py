@@ -1,6 +1,6 @@
 """Windows ChangeTime and cross-API identity preserve exact media hashing.
 
-Code version: v1.0.0-codex.0
+Code version: v1.0.1-codex.0
 """
 
 from __future__ import annotations
@@ -101,7 +101,12 @@ def windows_identity(monkeypatch):
 
     monkeypatch.setattr(media, "os", WindowsOS())
     monkeypatch.setattr(media.LocalMediaCatalog, "_content_stat_identity", staticmethod(cross_api_stat))
-    monkeypatch.setattr(metadata, "file_change_time", lambda path, descriptor=None: os.stat(path).st_ctime_ns)
+    if os.name != "nt":
+        # Only a foreign host needs a surrogate for the native Windows API.
+        # Windows stat().ctime is creation time and cannot model byte mutations.
+        monkeypatch.setattr(
+            metadata, "file_change_time", lambda path, descriptor=None: os.stat(path).st_ctime_ns,
+        )
     return original_identity
 
 

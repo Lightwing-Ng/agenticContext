@@ -1,6 +1,6 @@
 """Focused tests for the Web Computer Use controller.
 
-Code version: v3.85.1-codex.0
+Code version: v3.85.2-codex.0
 """
 
 from __future__ import annotations
@@ -8470,9 +8470,11 @@ def test_action_loop_allows_one_final_response_after_last_controller_action(
     assert len(submitted) == 2
 
 
+@pytest.mark.parametrize("consume_delete_receipt", [False, True])
 def test_action_loop_records_workspace_and_delete_receipt_provenance(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    consume_delete_receipt: bool,
 ) -> None:
     import app.core.computer_use_agent as computer_use_agent
 
@@ -8494,6 +8496,15 @@ def test_action_loop_records_workspace_and_delete_receipt_provenance(
         ComputerUseSettings(workspace_path=str(workspace), max_turns=3),
         stop_requested.is_set,
     )
+    execute = controller.execute
+
+    def consume_receipt(action):
+        observation = execute(action)
+        if consume_delete_receipt and action.get("action") == "delete" and observation.get("ok"):
+            controller.state.read_receipts.pop("audit.txt", None)
+        return observation
+
+    monkeypatch.setattr(controller, "execute", consume_receipt)
     responses = iter(
         (
             '{"action":"read","path":"audit.txt"}',
@@ -8576,6 +8587,8 @@ def test_action_loop_records_workspace_and_delete_receipt_provenance(
     assert result[2:] == (2, False)
     assert len(submitted) == 3
     assert not audit_file.exists()
+    if consume_delete_receipt:
+        assert "audit.txt" not in controller.state.read_receipts
     assert root["data"]["workspace_identity"] == expected_workspace_identity
     assert read_observation["data"]["workspace_identity"] == expected_workspace_identity
     assert read_observation["data"]["read_receipt"]["sha256"] == digest
