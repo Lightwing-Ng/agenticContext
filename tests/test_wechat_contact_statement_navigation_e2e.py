@@ -1,6 +1,6 @@
 """Contact statements navigate precisely while preserving plain-text selection.
 
-Code version: v1.1.0-codex.0
+Code version: v1.2.0-codex.0
 """
 
 from __future__ import annotations
@@ -157,7 +157,7 @@ def test_statement_keyboard_and_modified_click_keep_native_link_navigation(
 
 
 @pytest.mark.parametrize("width", [1026, 390])
-def test_merged_statement_has_only_primary_navigation(
+def test_merged_statement_keeps_one_primary_link_and_discloses_original_sources(
     disposable_browser, duplicate_contact_analysis_server, tmp_path, width
 ):
     fixture = duplicate_contact_analysis_server
@@ -172,13 +172,29 @@ def test_merged_statement_has_only_primary_navigation(
         row = page.locator("tr[data-contact-statement-id]")
         expect(row).to_have_count(1)
         statement = row.locator("a[data-wechat-contact-statement]")
+        expect(statement).to_have_count(1)
         expect(statement).to_have_text(fixture.shared_text)
-        expect(row.locator("details[data-wechat-contact-sources]")).to_have_count(0)
+        sources = row.locator("details[data-wechat-contact-sources]")
+        expect(sources).to_have_count(1)
+        expect(sources).not_to_have_attribute("open", "")
+        expect(sources.locator(".ui-collapse-body")).not_to_be_visible()
         expect(
             row.locator(".wechat-contact-statement-entry.has-sources")
-        ).to_have_count(0)
+        ).to_have_count(1)
+        observations = sources.locator("[data-wechat-contact-observation]")
+        expect(observations).to_have_count(2)
+        assert set(observations.evaluate_all(
+            "nodes => nodes.map(node => node.dataset.wechatContactObservation)"
+        )) == set(fixture.originals)
+        assert set(observations.evaluate_all(
+            "nodes => nodes.map(node => node.dataset.contactAccountKey)"
+        )) == set(fixture.originals.values())
+        assert set(sources.locator("a[data-wechat-contact-source]").evaluate_all(
+            "nodes => nodes.map(node => node.getAttribute('href'))"
+        )) == {"/browser/wechat/messages/" + identifier for identifier in fixture.originals}
         expect(row).not_to_contain_text("2 sources")
         source_id = row.get_attribute("data-contact-message-id")
+        assert source_id in fixture.originals
         expect(statement).to_have_attribute(
             "href", "/browser/wechat/messages/" + source_id
         )
@@ -188,6 +204,9 @@ def test_merged_statement_has_only_primary_navigation(
         _expect_original(page, source_id)
         page.go_back(wait_until="domcontentloaded")
         expect(page).to_have_url(origin)
-        expect(page.locator("details[data-wechat-contact-sources]")).to_have_count(0)
+        returned = page.locator("tr[data-contact-statement-id]")
+        expect(returned.locator("a[data-wechat-contact-statement]")).to_have_count(1)
+        expect(returned.locator("details[data-wechat-contact-sources]")).not_to_have_attribute("open", "")
+        assert fixture.before == (fixture.history.read_bytes(), fixture.registry.read_bytes())
     finally:
         context.close()
