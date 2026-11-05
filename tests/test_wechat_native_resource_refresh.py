@@ -1,11 +1,12 @@
 """Explicit native metadata refresh preserves every verified conversation scope.
 
-Code version: v1.0.0-codex.0
+Code version: v1.1.0-codex.0
 """
 
 from __future__ import annotations
 
 from copy import deepcopy
+from contextlib import closing
 from datetime import UTC, datetime
 import csv
 import hashlib
@@ -14,6 +15,8 @@ import io
 import json
 from pathlib import Path
 import sqlite3
+import shutil
+import sys
 from types import SimpleNamespace
 
 from flask import Flask, render_template
@@ -101,10 +104,13 @@ def _resource(template, conversation, owner, backup, database, local, kind, typ,
 
 @pytest.fixture
 def two_native_scopes(native_metadata, monkeypatch):
+    if sys.platform != "darwin":
+        # Only the synthetic fixture replaces the production APFS-only clone backend.
+        monkeypatch.setattr("app.core.wechat_export_merge._clonefile", shutil.copyfile)
     fixture = native_metadata
     owner = "wxid_account_b"
     backup, database = "c" * 64, "d" * 64
-    with sqlite3.connect(fixture.history) as primary:
+    with closing(sqlite3.connect(fixture.history)) as primary, primary:
         primary.row_factory = sqlite3.Row
         second = dict(
             primary.execute(
@@ -144,7 +150,7 @@ def two_native_scopes(native_metadata, monkeypatch):
         _resource(template, second, owner, backup, database, local, kind, typ, label)
         for local, (kind, typ, label) in enumerate(KINDS, 11)
     ]
-    with sqlite3.connect(fixture.original) as source:
+    with closing(sqlite3.connect(fixture.original)) as source, source:
         source.executemany(
             "INSERT INTO messages VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)", first_rows[2:]
         )

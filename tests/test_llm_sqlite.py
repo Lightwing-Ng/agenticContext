@@ -301,3 +301,88 @@ def test_failed_native_boundary_never_writes_or_publishes_private_sqlite(tmp_pat
     assert written == []
     assert legacy.read_bytes() == before
     assert list(tmp_path.iterdir()) == [legacy]
+
+
+def test_existing_sqlite_is_narrowed_before_any_snapshot_update(tmp_path: Path, monkeypatch):
+    from app.core import llm_sqlite
+
+    path = tmp_path / "history.sqlite3"
+    write_sqlite_rows(path, _rows(), SCHEMA)
+    before = path.read_bytes()
+    if os.name == "posix":
+        path.chmod(0o644)
+        assert owner_only_problem(path)
+    secure = llm_sqlite.ensure_owner_only
+    write = llm_sqlite._write_store
+    secured = []
+
+    def checked_secure(target, **options):
+        assert target == path and options == {"allow_hard_links": True}
+        secure(target, **options)
+        secured.append(target)
+
+    def private_update(target, *args, **kwargs):
+        assert secured == [path]
+        assert owner_only_problem(target, allow_hard_links=True) == ""
+        assert target.read_bytes() == before
+        return write(target, *args, **kwargs)
+
+    monkeypatch.setattr(llm_sqlite, "ensure_owner_only", checked_secure)
+    monkeypatch.setattr(llm_sqlite, "_write_store", private_update)
+    rows = _rows()
+    rows[0]["content_text"] = "Private snapshot update"
+    write_sqlite_rows(path, rows, SCHEMA)
+
+    assert read_sqlite_rows(path) == rows
+    assert owner_only_problem(path) == ""
+
+
+def test_existing_sqlite_boundary_failure_keeps_all_bytes_before_update(tmp_path: Path, monkeypatch):
+    from app.core import llm_sqlite
+
+    path = tmp_path / "history.sqlite3"
+    write_sqlite_rows(path, _rows(), SCHEMA)
+    before = path.read_bytes()
+
+    def refuse(target, **options):
+        assert target == path and options == {"allow_hard_links": True}
+        raise OwnerOnlyFileError("Synthetic existing SQLite boundary failure")
+
+    def unexpected_update(*_args, **_kwargs):
+        pytest.fail("Private SQLite updates require a verified owner-only boundary.")
+
+    monkeypatch.setattr(llm_sqlite, "ensure_owner_only", refuse)
+    monkeypatch.setattr(llm_sqlite, "_write_store", unexpected_update)
+    with pytest.raises(OwnerOnlyFileError, match="Synthetic existing SQLite boundary failure"):
+        write_sqlite_rows(path, [], SCHEMA)
+
+    assert path.read_bytes() == before
+    assert list(tmp_path.iterdir()) == [path]
+
+
+def test_snapshot_update_accepts_the_verified_initial_publication_alias(tmp_path: Path, monkeypatch):
+    from app.core import llm_sqlite
+
+    path = tmp_path / "history.sqlite3"
+    rows = _rows()
+    updated = [*rows, {**rows[0], "message_key": "additional", "content_text": "Second writer"}]
+    link = llm_sqlite.os.link
+    published = []
+
+    def update_before_temporary_unlink(temporary, destination, *args, **kwargs):
+        link(temporary, destination, *args, **kwargs)
+        assert destination == path and temporary.samefile(path)
+        assert path.stat().st_nlink == 2
+        assert owner_only_problem(path) == "it has multiple hard links"
+        assert owner_only_problem(path, allow_hard_links=True) == ""
+        published.append(temporary)
+        write_sqlite_rows(path, updated, SCHEMA)
+        assert read_sqlite_rows(temporary) == updated
+
+    monkeypatch.setattr(llm_sqlite.os, "link", update_before_temporary_unlink)
+    write_sqlite_rows(path, rows, SCHEMA)
+
+    assert published and all(not temporary.exists() for temporary in published)
+    assert read_sqlite_rows(path) == updated
+    assert owner_only_problem(path) == ""
+    assert list(tmp_path.iterdir()) == [path]

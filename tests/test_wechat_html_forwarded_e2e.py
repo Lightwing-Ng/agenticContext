@@ -1,11 +1,12 @@
 """Published HTML forwarding reuses the collapsed transcript and message rows.
 
-Code version: v1.2.0-codex.0
+Code version: v1.3.0-codex.0
 """
 
 from __future__ import annotations
 
 from copy import deepcopy
+from contextlib import closing
 import hashlib
 import json
 import re
@@ -30,7 +31,7 @@ from app.core.wechat_display_names import display_names_path
 from app.web.app import create_app
 from app.web.config_store import SavedConfigStore
 from tests import test_sidebar_e2e
-from tests.test_wechat_contacts import _make_forwarded_html_store
+from tests.test_wechat_contacts import _make_forwarded_html_store, insert_contact
 
 
 disposable_browser = test_sidebar_e2e.disposable_browser
@@ -61,8 +62,10 @@ def html_forwarded_server(tmp_path_factory):
     store = sandbox / "store"
     registry = contact_registry_path(store)
     registry.parent.mkdir(parents=True)
-    with sqlite3.connect(registry) as connection:
+    with closing(sqlite3.connect(registry)) as connection, connection:
         initialize_contact_registry(connection)
+        for username in ("wxid_forwarded", "wxid_other_forwarded"):
+            insert_contact(connection, username)
     fixture = _make_forwarded_html_store(store)
     history = fixture["history"]
     request = deepcopy(fixture["request"])
@@ -102,7 +105,7 @@ def html_forwarded_server(tmp_path_factory):
             for child in children
         ]
     )
-    with sqlite3.connect(history) as connection:
+    with closing(sqlite3.connect(history)) as connection, connection:
         provenance = json.loads(
             connection.execute(
                 "SELECT provenance FROM messages WHERE id=?", (request["id"],)
@@ -129,6 +132,7 @@ def html_forwarded_server(tmp_path_factory):
     assert projection["status"] == "source_proof_verified"
     contacts = [child["contact"] for child in projection["components"]]
     assert all(contact["identity_status"] == "verified" for contact in contacts)
+    assert all(contact["registry_persisted"] is True for contact in contacts)
     assert contacts[0]["id"] == contacts[1]["id"] != contacts[2]["id"]
     contact_id = canonical_contact_id(
         "wxid_forwarded", authority="native_message_sender"

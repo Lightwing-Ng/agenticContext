@@ -1,6 +1,6 @@
 """Transactional, indexed, compressed local history storage.
 
-Code version: v2.1.0-codex.0
+Code version: v2.1.1-codex.0
 
 Conversations map to stable compressed hash buckets, sharing compression context
 without requiring full-store reads. Typed Arrow IPC payloads avoid a full Python
@@ -168,6 +168,7 @@ def write_sqlite_rows(
     if source is None and path.name == "history.sqlite3":
         source = path.parent.name
     if path.exists():
+        ensure_owner_only(path, allow_hard_links=True)
         _write_store(path, rows, schema, source)
         return
     path.parent.mkdir(parents=True, exist_ok=True)

@@ -1,6 +1,6 @@
 """Unit tests for the Safari-backed browser automation surface."""
 
-# Code version: v2.17.1-codex.0
+# Code version: v2.17.2-codex.0
 
 from __future__ import annotations
 
@@ -2132,7 +2132,7 @@ def test_safari_context_closes_same_process_stale_owned_window(
     context = SafariContext("https://grok.com/files", lock_blocking=False)
     closed: list[int] = []
 
-    with patch(
+    with patch("app.core.safari_automation.os.kill", side_effect=AssertionError("Owner recovery must not signal its own console")), patch(
         "app.core.safari_automation.SAFARI_CONTEXT_LOCK_PATH",
         lock_path,
     ), patch(
@@ -3105,3 +3105,73 @@ def test_safari_page_evaluate_stages_a_large_argument_in_chunks() -> None:
     ]
     assert javascript_literals
     assert all("\n" not in literal for literal in javascript_literals)
+
+
+
+def test_safari_owner_liveness_never_signals_its_own_process():
+    import os
+    from app.core import safari_automation as safari
+
+    with patch.object(safari.os, "kill", side_effect=AssertionError("No liveness signal")):
+        assert safari._safari_pid_is_alive(os.getpid())
+
+
+@pytest.mark.parametrize("error,expected", [(5, True), (87, False), (8, True), (0, True)])
+def test_windows_safari_owner_probe_keeps_unknown_or_denied_owners(error, expected, monkeypatch):
+    import ctypes
+    from types import SimpleNamespace
+    from app.core import safari_automation as safari
+
+    class Call:
+        def __init__(self, result):
+            self.result = result
+        def __call__(self, *args):
+            return self.result
+
+    kernel = SimpleNamespace(OpenProcess=Call(0), GetExitCodeProcess=Call(False), CloseHandle=Call(True))
+    monkeypatch.setattr(ctypes, "WinDLL", lambda *args, **kwargs: kernel, raising=False)
+    monkeypatch.setattr(ctypes, "get_last_error", lambda: error, raising=False)
+    assert safari._windows_safari_owner_is_alive(12345) is expected
+
+
+@pytest.mark.parametrize("exit_code,query_ok,expected", [(259, True, True), (0, True, False), (259, False, True)])
+def test_windows_safari_owner_probe_reads_and_closes_native_handle(exit_code, query_ok, expected, monkeypatch):
+    import ctypes
+    from types import SimpleNamespace
+    from app.core import safari_automation as safari
+
+    closed = []
+    class Call:
+        def __init__(self, action):
+            self.action = action
+        def __call__(self, *args):
+            return self.action(*args)
+
+    def query(handle, output):
+        assert handle == 42
+        output._obj.value = exit_code
+        return query_ok
+
+    kernel = SimpleNamespace(
+        OpenProcess=Call(lambda access, inherit, pid: 42),
+        GetExitCodeProcess=Call(query),
+        CloseHandle=Call(lambda handle: closed.append(handle)),
+    )
+    monkeypatch.setattr(ctypes, "WinDLL", lambda *args, **kwargs: kernel, raising=False)
+    assert safari._windows_safari_owner_is_alive(12345) is expected
+    assert closed == [42]
+
+
+def test_safari_owner_native_probe_observes_an_exited_owned_child():
+    import os
+    import sys
+    from app.core import safari_automation as safari
+
+    options = {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP} if os.name == "nt" else {"start_new_session": True}
+    child = subprocess.Popen([sys.executable, "-c", "import time;time.sleep(30)"], **options)
+    try:
+        assert safari._safari_pid_is_alive(child.pid)
+    finally:
+        child.terminate()
+        child.wait(timeout=5)
+    assert not safari._safari_pid_is_alive(child.pid)

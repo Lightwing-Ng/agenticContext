@@ -1,6 +1,6 @@
 """Synthetic source, preservation, and crash-recovery tests for Takeout imports."""
 
-# Code version: v2.0.0-codex.0
+# Code version: v2.0.2-codex.0
 
 from __future__ import annotations
 
@@ -206,7 +206,7 @@ def test_full_source_bundle_is_preserved_without_executing_uploads(tmp_path):
     bundle = Path(result["bundle"])
     for name in ("MyActivity.html", "upload.py", "unreferenced.bin"):
         assert (bundle / "source" / name).read_bytes() == (source / name).read_bytes()
-    catalog = json.loads((bundle / "events.json").read_text())
+    catalog = json.loads((bundle / "events.json").read_text(encoding="utf-8"))
     assert catalog["events"][0]["raw_html_sha256"] == importer._sha(catalog["events"][0]["raw_html"].encode())
     assert owner_only_directory_problem(bundle) == ""
     for path in bundle.rglob("*"):
@@ -292,7 +292,7 @@ def test_crash_after_history_replace_is_idempotently_reconciled(tmp_path, monkey
     assert replay.summary["already_imported"]
     assert importer.apply_import(replay)["added_rows"] == 0
     assert gemini_history_path(root).read_bytes() == original
-    assert json.loads(next((root / "llm" / "gemini" / "imports").glob("*/receipt.json")).read_text())["state"] == "committed"
+    assert json.loads(next((root / "llm" / "gemini" / "imports").glob("*/receipt.json")).read_text(encoding="utf-8"))["state"] == "committed"
 
 
 def test_prepared_candidate_is_verified_and_resumed_after_precommit_failure(tmp_path, monkeypatch):
@@ -578,6 +578,155 @@ def test_unverifiable_private_bundle_fails_before_private_content_is_written(tmp
     assert source_before == {path.relative_to(source): path.read_bytes() for path in source.rglob("*") if path.is_file()}
 
 
+def test_hardlinked_candidate_cannot_mutate_canonical_history_before_refusal(tmp_path):
+    source = _source(tmp_path, _card(prompt="Recovered question", ids=("recovered-session",)))
+    root = tmp_path / "store"
+    _seed(root)
+    plan = _plan(source, root)
+    assert plan.summary["added_rows"] == 2
+    history = gemini_history_path(root)
+    before = history.read_bytes()
+    source_before = {path.relative_to(source): path.read_bytes() for path in source.rglob("*") if path.is_file()}
+    bundle = history.parent / "imports" / f"takeout-{plan.catalog['source_digest']}"
+    bundle.mkdir(parents=True)
+    candidate = bundle / "history-candidate.sqlite3"
+    os.link(history, candidate)
+
+    with pytest.raises(OwnerOnlyFileError, match="multiple hard links"):
+        importer.apply_import(plan)
+
+    assert candidate.samefile(history)
+    assert history.read_bytes() == candidate.read_bytes() == before
+    assert (bundle / "history-before.sqlite3").read_bytes() == before
+    assert not (bundle / "receipt.json").exists()
+    assert source_before == {path.relative_to(source): path.read_bytes() for path in source.rglob("*") if path.is_file()}
+    assert all((bundle / "source" / path).read_bytes() == body for path, body in source_before.items())
+
+
+def test_existing_candidate_is_secured_before_the_sqlite_writer(tmp_path, monkeypatch):
+    source = _source(tmp_path, _card(reply="<p>Recovered answer</p>"))
+    root = tmp_path / "store"
+    _seed(root)
+    plan = _plan(source, root)
+    history = gemini_history_path(root)
+    before = history.read_bytes()
+    bundle = history.parent / "imports" / f"takeout-{plan.catalog['source_digest']}"
+    bundle.mkdir(parents=True)
+    candidate = bundle / "history-candidate.sqlite3"
+    shutil.copyfile(history, candidate)
+    if os.name == "posix":
+        candidate.chmod(0o644)
+        assert owner_only_problem(candidate)
+    secured = []
+    secure = importer.ensure_owner_only
+    write = importer.write_sqlite_rows
+
+    def secure_candidate(path):
+        secure(path)
+        if path == candidate:
+            secured.append(path)
+
+    def checked_write(path, *args, **kwargs):
+        assert path == candidate
+        assert secured == [candidate]
+        assert owner_only_problem(path) == ""
+        assert path.read_bytes() == before
+        return write(path, *args, **kwargs)
+
+    monkeypatch.setattr(importer, "ensure_owner_only", secure_candidate)
+    monkeypatch.setattr(importer, "write_sqlite_rows", checked_write)
+    importer.apply_import(plan)
+
+    assert read_resource_rows(history) == plan.rows
+    assert owner_only_problem(history) == ""
+    assert (bundle / "history-before.sqlite3").read_bytes() == before
+    assert (bundle / "source" / "MyActivity.html").read_bytes() == (source / "MyActivity.html").read_bytes()
+
+
+def test_unverifiable_existing_candidate_fails_before_sqlite_bytes_change(tmp_path, monkeypatch):
+    source = _source(tmp_path, _card(reply="<p>Recovered answer</p>"))
+    root = tmp_path / "store"
+    _seed(root)
+    plan = _plan(source, root)
+    history = gemini_history_path(root)
+    before = history.read_bytes()
+    bundle = history.parent / "imports" / f"takeout-{plan.catalog['source_digest']}"
+    bundle.mkdir(parents=True)
+    candidate = bundle / "history-candidate.sqlite3"
+    shutil.copyfile(history, candidate)
+    secure = importer.ensure_owner_only
+
+    def reject_candidate(path):
+        if path == candidate:
+            raise OwnerOnlyFileError("Synthetic candidate boundary failure")
+        secure(path)
+
+    def reject_write(*_args, **_kwargs):
+        pytest.fail("The SQLite writer must not run before its candidate boundary is verified.")
+
+    monkeypatch.setattr(importer, "ensure_owner_only", reject_candidate)
+    monkeypatch.setattr(importer, "write_sqlite_rows", reject_write)
+    with pytest.raises(OwnerOnlyFileError, match="Synthetic candidate boundary failure"):
+        importer.apply_import(plan)
+
+    assert history.read_bytes() == candidate.read_bytes() == before
+    assert (bundle / "history-before.sqlite3").read_bytes() == before
+    assert not (bundle / "receipt.json").exists()
+    assert (bundle / "source" / "MyActivity.html").read_bytes() == (source / "MyActivity.html").read_bytes()
+
+
+def test_prepared_candidate_boundary_is_restored_before_resumed_publication(tmp_path, monkeypatch):
+    source = _source(tmp_path, _card(reply="<p>Recovered answer</p>"))
+    root = tmp_path / "store"
+    _seed(root)
+    plan = _plan(source, root)
+    history = gemini_history_path(root)
+    before = history.read_bytes()
+    publish = importer._publish_candidate
+
+    def interrupted_publication(*_args):
+        raise OSError("Synthetic interruption before publication")
+
+    monkeypatch.setattr(importer, "_publish_candidate", interrupted_publication)
+    with pytest.raises(OSError, match="Synthetic interruption before publication"):
+        importer.apply_import(plan)
+    assert history.read_bytes() == before
+    bundle = history.parent / "imports" / f"takeout-{plan.catalog['source_digest']}"
+    candidate = bundle / "history-candidate.sqlite3"
+    candidate_before = candidate.read_bytes()
+    if os.name == "posix":
+        candidate.chmod(0o644)
+        assert owner_only_problem(candidate)
+    preserved = {path.relative_to(bundle): path.read_bytes() for path in bundle.rglob("*")
+                 if path.is_file() and path.name not in {"receipt.json", "history-candidate.sqlite3"}}
+    secure = importer.ensure_owner_only
+    secured = []
+
+    def secure_candidate(path):
+        secure(path)
+        secured.append(path)
+
+    def checked_publish(incoming, target, expected):
+        assert incoming == candidate and incoming in secured
+        assert owner_only_problem(incoming) == ""
+        assert incoming.read_bytes() == candidate_before
+        return publish(incoming, target, expected)
+
+    monkeypatch.setattr(importer, "ensure_owner_only", secure_candidate)
+    monkeypatch.setattr(importer, "_publish_candidate", checked_publish)
+    replay = _plan(source, root)
+    assert replay.summary["resuming_prepared_import"]
+    assert json.loads((bundle / "receipt.json").read_text(encoding="utf-8"))["version"] == "v2.0.0-codex.0"
+    importer.apply_import(replay)
+
+    assert history.read_bytes() == candidate_before
+    assert owner_only_problem(history) == ""
+    assert not candidate.exists()
+    assert all((bundle / path).read_bytes() == body for path, body in preserved.items())
+    assert (bundle / "source" / "MyActivity.html").read_bytes() == (source / "MyActivity.html").read_bytes()
+    assert json.loads((bundle / "receipt.json").read_text(encoding="utf-8"))["state"] == "committed"
+
+
 def test_legacy_parquet_preview_and_sqlite_publication_preserve_exact_source_and_backup(tmp_path):
     source = _source(tmp_path, _card(reply="<p>New recovered response</p>"))
     root = tmp_path / "store"
@@ -596,7 +745,7 @@ def test_legacy_parquet_preview_and_sqlite_publication_preserve_exact_source_and
     assert read_resource_rows(history) == plan.rows
     assert read_sqlite_schema(history).equals(GEMINI_HISTORY_SCHEMA, check_metadata=True)
     assert read_sqlite_summaries(history)
-    receipt = json.loads((bundle / "receipt.json").read_text())
+    receipt = json.loads((bundle / "receipt.json").read_text(encoding="utf-8"))
     assert receipt["version"] == "v2.0.0-codex.0"
     assert receipt["baseline_format"] == "parquet"
     assert receipt["candidate_format"] == "sqlite"
@@ -686,6 +835,9 @@ def test_interrupted_initial_publication_link_is_reconciled_without_rewriting_hi
     before = history.read_bytes()
     candidate = next(history.parent.glob("imports/*/history-candidate.sqlite3"))
     assert candidate.samefile(history)
+    if os.name == "posix":
+        history.chmod(0o644)
+    assert owner_only_problem(history)
     monkeypatch.setattr(Path, "unlink", unlink)
     replay = _plan(source, root)
     assert replay.summary["already_imported"]
@@ -717,7 +869,7 @@ def test_legacy_receipts_replay_and_recover_in_their_original_format(tmp_path, s
     if state == "committed":
         assert receipt_path.read_bytes() == before_receipt
         assert legacy.read_bytes() == before_history
-    receipt = json.loads(receipt_path.read_text())
+    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
     assert receipt["version"] == "v1.0.0-codex.0"
     assert receipt["state"] == "committed"
 
@@ -771,7 +923,7 @@ def test_receipt_format_discriminators_are_a_closed_contract(tmp_path, field, va
     root = tmp_path / "store"
     result = importer.apply_import(_plan(source, root))
     receipt_path = Path(result["bundle"]) / "receipt.json"
-    receipt = json.loads(receipt_path.read_text())
+    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
     receipt[field] = value
     receipt_path.write_bytes(importer._json_bytes(receipt))
     before = gemini_history_path(root).read_bytes()
