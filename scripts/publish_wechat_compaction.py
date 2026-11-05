@@ -1,6 +1,6 @@
 """Publish verified WeChat SQLite candidates with reversible atomic macOS swaps.
 
-Code version: v1.1.1-codex.0
+Code version: v1.1.2-codex.0
 
 Each pathname pair is exchanged atomically. The operation receipt journals the
 ordered multi-file publication; it is not a filesystem-wide transaction. Writers

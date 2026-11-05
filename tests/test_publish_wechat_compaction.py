@@ -1,6 +1,6 @@
 """Verify reversible publication, external preservation gates, and source pins.
 
-Code version: v1.2.0-codex.0
+Code version: v1.2.1-codex.0
 """
 
 from __future__ import annotations
