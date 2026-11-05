@@ -1,8 +1,9 @@
 """Upgrade compact source links without copying text or discarding observations.
 
-Code version: v1.0.2-codex.0
+Code version: v1.0.3-codex.0
 """
 
+from contextlib import closing
 import sqlite3
 from pathlib import Path
 from unittest.mock import patch
@@ -39,7 +40,7 @@ def test_existing_reference_cache_adds_native_links_without_rescanning_sources(
     ):
         previous = analysis.query_contact_analysis(fixture.store, CID)
     cache = analysis.contact_analysis_cache_path(fixture.store, CID)
-    with sqlite3.connect(cache) as connection:
+    with closing(sqlite3.connect(cache)) as connection, connection:
         before_refs = connection.execute("SELECT * FROM refs ORDER BY id").fetchall()
         before_members = connection.execute(
             "SELECT reference_id FROM statement_members ORDER BY reference_id"
@@ -58,7 +59,7 @@ def test_existing_reference_cache_adds_native_links_without_rescanning_sources(
     assert current["total_count"] == 6 < previous["total_count"]
     assert current["observation_count"] == previous["observation_count"] == 18
     assert {item["id"] for item in current["items"]} == set(fixture.original_ids)
-    with sqlite3.connect(cache) as connection:
+    with closing(sqlite3.connect(cache)) as connection, connection:
         assert (
             connection.execute("SELECT * FROM refs ORDER BY id").fetchall()
             == before_refs
@@ -80,7 +81,7 @@ def test_existing_reference_cache_adds_native_links_without_rescanning_sources(
         ).fetchall()
     repeated = analysis.query_contact_analysis(fixture.store, CID)
     assert repeated["total_count"] == current["total_count"]
-    with sqlite3.connect(cache) as connection:
+    with closing(sqlite3.connect(cache)) as connection, connection:
         assert (
             connection.execute("SELECT * FROM statement_groups ORDER BY id").fetchall()
             == groups

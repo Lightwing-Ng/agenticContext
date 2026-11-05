@@ -1,6 +1,6 @@
 """Append source-separated WeChat exports without traversing existing messages.
 
-Code version: v1.1.2-codex.0
+Code version: v1.1.3-codex.0
 """
 
 from __future__ import annotations
@@ -18,6 +18,7 @@ import sys
 import tempfile
 from typing import Any
 
+from .owner_only_files import ensure_owner_only
 from .wechat_archive import _SCHEMA, _identifier, _source_exclusions, _time_fields
 from .wechat_archive import wechat_archive_path
 from .wechat_html_export import normalize_html_clock
@@ -447,7 +448,7 @@ def merge_wechat_export(
                 raise ValueError(
                     "The archive changed while creating its copy-on-write clone."
                 )
-        os.chmod(temporary, 0o600)
+        ensure_owner_only(temporary)
         connection = sqlite3.connect(temporary)
         connection.execute("PRAGMA journal_mode=DELETE")
         connection.execute("PRAGMA synchronous=FULL")

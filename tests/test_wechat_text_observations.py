@@ -1,8 +1,9 @@
 """Mac text overlays bind exact sources while leaving primary messages unchanged.
 
-Code version: v1.0.1-codex.0
+Code version: v1.0.2-codex.0
 """
 
+from contextlib import closing
 from copy import deepcopy
 from datetime import UTC, datetime
 import hashlib
@@ -74,7 +75,7 @@ def make_observation_fixture(store: Path) -> dict:
     history_path = wechat_archive_path(store)
     message_id = _identifier(metadata["source_id"], parent["extraction_record_id"])
     target_id = _identifier(metadata["source_id"], canonical["extraction_record_id"])
-    with sqlite3.connect(history_path) as connection:
+    with closing(sqlite3.connect(history_path)) as connection, connection:
         connection.row_factory = sqlite3.Row
         parent_row = dict(
             connection.execute(
@@ -98,7 +99,7 @@ def make_observation_fixture(store: Path) -> dict:
     )
     resource_path = resource_index_path(store)
     source_provenance = {}
-    with sqlite3.connect(resource_path) as connection:
+    with closing(sqlite3.connect(resource_path)) as connection, connection:
         connection.executescript(RESOURCE_SCHEMA)
         connection.execute(
             "INSERT INTO conversations VALUES(?,?,?,?,?,?,?,?,?,?,?,?)", conversation
@@ -429,7 +430,7 @@ def test_changed_native_quote_is_not_overlaid_even_if_registry_hashes_are_refres
     fixture = make_observation_fixture(tmp_path)
     provenance = deepcopy(fixture["provenance"])
     provenance["quoted_reference"]["content_unavailable"] = False
-    with sqlite3.connect(fixture["history_path"]) as connection:
+    with closing(sqlite3.connect(fixture["history_path"])) as connection, connection:
         connection.execute(
             "UPDATE messages SET provenance=? WHERE id=?",
             (json.dumps(provenance), fixture["message_id"]),
@@ -520,7 +521,7 @@ def test_same_named_text_in_another_account_cannot_supply_a_canonical_body(tmp_p
     )
     merge(tmp_path, [other], [target])
     target_id = _identifier(other["source_id"], target["extraction_record_id"])
-    with sqlite3.connect(fixture["history_path"]) as connection:
+    with closing(sqlite3.connect(fixture["history_path"])) as connection, connection:
         provenance = json.loads(
             connection.execute(
                 "SELECT provenance FROM messages WHERE id=?", (target_id,)
@@ -551,7 +552,7 @@ def test_concurrent_primary_write_discards_the_overlay(tmp_path):
 
     def changed(repository, requests):
         result = resolve(repository, requests)
-        with sqlite3.connect(fixture["history_path"]) as connection:
+        with closing(sqlite3.connect(fixture["history_path"])) as connection, connection:
             connection.execute(
                 "UPDATE messages SET sender_label='Concurrent edit' WHERE id=?",
                 (fixture["message_id"],),

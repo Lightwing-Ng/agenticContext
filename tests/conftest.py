@@ -1,6 +1,6 @@
 """Shared pytest fixtures for isolated agenticContext tests.
 
-Code version: v1.2.5-codex.0
+Code version: v1.2.6-codex.0
 """
 
 from __future__ import annotations
@@ -54,7 +54,7 @@ def client(app: Flask) -> FlaskClient:
 @pytest.fixture
 def macos_host(monkeypatch: pytest.MonkeyPatch) -> None:
     """Expose macOS-only browser descriptors to portable tests."""
-    from app.core import browser_sessions, config
+    from app.core import browser_sessions, computer_use_agent, config
     from app.web import agent_routes
 
     monkeypatch.setattr(config, "is_macos_host", lambda: True)
@@ -62,5 +62,6 @@ def macos_host(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(Path, "home", lambda: Path(_TEST_HOME.name))
     monkeypatch.setattr(browser_sessions, "is_macos_host", lambda: True)
     monkeypatch.setattr(browser_sessions, "is_windows_host", lambda: False)
+    monkeypatch.setattr(computer_use_agent, "detect_host_operating_system", lambda: "macos")
     monkeypatch.setattr(agent_routes, "is_macos_host", lambda: True)
     monkeypatch.setattr(agent_routes, "is_windows_host", lambda: False)

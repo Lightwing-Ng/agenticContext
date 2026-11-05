@@ -1,6 +1,6 @@
 """Add native text observations without replacing earlier WeChat evidence."""
 
-# Code version: v1.6.3-codex.0
+# Code version: v1.6.4-codex.0
 
 from __future__ import annotations
 
@@ -24,6 +24,7 @@ from .wechat_archive import (
     wechat_archive_path,
 )
 from .wechat_payments import payment_card_text, validate_payment_card_fields
+from .windows_file_metadata import file_change_time
 
 
 _ADDITIVE_SCHEMA = """
@@ -441,13 +442,18 @@ def _file_identity(path: Path):
     metadata = path.stat()
     if not path.is_file():
         raise ValueError("Reconciliation files must be regular files.")
-    return (
+    identity = (
         metadata.st_dev,
         metadata.st_ino,
         metadata.st_size,
         metadata.st_mtime_ns,
         metadata.st_ctime_ns,
     )
+    if os.name == "nt":
+        # Windows stat().ctime is birth time; retain it independently of mutations.
+        birth = getattr(metadata, "st_birthtime_ns", metadata.st_ctime_ns)
+        return (*identity[:4], file_change_time(path), birth)
+    return identity
 
 
 def _database_identity(path: Path):

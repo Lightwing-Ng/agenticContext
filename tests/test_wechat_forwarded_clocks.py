@@ -1,10 +1,11 @@
 """Pinned packet clocks recover child times while retaining independent sources.
 
-Code version: v1.1.1-codex.0
+Code version: v1.1.2-codex.0
 """
 
 from __future__ import annotations
 
+from contextlib import closing
 from copy import deepcopy
 from datetime import UTC, datetime, timedelta, timezone
 import hashlib
@@ -26,7 +27,7 @@ ROOM = "1234567890@chatroom"
 
 
 def _rows(fixture):
-    with sqlite3.connect(fixture.history) as connection:
+    with closing(sqlite3.connect(fixture.history)) as connection, connection:
         connection.row_factory = sqlite3.Row
         return [dict(connection.execute(
             "SELECT * FROM messages WHERE id=?", (fixture.html_parent,)
@@ -35,7 +36,7 @@ def _rows(fixture):
 
 def _pin(fixture):
     link = {"target_message_id": fixture.html_parent, "native_message_id": fixture.native_parent}
-    with sqlite3.connect(fixture.history) as connection:
+    with closing(sqlite3.connect(fixture.history)) as connection, connection:
         for prefix, identifier in (("target", fixture.html_parent), ("native", fixture.native_parent)):
             row = connection.execute("SELECT text,provenance FROM messages WHERE id=?", (identifier,)).fetchone()
             for field, value in zip(("text", "provenance"), row):
@@ -52,7 +53,7 @@ def _mutate(fixture, *, native, callback):
 @pytest.fixture
 def pinned_clock_store(forwarded_origin_store):
     fixture = forwarded_origin_store
-    with sqlite3.connect(fixture.history) as connection:
+    with closing(sqlite3.connect(fixture.history)) as connection, connection:
         connection.row_factory = sqlite3.Row
         for identifier in (fixture.html_parent, fixture.native_parent):
             conversation = connection.execute("SELECT conversation_id FROM messages WHERE id=?", (identifier,)).fetchone()[0]
@@ -113,7 +114,7 @@ def test_recovers_only_native_child_clock_and_preserves_all_source_bytes(pinned_
 def test_allows_independent_receiving_account_and_parent_delivery_time(pinned_clock_store):
     fixture = pinned_clock_store
     owner = "wxid_independent_html_owner"
-    with sqlite3.connect(fixture.history) as connection:
+    with closing(sqlite3.connect(fixture.history)) as connection, connection:
         connection.execute("UPDATE partitions SET account_id=?,account_key=? WHERE id=?", (owner, "account:" + owner, fixture.html_source))
         connection.execute("UPDATE conversations SET account_key=? WHERE partition_id=?", ("account:" + owner, fixture.html_source))
         snapshot = connection.execute("SELECT json_extract(provenance,'$.source_snapshot') FROM messages WHERE id=?", (fixture.html_parent,)).fetchone()[0]
@@ -170,7 +171,7 @@ def test_concurrent_source_change_discards_the_complete_projection(pinned_clock_
 
     def changed_after_read(*args, **kwargs):
         projected = original(*args, **kwargs)
-        with sqlite3.connect(fixture.history) as connection:
+        with closing(sqlite3.connect(fixture.history)) as connection, connection:
             connection.execute("UPDATE messages SET sender_label=sender_label || ' changed' WHERE id=?", (fixture.native_parent,))
         return projected
 
@@ -215,7 +216,7 @@ def test_rejects_incomplete_or_contradictory_packet_even_when_repinned(pinned_cl
 @pytest.mark.parametrize("fault", ["room", "forwarder", "locator", "record", "snapshot_owner"])
 def test_rejects_wrong_source_identity_even_when_repinned(pinned_clock_store, fault):
     fixture = pinned_clock_store
-    with sqlite3.connect(fixture.history) as connection:
+    with closing(sqlite3.connect(fixture.history)) as connection, connection:
         if fault == "room":
             connection.execute("UPDATE conversations SET peer_id='999@chatroom' WHERE id=(SELECT conversation_id FROM messages WHERE id=?)", (fixture.native_parent,))
         elif fault == "forwarder":
@@ -279,7 +280,7 @@ def test_runtime_budgets_fail_closed(pinned_clock_store, monkeypatch, limit):
 
 def _links(fixture, targets):
     result = []
-    with sqlite3.connect(fixture.history) as connection:
+    with closing(sqlite3.connect(fixture.history)) as connection, connection:
         for target in targets:
             link = {"target_message_id": target, "native_message_id": fixture.native_parent}
             for prefix, identifier in (("target", target), ("native", fixture.native_parent)):
@@ -291,7 +292,7 @@ def _links(fixture, targets):
 
 
 def _add_html_target(fixture):
-    with sqlite3.connect(fixture.history) as connection:
+    with closing(sqlite3.connect(fixture.history)) as connection, connection:
         connection.row_factory = sqlite3.Row
         row = dict(connection.execute("SELECT * FROM messages WHERE id=?", (fixture.html_parent,)).fetchone())
         proof = json.loads(row["provenance"])
@@ -310,7 +311,7 @@ def _json_links(fixture, links, info=None):
 
 def _indexed_links(fixture, links, info=None):
     path = fixture.clock_registry.with_suffix(".sqlite3")
-    with sqlite3.connect(path) as connection:
+    with closing(sqlite3.connect(path)) as connection, connection:
         connection.execute("PRAGMA user_version=1")
         connection.execute(
             "CREATE TABLE links(target_message_id TEXT PRIMARY KEY,native_message_id TEXT,"
@@ -352,7 +353,7 @@ def test_shared_native_and_snapshot_bytes_are_charged_only_once(pinned_clock_sto
     rows = [*_rows(fixture), second]
     _json_links(fixture, _links(fixture, [row["id"] for row in rows]))
     ids = [fixture.html_parent, second["id"], fixture.native_parent]
-    with sqlite3.connect(fixture.history) as connection:
+    with closing(sqlite3.connect(fixture.history)) as connection, connection:
         marks = ",".join("?" for _ in ids)
         source_bytes = connection.execute("SELECT SUM(length(CAST(text AS BLOB))+length(CAST(provenance AS BLOB))) FROM messages WHERE id IN (" + marks + ")", ids).fetchone()[0]
         snapshot_bytes = connection.execute("SELECT SUM(length(CAST(metadata AS BLOB))) FROM source_snapshots WHERE id IN (SELECT json_extract(provenance,'$.source_snapshot') FROM messages WHERE id IN (" + marks + "))", ids).fetchone()[0]
@@ -390,7 +391,7 @@ def test_indexed_registry_selects_requested_targets_and_retains_receipt(pinned_c
     assert projected[(1,)]["proof"]["candidate_agreement_receipt_sha256"] == "a" * 64
     assert all("ORDER BY target_message_id" not in sql for sql in statements)
     assert any("WHERE target_message_id IN" in sql for sql in statements)
-    with sqlite3.connect(path) as connection:
+    with closing(sqlite3.connect(path)) as connection, connection:
         plan = connection.execute("EXPLAIN QUERY PLAN SELECT * FROM links WHERE target_message_id=?", (fixture.html_parent,)).fetchall()
     assert any("SEARCH links USING PRIMARY KEY" in row[3] for row in plan)
 
@@ -432,7 +433,7 @@ def test_indexed_authority_never_falls_back_to_stale_json(pinned_clock_store, mo
     if fault == "corrupt":
         path.write_bytes(b"invalid database")
     elif fault == "version":
-        with sqlite3.connect(path) as connection:
+        with closing(sqlite3.connect(path)) as connection, connection:
             connection.execute("PRAGMA user_version=2")
     elif fault == "symlink":
         original = path.with_name("original-index.sqlite3")
@@ -467,14 +468,14 @@ def test_global_agreement_receipt_requires_the_unchanged_source_identity(pinned_
     info = {"source_identity": identity, "candidate_agreement_receipt": "all-candidates-reviewed.json"}
     (_indexed_links if indexed else _json_links)(fixture, links, info)
     assert clocks.WechatForwardedClocks(fixture.store).project(_rows(fixture))
-    with sqlite3.connect(fixture.history) as connection:
+    with closing(sqlite3.connect(fixture.history)) as connection, connection:
         connection.execute("UPDATE messages SET sender_label=sender_label || ' new source observation' WHERE id=?", (fixture.native_parent,))
     assert clocks.WechatForwardedClocks(fixture.store).project(_rows(fixture)) == {}
 
 
 def test_cached_html_snapshot_cannot_cross_its_stored_source_partition(pinned_clock_store):
     fixture = pinned_clock_store
-    with sqlite3.connect(fixture.history) as connection:
+    with closing(sqlite3.connect(fixture.history)) as connection, connection:
         connection.execute("UPDATE source_snapshots SET source_id='html-other-source' WHERE id=(SELECT json_extract(provenance,'$.source_snapshot') FROM messages WHERE id=?)", (fixture.html_parent,))
     assert clocks.WechatForwardedClocks(fixture.store).project(_rows(fixture)) == {}
 
@@ -491,7 +492,7 @@ def _short_packet(fixture, count, *, single=False, ordinal=False):
         proof["text_components"] = parts
 
     _mutate(fixture, native=True, callback=native)
-    with sqlite3.connect(fixture.history) as connection:
+    with closing(sqlite3.connect(fixture.history)) as connection, connection:
         parts = json.loads(connection.execute("SELECT provenance FROM messages WHERE id=?", (fixture.native_parent,)).fetchone()[0])["text_components"]
 
     def html(proof):
@@ -517,7 +518,7 @@ def test_ordinal_packets_require_one_verified_receiving_event(pinned_clock_store
     fixture = pinned_clock_store
     _short_packet(fixture, 2 if fault == "short" else 3, single=fault == "single", ordinal=True)
     if fault == "delivery":
-        with sqlite3.connect(fixture.history) as connection:
+        with closing(sqlite3.connect(fixture.history)) as connection, connection:
             connection.execute("UPDATE messages SET timestamp_value='2021-10-20T16:20:03' WHERE id=?", (fixture.html_parent,))
     elif fault == "owner":
         _change_html_owner(fixture, "wxid_independent_html_owner")
@@ -527,7 +528,7 @@ def test_ordinal_packets_require_one_verified_receiving_event(pinned_clock_store
 
 
 def _change_html_owner(fixture, owner):
-    with sqlite3.connect(fixture.history) as connection:
+    with closing(sqlite3.connect(fixture.history)) as connection, connection:
         connection.execute("UPDATE partitions SET account_id=?,account_key=? WHERE id=?", (owner, "account:" + owner, fixture.html_source))
         connection.execute("UPDATE conversations SET account_key=? WHERE partition_id=?", ("account:" + owner, fixture.html_source))
         snapshot = connection.execute("SELECT json_extract(provenance,'$.source_snapshot') FROM messages WHERE id=?", (fixture.html_parent,)).fetchone()[0]
@@ -547,7 +548,7 @@ def test_direct_packets_require_the_same_verified_participant_pair(pinned_clock_
         _change_html_owner(fixture, native_peer)
     if fault == "peer":
         html_peer = "wxid_unrelated_recipient"
-    with sqlite3.connect(fixture.history) as connection:
+    with closing(sqlite3.connect(fixture.history)) as connection, connection:
         for identifier, peer in ((fixture.native_parent, native_peer), (fixture.html_parent, html_peer)):
             connection.execute("UPDATE conversations SET kind='direct',peer_id=? WHERE id=(SELECT conversation_id FROM messages WHERE id=?)", (peer, identifier))
         direction = "received" if reciprocal else "sent"
@@ -567,7 +568,7 @@ def test_direct_packets_require_the_same_verified_participant_pair(pinned_clock_
 
 def _cross_context(fixture, change):
     peer = fixtures.RECEIVER if change == "private" else "999999@chatroom" if change == "group" else ROOM
-    with sqlite3.connect(fixture.history) as connection:
+    with closing(sqlite3.connect(fixture.history)) as connection, connection:
         connection.execute("UPDATE conversations SET kind=?,peer_id=? WHERE id=(SELECT conversation_id FROM messages WHERE id=?)", ("direct" if change == "private" else "group", peer, fixture.native_parent))
         if change == "forwarder":
             connection.execute("UPDATE messages SET sender_id='wxid_another_forwarder',direction='received' WHERE id=?", (fixture.native_parent,))
@@ -623,6 +624,6 @@ def test_new_source_observation_invalidates_cross_context_agreement_globally(pin
     _cross_context(fixture, "private")
     _indexed_links(fixture, _links(fixture, [fixture.html_parent]), _agreement_info(fixture))
     assert clocks.WechatForwardedClocks(fixture.store).project(_rows(fixture))
-    with sqlite3.connect(fixture.history) as connection:
+    with closing(sqlite3.connect(fixture.history)) as connection, connection:
         connection.execute("UPDATE messages SET sender_label=sender_label || ' added native observation' WHERE id=?", (fixture.native_parent,))
     assert clocks.WechatForwardedClocks(fixture.store).project(_rows(fixture)) == {}

@@ -1,6 +1,6 @@
 """Restore bounded native text subsets through an append-only APFS clone.
 
-Code version: v1.3.0-codex.0
+Code version: v1.3.1-codex.0
 """
 
 from __future__ import annotations
@@ -83,6 +83,7 @@ def _content_identity_matches(path, expected, baseline_sha256, *, database=False
             original is not None
             and current is not None
             and current[:4] == original[:4]
+            and current[5:] == original[5:]
             and (not database or observed[1:] == expected[1:])
         )
 

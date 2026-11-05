@@ -1,6 +1,6 @@
 """Exercise text-only WechatExporter ingestion and archive safety boundaries.
 
-Code version: v1.5.0
+Code version: v1.5.1
 """
 
 import html
@@ -87,7 +87,11 @@ def fixture_zip(
     path = tmp_path / "synthetic-export.zip"
     with zipfile.ZipFile(path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
         for name, value in members.items():
-            archive.writestr(name, value)
+            # These are literal ZIP member names, independent of host separators.
+            info = zipfile.ZipInfo()
+            info.filename = info.orig_filename = name
+            info.compress_type = zipfile.ZIP_DEFLATED
+            archive.writestr(info, value)
     return path
 
 
@@ -265,7 +269,7 @@ def test_rendered_location_and_channel_metadata_preserve_text_and_sender_only(
     monkeypatch.setattr(zipfile.ZipFile, "open", only_text)
     result = export.parse_html_export(path)
     records = result["conversations"][0]["messages"]
-    assert result["parser_version"] == "v1.5.0"
+    assert result["parser_version"] == "v1.5.1"
     assert [(record["text_kind"], record["text"]) for record in records] == [
         ("rendered_location_metadata", location_text),
         ("rendered_location_metadata", "A second rendered location"),
@@ -498,8 +502,39 @@ def test_misflagged_utf8_zip_names_are_recovered_without_renaming(tmp_path):
 )
 def test_unsafe_archive_paths_are_rejected_without_extraction(tmp_path, bad_member):
     path = fixture_zip(tmp_path, additional={bad_member: b"ignored"})
+    preserved = path.read_bytes()
+    assert preserved.count(bad_member.encode("ascii")) == 2
     with pytest.raises(ValueError, match="Unsafe ZIP"):
         export.parse_html_export(path)
+    assert path.read_bytes() == preserved
+
+
+@pytest.mark.parametrize("bad_member", ["Export\\escape.txt", "Export/alias\x00.txt"])
+def test_raw_archive_names_are_validated_before_windows_normalization(
+    tmp_path, monkeypatch, bad_member
+):
+    path = fixture_zip(tmp_path, additional={bad_member: b"ignored"})
+    preserved = path.read_bytes()
+    assert preserved.count(bad_member.encode("ascii")) == 2
+    original_zip_info = zipfile.ZipInfo
+
+    class WindowsZipInfo(original_zip_info):
+        def __init__(self, filename="NoName", *args, **kwargs):
+            super().__init__(filename, *args, **kwargs)
+            self.filename = self.filename.replace("\\", "/")
+
+    monkeypatch.setattr(zipfile, "ZipInfo", WindowsZipInfo)
+    with zipfile.ZipFile(path) as archive:
+        member = next(info for info in archive.infolist() if info.orig_filename == bad_member)
+        assert member.filename != member.orig_filename
+
+    def unexpected_member_read(*_args, **_kwargs):
+        pytest.fail("Unsafe archive names must fail before any member content is read.")
+
+    monkeypatch.setattr(zipfile.ZipFile, "open", unexpected_member_read)
+    with pytest.raises(ValueError, match="Unsafe ZIP"):
+        export.parse_html_export(path)
+    assert path.read_bytes() == preserved
 
 
 @pytest.mark.parametrize(

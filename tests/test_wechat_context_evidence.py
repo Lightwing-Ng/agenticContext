@@ -1,8 +1,9 @@
 """Retained native structure supplements presentation without replacing primary rows.
 
-Code version: v1.1.0-codex.0
+Code version: v1.1.1-codex.0
 """
 
+from contextlib import closing
 import hashlib
 import json
 import sqlite3
@@ -69,7 +70,7 @@ def evidence_fixture(store, *, forwarded=False):
 
 
 def primary_rows(store):
-    with sqlite3.connect(wechat_archive_path(store)) as connection:
+    with closing(sqlite3.connect(wechat_archive_path(store))) as connection, connection:
         connection.row_factory = sqlite3.Row
         return [
             dict(row)
@@ -78,7 +79,7 @@ def primary_rows(store):
 
 
 def edit_observation(store, change, *, row_change=None, duplicate=False):
-    with sqlite3.connect(wechat_archive_path(store)) as connection:
+    with closing(sqlite3.connect(wechat_archive_path(store))) as connection, connection:
         connection.row_factory = sqlite3.Row
         row = dict(
             connection.execute("SELECT * FROM message_evidence LIMIT 1").fetchone()
@@ -191,7 +192,7 @@ def test_invalid_or_conflicting_native_claims_are_not_promoted(tmp_path, failure
 
     edit_observation(tmp_path, change, row_change=row_change)
     if failure == "evidence_id":
-        with sqlite3.connect(wechat_archive_path(tmp_path)) as connection:
+        with closing(sqlite3.connect(wechat_archive_path(tmp_path))) as connection, connection:
             connection.execute("UPDATE message_evidence SET id=?", ("f" * 64,))
     assert WechatContextEvidence(tmp_path).project(supplied) == {}
 
@@ -216,7 +217,7 @@ def test_different_valid_structures_fail_closed_and_malformed_noise_cannot_overr
     tmp_path,
 ):
     _, _, _, supplied = evidence_fixture(tmp_path)
-    with sqlite3.connect(wechat_archive_path(tmp_path)) as connection:
+    with closing(sqlite3.connect(wechat_archive_path(tmp_path))) as connection, connection:
         connection.execute(
             "INSERT INTO message_evidence VALUES(?,?,?,?,?,?,?)",
             (
@@ -247,7 +248,7 @@ def test_different_valid_structures_fail_closed_and_malformed_noise_cannot_overr
 
 def test_shared_primary_structure_cannot_be_replaced_by_retained_evidence(tmp_path):
     _, _, _, _ = evidence_fixture(tmp_path)
-    with sqlite3.connect(wechat_archive_path(tmp_path)) as connection:
+    with closing(sqlite3.connect(wechat_archive_path(tmp_path))) as connection, connection:
         provenance = json.loads(
             connection.execute("SELECT provenance FROM messages").fetchone()[0]
         )
@@ -258,7 +259,7 @@ def test_shared_primary_structure_cannot_be_replaced_by_retained_evidence(tmp_pa
 
 def test_source_receipt_and_current_primary_body_remain_required(tmp_path):
     _, _, _, supplied = evidence_fixture(tmp_path)
-    with sqlite3.connect(wechat_archive_path(tmp_path)) as connection:
+    with closing(sqlite3.connect(wechat_archive_path(tmp_path))) as connection, connection:
         connection.execute("UPDATE messages SET text='Changed primary body'")
     evidence = WechatContextEvidence(tmp_path)
     assert evidence.project(supplied) == {}
@@ -283,7 +284,7 @@ def test_batch_reader_requires_existing_index_and_uses_bounded_indexed_queries(
         assert WechatContextEvidence(tmp_path).project(supplied)
     selections = [query for query in queries if query.startswith("WITH requested")]
     assert len(selections) == 1
-    with sqlite3.connect(wechat_archive_path(tmp_path)) as connection:
+    with closing(sqlite3.connect(wechat_archive_path(tmp_path))) as connection, connection:
         plan = "\n".join(
             str(row)
             for row in connection.execute("EXPLAIN QUERY PLAN " + selections[0])
