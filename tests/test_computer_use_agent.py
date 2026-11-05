@@ -1,6 +1,6 @@
 """Focused tests for the Web Computer Use controller.
 
-Code version: v3.85.2-codex.0
+Code version: v3.85.3-codex.0
 """
 
 from __future__ import annotations
@@ -8558,6 +8558,9 @@ def test_action_loop_records_workspace_and_delete_receipt_provenance(
         update=lambda **_changes: None,
         event_chain=event_chain,
     )
+
+    if consume_deleted_receipt:
+        assert "audit.txt" not in controller.state.read_receipts
 
     expected_workspace_identity = {
         "device": workspace.stat().st_dev,

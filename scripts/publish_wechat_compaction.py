@@ -1,6 +1,6 @@
 """Publish verified WeChat SQLite candidates with reversible atomic macOS swaps.
 
-Code version: v1.1.1-codex.0
+Code version: v1.1.2-codex.0
 
 Each pathname pair is exchanged atomically. The operation receipt journals the
 ordered multi-file publication; it is not a filesystem-wide transaction. Writers
@@ -24,7 +24,7 @@ import subprocess
 import sys
 
 
-VERSION = "v1.1.0-codex.0"
+VERSION = "v1.1.2-codex.0"
 _SPEC = importlib.util.spec_from_file_location(
     "wechat_sqlite_compactor", Path(__file__).with_name("compact_wechat_sqlite.py")
 )
