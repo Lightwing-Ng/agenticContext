@@ -1,6 +1,6 @@
 """Explicit project registry for the Secure MCP Tunnel coding backend.
 
-Code version: v1.8.1-codex.0
+Code version: v1.8.2-codex.0
 
 A Tunnel project is an authority-bearing identity mapped to exactly one canonical
 root. Every model-facing filesystem, Git, mutation, and verification tool names
@@ -337,12 +337,21 @@ class ProjectRegistry:
             return _fallback_project(fallback_workspace)
         except OSError as exc:
             raise ProjectRegistryError("The project registry cannot be read.") from exc
+        try:
+            if os.name == "nt":
+                from app.core.windows_file_metadata import file_change_time
+
+                change_time = file_change_time(path)
+            else:
+                change_time = int(metadata.st_ctime_ns)
+        except OSError as exc:
+            raise ProjectRegistryError("The project registry cannot be read.") from exc
         cache_key = (
             str(path),
             int(metadata.st_dev),
             int(metadata.st_ino),
             int(metadata.st_mtime_ns),
-            int(metadata.st_ctime_ns),
+            change_time,
             int(metadata.st_size),
         )
         with self._lock:

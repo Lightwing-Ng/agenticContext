@@ -1,6 +1,6 @@
 """Durable compute-job lifecycle and safety contract tests.
 
-Code version: v1.6.3-codex.0
+Code version: v1.7.0-codex.0
 """
 
 from __future__ import annotations
@@ -21,6 +21,7 @@ from unittest.mock import patch
 import pytest
 
 from app.core.agent import compute_jobs
+from app.core import windows_file_metadata
 from app.core.agent.compute_jobs import (
     ComputeJobError,
     ComputeJobManager,
@@ -1416,3 +1417,79 @@ def test_approved_file_read_preserves_crlf_bytes_in_windows_binary_mode(tmp_path
     assert digest == hashlib.sha256(payload).hexdigest()
     assert path.read_bytes() == payload
     assert opened and all(opened.values())
+
+
+@pytest.mark.parametrize("change_at", [None, "handle", "path"])
+def test_windows_reader_uses_one_native_change_token_for_paths_and_handles(
+    tmp_path, monkeypatch, change_at,
+):
+    path = tmp_path / "approved.py"
+    payload = b"print('exact approved bytes')\r\n"
+    path.write_bytes(payload)
+    native_fstat = os.fstat
+    module_os = SimpleNamespace(**vars(os))
+    module_os.name = "nt"
+
+    def mismatched_legacy_ctime(descriptor):
+        metadata = native_fstat(descriptor)
+        fields = {
+            name: getattr(metadata, name)
+            for name in ("st_dev", "st_ino", "st_mode", "st_nlink", "st_size", "st_mtime_ns")
+        }
+        return SimpleNamespace(**fields, st_ctime_ns=metadata.st_ctime_ns + 100)
+
+    module_os.fstat = mismatched_legacy_ctime
+    monkeypatch.setattr(compute_jobs, "os", module_os)
+    if change_at == "handle":
+        native_tokens = [10, 10, 11, 11]
+    elif change_at == "path":
+        native_tokens = [10, 10, 10, 11]
+    else:
+        native_tokens = [10] * 4
+    tokens = iter(native_tokens)
+    descriptors = []
+
+    def change_time(candidate, *, descriptor=None):
+        assert candidate == path
+        descriptors.append(descriptor)
+        return next(tokens)
+
+    monkeypatch.setattr(windows_file_metadata, "file_change_time", change_time)
+    if change_at is None:
+        content, digest = compute_jobs._stable_regular_file_bytes(
+            path, maximum_bytes=4096, label="Approved entrypoint",
+        )
+        assert content == payload
+        assert digest == hashlib.sha256(payload).hexdigest()
+    else:
+        with pytest.raises(ComputeJobError, match="changed while"):
+            compute_jobs._stable_regular_file_bytes(
+                path, maximum_bytes=4096, label="Approved entrypoint",
+            )
+    assert len(descriptors) == 4
+    assert descriptors[0] is descriptors[-1] is None
+    assert descriptors[1] == descriptors[2] and isinstance(descriptors[1], int)
+    assert path.read_bytes() == payload
+
+
+def test_windows_reader_refuses_unavailable_change_metadata_before_payload_read(
+    tmp_path, monkeypatch,
+):
+    path = tmp_path / "approved.py"
+    path.write_bytes(b"Private approved entrypoint")
+    module_os = SimpleNamespace(**vars(os))
+    module_os.name = "nt"
+    def forbidden_open(*_args, **_kwargs):
+        pytest.fail("Payload opened before native metadata verification")
+
+    module_os.open = forbidden_open
+    monkeypatch.setattr(compute_jobs, "os", module_os)
+
+    def denied(*_args, **_kwargs):
+        raise OSError("Native change metadata denied")
+
+    monkeypatch.setattr(windows_file_metadata, "file_change_time", denied)
+    with pytest.raises(ComputeJobError, match="inspected safely"):
+        compute_jobs._stable_regular_file_bytes(
+            path, maximum_bytes=4096, label="Approved entrypoint",
+        )

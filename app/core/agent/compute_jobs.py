@@ -1,6 +1,6 @@
 """Durable local compute jobs for approved optimization entrypoints.
 
-Code version: v1.6.4-codex.0
+Code version: v1.6.5-codex.0
 """
 
 from __future__ import annotations
@@ -212,6 +212,25 @@ def _cleanup_staged_job(staged_job_root: Path) -> None:
         pass
 
 
+def _regular_file_identity(
+    path: Path,
+    metadata: os.stat_result,
+    *,
+    descriptor: int | None = None,
+) -> tuple[int, ...]:
+    """Compare the same native mutation timestamp for paths and open handles."""
+    if os.name == "nt":
+        # Windows path stat exposes creation time where fstat exposes change
+        # time. Native ChangeTime gives both snapshots the same mutation token.
+        from ..windows_file_metadata import file_change_time
+
+        change_time = file_change_time(path, descriptor=descriptor)
+    else:
+        change_time = int(metadata.st_ctime_ns)
+    fields = ("st_dev", "st_ino", "st_mode", "st_nlink", "st_size", "st_mtime_ns")
+    return tuple(int(getattr(metadata, field)) for field in fields) + (change_time,)
+
+
 def _stable_regular_file_bytes(
     path: Path,
     *,
@@ -231,6 +250,10 @@ def _stable_regular_file_bytes(
         raise ComputeJobError(f"{label} must be one unlinked regular file.")
     if before_path.st_size > maximum_bytes:
         raise ComputeJobError(f"{label} exceeds the {maximum_bytes:,}-byte limit.")
+    try:
+        before_path_identity = _regular_file_identity(path, before_path)
+    except OSError as exc:
+        raise ComputeJobError(f"{label} could not be inspected safely.") from exc
     flags = (
         os.O_RDONLY
         | getattr(os, "O_BINARY", 0)
@@ -243,6 +266,9 @@ def _stable_regular_file_bytes(
         raise ComputeJobError(f"{label} could not be opened safely.") from exc
     try:
         before_handle = os.fstat(descriptor)
+        before_handle_identity = _regular_file_identity(
+            path, before_handle, descriptor=descriptor,
+        )
         content = bytearray()
         while True:
             chunk = os.read(descriptor, 64 * 1024)
@@ -254,25 +280,24 @@ def _stable_regular_file_bytes(
                     f"{label} exceeds the {maximum_bytes:,}-byte limit."
                 )
         after_handle = os.fstat(descriptor)
+        after_handle_identity = _regular_file_identity(
+            path, after_handle, descriptor=descriptor,
+        )
+    except OSError as exc:
+        raise ComputeJobError(f"{label} could not be inspected safely.") from exc
     finally:
         os.close(descriptor)
     try:
         after_path = path.lstat()
+        after_path_identity = _regular_file_identity(path, after_path)
     except OSError as exc:
         raise ComputeJobError(f"{label} changed while it was being read.") from exc
-    identity_fields = (
-        "st_dev",
-        "st_ino",
-        "st_mode",
-        "st_nlink",
-        "st_size",
-        "st_mtime_ns",
-        "st_ctime_ns",
+    identities = (
+        before_path_identity,
+        before_handle_identity,
+        after_handle_identity,
+        after_path_identity,
     )
-    identities = [
-        tuple(int(getattr(metadata, field)) for field in identity_fields)
-        for metadata in (before_path, before_handle, after_handle, after_path)
-    ]
     if any(identity != identities[0] for identity in identities[1:]):
         raise ComputeJobError(f"{label} changed while it was being read.")
     payload = bytes(content)
