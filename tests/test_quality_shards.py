@@ -1,6 +1,6 @@
 """Prove complete test partitions and fail-closed branch-coverage aggregation.
 
-Code version: v1.0.0-codex.0
+Code version: v1.1.0-codex.0
 """
 
 from __future__ import annotations
@@ -36,7 +36,7 @@ def project(tmp_path):
     (tmp_path / "pytest.ini").write_text("[pytest]\ntestpaths = tests\npython_files = test_*.py\n", encoding="utf-8")
     (tests / "conftest.py").write_text('collect_ignore_glob = ["* 2.py"]\n', encoding="utf-8")
     for category in ("e2e", "unit"):
-        for index in range(4):
+        for index in range(shards.SHARD_COUNT):
             (tests / f"test_{category}_{index}.py").write_text(
                 "from app.probe import choose\ndef test_probe():\n    assert choose(True) == 1\n",
                 encoding="utf-8",
@@ -53,7 +53,7 @@ def _bundles(project, arcs=None):
     partition = shards.partition(inventory)
     artifacts = project / "downloaded"
     artifacts.mkdir()
-    for index in range(1, 5):
+    for index in range(1, shards.SHARD_COUNT + 1):
         bundle = artifacts / f"artifact-{index}"
         bundle.mkdir()
         data = CoverageData(basename=str(bundle / "coverage.data"))
@@ -62,7 +62,7 @@ def _bundles(project, arcs=None):
         (bundle / "coverage.json").write_text(json.dumps({"meta": {"branch_coverage": True}}), encoding="utf-8")
         manifest = {
             "version": 1, "status": "passed", "context": CONTEXT,
-            "shard_index": index, "shard_count": 4, "marker": "not live",
+            "shard_index": index, "shard_count": 8, "marker": "not live",
             "inventory_sha256": hashlib.sha256(shards._encoded(inventory)).hexdigest(),
             "selected_files": partition[index - 1],
             "coverage_sha256": shards._digest(bundle / "coverage.data"),
@@ -74,6 +74,7 @@ def _bundles(project, arcs=None):
 
 
 def test_partition_covers_real_and_synthetic_inventory_exactly_once(project):
+    assert shards.SHARD_COUNT == 8
     for root in (project, ROOT):
         inventory = shards.test_inventory(root)
         partition = shards.partition(inventory)
@@ -85,31 +86,52 @@ def test_partition_covers_real_and_synthetic_inventory_exactly_once(project):
     assert all(any("_unit" in path for path in group) for group in shards.partition(shards.test_inventory(project)))
 
 
+def test_browser_setup_allowance_balances_one_large_module_and_many_small_modules():
+    """Repeated small browser modules must not disappear behind one large source file."""
+    inventory = [
+        {"path": "tests/test_large_e2e.py", "bytes": 512 * 1024},
+        *({"path": f"tests/test_small_{index:02d}_e2e.py", "bytes": 4096} for index in range(64)),
+    ]
+    partition = shards.partition(inventory)
+    sizes = {item["path"]: item["bytes"] for item in inventory}
+    costs = [sum(sizes[path] + shards.BROWSER_SETUP_BYTES for path in group) for group in partition]
+    assert min(map(len, partition)) >= 2
+    assert max(map(len, partition)) <= 9
+    assert max(costs) - min(costs) <= shards.BROWSER_SETUP_BYTES + 4096
+    assert set(path for group in partition for path in group) == set(sizes)
+
+
+def test_an_incomplete_inventory_cannot_create_empty_quality_shards():
+    inventory = [{"path": f"tests/test_unit_{index}.py", "bytes": 1} for index in range(7)]
+    with pytest.raises(ValueError, match="eight quality shards"):
+        shards.partition(inventory)
+
+
 def test_discovery_preserves_collision_exclusion_and_rejects_configuration_drift(project):
     (project / "tests/test_probe 2.py").write_text("raise AssertionError('Ignored collision copy')\n", encoding="utf-8")
-    assert len(shards.test_inventory(project)) == 8
+    assert len(shards.test_inventory(project)) == 16
     (project / "pytest.ini").write_text("[pytest]\ntestpaths = elsewhere\npython_files = *.py\n", encoding="utf-8")
     with pytest.raises(ValueError, match="discovery contract"):
         shards.test_inventory(project)
 
 
 @pytest.mark.parametrize("environment", [
-    {shards.SHARD_ENV: "1"}, {shards.COUNT_ENV: "4"},
-    {shards.SHARD_ENV: "", shards.COUNT_ENV: "4"},
-    {shards.SHARD_ENV: "0", shards.COUNT_ENV: "4"},
-    {shards.SHARD_ENV: "5", shards.COUNT_ENV: "4"},
-    {shards.SHARD_ENV: "1", shards.COUNT_ENV: "3"},
+    {shards.SHARD_ENV: "1"}, {shards.COUNT_ENV: "8"},
+    {shards.SHARD_ENV: "", shards.COUNT_ENV: "8"},
+    {shards.SHARD_ENV: "0", shards.COUNT_ENV: "8"},
+    {shards.SHARD_ENV: "9", shards.COUNT_ENV: "8"},
+    {shards.SHARD_ENV: "1", shards.COUNT_ENV: "4"},
 ])
 def test_partial_or_invalid_shard_settings_fail(environment):
     with pytest.raises(ValueError):
         shards.shard_from_environment(environment)
 
 
-@pytest.mark.parametrize("enabled,expected", [(False, "55"), (True, "0")])
-def test_only_explicit_complete_shard_settings_lower_the_default_minimum(enabled, expected):
+@pytest.mark.parametrize("index,expected", [(None, "55"), ("1", "0"), ("8", "0")])
+def test_only_explicit_complete_shard_settings_lower_the_default_minimum(index, expected):
     environment = {key: value for key, value in os.environ.items() if key not in (shards.SHARD_ENV, shards.COUNT_ENV)}
-    if enabled:
-        environment.update({shards.SHARD_ENV: "1", shards.COUNT_ENV: "4"})
+    if index is not None:
+        environment.update({shards.SHARD_ENV: index, shards.COUNT_ENV: "8"})
     result = subprocess.run([sys.executable, str(ROOT / "scripts/quality_shards.py"), "minimum", "55"], env=environment, capture_output=True, text=True, check=False)
     assert result.returncode == 0, result.stderr
     assert result.stdout.strip() == expected
@@ -145,16 +167,23 @@ def test_artifacts_from_another_commit_run_attempt_or_platform_fail(project, key
         shards.verified_coverage_files(project, artifacts, expected)
 
 
-@pytest.mark.parametrize("damage", ["missing", "extra", "missing_receipt", "changed_data", "changed_report", "line_only", "changed_test"])
+def test_seven_successful_artifacts_cannot_satisfy_the_eight_shard_gate(project):
+    artifacts = _bundles(project)
+    bundle = artifacts / "artifact-8"
+    for path in bundle.iterdir():
+        path.unlink()
+    bundle.rmdir()
+    assert len(list(artifacts.iterdir())) == 7
+    with pytest.raises(ValueError, match="Exactly eight successful"):
+        shards.verified_coverage_files(project, artifacts, CONTEXT)
+
+
+@pytest.mark.parametrize("damage", ["extra", "missing_receipt", "changed_data", "changed_report", "line_only", "changed_test"])
 def test_artifact_completeness_and_integrity_are_required(project, damage):
     artifacts = _bundles(project)
     bundle = artifacts / "artifact-1"
-    if damage == "missing":
-        for path in bundle.iterdir():
-            path.unlink()
-        bundle.rmdir()
-    elif damage == "extra":
-        (artifacts / "artifact-5").mkdir()
+    if damage == "extra":
+        (artifacts / "artifact-9").mkdir()
     elif damage == "missing_receipt":
         (bundle / "manifest.json").unlink()
     elif damage == "changed_data":
@@ -194,7 +223,7 @@ def test_global_threshold_uses_combined_branch_arcs_not_partial_percentages(proj
 
 
 def test_real_shard_produces_a_success_receipt_only_after_fresh_branch_data(project, monkeypatch):
-    for key, value in {**CONTEXT, shards.SHARD_ENV: "1", shards.COUNT_ENV: "4"}.items():
+    for key, value in {**CONTEXT, shards.SHARD_ENV: "1", shards.COUNT_ENV: "8"}.items():
         monkeypatch.setenv(key, value)
     monkeypatch.delenv("PYTEST_ADDOPTS", raising=False)
     assert shards.run_shard(project, ARGUMENTS) == 0
@@ -210,7 +239,7 @@ def test_real_shard_produces_a_success_receipt_only_after_fresh_branch_data(proj
 
 @pytest.mark.parametrize("exit_code", [0, 7])
 def test_failed_or_noop_pytest_cannot_publish_a_success_manifest(project, monkeypatch, exit_code):
-    for key, value in {**CONTEXT, shards.SHARD_ENV: "1", shards.COUNT_ENV: "4"}.items():
+    for key, value in {**CONTEXT, shards.SHARD_ENV: "1", shards.COUNT_ENV: "8"}.items():
         monkeypatch.setenv(key, value)
     monkeypatch.delenv("PYTEST_ADDOPTS", raising=False)
     monkeypatch.setattr(shards.subprocess, "run", lambda *_args, **_kwargs: subprocess.CompletedProcess([], exit_code))

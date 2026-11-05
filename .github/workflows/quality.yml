@@ -1,4 +1,4 @@
-# Code version: v1.6.0-codex.0
+# Code version: v1.7.0-codex.0
 name: Quality gate
 
 on:
@@ -14,17 +14,17 @@ concurrency:
 
 jobs:
   check-shards:
-    name: Linux quality shard ${{ matrix.shard }}/4
+    name: Linux quality shard ${{ matrix.shard }}/8
     runs-on: ubuntu-latest
     timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2, 3, 4]
+        shard: [1, 2, 3, 4, 5, 6, 7, 8]
     env:
       TZ: UTC
       AGENTIC_CONTEXT_TEST_SHARD: ${{ matrix.shard }}
-      AGENTIC_CONTEXT_TEST_SHARD_COUNT: '4'
+      AGENTIC_CONTEXT_TEST_SHARD_COUNT: '8'
 
     steps:
       - name: Check out repository
@@ -63,17 +63,17 @@ jobs:
           if-no-files-found: error
 
   check-windows-shards:
-    name: Windows quality shard ${{ matrix.shard }}/4
+    name: Windows quality shard ${{ matrix.shard }}/8
     runs-on: windows-latest
     timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2, 3, 4]
+        shard: [1, 2, 3, 4, 5, 6, 7, 8]
     env:
       TZ: UTC
       AGENTIC_CONTEXT_TEST_SHARD: ${{ matrix.shard }}
-      AGENTIC_CONTEXT_TEST_SHARD_COUNT: '4'
+      AGENTIC_CONTEXT_TEST_SHARD_COUNT: '8'
 
     steps:
       - name: Check out repository

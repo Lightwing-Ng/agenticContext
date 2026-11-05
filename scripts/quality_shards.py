@@ -1,6 +1,6 @@
 """Partition offline tests and verify complete, fresh branch-coverage artifacts.
 
-Code version: v1.0.0-codex.0
+Code version: v1.1.0-codex.0
 """
 
 from __future__ import annotations
@@ -19,7 +19,11 @@ import sys
 import time
 
 
-SHARD_COUNT = 4
+SHARD_COUNT = 8
+# Browser files each start disposable browser/server fixtures. CI showed that
+# balancing only source bytes concentrated 28 such files in one timed-out shard.
+# This fixed planning allowance represents setup work, not bytes read or runtime.
+BROWSER_SETUP_BYTES = 64 * 1024
 SHARD_ENV = "AGENTIC_CONTEXT_TEST_SHARD"
 COUNT_ENV = "AGENTIC_CONTEXT_TEST_SHARD_COUNT"
 CONTEXT_KEYS = ("GITHUB_SHA", "GITHUB_RUN_ID", "GITHUB_RUN_ATTEMPT", "RUNNER_OS")
@@ -33,14 +37,14 @@ class Shard:
 
 
 def shard_from_environment(environment: dict[str, str]) -> Shard | None:
-    """Require the complete, explicit four-shard contract before lowering coverage."""
+    """Require the complete, explicit eight-shard contract before lowering coverage."""
     if SHARD_ENV not in environment and COUNT_ENV not in environment:
         return None
     index, count = environment.get(SHARD_ENV, ""), environment.get(COUNT_ENV, "")
     if not index.isdecimal() or count != str(SHARD_COUNT):
-        raise ValueError("Set both test shard variables: index 1 through 4 and count 4.")
+        raise ValueError("Set both test shard variables: index 1 through 8 and count 8.")
     if not 1 <= int(index) <= SHARD_COUNT:
-        raise ValueError("The test shard index must be between 1 and 4.")
+        raise ValueError("The test shard index must be between 1 and 8.")
     return Shard(int(index))
 
 
@@ -96,7 +100,7 @@ def test_inventory(root: Path) -> list[dict[str, object]]:
 
 
 def partition(inventory: list[dict[str, object]]) -> list[list[str]]:
-    """Balance browser and other files separately, retaining every file exactly once."""
+    """Balance browser setup and source work separately from other test files."""
     shards: list[list[str]] = [[] for _ in range(SHARD_COUNT)]
     for browser in (True, False):
         weights = [0] * SHARD_COUNT
@@ -104,14 +108,14 @@ def partition(inventory: list[dict[str, object]]) -> list[list[str]]:
         for item in sorted(group, key=lambda row: (-int(row["bytes"]), str(row["path"]))):
             target = min(range(SHARD_COUNT), key=lambda index: (weights[index], len(shards[index]), index))
             shards[target].append(str(item["path"]))
-            weights[target] += int(item["bytes"])
+            weights[target] += int(item["bytes"]) + (BROWSER_SETUP_BYTES if browser else 0)
     for files in shards:
         files.sort()
     selected = [path for files in shards for path in files]
     if len(selected) != len(set(selected)) or set(selected) != {item["path"] for item in inventory}:
         raise ValueError("The shard partition must cover every discovered test file exactly once.")
     if any(not files for files in shards):
-        raise ValueError("Each of the four quality shards must contain tests.")
+        raise ValueError("Each of the eight quality shards must contain tests.")
     return shards
 
 
@@ -200,7 +204,7 @@ def verified_coverage_files(root: Path, artifacts: Path, context: dict[str, str]
     fingerprint = hashlib.sha256(_encoded(inventory)).hexdigest()
     bundles = list(artifacts.iterdir()) if artifacts.is_dir() else []
     if len(bundles) != SHARD_COUNT or any(path.is_symlink() or not path.is_dir() for path in bundles):
-        raise ValueError("Exactly four successful quality-shard artifact directories are required.")
+        raise ValueError("Exactly eight successful quality-shard artifact directories are required.")
     files: dict[int, Path] = {}
     for bundle in bundles:
         manifest_file = bundle / "manifest.json"
