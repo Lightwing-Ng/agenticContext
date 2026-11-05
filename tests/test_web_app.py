@@ -1,6 +1,6 @@
 """Focused regression tests for the local web console."""
 
-# Code version: v1.155.8-codex.0
+# Code version: v1.155.9-codex.0
 
 from __future__ import annotations
 
@@ -499,7 +499,9 @@ class WebAppTests(unittest.TestCase):
     def test_agent_uses_canonical_browser_provider_paths(self) -> None:
         with patch(
             "app.core.computer_use_agent.load_computer_use_settings",
-            return_value=ComputerUseSettings(browser="edge", platform="chatgpt"),
+            return_value=ComputerUseSettings(
+                browser="edge", platform="chatgpt", operating_system="macos"
+            ),
         ):
             app = create_app()
 
@@ -1196,7 +1198,9 @@ class WebAppTests(unittest.TestCase):
     def test_agent_control_plane_allows_private_lan_with_password(self) -> None:
         with patch(
             "app.core.computer_use_agent.load_computer_use_settings",
-            return_value=ComputerUseSettings(browser="edge", platform="chatgpt"),
+            return_value=ComputerUseSettings(
+                browser="edge", platform="chatgpt", operating_system="macos"
+            ),
         ):
             app = create_app()
 
@@ -1313,7 +1317,7 @@ class WebAppTests(unittest.TestCase):
         self.assertNotIn('class="trade-strategy-combobox agent-combobox agent-os-combobox"', local_body)
         self.assertNotIn('data-agent-terminal-authorization-button', local_body)
         self.assertNotIn('data-agent-terminal-authorization-status', local_body)
-        self.assertIn(f'name="operating_system" value="{ComputerUseSettings().operating_system}" data-agent-prompt-os', local_body)
+        self.assertIn('name="operating_system" value="macos" data-agent-prompt-os', local_body)
         self.assertIn('data-agent-combobox-option="safari"', local_body)
         self.assertNotIn('name="port"', local_body)
         self.assertIn('id="agent_project_path"', local_body)
@@ -4233,7 +4237,9 @@ class WebAppTests(unittest.TestCase):
     def test_agent_browser_alias_and_claude_route_render_the_shared_workspace(self) -> None:
         with patch(
             "app.core.computer_use_agent.load_computer_use_settings",
-            return_value=ComputerUseSettings(browser="edge", platform="chatgpt"),
+            return_value=ComputerUseSettings(
+                browser="edge", platform="chatgpt", operating_system="macos"
+            ),
         ):
             app = create_app()
 
