@@ -1,14 +1,16 @@
 """Security and lifecycle tests for local browser acceptance.
 
-Code version: v1.1.0-codex.1
+Code version: v1.1.1-codex.0
 """
 
 from __future__ import annotations
 
 from contextlib import contextmanager
+import json
 from pathlib import Path
 import socket
 from threading import current_thread
+import time
 
 import pytest
 
@@ -70,6 +72,7 @@ def test_workspace_controller_executes_browser_acceptance_inside_active_playwrig
         compute_job_runtime_root=tmp_path / "runtime",
     )
     with playwright_sync.sync_playwright():
+        started = time.monotonic()
         result = controller.execute(
             {
                 "action": "browser_acceptance",
@@ -79,6 +82,45 @@ def test_workspace_controller_executes_browser_acceptance_inside_active_playwrig
                 "expected_selectors": ["main"],
             }
         )
+        elapsed = time.monotonic() - started
+    if not result["ok"]:
+        diagnostics = {
+            "error": str(result.get("error") or "")[:500],
+            "action": result.get("action"),
+            "controller_elapsed_seconds": round(elapsed, 3),
+            "acceptance_result_returned": "viewports" in result,
+            "controller_evidence_checked": "workspace_scan_complete" in result,
+            **{
+                key: result.get(key)
+                for key in (
+                    "mutated_workspace", "workspace_scan_complete", "verification_current",
+                    "edit_generation", "verification_generation", "workspace_generation",
+                    "verification_workspace_generation", "verification_snapshot_id",
+                )
+            },
+            "viewports": [],
+        }
+        for viewport in result.get("viewports", [])[:2]:
+            diagnostics["viewports"].append({
+                "viewport": {
+                    key: viewport.get("viewport", {}).get(key)
+                    for key in ("name", "width", "height")
+                },
+                "ok": viewport.get("ok"),
+                "http_status": viewport.get("http_status"),
+                "assertions": [
+                    {key: item.get(key) for key in ("kind", "index", "ok")}
+                    for item in viewport.get("assertions", [])[:40]
+                ],
+                **{
+                    key: [
+                        str(value)[:80] if str(value).startswith("sha256:") else "[non-fingerprint omitted]"
+                        for value in viewport.get(key, [])[:20]
+                    ]
+                    for key in ("console_errors", "page_errors", "blocked_requests")
+                },
+            })
+        print("Synthetic browser acceptance failure: " + json.dumps(diagnostics, separators=(",", ":")))
     assert result["ok"] is True
     assert result["action"] == "browser_acceptance"
     assert result["preview"]["port"] != 8666
