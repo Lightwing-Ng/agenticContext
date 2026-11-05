@@ -1,12 +1,14 @@
-"""Session switching, capacity, and selected controls. Code version: v1.37.4-codex.0."""
+"""Session switching, capacity, and selected controls. Code version: v1.37.5-codex.0."""
 
+import json
 import re
+from contextlib import contextmanager
 from copy import deepcopy
 from threading import Thread
 from urllib.parse import parse_qs, urlsplit
 
 import pytest
-from playwright.sync_api import expect
+from playwright.sync_api import Error as PlaywrightError, expect
 from werkzeug.serving import make_server
 
 from tests import test_sidebar_e2e as fixtures
@@ -6472,6 +6474,103 @@ def test_restored_session_loads_bound_history_and_ignores_late_reply(
         context.close()
 
 
+@contextmanager
+def _observe_draft_sidebar_failure(page):
+    """Expose bounded control state only when the original draft interaction fails."""
+    page.add_init_script(
+        """(() => {
+            const events = [];
+            const controller = new AbortController();
+            window.__cachelikesDraftSidebarTrace = {events, controller};
+            const sidebarState = () => {
+                const shell = document.querySelector('#app_shell');
+                return {
+                    expanded: document.querySelector('#sidebar_toggle')?.getAttribute('aria-expanded'),
+                    open: Boolean(shell?.classList.contains('is-sidebar-open')),
+                    opening: Boolean(shell?.classList.contains('is-sidebar-opening')),
+                    closing: Boolean(shell?.classList.contains('is-sidebar-closing')),
+                    animating: Boolean(shell?.classList.contains('is-sidebar-animating')),
+                };
+            };
+            for (const kind of ['pointerdown', 'pointerup', 'click']) {
+                document.addEventListener(kind, event => {
+                    if (events.length >= 40 || !(event.target instanceof Element)) return;
+                    const control = event.target.closest(
+                        '#sidebar_toggle, #sidebar_backdrop, [data-agent-combobox-trigger], [data-agent-combobox-option]',
+                    );
+                    if (!control) return;
+                    let target = '';
+                    if (control.id === 'sidebar_toggle') target = 'sidebar-toggle';
+                    else if (control.id === 'sidebar_backdrop') target = 'sidebar-backdrop';
+                    else {
+                        const choice = control.closest('.agent-platform-combobox') ? 'platform'
+                            : control.closest('.agent-browser-combobox') ? 'browser' : '';
+                        if (!choice) return;
+                        target = `${choice}-${control.hasAttribute('data-agent-combobox-trigger') ? 'trigger' : 'option'}`;
+                    }
+                    events.push({kind, target, atMs: Math.round(performance.now()), ...sidebarState()});
+                }, {capture: true, signal: controller.signal});
+            }
+        })();"""
+    )
+    try:
+        yield
+    except (AssertionError, PlaywrightError):
+        try:
+            diagnostic = page.evaluate(
+                """() => {
+                    const read = selector => {
+                        const node = document.querySelector(selector);
+                        if (!node) return {present: false};
+                        const rect = node.getBoundingClientRect();
+                        const style = getComputedStyle(node);
+                        return {
+                            present: true, hidden: node.hidden, inert: node.inert,
+                            ariaHidden: node.getAttribute('aria-hidden'),
+                            expanded: node.getAttribute('aria-expanded'),
+                            rect: Object.fromEntries(['x', 'y', 'width', 'height'].map(
+                                name => [name, Math.round(rect[name] * 100) / 100],
+                            )),
+                            style: Object.fromEntries([
+                                'display', 'visibility', 'opacity', 'pointerEvents', 'transform',
+                                'transitionProperty', 'transitionDuration',
+                            ].map(name => [name, style[name].slice(0, 120)])),
+                        };
+                    };
+                    const shell = document.querySelector('#app_shell');
+                    const path = location.pathname;
+                    return {
+                        routePath: /^\\/agent\\/(?:edge|chrome|safari|tunnel)\\/(?:chatgpt|gemini|grok|claude)$/.test(path)
+                            ? path : 'other',
+                        readyState: document.readyState,
+                        motion: Object.fromEntries([
+                            'is-sidebar-open', 'is-sidebar-collapsed', 'is-sidebar-opening',
+                            'is-sidebar-closing', 'is-sidebar-animating',
+                        ].map(name => [name, Boolean(shell?.classList.contains(name))])),
+                        controls: {
+                            toggle: read('#sidebar_toggle'), backdrop: read('#sidebar_backdrop'),
+                            sidebar: read('.sidebar'),
+                            platform: read('.agent-platform-combobox [data-agent-combobox-trigger]'),
+                            browser: read('.agent-browser-combobox [data-agent-combobox-trigger]'),
+                        },
+                        events: window.__cachelikesDraftSidebarTrace?.events || [],
+                    };
+                }"""
+            )
+            print("Draft sidebar failure diagnostic: " + json.dumps(diagnostic, sort_keys=True))
+        except Exception as diagnostic_error:
+            print("Draft sidebar failure diagnostic: " + json.dumps({
+                "capture_error_type": type(diagnostic_error).__name__,
+            }))
+        raise
+    finally:
+        if not page.is_closed():
+            try:
+                page.evaluate("window.__cachelikesDraftSidebarTrace?.controller.abort()")
+            except PlaywrightError:
+                pass
+
+
 @pytest.mark.parametrize("choice,target", [("platform", "grok"), ("browser", "chrome")])
 @pytest.mark.parametrize("width", [1161, 390])
 def test_new_session_drafts_are_isolated_by_route(
@@ -6490,27 +6589,28 @@ def test_new_session_drafts_are_isolated_by_route(
     }))
     page.route("**/api/agent/sources**", lambda route: route.fulfill(json=catalog))
     try:
-        page.goto(f"{sidebar_server_url}/agent/edge/chatgpt")
-        prompt = page.locator("#agent_prompt_input")
-        prompt.fill("Draft for Edge ChatGPT")
-        if width < 900:
-            page.locator("#sidebar_toggle").click()
-        trigger = page.locator(f'.agent-{choice}-combobox [data-agent-combobox-trigger]')
-        trigger.click()
-        page.locator(f'.agent-{choice}-combobox [data-agent-combobox-option="{target}"]').click()
-        expect(prompt).to_have_value("")
-        if width < 900:
-            page.locator("#sidebar_toggle").click()
-        prompt.fill("Draft for the other route")
-        if width < 900:
-            page.locator("#sidebar_toggle").click()
-        trigger.click()
-        original = "chatgpt" if choice == "platform" else "edge"
-        page.locator(f'.agent-{choice}-combobox [data-agent-combobox-option="{original}"]').click()
-        expect(prompt).to_have_value("Draft for Edge ChatGPT")
-        trigger.click()
-        page.locator(f'.agent-{choice}-combobox [data-agent-combobox-option="{target}"]').click()
-        expect(prompt).to_have_value("Draft for the other route")
+        with _observe_draft_sidebar_failure(page):
+            page.goto(f"{sidebar_server_url}/agent/edge/chatgpt")
+            prompt = page.locator("#agent_prompt_input")
+            prompt.fill("Draft for Edge ChatGPT")
+            if width < 900:
+                page.locator("#sidebar_toggle").click()
+            trigger = page.locator(f'.agent-{choice}-combobox [data-agent-combobox-trigger]')
+            trigger.click()
+            page.locator(f'.agent-{choice}-combobox [data-agent-combobox-option="{target}"]').click()
+            expect(prompt).to_have_value("")
+            if width < 900:
+                page.locator("#sidebar_toggle").click()
+            prompt.fill("Draft for the other route")
+            if width < 900:
+                page.locator("#sidebar_toggle").click()
+            trigger.click()
+            original = "chatgpt" if choice == "platform" else "edge"
+            page.locator(f'.agent-{choice}-combobox [data-agent-combobox-option="{original}"]').click()
+            expect(prompt).to_have_value("Draft for Edge ChatGPT")
+            trigger.click()
+            page.locator(f'.agent-{choice}-combobox [data-agent-combobox-option="{target}"]').click()
+            expect(prompt).to_have_value("Draft for the other route")
     finally:
         context.close()
 
