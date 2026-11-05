@@ -1,4 +1,4 @@
-"""Tunnel call accounting and compact badge acceptance. Code version: v1.7.1-codex.0."""
+"""Tunnel call accounting and compact badge acceptance. Code version: v1.7.2-codex.0."""
 
 from __future__ import annotations
 
@@ -726,6 +726,7 @@ def test_summary_polling_states_and_long_integer_geometry(
         refresh()
         expect(recent_tokens.locator("[data-tunnel-recent-token-digits]")).to_have_text("9,007,199,254,740,991")
         assert badge.evaluate("e => e.scrollWidth <= e.clientWidth + 1")
+        assert abs(panel.bounding_box()["height"] - initial_height) <= 1
 
         payload["active_calls"] = []
         payload["recent_calls"] = [usage_record(1, 12_345_678, "completed")]
@@ -775,10 +776,19 @@ def test_summary_polling_states_and_long_integer_geometry(
                 "aria-label",
                 "Tokens: unavailable; estimated tool-text tokens from retained recent calls",
             )
+            assert abs(panel.bounding_box()["height"] - initial_height) <= 1, panel.evaluate(
+                """element => ({
+                    fontStatus: document.fonts.status,
+                    rowMinimum: getComputedStyle(element.querySelector('.agent-tunnel-usage-row')).minBlockSize,
+                    height: element.getBoundingClientRect().height
+                })"""
+            )
         payload["active_calls"] = []
         payload["recent_calls"] = []
         payload["recent_usage"] = {"estimated_tokens": 0, "complete": True}
         refresh()
+        expect(badge).to_be_visible()
+        expect(recent_tokens.locator("[data-tunnel-recent-token-digits]")).to_have_text("0")
         assert abs(panel.bounding_box()["height"] - initial_height) <= 1
         assert page.evaluate("document.documentElement.scrollWidth <= innerWidth")
         assert not errors

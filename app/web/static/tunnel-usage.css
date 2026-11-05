@@ -1,4 +1,4 @@
-/* Code version: v1.8.2-codex.0 */
+/* Code version: v1.8.3-codex.0 */
 /* Tunnel onboarding uses the wrapper for layout without painting another panel. */
 .workspace-article-card.agent-tunnel-onboarding-card {
     border: 0;
@@ -50,7 +50,11 @@
     );
     align-items: center;
     gap: 8px;
-    min-block-size: 24px;
+    /* Reserve the canonical numeral and its badge padding in every state. */
+    min-block-size: calc(
+        var(--workspace-metric-value-font-size)
+        + var(--investment-holdings-allocation-badge-padding-block) * 2
+    );
     min-inline-size: 0;
 }
 
