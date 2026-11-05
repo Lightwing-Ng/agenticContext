@@ -1,6 +1,6 @@
 """Durable local compute jobs for approved optimization entrypoints.
 
-Code version: v1.6.6-codex.0
+Code version: v1.6.7-codex.0
 """
 
 from __future__ import annotations
@@ -267,6 +267,8 @@ def _stable_regular_file_bytes(
                 )
         after_handle = os.fstat(descriptor)
         after_handle_change = change_token(after_handle, descriptor=descriptor)
+    except OSError as exc:
+        raise ComputeJobError(f"{label} could not be inspected safely.") from exc
     finally:
         os.close(descriptor)
     try:

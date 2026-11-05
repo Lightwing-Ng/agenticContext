@@ -1,12 +1,13 @@
 """Durable compute-job lifecycle and safety contract tests.
 
-Code version: v1.6.7-codex.0
+Code version: v1.6.8-codex.0
 """
 
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
+import errno
 import hashlib
 import json
 import os
@@ -1846,6 +1847,106 @@ def test_approved_file_read_preserves_crlf_bytes_in_windows_binary_mode(tmp_path
     assert digest == hashlib.sha256(payload).hexdigest()
     assert path.read_bytes() == payload
     assert opened and all(opened.values())
+
+
+@pytest.mark.parametrize("failure_at", ["first_fstat", "read", "second_fstat"])
+def test_approved_reader_wraps_io_errors_and_closes_its_real_descriptor(
+    tmp_path, monkeypatch, failure_at,
+):
+    path = tmp_path / "approved.py"
+    payload = b"print('preserve exact approved bytes')\n"
+    path.write_bytes(payload)
+    failure = OSError(errno.EIO, "Synthetic approved-input I/O failure")
+    handle_reads = []
+    closed = []
+
+    def inspect(descriptor):
+        handle_reads.append(descriptor)
+        if failure_at == "first_fstat" or failure_at == "second_fstat" and len(handle_reads) == 2:
+            raise failure
+        return os.fstat(descriptor)
+
+    def read(descriptor, size):
+        if failure_at == "read":
+            raise failure
+        return os.read(descriptor, size)
+
+    def close(descriptor):
+        closed.append(descriptor)
+        os.close(descriptor)
+
+    monkeypatch.setattr(compute_jobs, "os", SimpleNamespace(
+        **{**vars(os), "fstat": inspect, "read": read, "close": close}
+    ))
+    try:
+        with pytest.raises(ComputeJobError, match="could not be inspected safely") as observed:
+            compute_jobs._stable_regular_file_bytes(path, maximum_bytes=4096, label="Approved input")
+        assert observed.value.__cause__ is failure
+    finally:
+        assert len(closed) == 1 and set(handle_reads) == set(closed)
+        with pytest.raises(OSError) as released:
+            os.fstat(closed[0])
+        assert released.value.errno == errno.EBADF
+        assert path.read_bytes() == payload
+
+
+@pytest.mark.parametrize("snapshot_name", ["entrypoint.py", "config.json"])
+def test_worker_persists_failed_state_when_approved_snapshot_read_fails(
+    tmp_path, monkeypatch, snapshot_name,
+):
+    job_root = tmp_path / ("7" * 32)
+    job_root.mkdir()
+    entrypoint, config = job_root / "entrypoint.py", job_root / "config.json"
+    entrypoint.write_bytes(b"raise RuntimeError('Approved code must not run')\n")
+    config.write_bytes(b"{}")
+    metadata_path = job_root / "metadata.json"
+    identity = "synthetic-owned-worker"
+    metadata_path.write_text(json.dumps({
+        "schema_version": 1, "revision": 1, "job_id": job_root.name,
+        "workspace": str(tmp_path), "state": "running", "pid": os.getpid(),
+        "process_identity": identity, "updated_at": datetime.now(timezone.utc).isoformat(),
+        "entrypoint_sha256": _sha256(entrypoint), "config_sha256": _sha256(config),
+    }), encoding="utf-8")
+    monkeypatch.setattr(
+        compute_jobs, "_identity_matches",
+        lambda pid, expected: pid == os.getpid() and expected == identity,
+    )
+    native_reader = compute_jobs._stable_regular_file_bytes
+    closed = []
+
+    def fail_read(_descriptor, _size):
+        raise OSError(errno.EIO, "Synthetic worker snapshot read failure")
+
+    def close(descriptor):
+        closed.append(descriptor)
+        os.close(descriptor)
+
+    def read_snapshot(path, **options):
+        if path.name != snapshot_name:
+            return native_reader(path, **options)
+        with monkeypatch.context() as scoped:
+            scoped.setattr(compute_jobs, "os", SimpleNamespace(
+                **{**vars(os), "read": fail_read, "close": close}
+            ))
+            return native_reader(path, **options)
+
+    def forbidden_launch(*_args, **_options):
+        pytest.fail("An unreadable approved snapshot must never launch a child.")
+
+    monkeypatch.setattr(compute_jobs, "_stable_regular_file_bytes", read_snapshot)
+    monkeypatch.setattr(compute_jobs, "subprocess", SimpleNamespace(
+        **{**vars(subprocess), "Popen": forbidden_launch}
+    ))
+    assert compute_jobs._worker_main([str(metadata_path), str(entrypoint), str(config), "43_200"]) == 70
+    persisted = json.loads(metadata_path.read_text(encoding="utf-8"))
+    assert persisted["state"] == "failed" and persisted["revision"] == 2
+    assert persisted["exit_status"] == 70
+    assert persisted["ended_at"] == persisted["containment_cleared_at"] == persisted["updated_at"]
+    assert persisted["message"] == "Compute job input snapshots could not be verified."
+    assert len(closed) == 1
+    with pytest.raises(OSError) as released:
+        os.fstat(closed[0])
+    assert released.value.errno == errno.EBADF
 
 
 @pytest.fixture
