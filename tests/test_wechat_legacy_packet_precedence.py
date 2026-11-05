@@ -1,10 +1,11 @@
 """Legacy packet positions require complete corroboration and preserve every source.
 
-Code version: v1.0.0-codex.0
+Code version: v1.0.1-codex.0
 """
 
 from __future__ import annotations
 
+from contextlib import closing
 from copy import deepcopy
 import hashlib
 import json
@@ -55,7 +56,7 @@ def legacy_packet_store(forwarded_origin_store):
 
 
 def _packet_pair(fixture):
-    with sqlite3.connect(fixture.history) as connection:
+    with closing(sqlite3.connect(fixture.history)) as connection, connection:
         connection.row_factory = sqlite3.Row
         rows = [
             dict(
@@ -80,7 +81,7 @@ def _packet_pair(fixture):
 
 def _insert_html_only(fixture):
     """Keep an unmatched ordinary HTML observation beside the complete packet."""
-    with sqlite3.connect(fixture.history) as connection:
+    with closing(sqlite3.connect(fixture.history)) as connection, connection:
         connection.row_factory = sqlite3.Row
         row = dict(
             connection.execute(
@@ -108,7 +109,7 @@ def _insert_html_only(fixture):
         proof["locator"].update(export_msgid="414", export_msgtype="1")
         row["provenance"] = json.dumps(proof)
         original._insert(connection, "messages", row)
-    with sqlite3.connect(fixture.registry) as connection:
+    with closing(sqlite3.connect(fixture.registry)) as connection, connection:
         connection.execute(
             "INSERT INTO sender_bindings VALUES(?,?,?,?,?,?,?)",
             (
@@ -263,7 +264,7 @@ def test_ambiguous_native_legacy_packets_keep_independent_html_receipts(
     legacy_packet_store,
 ):
     fixture = legacy_packet_store
-    with sqlite3.connect(fixture.history) as connection:
+    with closing(sqlite3.connect(fixture.history)) as connection, connection:
         connection.row_factory = sqlite3.Row
         connection.executemany(
             "DELETE FROM messages WHERE id=?", [(key,) for key in fixture.original_ids]
@@ -311,7 +312,7 @@ def test_previous_complete_contact_cache_upgrades_without_author_rescan(
     assert old["status"] == "ready"
     assert old["total_count"] == 12 and old["observation_count"] == 18
     cache = analysis.contact_analysis_cache_path(fixture.store, CID)
-    with sqlite3.connect(cache) as connection:
+    with closing(sqlite3.connect(cache)) as connection, connection:
         references = connection.execute("SELECT * FROM refs ORDER BY id").fetchall()
 
     def no_author_rescan(*_args, **_kwargs):
@@ -328,7 +329,7 @@ def test_previous_complete_contact_cache_upgrades_without_author_rescan(
         monkeypatch.setattr(analysis, name, no_author_rescan)
     page = analysis.query_contact_analysis(fixture.store, CID)
     _assert_originals_and_receipts(fixture, page)
-    with sqlite3.connect(cache) as connection:
+    with closing(sqlite3.connect(cache)) as connection, connection:
         assert (
             connection.execute("SELECT * FROM refs ORDER BY id").fetchall()
             == references

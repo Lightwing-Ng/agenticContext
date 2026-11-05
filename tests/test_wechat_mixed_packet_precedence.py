@@ -1,10 +1,11 @@
 """Known resource positions cannot hide or duplicate flat transcript text events.
 
-Code version: v1.0.0-codex.0
+Code version: v1.0.1-codex.0
 """
 
 from __future__ import annotations
 
+from contextlib import closing
 from copy import deepcopy
 from datetime import datetime, timedelta
 import hashlib
@@ -201,7 +202,7 @@ def test_mixed_packet_positions_fail_closed(mixed_packet_store, damage):
 
 def _separate_same_clock_counterpart(fixture, *, origin_kind):
     """Keep a same-body, same-clock event in the opposite thread as independent evidence."""
-    with sqlite3.connect(fixture.history) as connection:
+    with closing(sqlite3.connect(fixture.history)) as connection, connection:
         connection.row_factory = sqlite3.Row
         if origin_kind == "group":
             group_peer = "synthetic-original@chatroom"
@@ -306,7 +307,7 @@ def test_mixed_packet_upgrade_reuses_every_accepted_reference(
         old = analysis.query_contact_analysis(fixture.store, CID)
     assert old["total_count"] == 13 and old["observation_count"] == 19
     cache = analysis.contact_analysis_cache_path(fixture.store, CID)
-    with sqlite3.connect(cache) as connection:
+    with closing(sqlite3.connect(cache)) as connection, connection:
         refs = connection.execute("SELECT * FROM refs ORDER BY id").fetchall()
 
     def no_author_rescan(*_args, **_kwargs):
@@ -327,7 +328,7 @@ def test_mixed_packet_upgrade_reuses_every_accepted_reference(
     assert all(
         selected[key]["source_label"] == "iPad archive" for key in fixture.original_ids
     )
-    with sqlite3.connect(cache) as connection:
+    with closing(sqlite3.connect(cache)) as connection, connection:
         assert connection.execute("SELECT * FROM refs ORDER BY id").fetchall() == refs
         assert (
             dict(connection.execute("SELECT key,value FROM info"))[

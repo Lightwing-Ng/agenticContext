@@ -1,10 +1,12 @@
 """Export publication preserves old evidence without reading existing message bodies.
 
-Code version: v1.0.1-codex.0
+Code version: v1.1.0-codex.0
 """
 
+from contextlib import closing
 import hashlib
 import json
+import os
 from pathlib import Path
 import sqlite3
 import sys
@@ -13,6 +15,7 @@ import pytest
 
 from app.core.wechat_archive import _SCHEMA, _identifier, wechat_archive_path
 from app.core import wechat_export_merge as exports
+from app.core.owner_only_files import OwnerOnlyFileError, owner_only_problem
 
 
 def source(identifier="html-fixture", **changes):
@@ -57,14 +60,14 @@ def merge(store, metadata=None, observations=None, **options):
 
 def rows(store, table):
     path = wechat_archive_path(store)
-    with sqlite3.connect(path) as connection:
+    with closing(sqlite3.connect(path)) as connection, connection:
         return connection.execute(f"SELECT * FROM {table} ORDER BY 1").fetchall()
 
 
 def old_archive(store):
     path = wechat_archive_path(store)
     path.parent.mkdir(parents=True)
-    with sqlite3.connect(path) as connection:
+    with closing(sqlite3.connect(path)) as connection, connection:
         connection.executescript(_SCHEMA)
         connection.execute(
             "INSERT INTO partitions VALUES(?,?,?,?,?,?,?,?)",
@@ -150,7 +153,32 @@ def test_first_export_preserves_exact_text_labels_identifiers_and_unknown_clock(
     partition = rows(tmp_path, "partitions")[0]
     assert partition[1] == "source:html-fixture" and partition[2] is None
     assert partition[5] == "HTML export"
-    assert wechat_archive_path(tmp_path).stat().st_mode & 0o777 == 0o600
+    history = wechat_archive_path(tmp_path)
+    assert owner_only_problem(history) == ""
+    if os.name == "posix":
+        assert history.stat().st_mode & 0o777 == 0o600
+
+
+def test_owner_only_boundary_precedes_sqlite_bytes_and_refuses_unverified_privacy(
+    tmp_path, monkeypatch
+):
+    candidates = []
+
+    def refuse_unverified_permissions(path):
+        assert path.is_file() and path.stat().st_size == 0
+        candidates.append(path)
+        raise OwnerOnlyFileError("Synthetic owner-only verification failure.")
+
+    def unexpected_sqlite_write(*_args, **_kwargs):
+        pytest.fail("An unverified staging file must not receive private SQLite bytes.")
+
+    monkeypatch.setattr(exports, "ensure_owner_only", refuse_unverified_permissions)
+    monkeypatch.setattr(exports.sqlite3, "connect", unexpected_sqlite_write)
+    with pytest.raises(OwnerOnlyFileError, match="Synthetic owner-only"):
+        merge(tmp_path, observations=[record()], expected_records=1)
+    assert len(candidates) == 1
+    assert not candidates[0].exists()
+    assert not wechat_archive_path(tmp_path).exists()
 
 
 @pytest.mark.skipif(
@@ -343,7 +371,7 @@ def test_concurrent_archive_or_policy_change_prevents_publication(tmp_path, chan
     def observations():
         yield record()
         if changed == "archive":
-            with sqlite3.connect(path) as connection:
+            with closing(sqlite3.connect(path)) as connection, connection:
                 connection.execute(
                     "INSERT INTO archive_info VALUES('external-change','retained')"
                 )
@@ -372,7 +400,7 @@ def test_clonefile_unavailable_has_no_full_copy_fallback(tmp_path, monkeypatch):
 
 def test_guard_rejects_old_message_reads_and_protected_updates_and_deletes(tmp_path):
     path = old_archive(tmp_path)
-    with sqlite3.connect(path) as connection:
+    with closing(sqlite3.connect(path)) as connection, connection:
         exports._install_guard(connection)
         for sql in (
             "SELECT * FROM messages",
