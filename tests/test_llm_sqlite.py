@@ -1,6 +1,6 @@
 """Protect lossless SQLite histories, atomic publication, and incremental updates."""
 
-# Code version: v2.0.0-codex.0
+# Code version: v2.0.1-codex.0
 
 from __future__ import annotations
 
@@ -132,7 +132,7 @@ def test_legacy_fallback_is_read_only_and_existing_sqlite_wins(tmp_path: Path):
     assert read_resource_rows(canonical) is None
 
 
-def test_llm_root_catalog_uses_sqlite_without_changing_media_catalogs(tmp_path: Path):
+def test_llm_root_catalog_and_media_catalog_keep_distinct_sqlite_formats(tmp_path: Path):
     from app.core.cache_catalog import LocalTweetCacheIndex
 
     llm = tmp_path / "llm"
@@ -145,7 +145,7 @@ def test_llm_root_catalog_uses_sqlite_without_changing_media_catalogs(tmp_path: 
     media = tmp_path / "x"
     media.mkdir()
     assert (
-        LocalTweetCacheIndex.build(media).catalog_path.name == ".cache_catalog.parquet"
+        LocalTweetCacheIndex.build(media).catalog_path.name == ".cache_catalog.sqlite3"
     )
 
 

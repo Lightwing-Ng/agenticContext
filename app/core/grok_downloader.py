@@ -1,6 +1,6 @@
 """Grok media sync helpers."""
 
-# Code version: v1.19.6-codex.0
+# Code version: v1.20.1-codex.0
 
 from __future__ import annotations
 
@@ -17,11 +17,11 @@ import subprocess
 import tempfile
 import time
 from concurrent.futures import Future, ThreadPoolExecutor, as_completed
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from threading import RLock
-from typing import Callable
+from typing import Any, Callable
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 from urllib.parse import urlsplit
@@ -30,22 +30,17 @@ from .cache_timing import wait_for_cache_scan
 from .browser_sessions import browser_descriptors, launch_chromium_context
 from .config import MEDIA_STORE_ROOT, CrawlConfig, default_edge_user_data_dir, is_windows_host
 from .local_media_browser import BrowserDeletionCatalog
+from .media_sqlite import media_store_for
 from .resource_persistence import (
     GROK_CATALOG_FILENAME,
-    GROK_CATALOG_SCHEMA,
     GROK_CATALOG_SCHEMA_VERSION,
     GROK_DOWNLOAD_MANIFEST_FILENAME,
-    GROK_DOWNLOAD_MANIFEST_SCHEMA,
     GROK_DOWNLOAD_MANIFEST_SCHEMA_VERSION,
     GROK_WORK_QUEUE_FILENAME,
-    GROK_WORK_QUEUE_SCHEMA,
     GROK_WORK_QUEUE_SCHEMA_VERSION,
     LEGACY_GROK_CATALOG_FILENAME,
     LEGACY_GROK_DOWNLOAD_MANIFEST_FILENAME,
     LEGACY_GROK_WORK_QUEUE_FILENAME,
-    read_parquet_rows,
-    retire_legacy_file,
-    write_parquet_rows_atomic,
 )
 from .safari_automation import SafariAuthenticationRequiredError, SafariContext
 from .state import TaskSnapshot, TaskState, utc_now
@@ -943,13 +938,110 @@ def candidate_from_file_reference(file_id: str, preview_url: str, media_tag: str
     )
 
 
+class _GrokStateEntries(dict):
+    """Retain the existing map interface while tracking only changed state keys."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.changed: set[str] = set()
+        self.deleted: set[str] = set()
+        self._baselines: dict[str, tuple] = {}
+
+    def __setitem__(self, key, value) -> None:
+        super().__setitem__(key, value)
+        self.changed.add(key)
+        self.deleted.discard(key)
+
+    def pop(self, key, default=None):
+        if key not in self:
+            return default
+        value = super().pop(key)
+        self.changed.discard(key)
+        self.deleted.add(key)
+        return value
+
+    def mark_clean(self) -> None:
+        for key in self.changed:
+            self._baselines[key] = self._snapshot(self[key])
+        for key in self.deleted:
+            self._baselines.pop(key, None)
+        self.changed.clear()
+        self.deleted.clear()
+
+    @staticmethod
+    def _snapshot(entry) -> tuple:
+        return tuple(getattr(entry, name) for name in entry.__dataclass_fields__)
+
+    def has_local_changes(self, key) -> bool:
+        if key in self and key in self._baselines and self._snapshot(self[key]) != self._baselines[key]:
+            self.changed.add(key)
+        return key in self.changed
+
+    def remember_clean(self, key, entry) -> None:
+        dict.__setitem__(self, key, entry)
+        self._baselines[key] = self._snapshot(entry)
+
+
+def _grok_state_row(entry, schema_version: int) -> dict[str, Any]:
+    return {"schema_version": schema_version, **asdict(entry)}
+
+
+def _grok_state_entry(entry_type, row):
+    return entry_type(**{name: row[name] for name in entry_type.__dataclass_fields__})
+
+
+def _flush_grok_state(target_dir, path, store, entries, schema_version) -> None:
+    """Bootstrap once, then atomically commit only assigned and removed keys."""
+    _require_safe_grok_media_path(target_dir, path)
+    if not path.exists():
+        store.replace_rows(
+            _grok_state_row(entries[key], schema_version) for key in sorted(entries)
+        )
+    else:
+        store.apply_changes(
+            rows=[
+                _grok_state_row(entries[key], schema_version)
+                for key in sorted(entries.changed)
+            ],
+            delete_keys=sorted(entries.deleted),
+        )
+    entries.mark_clean()
+
+
+def _load_grok_state_rows(target_dir, path, legacy_filename, store):
+    """Read canonical or legacy state without publishing or retiring either source."""
+    legacy_path = target_dir / legacy_filename
+    _require_safe_grok_media_path(target_dir, path)
+    _require_safe_grok_media_path(target_dir, path.with_suffix(".parquet"))
+    _require_safe_grok_media_path(target_dir, legacy_path)
+    if path.exists() or path.with_suffix(".parquet").exists():
+        return store.rows()
+    if not legacy_path.exists():
+        return None
+    try:
+        payload = json.loads(legacy_path.read_text())
+    except (OSError, json.JSONDecodeError):
+        return None
+    raw_entries = payload.get("entries") if isinstance(payload, dict) else None
+    if isinstance(raw_entries, dict):
+        raw_entries = list(raw_entries.values())
+    return (
+        [dict(row) for row in raw_entries if isinstance(row, dict)]
+        if isinstance(raw_entries, list)
+        else None
+    )
+
+
 class GrokMediaCatalog:
     """Track known Grok assets and local content hashes."""
 
     def __init__(self, target_dir: Path) -> None:
         self.target_dir = target_dir
         self.catalog_path = target_dir / GROK_CATALOG_FILENAME
-        self.entries_by_identity: dict[str, GrokCatalogEntry] = {}
+        _require_safe_grok_media_path(target_dir, self.catalog_path)
+        self.entries_by_identity: dict[str, GrokCatalogEntry] = _GrokStateEntries()
+        self._store = media_store_for(self.catalog_path)
+        self._identities_by_asset_id: dict[str, set[str]] = {}
         self.hash_to_relative_path: dict[str, str] = {}
         self.first_seen_by_relative_path: dict[str, str] = {}
         self.media_kind_by_relative_path: dict[str, str] = {}
@@ -979,15 +1071,43 @@ class GrokMediaCatalog:
 
     def contains_identity(self, identity: str) -> bool:
         """Return whether the given Grok asset is already known locally."""
+        return self.get_entry(identity) is not None
+
+    def _remember_entry_unlocked(self, entry: GrokCatalogEntry) -> None:
+        self.entries_by_identity[entry.identity] = entry
+        self._identities_by_asset_id.setdefault(
+            extract_status_id_from_identity(entry.identity), set()
+        ).add(entry.identity)
+
+    def _get_entry_unlocked(self, identity: str) -> GrokCatalogEntry | None:
+        if identity in self.entries_by_identity.deleted:
+            return None
+        if self.entries_by_identity.has_local_changes(identity):
+            self.dirty = True
+            return self.entries_by_identity.get(identity)
+        if self.catalog_path.exists():
+            row = self._store.get(identity)
+            if row is None:
+                return None
+            entry = _grok_state_entry(GrokCatalogEntry, row)
+            self.entries_by_identity.remember_clean(identity, entry)
+            self._identities_by_asset_id.setdefault(
+                extract_status_id_from_identity(identity), set()
+            ).add(identity)
+            return entry
+        return self.entries_by_identity.get(identity)
+
+    def get_entry(self, identity: str) -> GrokCatalogEntry | None:
+        """Use the persisted primary key before validating one local media file."""
         with self._lock:
-            entry = self.entries_by_identity.get(identity)
+            entry = self._get_entry_unlocked(identity)
             if entry is None:
-                return False
+                return None
             if self._entry_points_to_valid_file_unlocked(entry):
-                return True
+                return entry
             self._drop_catalog_entry_unlocked(identity)
             self._flush_unlocked()
-            return False
+            return None
 
     def contains_asset_id(self, asset_id: str) -> bool:
         """Return whether any healthy catalog entry already exists for one Grok asset ID."""
@@ -997,8 +1117,9 @@ class GrokMediaCatalog:
 
         with self._lock:
             stale_identities: list[str] = []
-            for identity, entry in self.entries_by_identity.items():
-                if extract_status_id_from_identity(identity) != normalized_asset_id:
+            for identity in tuple(self._identities_by_asset_id.get(normalized_asset_id, ())):
+                entry = self._get_entry_unlocked(identity)
+                if entry is None:
                     continue
                 if self._entry_points_to_valid_file_unlocked(entry):
                     return True
@@ -1017,27 +1138,19 @@ class GrokMediaCatalog:
             return False
 
         with self._lock:
-            return any(
-                extract_status_id_from_identity(identity) == normalized_asset_id
-                for identity in self.entries_by_identity
-            )
-
-    def get_entry(self, identity: str) -> GrokCatalogEntry | None:
-        """Return one catalog entry when it still points to valid local content."""
-        with self._lock:
-            entry = self.entries_by_identity.get(identity)
-            if entry is None:
-                return None
-            if self._entry_points_to_valid_file_unlocked(entry):
-                return entry
-            self._drop_catalog_entry_unlocked(identity)
-            self._flush_unlocked()
-            return None
+            return bool(self._identities_by_asset_id.get(normalized_asset_id))
 
     def lookup_relative_path_by_hash(self, content_sha256: str) -> str | None:
         """Return the local file path for an already cached payload hash."""
         with self._lock:
             relative_path = self.hash_to_relative_path.get(content_sha256)
+            if self.catalog_path.exists():
+                persisted = self._store.find("content_sha256", content_sha256)
+                if persisted and not self.entries_by_identity.changed:
+                    relative_path = min(
+                        persisted,
+                        key=lambda row: (parse_seen_at(row["first_seen_at"]), row["relative_path"]),
+                    )["relative_path"]
             if not relative_path:
                 return None
 
@@ -1115,24 +1228,11 @@ class GrokMediaCatalog:
             self._flush_unlocked()
 
     def _load(self) -> bool:
-        """Load Parquet state, preferring a valid legacy JSON file for one-time migration."""
+        """Read SQLite or legacy inventory without publishing a format conversion."""
         with self._lock:
-            rows = read_parquet_rows(self.catalog_path)
-            legacy_path = self.target_dir / LEGACY_GROK_CATALOG_FILENAME
-            _require_safe_grok_media_path(self.target_dir, legacy_path)
-            migrated_legacy = False
-            if rows is None and legacy_path.exists():
-                try:
-                    payload = json.loads(legacy_path.read_text())
-                except (OSError, json.JSONDecodeError):
-                    payload = None
-                raw_entries = payload.get("entries") if isinstance(payload, dict) else None
-                if isinstance(raw_entries, dict):
-                    raw_entries = list(raw_entries.values())
-                if isinstance(raw_entries, list):
-                    rows = [dict(row) for row in raw_entries if isinstance(row, dict)]
-                    migrated_legacy = True
-
+            rows = _load_grok_state_rows(
+                self.target_dir, self.catalog_path, LEGACY_GROK_CATALOG_FILENAME, self._store,
+            )
             if rows is None:
                 return False
 
@@ -1152,6 +1252,7 @@ class GrokMediaCatalog:
                 if not absolute_path.is_file() or (
                     content_bytes > 0 and absolute_path.stat().st_size != content_bytes
                 ):
+                    self.entries_by_identity.deleted.add(identity)
                     self.dirty = True
                     continue
 
@@ -1188,7 +1289,7 @@ class GrokMediaCatalog:
                         last_seen_at=entry.last_seen_at,
                     )
                     self.dirty = True
-                self.entries_by_identity[identity] = entry
+                self._remember_entry_unlocked(entry)
                 self.hash_to_relative_path[content_sha256] = canonical_relative_path
                 self.first_seen_by_relative_path[canonical_relative_path] = min(
                     entry.first_seen_at,
@@ -1197,9 +1298,13 @@ class GrokMediaCatalog:
                 self.media_kind_by_relative_path[canonical_relative_path] = media_kind
                 loaded_any = True
 
-            if migrated_legacy:
-                self.dirty = True
-            return loaded_any or migrated_legacy
+            for identity in self.entries_by_identity:
+                self._identities_by_asset_id.setdefault(
+                    extract_status_id_from_identity(identity), set()
+                ).add(identity)
+            if not self.dirty:
+                self.entries_by_identity.mark_clean()
+            return loaded_any or rows == []
 
     def _rebuild_from_disk(self) -> None:
         """Recreate the Grok catalog from existing local files."""
@@ -1228,7 +1333,7 @@ class GrokMediaCatalog:
                     relative_path,
                     first_seen_at,
                 )
-                self.entries_by_identity[identity] = GrokCatalogEntry(
+                self._remember_entry_unlocked(GrokCatalogEntry(
                     identity=identity,
                     relative_path=canonical_relative_path,
                     media_kind=media_kind,
@@ -1237,7 +1342,7 @@ class GrokMediaCatalog:
                     source_url="",
                     first_seen_at=first_seen_at,
                     last_seen_at=first_seen_at,
-                )
+                ))
                 self.hash_to_relative_path[content_sha256] = canonical_relative_path
                 self.first_seen_by_relative_path[canonical_relative_path] = min(
                     first_seen_at,
@@ -1288,7 +1393,7 @@ class GrokMediaCatalog:
         """Register a newly saved Grok asset while the catalog lock is held."""
         timestamp = normalize_catalog_timestamp(seen_at or "", fallback=utc_now())
         canonical_relative_path = self._preferred_relative_path(content_sha256, relative_path, timestamp)
-        self.entries_by_identity[candidate.identity] = GrokCatalogEntry(
+        self._remember_entry_unlocked(GrokCatalogEntry(
             identity=candidate.identity,
             relative_path=canonical_relative_path,
             media_kind=candidate.media_kind,
@@ -1297,7 +1402,7 @@ class GrokMediaCatalog:
             source_url=candidate.source_url,
             first_seen_at=timestamp,
             last_seen_at=timestamp,
-        )
+        ))
         self.hash_to_relative_path[content_sha256] = canonical_relative_path
         self.first_seen_by_relative_path[canonical_relative_path] = min(
             timestamp,
@@ -1323,7 +1428,7 @@ class GrokMediaCatalog:
             if existing_entry
             else (self.target_dir / canonical_relative_path).stat().st_size
         )
-        self.entries_by_identity[candidate.identity] = GrokCatalogEntry(
+        self._remember_entry_unlocked(GrokCatalogEntry(
             identity=candidate.identity,
             relative_path=canonical_relative_path,
             media_kind=candidate.media_kind,
@@ -1332,7 +1437,7 @@ class GrokMediaCatalog:
             source_url=candidate.source_url,
             first_seen_at=first_seen_at,
             last_seen_at=timestamp,
-        )
+        ))
         self.hash_to_relative_path[content_sha256] = canonical_relative_path
         self.first_seen_by_relative_path[canonical_relative_path] = min(
             first_seen_at,
@@ -1342,28 +1447,13 @@ class GrokMediaCatalog:
         self.dirty = True
 
     def _flush_unlocked(self) -> None:
-        """Persist the catalog when it changed while the lock is held."""
+        """Commit only dirty catalog keys while retaining legacy rollback sources."""
         if not self.dirty:
             return
-        _require_safe_grok_media_path(self.target_dir, self.catalog_path)
-        _require_safe_grok_media_path(self.target_dir, self.target_dir / LEGACY_GROK_CATALOG_FILENAME)
-
-        rows = [
-            {
-                "schema_version": GROK_CATALOG_SCHEMA_VERSION,
-                "identity": entry.identity,
-                "relative_path": entry.relative_path,
-                "media_kind": entry.media_kind,
-                "content_sha256": entry.content_sha256,
-                "content_bytes": entry.content_bytes,
-                "source_url": entry.source_url,
-                "first_seen_at": entry.first_seen_at,
-                "last_seen_at": entry.last_seen_at,
-            }
-            for entry in sorted(self.entries_by_identity.values(), key=lambda item: item.identity)
-        ]
-        write_parquet_rows_atomic(self.catalog_path, rows, GROK_CATALOG_SCHEMA)
-        retire_legacy_file(self.target_dir / LEGACY_GROK_CATALOG_FILENAME)
+        _flush_grok_state(
+            self.target_dir, self.catalog_path, self._store,
+            self.entries_by_identity, GROK_CATALOG_SCHEMA_VERSION,
+        )
         self.dirty = False
 
     def _prune_unreferenced_relative_path_unlocked(self, relative_path: str) -> None:
@@ -1389,6 +1479,9 @@ class GrokMediaCatalog:
         entry = self.entries_by_identity.pop(identity, None)
         if entry is None:
             return
+        self._identities_by_asset_id.get(
+            extract_status_id_from_identity(identity), set()
+        ).discard(identity)
 
         remaining_same_hash = [
             candidate
@@ -1562,7 +1655,9 @@ class GrokDownloadManifest:
     def __init__(self, target_dir: Path) -> None:
         self.target_dir = target_dir
         self.manifest_path = target_dir / GROK_DOWNLOAD_MANIFEST_FILENAME
-        self.entries_by_identity: dict[str, GrokManifestEntry] = {}
+        _require_safe_grok_media_path(target_dir, self.manifest_path)
+        self.entries_by_identity: dict[str, GrokManifestEntry] = _GrokStateEntries()
+        self._store = media_store_for(self.manifest_path)
         self.dirty = False
         self._lock = RLock()
 
@@ -1577,12 +1672,34 @@ class GrokDownloadManifest:
         manifest.flush()
         return manifest
 
+    def _get_entry_unlocked(self, identity: str) -> GrokManifestEntry | None:
+        if self.entries_by_identity.has_local_changes(identity):
+            self.dirty = True
+            return self.entries_by_identity.get(identity)
+        if self.manifest_path.exists():
+            row = self._store.get(identity)
+            if row is None:
+                return None
+            entry = _grok_state_entry(GrokManifestEntry, row)
+            self.entries_by_identity.remember_clean(identity, entry)
+            return entry
+        return self.entries_by_identity.get(identity)
+
     def reconcile_with_catalog(self, catalog: GrokMediaCatalog) -> None:
         """Convert stale in-progress records into resumable or completed state."""
         with self._lock:
             for identity, entry in list(self.entries_by_identity.items()):
                 catalog_entry = catalog.entries_by_identity.get(identity)
                 if catalog_entry is not None:
+                    if (
+                        entry.status == "completed"
+                        and entry.relative_path == catalog_entry.relative_path
+                        and entry.content_sha256 == catalog_entry.content_sha256
+                        and entry.content_bytes == catalog_entry.content_bytes
+                        and not entry.temp_relative_path
+                        and not entry.last_error
+                    ):
+                        continue
                     entry.status = "completed"
                     entry.relative_path = catalog_entry.relative_path
                     entry.content_sha256 = catalog_entry.content_sha256
@@ -1644,7 +1761,7 @@ class GrokDownloadManifest:
         pending: list[GrokMediaCandidate] = []
         with self._lock:
             for candidate in candidates:
-                entry = self.entries_by_identity.get(candidate.identity)
+                entry = self._get_entry_unlocked(candidate.identity)
                 if entry is None:
                     entry = GrokManifestEntry(
                         identity=candidate.identity,
@@ -1702,7 +1819,7 @@ class GrokDownloadManifest:
         """Return the absolute temporary path for one candidate."""
         relative_path = build_partial_relative_path(candidate)
         with self._lock:
-            entry = self.entries_by_identity.get(candidate.identity)
+            entry = self._get_entry_unlocked(candidate.identity)
             if entry is None:
                 entry = GrokManifestEntry(
                     identity=candidate.identity,
@@ -1728,7 +1845,7 @@ class GrokDownloadManifest:
     def mark_in_progress(self, candidate: GrokMediaCandidate, temp_relative_path: str) -> None:
         """Record that one worker has started or resumed downloading a candidate."""
         with self._lock:
-            entry = self.entries_by_identity.get(candidate.identity)
+            entry = self._get_entry_unlocked(candidate.identity)
             if entry is None:
                 entry = GrokManifestEntry(
                     identity=candidate.identity,
@@ -1755,7 +1872,7 @@ class GrokDownloadManifest:
     def mark_pending_resume(self, candidate: GrokMediaCandidate, temp_relative_path: str, error: str = "") -> None:
         """Record a resumable partial download that should continue next run."""
         with self._lock:
-            entry = self.entries_by_identity.get(candidate.identity)
+            entry = self._get_entry_unlocked(candidate.identity)
             if entry is None:
                 return
             entry.status = "pending"
@@ -1769,7 +1886,7 @@ class GrokDownloadManifest:
     def mark_failed(self, candidate: GrokMediaCandidate, temp_relative_path: str, error: str) -> None:
         """Record a failed download attempt that still remains eligible for retry."""
         with self._lock:
-            entry = self.entries_by_identity.get(candidate.identity)
+            entry = self._get_entry_unlocked(candidate.identity)
             if entry is None:
                 return
             entry.status = "failed"
@@ -1783,7 +1900,7 @@ class GrokDownloadManifest:
     def mark_size_skipped(self, candidate: GrokMediaCandidate, temp_relative_path: str, error: str) -> None:
         """Record an asset skipped by the cache size limit without retaining a partial file."""
         with self._lock:
-            entry = self.entries_by_identity.get(candidate.identity)
+            entry = self._get_entry_unlocked(candidate.identity)
             if entry is None:
                 return
             entry.status = "size_skipped"
@@ -1803,7 +1920,7 @@ class GrokDownloadManifest:
     ) -> None:
         """Record a successfully committed local file."""
         with self._lock:
-            entry = self.entries_by_identity.get(candidate.identity)
+            entry = self._get_entry_unlocked(candidate.identity)
             if entry is None:
                 entry = GrokManifestEntry(
                     identity=candidate.identity,
@@ -1826,58 +1943,21 @@ class GrokDownloadManifest:
         self.flush()
 
     def flush(self) -> None:
-        """Persist the manifest when it changed."""
+        """Commit only changed download records in one SQLite transaction."""
         with self._lock:
             if not self.dirty:
                 return
-            _require_safe_grok_media_path(self.target_dir, self.manifest_path)
-            _require_safe_grok_media_path(self.target_dir, self.target_dir / LEGACY_GROK_DOWNLOAD_MANIFEST_FILENAME)
-            rows = [
-                {
-                    "schema_version": GROK_DOWNLOAD_MANIFEST_SCHEMA_VERSION,
-                    "identity": entry.identity,
-                    "asset_id": entry.asset_id,
-                    "asset_name": entry.asset_name,
-                    "media_kind": entry.media_kind,
-                    "source_url": entry.source_url,
-                    "status": entry.status,
-                    "relative_path": entry.relative_path,
-                    "temp_relative_path": entry.temp_relative_path,
-                    "content_sha256": entry.content_sha256,
-                    "content_bytes": entry.content_bytes,
-                    "expected_bytes": entry.expected_bytes,
-                    "created_at": entry.created_at,
-                    "attempts": entry.attempts,
-                    "last_error": entry.last_error,
-                    "updated_at": entry.updated_at,
-                }
-                for entry in sorted(self.entries_by_identity.values(), key=lambda item: item.identity)
-            ]
-            write_parquet_rows_atomic(
-                self.manifest_path,
-                rows,
-                GROK_DOWNLOAD_MANIFEST_SCHEMA,
+            _flush_grok_state(
+                self.target_dir, self.manifest_path, self._store,
+                self.entries_by_identity, GROK_DOWNLOAD_MANIFEST_SCHEMA_VERSION,
             )
-            retire_legacy_file(self.target_dir / LEGACY_GROK_DOWNLOAD_MANIFEST_FILENAME)
             self.dirty = False
 
     def _load(self) -> None:
-        """Load Parquet state and import a valid legacy JSON manifest when present."""
-        rows = read_parquet_rows(self.manifest_path)
-        legacy_path = self.target_dir / LEGACY_GROK_DOWNLOAD_MANIFEST_FILENAME
-        _require_safe_grok_media_path(self.target_dir, legacy_path)
-        migrated_legacy = False
-        if rows is None and legacy_path.exists():
-            try:
-                payload = json.loads(legacy_path.read_text())
-            except (OSError, json.JSONDecodeError):
-                payload = None
-            raw_entries = payload.get("entries") if isinstance(payload, dict) else None
-            if isinstance(raw_entries, dict):
-                raw_entries = list(raw_entries.values())
-            if isinstance(raw_entries, list):
-                rows = [dict(row) for row in raw_entries if isinstance(row, dict)]
-                migrated_legacy = True
+        """Read resumable state without rewriting a legacy source."""
+        rows = _load_grok_state_rows(
+            self.target_dir, self.manifest_path, LEGACY_GROK_DOWNLOAD_MANIFEST_FILENAME, self._store,
+        )
 
         for row in rows or []:
             for field in ("relative_path", "temp_relative_path"):
@@ -1907,8 +1987,7 @@ class GrokDownloadManifest:
                 last_error=str(row.get("last_error") or "").strip(),
                 updated_at=normalize_catalog_timestamp(str(row.get("updated_at") or "").strip(), fallback=utc_now()),
             )
-        if migrated_legacy:
-            self.dirty = True
+        self.entries_by_identity.mark_clean()
 
 
 class GrokWorkQueue:
@@ -1917,7 +1996,9 @@ class GrokWorkQueue:
     def __init__(self, target_dir: Path) -> None:
         self.target_dir = target_dir
         self.queue_path = target_dir / GROK_WORK_QUEUE_FILENAME
-        self.entries_by_asset_id: dict[str, GrokWorkQueueEntry] = {}
+        _require_safe_grok_media_path(target_dir, self.queue_path)
+        self.entries_by_asset_id: dict[str, GrokWorkQueueEntry] = _GrokStateEntries()
+        self._store = media_store_for(self.queue_path)
         self.dirty = False
         self._lock = RLock()
 
@@ -1932,11 +2013,85 @@ class GrokWorkQueue:
         queue.flush()
         return queue
 
+    def _get_entry_unlocked(self, asset_id: str) -> GrokWorkQueueEntry | None:
+        if self.entries_by_asset_id.has_local_changes(asset_id):
+            self.dirty = True
+            return self.entries_by_asset_id.get(asset_id)
+        if self.queue_path.exists():
+            row = self._store.get(asset_id)
+            if row is None:
+                return None
+            entry = _grok_state_entry(GrokWorkQueueEntry, row)
+            self.entries_by_asset_id.remember_clean(asset_id, entry)
+            return entry
+        return self.entries_by_asset_id.get(asset_id)
+
+    def _status_entries_unlocked(self, statuses: set[str]) -> list[GrokWorkQueueEntry]:
+        if not self.queue_path.exists():
+            return [entry for entry in self.entries_by_asset_id.values() if entry.status in statuses]
+        selected = {}
+        for status in sorted(statuses):
+            for row in self._store.find("status", status):
+                entry = _grok_state_entry(GrokWorkQueueEntry, row)
+                if not self.entries_by_asset_id.has_local_changes(entry.asset_id):
+                    self.entries_by_asset_id.remember_clean(entry.asset_id, entry)
+                    selected[entry.asset_id] = entry
+        for key in self.entries_by_asset_id.changed:
+            entry = self.entries_by_asset_id[key]
+            if entry.status in statuses:
+                selected[key] = entry
+        return list(selected.values())
+
+    def _claim_entries(self, limit, excluded_asset_ids, statuses, target_status, counter):
+        """Commit each claim only while its persisted status and attempt still match.
+
+        Startup reconciliation remains the existing explicit crash-recovery step;
+        it must not be invoked while another sync owns this provider's task lock.
+        """
+        if limit <= 0:
+            return []
+        excluded = {str(value or "").strip().lower() for value in (excluded_asset_ids or ())}
+        claimed = []
+        with self._lock:
+            self.flush()
+            if self.entries_by_asset_id and not self.queue_path.exists():
+                _flush_grok_state(
+                    self.target_dir, self.queue_path, self._store,
+                    self.entries_by_asset_id, GROK_WORK_QUEUE_SCHEMA_VERSION,
+                )
+            ordered = sorted(
+                self._status_entries_unlocked(statuses),
+                key=lambda entry: (entry.created_at or entry.discovered_at or "", entry.asset_id),
+                reverse=True,
+            )
+            for entry in ordered:
+                if len(claimed) >= limit:
+                    break
+                if entry.asset_id in excluded:
+                    continue
+                attempts = getattr(entry, counter)
+                updated = self._store.compare_and_swap(
+                    entry.asset_id,
+                    expected={"status": entry.status, counter: attempts},
+                    updates={
+                        "status": target_status, counter: attempts + 1,
+                        "last_error": "", "updated_at": utc_now(),
+                    },
+                )
+                if updated is None:
+                    continue
+                entry = _grok_state_entry(GrokWorkQueueEntry, updated)
+                self.entries_by_asset_id.remember_clean(entry.asset_id, entry)
+                claimed.append(self._entry_to_candidate(entry))
+        return claimed
+
     def reconcile(self, catalog: GrokMediaCatalog) -> None:
         """Repair transient queue states after crashes or forced shutdowns."""
         with self._lock:
             for asset_id, entry in list(self.entries_by_asset_id.items()):
                 if catalog.has_recorded_asset_id(asset_id):
+                    if entry.status == "completed" and not entry.last_error:
+                        continue
                     entry.status = "completed"
                     entry.last_error = ""
                     entry.updated_at = utc_now()
@@ -1972,10 +2127,9 @@ class GrokWorkQueue:
     def has_pending_pipeline_work(self) -> bool:
         """Return whether unresolved or unsent queue items remain."""
         with self._lock:
-            return any(
-                entry.status in {"discovered", "resolution_failed", "ready", "submitted"}
-                for entry in self.entries_by_asset_id.values()
-            )
+            return bool(self._status_entries_unlocked(
+                {"discovered", "resolution_failed", "ready", "submitted"}
+            ))
 
     def register_discovered(self, candidates: list[GrokMediaCandidate]) -> int:
         """Persist newly discovered page assets without blocking downloads."""
@@ -1986,7 +2140,7 @@ class GrokWorkQueue:
                 if not asset_id:
                     continue
 
-                entry = self.entries_by_asset_id.get(asset_id)
+                entry = self._get_entry_unlocked(asset_id)
                 if entry is None:
                     entry = GrokWorkQueueEntry(
                         asset_id=asset_id,
@@ -2024,36 +2178,13 @@ class GrokWorkQueue:
         return newly_added
 
     def claim_for_resolution(
-        self,
-        limit: int,
-        excluded_asset_ids: set[str] | None = None,
+        self, limit: int, excluded_asset_ids: set[str] | None = None,
     ) -> list[GrokMediaCandidate]:
-        """Claim raw discoveries that still need canonical download URLs."""
-        excluded = {str(asset_id or "").strip().lower() for asset_id in (excluded_asset_ids or set())}
-        claimed: list[GrokMediaCandidate] = []
-        with self._lock:
-            ordered_entries = sorted(
-                self.entries_by_asset_id.values(),
-                key=lambda entry: (entry.created_at or entry.discovered_at or "", entry.asset_id),
-                reverse=True,
-            )
-            for entry in ordered_entries:
-                if len(claimed) >= limit:
-                    break
-                if entry.asset_id in excluded:
-                    continue
-                if entry.status not in {"discovered", "resolution_failed"}:
-                    continue
-                entry.status = "resolving"
-                entry.resolution_attempts += 1
-                entry.last_error = ""
-                entry.updated_at = utc_now()
-                self.entries_by_asset_id[entry.asset_id] = entry
-                self.dirty = True
-                claimed.append(self._entry_to_candidate(entry))
-
-        self.flush()
-        return claimed
+        """Atomically claim indexed discoveries that need canonical download URLs."""
+        return self._claim_entries(
+            limit, excluded_asset_ids, {"discovered", "resolution_failed"},
+            "resolving", "resolution_attempts",
+        )
 
     def mark_resolved(self, asset_id: str, candidate: GrokMediaCandidate) -> None:
         """Persist the canonical download metadata for one asset."""
@@ -2062,7 +2193,7 @@ class GrokWorkQueue:
             return
 
         with self._lock:
-            entry = self.entries_by_asset_id.get(normalized_asset_id) or GrokWorkQueueEntry(asset_id=normalized_asset_id)
+            entry = self._get_entry_unlocked(normalized_asset_id) or GrokWorkQueueEntry(asset_id=normalized_asset_id)
             entry.identity = candidate.identity
             entry.asset_name = candidate.asset_name
             entry.media_kind = candidate.media_kind
@@ -2085,7 +2216,7 @@ class GrokWorkQueue:
             return
 
         with self._lock:
-            entry = self.entries_by_asset_id.get(normalized_asset_id)
+            entry = self._get_entry_unlocked(normalized_asset_id)
             if entry is None:
                 return
             entry.status = (
@@ -2100,36 +2231,12 @@ class GrokWorkQueue:
         self.flush()
 
     def claim_ready_for_download(
-        self,
-        limit: int,
-        excluded_asset_ids: set[str] | None = None,
+        self, limit: int, excluded_asset_ids: set[str] | None = None,
     ) -> list[GrokMediaCandidate]:
-        """Claim resolved queue entries and hand them to download workers."""
-        excluded = {str(asset_id or "").strip().lower() for asset_id in (excluded_asset_ids or set())}
-        claimed: list[GrokMediaCandidate] = []
-        with self._lock:
-            ordered_entries = sorted(
-                self.entries_by_asset_id.values(),
-                key=lambda entry: (entry.created_at or entry.discovered_at or "", entry.asset_id),
-                reverse=True,
-            )
-            for entry in ordered_entries:
-                if len(claimed) >= limit:
-                    break
-                if entry.asset_id in excluded:
-                    continue
-                if entry.status != "ready":
-                    continue
-                entry.status = "submitted"
-                entry.download_attempts += 1
-                entry.last_error = ""
-                entry.updated_at = utc_now()
-                self.entries_by_asset_id[entry.asset_id] = entry
-                self.dirty = True
-                claimed.append(self._entry_to_candidate(entry))
-
-        self.flush()
-        return claimed
+        """Atomically claim indexed ready entries for download workers."""
+        return self._claim_entries(
+            limit, excluded_asset_ids, {"ready"}, "submitted", "download_attempts",
+        )
 
     def mark_completed(self, candidate: GrokMediaCandidate) -> None:
         """Persist that one asset has been fully cached or aliased locally."""
@@ -2138,7 +2245,7 @@ class GrokWorkQueue:
             return
 
         with self._lock:
-            entry = self.entries_by_asset_id.get(normalized_asset_id) or GrokWorkQueueEntry(asset_id=normalized_asset_id)
+            entry = self._get_entry_unlocked(normalized_asset_id) or GrokWorkQueueEntry(asset_id=normalized_asset_id)
             entry.identity = candidate.identity
             entry.asset_name = candidate.asset_name
             entry.media_kind = candidate.media_kind
@@ -2161,7 +2268,7 @@ class GrokWorkQueue:
             return
 
         with self._lock:
-            entry = self.entries_by_asset_id.get(normalized_asset_id)
+            entry = self._get_entry_unlocked(normalized_asset_id)
             if entry is None:
                 return
             entry.status = "download_failed"
@@ -2178,7 +2285,7 @@ class GrokWorkQueue:
             return
 
         with self._lock:
-            entry = self.entries_by_asset_id.get(normalized_asset_id)
+            entry = self._get_entry_unlocked(normalized_asset_id)
             if entry is None:
                 return
             entry.status = "size_skipped"
@@ -2195,7 +2302,7 @@ class GrokWorkQueue:
             return
 
         with self._lock:
-            entry = self.entries_by_asset_id.get(normalized_asset_id)
+            entry = self._get_entry_unlocked(normalized_asset_id)
             if entry is None:
                 return
             entry.status = "ready"
@@ -2206,54 +2313,21 @@ class GrokWorkQueue:
         self.flush()
 
     def flush(self) -> None:
-        """Persist the work queue when it changed."""
+        """Commit only changed queue records in one SQLite transaction."""
         with self._lock:
             if not self.dirty:
                 return
-            _require_safe_grok_media_path(self.target_dir, self.queue_path)
-            _require_safe_grok_media_path(self.target_dir, self.target_dir / LEGACY_GROK_WORK_QUEUE_FILENAME)
-
-            rows = [
-                {
-                    "schema_version": GROK_WORK_QUEUE_SCHEMA_VERSION,
-                    "asset_id": entry.asset_id,
-                    "identity": entry.identity,
-                    "asset_name": entry.asset_name,
-                    "media_kind": entry.media_kind,
-                    "source_url": entry.source_url,
-                    "preview_url": entry.preview_url,
-                    "expected_bytes": entry.expected_bytes,
-                    "created_at": entry.created_at,
-                    "discovered_at": entry.discovered_at,
-                    "updated_at": entry.updated_at,
-                    "status": entry.status,
-                    "resolution_attempts": entry.resolution_attempts,
-                    "download_attempts": entry.download_attempts,
-                    "last_error": entry.last_error,
-                }
-                for entry in sorted(self.entries_by_asset_id.values(), key=lambda item: item.asset_id)
-            ]
-            write_parquet_rows_atomic(self.queue_path, rows, GROK_WORK_QUEUE_SCHEMA)
-            retire_legacy_file(self.target_dir / LEGACY_GROK_WORK_QUEUE_FILENAME)
+            _flush_grok_state(
+                self.target_dir, self.queue_path, self._store,
+                self.entries_by_asset_id, GROK_WORK_QUEUE_SCHEMA_VERSION,
+            )
             self.dirty = False
 
     def _load(self) -> None:
-        """Load Parquet state and import a valid legacy JSON work queue when present."""
-        rows = read_parquet_rows(self.queue_path)
-        legacy_path = self.target_dir / LEGACY_GROK_WORK_QUEUE_FILENAME
-        _require_safe_grok_media_path(self.target_dir, legacy_path)
-        migrated_legacy = False
-        if rows is None and legacy_path.exists():
-            try:
-                payload = json.loads(legacy_path.read_text())
-            except (OSError, json.JSONDecodeError):
-                payload = None
-            raw_entries = payload.get("entries") if isinstance(payload, dict) else None
-            if isinstance(raw_entries, dict):
-                raw_entries = list(raw_entries.values())
-            if isinstance(raw_entries, list):
-                rows = [dict(row) for row in raw_entries if isinstance(row, dict)]
-                migrated_legacy = True
+        """Read queue state without rewriting a legacy source."""
+        rows = _load_grok_state_rows(
+            self.target_dir, self.queue_path, LEGACY_GROK_WORK_QUEUE_FILENAME, self._store,
+        )
 
         for row in rows or []:
             asset_id = str(row.get("asset_id") or "").strip().lower()
@@ -2275,8 +2349,7 @@ class GrokWorkQueue:
                 download_attempts=int(row.get("download_attempts") or 0),
                 last_error=str(row.get("last_error") or "").strip(),
             )
-        if migrated_legacy:
-            self.dirty = True
+        self.entries_by_asset_id.mark_clean()
 
     def _entry_to_candidate(self, entry: GrokWorkQueueEntry) -> GrokMediaCandidate:
         """Convert one queue entry back into a Grok media candidate."""
@@ -2356,6 +2429,14 @@ def reset_grok_state(target_dir: Path | None = None) -> GrokResetResult:
         resolved_target_dir / LEGACY_GROK_DOWNLOAD_MANIFEST_FILENAME,
         resolved_target_dir / LEGACY_GROK_WORK_QUEUE_FILENAME,
     ]
+    state_paths.extend(
+        resolved_target_dir / Path(filename).with_suffix(".parquet")
+        for filename in (
+            GROK_CATALOG_FILENAME,
+            GROK_DOWNLOAD_MANIFEST_FILENAME,
+            GROK_WORK_QUEUE_FILENAME,
+        )
+    )
     for state_path in state_paths:
         if not state_path.exists():
             continue

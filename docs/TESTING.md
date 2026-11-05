@@ -1,6 +1,31 @@
 # Testing guide
 
-Documentation version: `v1.42.2-codex.0`
+Documentation version: `v1.43.0-codex.0`
+
+## Media SQLite persistence checks
+
+`tests/test_media_sqlite.py` verifies typed indexed rows, exact schemas and metadata,
+nullable/list values, unchanged-row suppression, atomic mixed mutations, failed-write
+rollback, concurrent first publication, conditional claims, and format isolation.
+Catalog and Grok integration tests exercise actual dirty-key callers, legacy
+read-only fallback, normalized old schemas, visual deduplication, failed-flush
+retry, status selection, and provider task boundaries. Migration tests cover all
+five admitted resource types, exact rollback, source drift, protected-name exclusion,
+existing-target conflicts, and open handles. They use synthetic isolated stores.
+
+Run `TZ=UTC ./scripts/check.sh` for the full non-live suite, branch coverage,
+dependency audit, documentation checks, JavaScript syntax, and JavaScript tests.
+Do not substitute a focused storage selection or exclude `slow` tests for a full
+suite claim. BeautifulSoup is a declared test dependency because the existing
+WeChat quote-padding assertions import it during collection.
+
+Use `scripts/benchmark_media_sqlite.py --rows 1000 10000 --repeats 9 --report
+test-results/media-synthetic.json` for public synthetic comparisons. Real migration
+reports stay private. Disk point queries are compared separately from full reads;
+one-row writes compare the old in-memory snapshot serialization and verification
+against a keyed SQLite transaction. Neither benchmark substitutes disk reads for
+the existing process-local memory cache. Report P95 and median, full-read costs,
+file sizes, and rollback allocation, including regressions.
 
 ## LLM SQLite persistence checks
 

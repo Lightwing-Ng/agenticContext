@@ -1,12 +1,25 @@
 # Cache handoff and operating runbook
 
-Documentation version: `v1.33.1-codex.0`
+Documentation version: `v1.34.0-codex.0`
 
 This is the authoritative handoff document for the second Dock item, `Cache`.
 Read it before changing Cache routes, source switching, Text/Media behavior, local
 history persistence, or Grok synchronization. The third Dock item is `Local resources`;
 it is the read-only review surface for cached media and text and must not be confused
 with the Cache execution surface.
+
+## Current media storage contract
+
+The ChatGPT/Grok media catalogs, Grok download manifest/work queue, and X media
+index now use native keyed SQLite tables. Ordinary updates commit dirty records;
+hash, identity, and status reads use indexed queries. Queue claims are conditional
+transactions, and catalog deduplication commits the replacement and deletion
+together. Existing in-memory indexes retain their provider-specific semantics.
+
+Legacy Parquet is read only when the SQLite target is absent and is retained by
+ordinary first-write adoption. Do not rename old bytes to `.sqlite3` or point this
+backend at an LLM history. Use the explicit migration script and verified rollback
+receipt before retiring an old file. See [media SQLite storage](MEDIA_SQLITE_STORAGE.md).
 
 ## Current LLM storage contract
 
