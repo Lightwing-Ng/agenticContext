@@ -1,10 +1,11 @@
 """Published media metadata extends every verified account's complete timeline.
 
-Code version: v1.0.0-codex.0
+Code version: v1.0.1-codex.0
 """
 
 from __future__ import annotations
 
+from contextlib import closing
 from copy import deepcopy
 from datetime import datetime, timedelta
 import csv
@@ -237,8 +238,10 @@ def global_media_store(placeholder_store):
     specs = _global_fixture(fixture)
     index_path = fixture.history.with_name("media_events.sqlite3")
     with (
-        sqlite3.connect(fixture.history) as source,
-        sqlite3.connect(index_path) as index,
+        closing(sqlite3.connect(fixture.history)) as source,
+        source,
+        closing(sqlite3.connect(index_path)) as index,
+        index,
     ):
         source.row_factory = sqlite3.Row
         index.executescript(MEDIA_EVENT_SCHEMA)

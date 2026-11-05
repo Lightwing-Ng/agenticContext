@@ -6,7 +6,7 @@ phone. Anything that creates or touches the runtime also requires external Agent
 operations, so isolated and test applications never reach a device.
 """
 
-# Code version: v1.1.0-codex.0
+# Code version: v1.1.1-codex.0
 
 from __future__ import annotations
 
@@ -69,6 +69,10 @@ class IphoneRouteContext:
 
 class IphoneRequestError(ValueError):
     """A request whose shape the iPhone API cannot accept."""
+
+    def __init__(self, public_message: str) -> None:
+        super().__init__(public_message)
+        self.public_message = public_message
 
 
 class FramePollAccessLogFilter(logging.Filter):
@@ -148,9 +152,14 @@ def register_iphone_routes(app: Flask, context: IphoneRouteContext) -> None:
         try:
             result = operation()
         except IphoneRequestError as exc:
-            return iphone_error_response(400, "invalid_request", str(exc))
-        except IPhoneUnavailableError as exc:
-            return iphone_error_response(501, "iphone_unavailable", str(exc))
+            return iphone_error_response(400, "invalid_request", exc.public_message)
+        except IPhoneUnavailableError:
+            logging.getLogger(__name__).warning("iPhone runtime is unavailable.", exc_info=True)
+            return iphone_error_response(
+                501,
+                "iphone_unavailable",
+                "iPhone control is unavailable. Check this Mac's setup and try again.",
+            )
         except IPhoneOperationError as exc:
             return jsonify({"error": exc.as_dict()}), iphone_error_status(exc.code)
         if isinstance(result, Response):

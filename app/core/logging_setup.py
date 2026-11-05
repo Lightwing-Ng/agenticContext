@@ -1,6 +1,6 @@
 """Structured logging configuration for the application.
 
-Code version: v1.1.0-codex.1
+Code version: v1.1.1-codex.0
 """
 
 from __future__ import annotations
@@ -17,6 +17,7 @@ from typing import Any
 from uuid import uuid4
 
 from .config import LOGS_ROOT
+from .owner_only_files import ensure_owner_only
 
 
 _CONFIGURED = False
@@ -172,21 +173,23 @@ def _redact_log_value(value: Any) -> Any:
 
 
 def _ensure_owner_only_file(path: Path) -> None:
-    """Create a log file without a public-readable window and enforce mode 0600."""
-    descriptor = os.open(path, os.O_APPEND | os.O_CREAT, 0o600)
+    """Verify the native owner-only boundary before any log content is written."""
+    if path.exists() or path.is_symlink():
+        ensure_owner_only(path)
+    descriptor = os.open(path, os.O_APPEND | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0), 0o600)
     os.close(descriptor)
-    path.chmod(0o600)
+    ensure_owner_only(path)
 
 
 def _secure_rotating_log_files(path: Path) -> None:
     """Tighten the active log and its numeric rotation files without changing content."""
     if path.exists():
-        path.chmod(0o600)
+        ensure_owner_only(path)
     rotation_prefix = f"{path.name}."
     for candidate in path.parent.glob(f"{rotation_prefix}*"):
         rotation_index = candidate.name.removeprefix(rotation_prefix)
         if rotation_index.isdigit() and candidate.is_file():
-            candidate.chmod(0o600)
+            ensure_owner_only(candidate)
 
 
 class OwnerOnlyRotatingFileHandler(RotatingFileHandler):

@@ -1,6 +1,6 @@
 """Static checks for the cross-project spatial layout contract.
 
-Code version: v0.2.1-claude.0
+Code version: v0.2.2-codex.0
 """
 
 from pathlib import Path
@@ -113,6 +113,9 @@ def test_production_templates_publish_shared_layout_roles() -> None:
         "settings_style_tokens.html",
     ):
         template = _read(TEMPLATE_ROOT / template_name)
+        if template_name == "browser.html":
+            assert '{% include "_local_resource_sidebar.html" %}' in template
+            template += _read(TEMPLATE_ROOT / "_local_resource_sidebar.html")
         for fragment in (
             'data-layout-role="sidebar-shell"',
             'data-layout-role="sidebar-toggle"',

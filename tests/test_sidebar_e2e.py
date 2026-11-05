@@ -1,6 +1,6 @@
 """Disposable-browser E2E coverage for the responsive sidebar and language boundaries.
 
-Code version: v1.57.0-codex.0
+Code version: v1.58.0-codex.0
 """
 
 from __future__ import annotations
@@ -66,6 +66,20 @@ def _is_zhimg_request_url(url: str) -> bool:
     """Match the exact zhimg.com host or one of its subdomains."""
     hostname = (urlsplit(url).hostname or "").casefold().rstrip(".")
     return hostname == "zhimg.com" or hostname.endswith(".zhimg.com")
+
+
+def _registered_cache_source_keys() -> list[str]:
+    """Check the complete registry, including native and OpenClaw sources."""
+    from app.core.providers import OPENCLAW_SOURCE_LABELS
+    from app.web.cache_sources import CACHE_SOURCE_VIEWS
+
+    keys = [source.key for source in CACHE_SOURCE_VIEWS]
+    assert len(keys) == len(set(keys))
+    assert {
+        "chatgpt", "claude", "claude_code", "codex", "gemini", "grok_build",
+        "grok", "copilot", "x", "zhihu", *OPENCLAW_SOURCE_LABELS,
+    } <= set(keys)
+    return keys
 
 
 @pytest.mark.parametrize(
@@ -411,6 +425,13 @@ def _wait_for_global_title_rail(page: Page, title_selector: str) -> None:
     )
 
 
+def _wait_for_responsive_layout(page: Page) -> None:
+    """Finish the resize render before reading CSS boxes from the new viewport."""
+    page.evaluate(
+        "() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))"
+    )
+
+
 def _assert_hidden_backdrop(page: Page) -> None:
     backdrop = page.locator("#sidebar_backdrop")
     expect(backdrop).to_be_hidden()
@@ -502,7 +523,20 @@ def test_cache_source_switcher_reuses_the_complete_registry_across_cache_pages(
     """Verify every cache sidebar exposes the same complete source menu in Chromium."""
     from app.core.config import load_saved_config
 
-    expected_sources = ["chatgpt", "claude", "claude_code", "codex", "gemini", "grok_build", "grok", "copilot", "x", "zhihu"]
+    from app.web.cache_sources import CACHE_SOURCE_VIEWS
+
+    expected_sources = _registered_cache_source_keys()
+    config = load_saved_config()
+    expected_paths = []
+    for source in CACHE_SOURCE_VIEWS:
+        path = f"/cache/{source.key}"
+        if source.show_content_mode and not source.is_local:
+            mode = "text" if "text" in source.content_modes else source.content_modes[0]
+            browser = getattr(config, source.browser_config_field)
+            if source.supported_browsers and browser not in source.supported_browsers:
+                browser = source.supported_browsers[0]
+            path += f"/{mode}/{browser}"
+        expected_paths.append(path)
     page, context = _open_page(
         disposable_browser,
         f"{sidebar_server_url}/cache/chatgpt",
@@ -528,18 +562,6 @@ def test_cache_source_switcher_reuses_the_complete_registry_across_cache_pages(
             assert browser_trigger.evaluate("element => element.getBoundingClientRect().height") == 36
             expect(page.locator('[data-dock-section="cache"]')).to_have_class(re.compile(r"\bis-active\b"))
             expect(page.locator('[data-dock-section="agent"]')).not_to_have_class(re.compile(r"\bis-active\b"))
-            expected_paths = [
-                "/cache/chatgpt/text/edge",
-                "/cache/claude/text/edge",
-                "/cache/claude_code",
-                "/cache/codex",
-                "/cache/gemini/text/edge",
-                "/cache/grok_build",
-                "/cache/grok/text/edge",
-                f"/cache/copilot/text/{load_saved_config().copilot_browser}",
-                "/cache/x/text/chrome",
-                "/cache/zhihu/text/edge",
-            ]
             assert options.evaluate_all(
                 "elements => elements.map(element => element.dataset.cacheSourceSwitcherPath)"
             ) == expected_paths
@@ -615,7 +637,7 @@ def test_cache_source_switcher_menu_has_an_opaque_base(
         )
         assert rendering["backgroundColor"] == rendering["themeBackground"], rendering
         assert rendering["backgroundColor"].startswith("rgb("), rendering
-        assert rendering["optionCount"] == 9, rendering
+        assert rendering["optionCount"] == len(_registered_cache_source_keys()), rendering
         assert all(rendering["hitTests"]), rendering
 
         menu.locator('[data-cache-source-switcher-option="chatgpt"]').focus()
@@ -1248,12 +1270,14 @@ def test_browser_title_rail_stays_aligned_with_global_anchors_across_viewports(
 
         page.set_viewport_size({"width": 390, "height": 844})
         page.wait_for_function("() => window.matchMedia('(max-width: 560px)').matches")
+        _wait_for_responsive_layout(page)
         _wait_for_global_title_rail(page, ".browser-heading-copy")
         narrow = read_geometry()
         assert narrow is not None
         assert abs(narrow["titleCenterY"] - narrow["toggleCenterY"]) <= 1
         assert abs(narrow["titleCenterY"] - narrow["themeCenterY"]) <= 1
         assert 0 < narrow["summaryWidth"] <= 640
+        # The compact rail uses the shared global anchor minus its page inset.
         assert narrow["summaryPaddingTop"] == "12px"
         assert narrow["summaryOverflow"] == "visible"
         assert not narrow["horizontalOverflow"]
@@ -1344,8 +1368,12 @@ def test_zhihu_text_browser_shows_answerers_and_complete_answers(
             "No.",
             "Answerer",
             "Answers",
-            "Last updated ↓",
+            "Last updated",
         ]
+        expect(header.locator('th[aria-sort="descending"]')).to_contain_text("Last updated")
+        expect(header.locator(".browser-session-sort-link")).to_have_attribute(
+            "aria-label", "Last updated: sort oldest first"
+        )
         expect(table.locator(".browser-session-table-source")).to_have_count(0)
         assert table.locator(".browser-session-table-title").all_inner_texts() == [
             "肥肥猫",
@@ -1645,7 +1673,7 @@ def test_browser_message_timestamps_share_the_card_header_across_viewports(
     disposable_browser: Browser,
     seeded_chatgpt_browser_server_url: str,
 ) -> None:
-    """Keep the date and clock on one muted header row of each message card."""
+    """Keep atomic date and clock groups together on the message metadata rail."""
     page, context = _open_page(
         disposable_browser,
         f"{seeded_chatgpt_browser_server_url}/browser?view=text&source=chatgpt&sort=newest&session_view=1",
@@ -1678,15 +1706,18 @@ def test_browser_message_timestamps_share_the_card_header_across_viewports(
                 "    whiteSpace: style.whiteSpace,"
                 "    lines: [...element.children].map(child => {"
                 "      const rect = child.getBoundingClientRect();"
-                "      return {text: child.textContent.trim(), top: rect.top};"
+                "      return {text: child.textContent.trim(), top: rect.top,"
+                "        whiteSpace: getComputedStyle(child).whiteSpace};"
                 "    }),"
                 "    overflow: document.documentElement.scrollWidth - innerWidth,"
                 "  };"
                 "}"
             )
-            # A flex item blockifies inline-flex, so both computed values are one row.
+            # Date and clock remain atomic groups on the metadata rail.
             assert geometry["display"] in {"flex", "inline-flex"}, (width, geometry)
-            assert geometry["whiteSpace"] == "nowrap", (width, geometry)
+            assert all(line["whiteSpace"] == "nowrap" for line in geometry["lines"]), (
+                width, geometry,
+            )
             assert [line["text"] for line in geometry["lines"]] == [
                 "12/08/2026",
                 "13:00:00 (HKT)",
@@ -2618,7 +2649,9 @@ def test_cache_sidebars_reuse_the_chatgpt_base_contract(
             expect(aside.locator(":scope > .hero")).to_have_count(1)
             expect(aside.locator(":scope > .cache-page-content-mode-section")).to_have_count(1)
             expect(aside.locator("[data-cache-source-switcher]")).to_have_count(1)
-            expect(aside.locator("[data-cache-source-switcher-option]")).to_have_count(10)
+            expect(aside.locator("[data-cache-source-switcher-option]")).to_have_count(
+                len(_registered_cache_source_keys())
+            )
             expect(aside.locator("[data-browser-session-panel]")).to_have_count(1)
             expect(aside.locator(".browser-session-panel-label")).to_have_text("Authorized browser")
             expect(aside.locator(".cache-settings-link")).to_have_count(1)
@@ -5463,7 +5496,7 @@ def test_cache_sidebar_text_media_switcher_defaults_to_text(
         expect(x_source_option).to_be_hidden()
         assert source_options.evaluate_all(
             "elements => elements.filter(element => !element.hidden).map(element => element.dataset.cacheSourceSwitcherOption)"
-        ) == ["chatgpt", "claude", "claude_code", "codex", "gemini", "grok_build", "grok", "x", "zhihu"]
+        ) == _registered_cache_source_keys()
         if source_key == "chatgpt":
             expect(page.locator("#start_form_chatgpt > label")).to_have_count(0)
             expect(page.locator("[data-chatgpt-media-config]")).to_be_hidden()
@@ -5483,7 +5516,7 @@ def test_cache_sidebar_text_media_switcher_defaults_to_text(
         assert x_source_option.evaluate("element => !element.hidden")
         assert source_options.evaluate_all(
             "elements => elements.filter(element => !element.hidden).map(element => element.dataset.cacheSourceSwitcherOption)"
-        ) == ["chatgpt", "claude", "claude_code", "codex", "gemini", "grok_build", "grok", "x", "zhihu"]
+        ) == _registered_cache_source_keys()
         if source_key == "chatgpt":
             expect(page.locator("#start_form_chatgpt > label")).to_have_count(0)
             expect(page.locator("[data-chatgpt-media-config]")).to_be_visible()
@@ -9518,6 +9551,7 @@ def test_agent_response_action_rail_survives_a_short_crowded_viewport(
             }""",
             timeout=5_000,
         )
+        _wait_for_responsive_layout(page)
         desktop_rail = page.evaluate(
             """() => {
                 const selectors = {
@@ -11758,12 +11792,14 @@ def test_resource_annotations_search_scope_toolbar_and_remark_bounds(
         page.locator('#browser_search_input').click()
         expect(page.locator('#browser_search_input')).to_be_focused()
         page.locator('#browser_search_input').fill("crosspage needle")
-        page.locator('#browser_search_input').press("Enter")
+        with page.expect_navigation(wait_until="load"):
+            page.locator('#browser_search_input').press("Enter")
         expect(page.locator('[data-chat-message-id]')).to_have_count(1)
         expect(page.locator('[data-browser-session-tag]')).to_be_visible()
         expect(page.locator('.browser-chat-list')).to_contain_text("crosspage needle")
         assert "page=2" not in page.url
-        page.locator('[data-browser-session-scope-remove]').click()
+        with page.expect_navigation(wait_until="load"):
+            page.locator('[data-browser-session-scope-remove]').click()
         expect(page.locator('[data-browser-session-tag]')).to_have_count(0)
         expect(page.locator('[data-chat-message-id]')).to_have_count(1)
         assert "source=chatgpt" in page.url and "session=" not in page.url
@@ -11774,9 +11810,10 @@ def test_resource_annotations_search_scope_toolbar_and_remark_bounds(
         assert page.locator('[aria-label="Saved prompt totals"] .metric-label').all_text_contents() == ["Saved prompts", "Sources"]
         bounds = page.locator('[data-prompt-remark-input]').evaluate("""input => {
             const r = input.getBoundingClientRect(); const c = input.closest('td').getBoundingClientRect();
-            return {radius: getComputedStyle(input).borderRadius, left:r.left, right:r.right, cellLeft:c.left, cellRight:c.right};
+            return {radius: getComputedStyle(input).borderRadius, height:r.height, left:r.left, right:r.right, cellLeft:c.left, cellRight:c.right};
         }""")
-        assert bounds["radius"] == "10px"
+        assert bounds["radius"] == "999px"
+        assert bounds["height"] == 30
         assert bounds["left"] >= bounds["cellLeft"] and bounds["right"] <= bounds["cellRight"]
         assert page.locator('[data-prompt-tag]').count() == 3
         expect(page.locator('.browser-result-summary')).to_have_count(0)
@@ -12282,6 +12319,8 @@ def test_text_source_selection_survives_global_search_form_submission(
     disposable_browser: Browser, seeded_chatgpt_browser_server_url: str, width: int,
 ) -> None:
     """Keep Text source choices explicit and preserve them across global searches."""
+    from app.web.cache_sources import CACHE_SOURCE_BY_KEY
+
     page, context = _open_page(
         disposable_browser,
         seeded_chatgpt_browser_server_url + "/browser?view=text&session_view=0&source=all&sort=newest&q=",
@@ -12317,14 +12356,16 @@ def test_text_source_selection_survives_global_search_form_submission(
             for item in option_geometry
         )
         page.locator("[data-browser-source-filter-trigger]").click()
-        for source, label in [("claude", "Claude"), ("gemini", "Gemini"), ("grok", "Grok"), ("chatgpt", "ChatGPT")]:
+        for source in ("claude", "gemini", "grok", "chatgpt"):
             page.locator("[data-browser-source-filter-trigger]").click()
             page.locator(f'[data-browser-source-filter-option="{source}"]').click()
             page.wait_for_url(
                 re.compile(rf"[?&]source={source}(?:&|$)"),
                 wait_until="domcontentloaded",
             )
-            expect(page.locator("[data-browser-source-filter-trigger]")).to_have_attribute("aria-label", f"Source: {label}")
+            expect(page.locator("[data-browser-source-filter-trigger]")).to_have_attribute(
+                "aria-label", f"Source: {CACHE_SOURCE_BY_KEY[source].label}"
+            )
         page.locator("[data-browser-source-filter-trigger]").click()
         page.locator('[data-browser-source-filter-option="gemini"]').click()
         page.wait_for_url(
@@ -12378,6 +12419,8 @@ def test_returning_to_text_restores_session_table(
 def test_session_header_source_sort_and_two_line_time(
     disposable_browser: Browser, annotated_resources_server_url: str, width: int,
 ) -> None:
+    from app.web.cache_sources import LOCAL_RESOURCE_TEXT_SOURCE_VIEWS
+
     context = disposable_browser.new_context(viewport={"width": width, "height": 1332})
     page = context.new_page()
     try:
@@ -12400,7 +12443,8 @@ def test_session_header_source_sort_and_two_line_time(
         assert geometry['dateRight'] <= geometry['cellRight'] + 1, geometry
         assert geometry['clockRight'] <= geometry['cellRight'] + 1, geometry
         assert geometry['tableRight'] <= width
-        header.locator('.browser-session-sort-link').click()
+        with page.expect_navigation(wait_until="load"):
+            header.locator('.browser-session-sort-link').click()
         expect(page.locator('th[aria-sort="ascending"]')).to_be_visible()
         assert 'sort=oldest' in page.url
         trigger = page.locator('[data-browser-header-filter] [data-browser-source-filter-trigger]')
@@ -12408,12 +12452,20 @@ def test_session_header_source_sort_and_two_line_time(
         trigger.click()
         menu = page.locator('#browser_header_source_filter_options')
         expect(menu).to_be_visible()
+        source_keys = menu.locator('[data-browser-source-filter-option]').evaluate_all(
+            'options => options.map(option => option.dataset.browserSourceFilterOption)'
+        )
+        assert source_keys == [source.key for source in LOCAL_RESOURCE_TEXT_SOURCE_VIEWS]
+        assert len(source_keys) == len(set(source_keys))
+        assert {"wechat", "codex", "copilot", "chatgpt_openclaw"} <= set(source_keys)
         assert menu.evaluate('element => element.parentElement === document.body')
-        menu.locator('[data-browser-source-filter-option="chatgpt"]').click()
+        with page.expect_navigation(wait_until="load"):
+            menu.locator('[data-browser-source-filter-option="chatgpt"]').click()
         assert 'source=chatgpt' in page.url and 'sort=oldest' in page.url
         expect(page.locator('#browser_search_input')).to_have_value('crosspage needle')
         expect(page.locator('#browser_filter_form [data-browser-source-filter-input]')).to_have_value('chatgpt')
-        page.locator('.browser-session-sort-link').click()
+        with page.expect_navigation(wait_until="load"):
+            page.locator('.browser-session-sort-link').click()
         expect(page.locator('th[aria-sort="descending"]')).to_be_visible()
         assert 'source=chatgpt' in page.url
     finally:

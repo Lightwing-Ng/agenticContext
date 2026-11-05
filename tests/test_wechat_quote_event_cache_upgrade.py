@@ -1,8 +1,9 @@
 """Quote proof upgrades refresh derived views without rescanning accepted sources.
 
-Code version: v1.0.0-codex.0
+Code version: v1.0.1-codex.0
 """
 
+from contextlib import closing
 import sqlite3
 
 from app.core import wechat_contact_analysis as analysis
@@ -48,7 +49,7 @@ def test_previous_quote_event_cache_is_recomputed(event_store, monkeypatch):
 
 
 def _accepted_rows(path):
-    with sqlite3.connect(path) as connection:
+    with closing(sqlite3.connect(path)) as connection:
         return {
             table: connection.execute(f"SELECT * FROM {table} ORDER BY 1").fetchall()
             for table in ("refs", "statement_groups", "statement_members")
@@ -85,7 +86,7 @@ def test_additive_quote_proof_reuses_complete_contact_index(
     assert updated["status"] == "ready"
     assert updated["source_fingerprint"] != original["source_fingerprint"]
     assert _accepted_rows(cache) == accepted
-    with sqlite3.connect(cache) as connection:
+    with closing(sqlite3.connect(cache)) as connection:
         info = dict(connection.execute("SELECT key,value FROM info"))
     assert info["event_proof_version"] == current_version
     assert before == (fixture.history.read_bytes(), fixture.registry.read_bytes())

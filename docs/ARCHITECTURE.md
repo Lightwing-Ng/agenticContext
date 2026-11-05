@@ -1,6 +1,6 @@
 # Architecture guide
 
-Documentation version: `v1.78.0-codex.0`
+Documentation version: `v1.78.1-codex.0`
 
 ## Runtime flow
 
@@ -1079,7 +1079,11 @@ confirmation receipt. It never rewrites native contacts, sender bindings, source
 accounts, or message bodies. Native contact caches remain independent; a separate
 person cache unions their reference metadata and existing evidence-backed statement
 groups. Equal names, matching text, and unknown clocks do not establish additional
-identity or event equivalence. The declaration digest and source revision pin that
+identity or event equivalence. The optional `wechat_contact_forwarded_copies.py`
+operation groups text copies only when explicitly invoked for a reversible display
+projection. Canonical contact-index construction does not invoke it; cache replay
+restores its journal before rechecking strict packet, original-event, and reviewed
+source proofs. The declaration digest and source revision pin that
 cache, pagination, search, and CSV export. Old member-page links redirect to the
 selected target while retaining the local conversation return destination.
 

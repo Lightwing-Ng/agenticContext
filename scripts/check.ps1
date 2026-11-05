@@ -1,5 +1,5 @@
 # agenticContext Windows quality gate.
-# Code version: v1.6.0-codex.0
+# Code version: v1.7.0-codex.0
 
 $ErrorActionPreference = "Stop"
 $ProjectRoot = Split-Path -Parent $PSScriptRoot
@@ -81,16 +81,23 @@ try {
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
     Write-Host "[6/6] Python tests with branch coverage"
+    $ShardCoverageMinimum = $CoverageMinimum
+    $IsSharded = $null -ne $env:AGENTIC_CONTEXT_TEST_SHARD -or $null -ne $env:AGENTIC_CONTEXT_TEST_SHARD_COUNT
+    if ($IsSharded) {
+        $ShardCoverageMinimum = & $Python @PythonArgs scripts/quality_shards.py minimum $CoverageMinimum
+        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+    }
     $CoverageStartedAt = [DateTime]::UtcNow
-    & $Python @PythonArgs -m pytest `
-        -q `
-        -p no:cacheprovider `
-        -m $TestMarkExpression `
-        --cov=app `
-        --cov-branch `
-        --cov-report=term-missing `
-        --cov-report="json:test-results/coverage.json" `
-        --cov-fail-under="$CoverageMinimum"
+    [string[]]$PytestArguments = @(
+        "-q", "-p", "no:cacheprovider", "-m", $TestMarkExpression,
+        "--cov=app", "--cov-branch", "--cov-report=term-missing",
+        "--cov-report=json:test-results/coverage.json", "--cov-fail-under=$ShardCoverageMinimum"
+    )
+    if ($IsSharded) {
+        & $Python @PythonArgs scripts/quality_shards.py run -- @PytestArguments
+    } else {
+        & $Python @PythonArgs -m pytest @PytestArguments
+    }
     $pytestExitCode = $LASTEXITCODE
     if ($pytestExitCode -ne 0) { exit $pytestExitCode }
     $CoverageReport = Get-Item "test-results/coverage.json" -ErrorAction SilentlyContinue
@@ -98,7 +105,11 @@ try {
         throw "Pytest did not produce a fresh coverage report."
     }
 
-    Write-Host "Quality gate passed."
+    if ($IsSharded) {
+        Write-Host "Quality shard passed. Complete platform coverage aggregation is still required."
+    } else {
+        Write-Host "Quality gate passed."
+    }
     exit 0
 } finally {
     Pop-Location

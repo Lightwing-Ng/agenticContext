@@ -1,6 +1,6 @@
 """Append source-separated WeChat exports without traversing existing messages.
 
-Code version: v1.1.1-codex.0
+Code version: v1.1.2-codex.0
 """
 
 from __future__ import annotations
@@ -630,7 +630,7 @@ def merge_wechat_export(
         connection.commit()
         connection.close()
         connection = None
-        with temporary.open("rb") as stream:
+        with temporary.open("r+b") as stream:
             os.fsync(stream.fileno())
         if (
             _database_identity(target) != database_identity

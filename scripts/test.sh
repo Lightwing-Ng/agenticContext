@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-# Code version: v1.2.0-codex.1
+# Code version: v1.3.0-codex.0
 
 set -euo pipefail
 
@@ -16,5 +16,9 @@ fi
 
 cd "$ROOT_DIR"
 export PYTHONDONTWRITEBYTECODE=1
+
+if [[ ${AGENTIC_CONTEXT_TEST_SHARD+x} || ${AGENTIC_CONTEXT_TEST_SHARD_COUNT+x} ]]; then
+	exec "$PYTHON_BIN" scripts/quality_shards.py run -- -q -p no:cacheprovider -m "$TEST_MARK_EXPRESSION" "$@"
+fi
 
 exec "$PYTHON_BIN" -m pytest -q -p no:cacheprovider -m "$TEST_MARK_EXPRESSION" "$@"

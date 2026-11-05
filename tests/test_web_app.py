@@ -1,8 +1,10 @@
 """Focused regression tests for the local web console."""
 
-# Code version: v1.155.4-codex.0
+# Code version: v1.155.7-codex.0
 
 from __future__ import annotations
+
+import pytest
 
 from dataclasses import asdict
 from datetime import datetime, timedelta, timezone
@@ -806,7 +808,7 @@ class WebAppTests(unittest.TestCase):
                 self.assertIn("hidden", body[stop_form_start:stop_form_end])
                 self.assertIn(">Start</button>", body)
         self.assertIn('browser-session-status.js?v=browser-session-status-v1.14.1-codex.0', chatgpt_body)
-        self.assertIn('browser-session-picker.js?v=browser-session-picker-v1.10.0-codex.0', chatgpt_body)
+        self.assertIn('browser-session-picker.js?v=browser-session-picker-v1.10.1-codex.0', chatgpt_body)
         chatgpt_form_identifier = chatgpt_body.index('id="start_form_chatgpt"')
         chatgpt_form_start = chatgpt_body.rfind("<form", 0, chatgpt_form_identifier)
         chatgpt_form_end = chatgpt_body.index("</form>", chatgpt_form_start)
@@ -832,7 +834,7 @@ class WebAppTests(unittest.TestCase):
         self.assertIn("function cacheSelectionFromUrl()", picker_script)
         self.assertIn("function syncCacheBrowserUrl(browserId)", picker_script)
         self.assertIn("const urlSelection = cacheSelectionFromUrl();", picker_script)
-        self.assertIn('option.setAttribute("href", `/cache/${source}/${optionMode}/${browserId}`);', picker_script)
+        self.assertIn('option.setAttribute("href", `/cache/${sourceSegment}/${optionMode}/${browserSegment}`);', picker_script)
         self.assertIn('cacheActionRow.dataset.actionRunning = String(isRunning);', cache_page_script)
         self.assertIn('const startAction = document.querySelector(".sidebar-form-start");', cache_page_script)
         self.assertIn('startAction.hidden = isRunning;', cache_page_script)
@@ -935,7 +937,7 @@ class WebAppTests(unittest.TestCase):
                 self.assertIn('class="circular-icon-button global-quick-action-button global-theme-toggle"', body)
                 self.assertIn('class="sidebar-dock-label"', dock_markup)
                 self.assertNotIn("cachelikes:browser-sidebar-open", body)
-                self.assertIn('waiting-modal.js?v=waiting-modal-v1.1.0-codex.1', body)
+                self.assertIn('waiting-modal.js?v=waiting-modal-v1.2.0-codex.0', body)
                 self.assertIn('id="cache_wait_modal"', body)
                 self.assertIn('class="workspace-modal-overlay cache-wait-modal"', body)
                 self.assertIn('suggestion-loading-spinner workspace-modal-icon', body)
@@ -2028,7 +2030,8 @@ class WebAppTests(unittest.TestCase):
                 )
 
         self.assertEqual(response.status_code, 409)
-        self.assertEqual(response.get_json()["error"], "Admission reached.")
+        self.assertEqual(response.get_json()["error"], "The Agent task could not be started. Check local diagnostics and try again.")
+        self.assertNotIn("Admission reached.", response.get_data(as_text=True))
         admission.assert_called_once()
 
     def test_only_agent_gemini_readiness_prefers_the_initialized_debug_profile(self) -> None:
@@ -3455,7 +3458,7 @@ class WebAppTests(unittest.TestCase):
         self.assertEqual(payload["agent"]["phase"], "running")
         self.assertIn("another project", payload["agent"]["message"])
 
-    def test_agent_page_renders_error_traceback_in_a_collapsible_record(self) -> None:
+    def test_agent_page_keeps_retry_context_without_exposing_error_traceback(self) -> None:
         app = create_app()
         agent_service = app.extensions["computer_use_agent_service"]
         snapshot = agent_service.snapshot()
@@ -3483,8 +3486,9 @@ class WebAppTests(unittest.TestCase):
         self.assertNotIn("Execution record", body)
         self.assertNotIn("Error details", body)
         self.assertIn('data-agent-error-record-content', body)
-        self.assertIn("Traceback (most recent call last):", body)
-        self.assertIn("RuntimeError: &lt;unsafe&gt;", body)
+        self.assertNotIn("Traceback (most recent call last):", body)
+        self.assertNotIn("RuntimeError: &lt;unsafe&gt;", body)
+        self.assertIn("The Agent operation failed. Check local diagnostics and try again.", body)
         self.assertIn(
             'data-agent-prompt-input required>RETRY_PROMPT_SENTINEL</textarea>',
             body,
@@ -3922,6 +3926,7 @@ class WebAppTests(unittest.TestCase):
             with self.subTest(fragment=fragment):
                 self.assertIn(fragment, script)
 
+    @pytest.mark.usefixtures("macos_host")
     def test_cache_browser_session_offers_recheck_without_a_login_action(self) -> None:
         app = create_app()
         with app.test_client() as client:
@@ -5958,7 +5963,7 @@ class WebAppTests(unittest.TestCase):
             self.assertIn("style-v2.159.1-codex.0", body)
             self.assertIn("/static/images/photo.stack.svg", body)
             self.assertIn('pagination-motion.js?v=pagination-motion-v1.1.0-codex.1', body)
-            self.assertIn('local-media-browser.js?v=local-media-browser-v1.44.1-codex.0', body)
+            self.assertIn('local-media-browser.js?v=local-media-browser-v1.45.1-codex.0', body)
             self.assertIn('data-media-source-link', body)
             self.assertIn('data-media-copy-source-url', body)
             self.assertIn('data-media-reveal', body)
@@ -6637,7 +6642,10 @@ class WebAppTests(unittest.TestCase):
         ):
             with self.subTest(fragment=fragment):
                 self.assertIn(fragment, media_script)
-        self.assertEqual(media_script.count('targetUrl.searchParams.delete("session_index");'), 2)
+        filters_script = (LOCAL_MEDIA_BROWSER_SCRIPT_PATH.parent / "browser-sidebar-filters.js").read_text(encoding="utf-8")
+        self.assertEqual(media_script.count('targetUrl.searchParams.delete("session_index");'), 1)
+        self.assertEqual(filters_script.count('targetUrl.searchParams.delete("session_index");'), 1)
+        self.assertIn('browser-sidebar-filters.js', BROWSER_TEMPLATE_PATH.read_text(encoding="utf-8"))
         self.assertIn('"session_view", "session_index", "media_view"]', sidebar_script)
         self.assertEqual(pagination_template.count("session_index=('1' if filters.session_index else none)"), 2)
 
@@ -7432,7 +7440,7 @@ def test_grok_remembered_text_submission_cannot_start_media(tmp_path: Path) -> N
     start.assert_not_called()
 
 
-def test_cache_grok_url_includes_content_mode_and_safari(tmp_path: Path) -> None:
+def test_cache_grok_url_includes_content_mode_and_safari(tmp_path: Path, macos_host) -> None:
     with patch("app.core.browser_sessions.is_macos_host", return_value=True):
         client = create_app(tmp_path / "local_store").test_client()
         safari = client.get("/cache/grok/text/safari")
@@ -7457,7 +7465,7 @@ def test_cache_grok_url_includes_content_mode_and_safari(tmp_path: Path) -> None
     assert zhihu_safari.status_code == 404
 
 
-def test_claude_media_mode_has_separate_safari_worker_and_counters(tmp_path: Path) -> None:
+def test_claude_media_mode_has_separate_safari_worker_and_counters(tmp_path: Path, macos_host) -> None:
     application = create_app(tmp_path / "local_store")
     client = application.test_client()
 
@@ -7566,3 +7574,16 @@ def test_all_text_cache_sources_dispatch_selected_browser(tmp_path: Path) -> Non
             assert start.call_args.kwargs == {"content_mode": "text"}
         elif source == "zhihu":
             assert start.call_args.kwargs == {"author_url": ""}
+
+
+def test_safari_cache_route_requires_the_macos_browser_boundary(tmp_path, monkeypatch):
+    from app.core import browser_sessions, config
+
+    monkeypatch.setattr(config, "is_macos_host", lambda: False)
+    monkeypatch.setattr(config, "is_windows_host", lambda: True)
+    monkeypatch.setattr(browser_sessions, "is_macos_host", lambda: False)
+    application = create_app(tmp_path / "store")
+    client = application.test_client()
+
+    assert client.get("/cache/claude/media/safari").status_code == 404
+    assert client.get("/cache/claude/text/edge").status_code == 200

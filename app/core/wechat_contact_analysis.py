@@ -1,6 +1,6 @@
 """Aggregate one verified contact's text occurrences without merging namesakes.
 
-Code version: v1.22.0-codex.0
+Code version: v1.22.1-codex.0
 """
 
 from __future__ import annotations
@@ -85,12 +85,11 @@ from .wechat_source_precedence import (
 from .wechat_contact_forwarded_copies import (
     VERSION as FORWARDED_COPY_PROJECTION_VERSION,
     copy_forwarded_copy_evidence,
-    fold_contact_forwarded_copies,
     restore_forwarded_copy_groups,
 )
 
 
-VERSION = "v1.22.0-codex.0"
+VERSION = "v1.22.1-codex.0"
 INDEX_VERSION = "v1.15.0-codex.0"
 _LEGACY_REFERENCE_VERSION = "v1.1.1-codex.0"
 _CONTACT_ID = re.compile(r"wechat:contact:[0-9a-f]{64}")
@@ -2273,16 +2272,9 @@ def _build_index(root, contact_id, fingerprint):
                     prepare_rows=_requests,
                     native_thread_key=_native_conversation_key,
                 )
-                forwarded_copy_summary = fold_contact_forwarded_copies(
-                    source,
-                    output,
-                    contact_id,
-                    username,
-                    row_select=_ROW_SELECT,
-                    prepare_rows=_requests,
-                    native_thread_key=_native_conversation_key,
-                    check_cancelled=_check_build_cancelled,
-                )
+                # Compact text-copy grouping is an explicit display operation. The
+                # canonical index keeps the source/event proof boundaries above.
+                forwarded_copy_summary = {"status": "explicit_projection_required"}
                 from .wechat_conversation_events import VERSION as event_version
 
                 output.executemany(

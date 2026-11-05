@@ -1,18 +1,49 @@
 """Only an exact retained native original can remove quote display padding.
 
-Code version: v1.0.0-codex.0
+Code version: v1.0.1-codex.0
 """
 
 from copy import deepcopy
 import hashlib
 from types import SimpleNamespace
 
-from bs4 import BeautifulSoup
+from html.parser import HTMLParser
 import pytest
 
 from app.core.wechat_history_browser import _native_quoted_reply_presentation
 from app.core.wechat_quote_padding import MATCH_BASIS, project_native_quote_padding
 from app.core.wechat_text import native_components_text
+
+
+class _QuotedTextParser(HTMLParser):
+    """Read the rendered quote's decoded text and reject executable descendants."""
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.quote_count = 0
+        self.depth = 0
+        self.parts = []
+        self.has_script = False
+
+    @property
+    def text(self):
+        return "".join(self.parts)
+
+    def handle_starttag(self, tag, attrs):
+        if self.depth:
+            self.depth += 1
+            self.has_script |= tag == "script"
+        elif "wechat-quoted-text" in dict(attrs).get("class", "").split():
+            self.quote_count += 1
+            self.depth = 1
+
+    def handle_endtag(self, tag):
+        if self.depth:
+            self.depth -= 1
+
+    def handle_data(self, data):
+        if self.depth:
+            self.parts.append(data)
 
 
 OWNER = "wxid_padding_owner"
@@ -301,11 +332,14 @@ def test_actual_fragment_uses_only_display_override_and_escapes_its_copy():
         {"text_page": SimpleNamespace(messaging={}, session_detail=False, sessions=[])}
     )
     markup = str(module.message_row(fixture.reply))
-    soup = BeautifulSoup(markup, "html.parser")
-    node = soup.select_one(".wechat-quoted-text")
-    assert node.get_text() == quote["display_text"]
-    assert node.find("script") is None
+    parsed = _QuotedTextParser()
+    parsed.feed(markup)
+    assert parsed.text == quote["display_text"]
+    assert parsed.quote_count == 1
+    assert not parsed.has_script
     assert quote["text"].startswith("\n")
     del quote["display_text"]
-    fallback = BeautifulSoup(str(module.message_row(fixture.reply)), "html.parser")
-    assert fallback.select_one(".wechat-quoted-text").get_text() == quote["text"]
+    fallback = _QuotedTextParser()
+    fallback.feed(str(module.message_row(fixture.reply)))
+    assert fallback.quote_count == 1
+    assert fallback.text == quote["text"]

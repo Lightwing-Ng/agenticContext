@@ -1,6 +1,6 @@
 """Durable local compute jobs for approved optimization entrypoints.
 
-Code version: v1.6.2-codex.1
+Code version: v1.6.3-codex.0
 """
 
 from __future__ import annotations
@@ -231,7 +231,12 @@ def _stable_regular_file_bytes(
         raise ComputeJobError(f"{label} must be one unlinked regular file.")
     if before_path.st_size > maximum_bytes:
         raise ComputeJobError(f"{label} exceeds the {maximum_bytes:,}-byte limit.")
-    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0)
+    flags = (
+        os.O_RDONLY
+        | getattr(os, "O_BINARY", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+        | getattr(os, "O_CLOEXEC", 0)
+    )
     try:
         descriptor = os.open(path, flags)
     except OSError as exc:

@@ -1,6 +1,6 @@
 # Testing guide
 
-Documentation version: `v1.43.0-codex.0`
+Documentation version: `v1.44.0-codex.0`
 
 ## Media SQLite persistence checks
 
@@ -67,6 +67,31 @@ Do not add account data or real-data benchmark outcomes to tracked test fixtures
 documentation. Focused checks do not replace the repository's complete quality gate.
 
 ## Supported commands
+
+CI runs eight deterministic file shards on each existing Linux and Windows platform.
+The partition balances end-to-end browser files and other files separately by source
+size, adding a fixed 64 KiB planning allowance per browser file for its disposable
+browser/server fixture setup. Source size alone put one browser file in one shard
+and 28 in another; remote Linux and Windows jobs reached their existing time limits.
+The allowance accounts for repeated setup work rather than estimating seconds.
+Every discovered test file belongs to exactly one shard. Each shard retains the
+ordinary static checks, default `not live` marker, and browser setup. The paired
+`AGENTIC_CONTEXT_TEST_SHARD` (1 through 8) and
+`AGENTIC_CONTEXT_TEST_SHARD_COUNT=8` variables enable this CI-only mode and permit
+partial coverage below 55%; incomplete shard settings or additional test filters fail.
+Without these variables, the launchers still run the complete suite with the existing
+55% branch-coverage threshold.
+
+The required Linux and Windows checks are the final aggregate jobs. Each requires all
+eight successful shard jobs and exactly eight artifacts bound to the current commit,
+run, attempt, platform, file inventory, selected files, and coverage hashes. Raw branch
+coverage uses relative application paths and is combined before enforcing the same
+55% global threshold. Missing, stale, duplicate, altered, or non-branch artifacts fail
+the aggregate; shard percentages are never averaged. Job timeouts, test markers,
+platform coverage, and coverage requirements are unchanged. One unusually large test
+module remains indivisible, so capacity improvements still require live CI evidence.
+Re-run the complete workflow when retrying: artifacts are named by run attempt, and
+successful shards from an earlier attempt cannot fill gaps in a newer attempt.
 
 Install the project dependencies with the supported Python 3.13 or newer workflow:
 
