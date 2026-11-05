@@ -1,6 +1,6 @@
 """Jury HTTP validation, isolation, and control-plane security regressions.
 
-Code version: v1.5.1-codex.0
+Code version: v1.5.3-codex.0
 """
 
 from __future__ import annotations
@@ -69,8 +69,14 @@ def enable_fake_operations(application):
     application.config["AGENT_EXTERNAL_OPERATIONS_ENABLED"] = True
 
 
-def test_macos_jury_route_exposes_safari_as_a_persistable_browser(jury_app):
-    application, service = jury_app
+@pytest.fixture
+def macos_jury_app(macos_host, request):
+    """Install the complete host model before constructing the disposable app."""
+    return request.getfixturevalue("jury_app")
+
+
+def test_macos_jury_route_exposes_safari_as_a_persistable_browser(macos_jury_app):
+    application, service = macos_jury_app
     response = application.test_client().get("/jury/safari")
     assert response.status_code == 200
     body = response.get_data(as_text=True)
@@ -104,8 +110,8 @@ def test_jury_status_and_sessions_are_read_only_and_not_cached(jury_app):
     service.start.assert_not_called()
 
 
-def test_safari_jury_sessions_catalog_uses_the_selected_browser(jury_app):
-    application, service = jury_app
+def test_safari_jury_sessions_catalog_uses_the_selected_browser(macos_jury_app):
+    application, service = macos_jury_app
     response = application.test_client().get("/api/jury/sessions?browser=safari")
 
     assert response.status_code == 200

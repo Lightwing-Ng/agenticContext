@@ -1,4 +1,4 @@
-"""Compact chat padding and contained external shadows. Code version: v1.1.1-codex.0."""
+"""Compact chat padding and contained external shadows. Code version: v1.1.2-codex.0."""
 
 from io import BytesIO
 import math
@@ -178,6 +178,11 @@ def _assert_metrics_unaffected_by_chat_effects(page: Page, geometry: dict) -> No
             ),
             "restoredChangedBounds": ImageChops.difference(painted, restored).getbbox(),
             "hiddenRestoredChangedBounds": ImageChops.difference(hidden, restored).getbbox(),
+        })
+        print("Chat-effect paint comparison:", {
+            key: diagnostics[key] for key in (
+                "changedBounds", "changedPixels", "restoredChangedBounds", "hiddenRestoredChangedBounds",
+            )
         })
     assert changed_bounds is None, diagnostics
 
