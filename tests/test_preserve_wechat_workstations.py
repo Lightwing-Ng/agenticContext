@@ -1,4 +1,4 @@
-"""Verify source-preserving workstation relocation. Code version: v1.2.0-codex.0."""
+"""Verify source-preserving workstation relocation. Code version: v1.2.1-codex.0."""
 
 from __future__ import annotations
 
@@ -160,7 +160,7 @@ def test_open_database_protects_its_closed_journal(tool, tmp_path, monkeypatch):
     })
     report = tool.preserve(root, target, apply=True)
     assert source.exists() and journal.exists()
-    assert report["entries"][str(journal.relative_to(root))]["defer_reason"] == "database_family_requires_review"
+    assert report["entries"][journal.relative_to(root).as_posix()]["defer_reason"] == "database_family_requires_review"
     assert not report["moved_entries"]
 
 

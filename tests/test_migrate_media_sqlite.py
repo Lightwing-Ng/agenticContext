@@ -1,17 +1,20 @@
 """Exercise canonical media migration, immutable rollback, and drift refusal.
 
-Code version: v1.1.0
+Code version: v1.2.0
 """
 
 from __future__ import annotations
 
 import gzip
 import importlib.util
-from pathlib import Path
+import os
+from pathlib import Path, PurePosixPath, PureWindowsPath
 
 import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
+
+from app.core.owner_only_files import owner_only_problem
 
 
 _SCRIPT = Path(__file__).parents[1] / "scripts" / "migrate_media_sqlite.py"
@@ -75,6 +78,13 @@ def test_preview_excludes_numbered_files_archives_llm_and_payloads(media, tmp_pa
     assert not source.with_suffix(".sqlite3").exists()
 
 
+@pytest.mark.parametrize("root", [PurePosixPath("/store"), PureWindowsPath("C:/store")])
+def test_relative_report_identifiers_are_portable_across_path_flavors(root):
+    source = root / "media" / "grok" / ".grok_work_queue.parquet"
+    assert migrator._relative_report_path(source, root) == "media/grok/.grok_work_queue.parquet"
+    assert migrator._relative_report_path(source.with_suffix(".sqlite3"), root) == "media/grok/.grok_work_queue.sqlite3"
+
+
 @pytest.mark.parametrize("name", sorted(migrator.SPECS))
 def test_all_media_types_preserve_exact_schema_rows_backup_and_retire(
     name, tmp_path, monkeypatch
@@ -101,7 +111,9 @@ def test_all_media_types_preserve_exact_schema_rows_backup_and_retire(
     assert target.stat().st_mtime_ns == original_mtime
     rollback = Path(report["entries"][0]["rollback"]["path"])
     assert gzip.decompress(rollback.read_bytes()) == original
-    assert rollback.stat().st_mode & 0o777 == 0o600
+    assert owner_only_problem(rollback) == ""
+    if os.name == "posix":
+        assert rollback.stat().st_mode & 0o777 == 0o600
     assert report["totals"]["rows"] == len(rows)
 
 

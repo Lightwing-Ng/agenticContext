@@ -1,6 +1,6 @@
 """Migrate canonical media metadata with verified rollback and comparable timings.
 
-Code version: v1.0.0
+Code version: v1.1.0
 
 The migration excludes media payloads, numbered copies, browser profiles, LLM
 histories, deleted-resource records, saved prompts, and recovery evidence.
@@ -12,7 +12,7 @@ import argparse
 from contextlib import closing
 from datetime import UTC, datetime
 import os
-from pathlib import Path
+from pathlib import Path, PurePath
 import platform
 import sqlite3
 import sys
@@ -50,7 +50,7 @@ from scripts.migrate_llm_sqlite import (  # noqa: E402
 )
 
 
-VERSION = "v1.0.0"
+VERSION = "v1.1.0"
 SPECS = {
     ".chatgpt_catalog.parquet": (
         CHATGPT_CATALOG_SCHEMA,
@@ -97,6 +97,11 @@ def canonical_sources(root: Path) -> list[Path]:
 
 def _store(path: Path, schema: pa.Schema) -> MediaSQLiteStore:
     return media_store_for(path, schema)
+
+
+def _relative_report_path(path: PurePath, root: PurePath) -> str:
+    """Use portable POSIX identifiers; absolute filesystem paths remain native."""
+    return path.relative_to(root).as_posix()
 
 
 def benchmark(
@@ -276,8 +281,8 @@ def _migrate(root, report_path, apply, retire_legacy, backup_directory, repeats)
         if source.is_symlink() or target.is_symlink():
             raise ValueError("Canonical migration paths must not be symbolic links.")
         entry = {
-            "source": str(source.relative_to(root)),
-            "target": str(target.relative_to(root)),
+            "source": _relative_report_path(source, root),
+            "target": _relative_report_path(target, root),
             "source_initial": file_state(source),
             "status": "planned",
         }
