@@ -1,4 +1,4 @@
-"""Shared select keyboard adapters. Code version: v1.3.0-codex.0."""
+"""Shared select keyboard adapters. Code version: v1.3.1-codex.0."""
 
 from pathlib import Path
 
@@ -332,7 +332,18 @@ def test_settings_operating_system_uses_standard_shared_select(
         catalog_trigger = catalog.locator("[data-style-token-shared-filter-trigger]")
         catalog_menu = catalog.locator("[data-style-token-shared-filter-menu]")
         catalog_chevron = catalog.locator(".browser-picker-trigger-chevron")
-        catalog_trigger.evaluate("node => node.scrollIntoView({block: 'start'})")
+        catalog_trigger.evaluate(
+            """async node => {
+                // The catalog queues its initial hash-reference scroll in a
+                // rendering frame. Let that run before positioning this probe.
+                await document.fonts.ready;
+                await new Promise(requestAnimationFrame);
+                await new Promise(requestAnimationFrame);
+                node.scrollIntoView({behavior: 'instant', block: 'start'});
+                await new Promise(requestAnimationFrame);
+                await new Promise(requestAnimationFrame);
+            }"""
+        )
         assert_shared_chevron_rotation(page, catalog_chevron, -90)
         catalog_trigger.press("ArrowDown")
         expect(catalog_menu.locator('[aria-selected="true"]')).to_be_focused()
