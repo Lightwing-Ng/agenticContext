@@ -1,6 +1,6 @@
 """Disposable-browser E2E coverage for the responsive sidebar and language boundaries.
 
-Code version: v1.58.3-codex.0
+Code version: v1.58.4-codex.0
 """
 
 from __future__ import annotations
@@ -9296,7 +9296,11 @@ def test_agent_response_scrollports_keep_actions_and_last_line_inside(
         page.mouse.wheel(0, 600)
         page.locator("#agent_response_answer").focus()
         page.keyboard.press("End")
-        page.wait_for_function("() => document.querySelector('#agent_response_answer').scrollTop > 0")
+        # Wheel dispatch can return before scrolling finishes; await both input effects.
+        page.wait_for_function(
+            """() => document.querySelector('#agent_response_question').scrollTop > 0
+                && document.querySelector('#agent_response_answer').scrollTop > 0"""
+        )
         page.evaluate("() => { const e=document.querySelector('#agent_response_answer'); e.scrollTop=e.scrollHeight; }")
         after = page.evaluate(read_layout)
         for action in ("questionToggle", "copy"):
