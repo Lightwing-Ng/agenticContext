@@ -1,6 +1,6 @@
 """Verify reversible publication, external preservation gates, and source pins.
 
-Code version: v1.1.1-codex.0
+Code version: v1.2.0-codex.0
 """
 
 from __future__ import annotations
@@ -89,12 +89,72 @@ def publication(tmp_path, monkeypatch):
     monkeypatch.setattr(publisher, "_ensure_platform", lambda: None)
     monkeypatch.setattr(publisher, "_assert_no_writers", lambda path: [])
     monkeypatch.setattr(publisher, "_swap", _simulated_swap)
+    if os.name == "nt":
+        def sync_test_files(left, right):
+            # The macOS exchange/directory primitives are modeled by this fixture.
+            for path in (left, right):
+                with Path(path).open("r+b") as stream:
+                    os.fsync(stream.fileno())
+
+        monkeypatch.setattr(publisher, "_sync_pair", sync_test_files)
     return {"history": history, "sidecar": sidecar, "receipts": receipts,
             "backups": backups, "reports": reports, "operation": external / "operation.json"}
 
 
 def _publish(fixture):
     return publisher.publish(list(reversed(fixture["receipts"])), fixture["backups"], fixture["operation"])
+
+
+@pytest.mark.parametrize("helper", ["_view_content", "_info"])
+@pytest.mark.parametrize("read_error", [False, True])
+def test_preflight_readers_close_before_publication_or_error(
+    publication, monkeypatch, helper, read_error
+):
+    readonly = compactor.readonly
+    readers = []
+
+    class TrackedReader:
+        def __init__(self, path):
+            self.connection = readonly(path)
+            self.closed = False
+            readers.append(self)
+
+        def __enter__(self):
+            self.connection.__enter__()
+            return self
+
+        def __exit__(self, *error):
+            return self.connection.__exit__(*error)
+
+        def execute(self, *args):
+            if read_error:
+                raise sqlite3.DatabaseError("Synthetic preflight read failure")
+            return self.connection.execute(*args)
+
+        def close(self):
+            self.connection.close()
+            self.closed = True
+
+    monkeypatch.setattr(compactor, "readonly", TrackedReader)
+    try:
+        if read_error:
+            with pytest.raises(sqlite3.DatabaseError, match="Synthetic preflight"):
+                getattr(publisher, helper)(publication["history"])
+        else:
+            getattr(publisher, helper)(publication["history"])
+        assert len(readers) == 1 and readers[0].closed
+        assert not publication["operation"].exists()
+    finally:
+        for reader in readers:
+            reader.close()
+
+
+def test_non_macos_publication_refuses_before_creating_output(tmp_path, monkeypatch):
+    monkeypatch.setattr(publisher, "sys", SimpleNamespace(platform="win32"))
+    output = tmp_path / "unused-operation.json"
+    with pytest.raises(ValueError, match="requires macOS"):
+        publisher.publish([], [], output)
+    assert not output.exists()
 
 
 def test_publication_preserves_original_inodes_and_exact_view_output(publication):

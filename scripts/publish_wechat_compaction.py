@@ -1,6 +1,6 @@
 """Publish verified WeChat SQLite candidates with reversible atomic macOS swaps.
 
-Code version: v1.1.0-codex.0
+Code version: v1.1.1-codex.0
 
 Each pathname pair is exchanged atomically. The operation receipt journals the
 ordered multi-file publication; it is not a filesystem-wide transaction. Writers
@@ -11,6 +11,7 @@ and no preserved original or external rollback is removed by this tool.
 from __future__ import annotations
 
 import argparse
+from contextlib import closing
 import ctypes
 from datetime import UTC, datetime
 import hashlib
@@ -89,7 +90,7 @@ def _read_json(path):
 def _view_content(path):
     """Verify complete projected views as typed row multisets without private output."""
     result = {}
-    with compactor.readonly(path) as connection:
+    with closing(compactor.readonly(path)) as connection, connection:
         names = connection.execute("SELECT name FROM sqlite_master WHERE type='view' ORDER BY name").fetchall()
         for (name,) in names:
             count = total = exclusive = 0
@@ -103,7 +104,7 @@ def _view_content(path):
 
 
 def _info(path):
-    with compactor.readonly(path) as connection:
+    with closing(compactor.readonly(path)) as connection, connection:
         if connection.execute("SELECT 1 FROM sqlite_master WHERE name='archive_info' AND type='table'").fetchone() is None:
             return {}
         return dict(connection.execute("SELECT key,value FROM archive_info"))
