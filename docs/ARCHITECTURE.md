@@ -1,6 +1,6 @@
 # Architecture guide
 
-Documentation version: `v1.75.2-codex.0`
+Documentation version: `v1.75.3-codex.0`
 
 ## Runtime flow
 
@@ -8,7 +8,7 @@ Documentation version: `v1.75.2-codex.0`
 scripts/run_app.sh or scripts/run_app.ps1
   -> Python 3.13 or newer runtime resolution
   -> main.py (reload supervisor: owns the listening socket, restarts the serving child)
-  -> main.py (serving child, Flask debug mode)
+  -> main.py (serving child, optional template auto-reload, HTTP debugger disabled)
   -> structured logging setup
   -> app.web.app.create_app()
   -> Flask routes and static UI
