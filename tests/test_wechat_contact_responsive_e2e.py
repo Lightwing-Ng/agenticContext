@@ -1,13 +1,18 @@
 """Contact statements fit their scrollport and keep shared header alignment.
 
-Code version: v1.2.1-codex.0
+Code version: v1.2.2-codex.0
 """
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 from copy import deepcopy
+import hashlib
 import json
+from pathlib import PurePosixPath
+import re
 from unittest.mock import patch
+from urllib.parse import urlsplit
 
 import pytest
 from playwright.sync_api import expect
@@ -25,6 +30,115 @@ LONG_STATEMENT = (
 )
 LONG_CONVERSATION = "A conversation with a long title 需要保留的完整群聊名称"
 LONG_ACCOUNT = "Research account with a complete source identity · abc123"
+
+
+def _static_resource_name(url):
+    path = urlsplit(url).path
+    return PurePosixPath(path).name[:128] if path.startswith("/static/") else ""
+
+
+def _stylesheet_diagnostic(response):
+    headers = response.headers
+    length = headers.get("content-length", "")
+    declared = int(length) if length.isdecimal() and len(length) <= 10 else None
+    result = {
+        "resource": _static_resource_name(response.url),
+        "status": response.status,
+        "mime": headers.get("content-type", "").split(";", 1)[0][:80],
+        "declared_bytes": declared,
+    }
+    if declared is not None and 0 <= declared <= 1024 * 1024:
+        try:
+            body = response.body()
+        except Exception as error:
+            result["body_error_type"] = type(error).__name__
+        else:
+            result["bytes"] = len(body)
+            if len(body) <= 1024 * 1024:
+                result["sha256"] = hashlib.sha256(body).hexdigest()
+            else:
+                result["body_over_budget"] = True
+    else:
+        result["body_capture"] = "unknown_or_excessive_declared_size"
+    return result
+
+
+@contextmanager
+def _observe_contact_table_failure(page):
+    """Keep bounded static evidence and inspect bodies only after a failed assertion."""
+    stylesheets, failed_requests, console_codes = [], [], []
+
+    def response_received(response):
+        name = _static_resource_name(response.url)
+        if name.endswith(".css") and len(stylesheets) < 16:
+            stylesheets.append(response)
+
+    def request_failed(request):
+        name = _static_resource_name(request.url)
+        if name and len(failed_requests) < 16:
+            failed_requests.append({
+                "resource": name,
+                "codes": re.findall(r"\bERR_[A-Z0-9_]+\b", str(request.failure))[:8],
+            })
+
+    def console_error(message):
+        name = _static_resource_name(message.location.get("url", ""))
+        if message.type == "error" and name and len(console_codes) < 16:
+            console_codes.append({
+                "resource": name,
+                "codes": re.findall(r"\bERR_[A-Z0-9_]+\b", message.text)[:8],
+            })
+
+    page.on("response", response_received)
+    page.on("requestfailed", request_failed)
+    page.on("console", console_error)
+    try:
+        yield
+    except AssertionError:
+        try:
+            state = page.evaluate("""() => {
+                const properties = ['number', 'time', 'statement', 'conversation', 'account'];
+                const tables = [...document.querySelectorAll('.wechat-contact-table')].slice(0, 2).map(table => {
+                    const style = getComputedStyle(table);
+                    return {
+                        role: table.hasAttribute('data-table-body') ? 'body' : 'header',
+                        layout: style.tableLayout, width: style.width,
+                        variables: properties.map(name => style.getPropertyValue('--wechat-contact-' + name + '-width').trim().slice(0, 32)),
+                        columns: [...table.querySelectorAll('col')].slice(0, 5).map(col => ({
+                            inline: col.style.width.slice(0, 40), computed: getComputedStyle(col).width,
+                        })),
+                        cells: [...(table.rows[0]?.cells || [])].slice(0, 5).map(cell => ({
+                            inline: cell.style.width.slice(0, 40), computed: getComputedStyle(cell).width,
+                        })),
+                    };
+                });
+                const links = [...document.querySelectorAll('link[rel=stylesheet]')].filter(link => {
+                    return new URL(link.href).pathname.startsWith('/static/');
+                }).slice(0, 8).map(link => {
+                    let rules = null;
+                    try { rules = link.sheet?.cssRules.length ?? null; } catch {}
+                    return {
+                        resource: new URL(link.href).pathname.split('/').pop().slice(0, 128),
+                        sheet: Boolean(link.sheet), rules, disabled: link.disabled,
+                        media: link.media.slice(0, 80),
+                    };
+                });
+                return {readyState: document.readyState, fonts: document.fonts.status, tables, links};
+            }""")
+            diagnostics = {
+                "state": state,
+                "stylesheets": [_stylesheet_diagnostic(response) for response in stylesheets],
+                "failed_static_requests": failed_requests,
+                "static_console_codes": console_codes,
+            }
+            print("Contact table style failure: " + json.dumps(diagnostics, separators=(",", ":")))
+        except Exception as error:
+            print("Contact table style diagnostic unavailable: " + type(error).__name__)
+        raise
+    finally:
+        page.remove_listener("response", response_received)
+        page.remove_listener("requestfailed", request_failed)
+        page.remove_listener("console", console_error)
 
 
 def _responsive_results(fixture):
@@ -210,7 +324,7 @@ def test_contact_columns_fit_without_horizontal_scroll_and_keep_centered_numbers
     measurements = []
     url = fixture.url + "/browser/wechat/contacts/" + fixture.target_id
     try:
-        with patch(
+        with _observe_contact_table_failure(page), patch(
             "app.core.wechat_contact_analysis.query_contact_analysis",
             side_effect=_responsive_results(fixture),
         ):
