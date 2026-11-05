@@ -1,6 +1,6 @@
 # Testing guide
 
-Documentation version: `v1.46.0-codex.0`
+Documentation version: `v1.46.1-codex.0`
 
 ## Media SQLite persistence checks
 
@@ -965,6 +965,13 @@ when the route or service boundary is the behavior being tested.
 - `slow`: Tests materially slower than the unit-test median.
 - `live`: Explicit manual checks that require a signed-in browser or a remote service. These never
   belong in CI or the default quality gate.
+
+The live Tunnel badge contract reads the canonical Worthward style-token page at
+`http://127.0.0.1:8688/settings/style-tokens` by default. Set
+`AGENTIC_CONTEXT_REFERENCE_STYLE_URL` to the style-token URL of an actual isolated Worthward
+instance when its user-owned service is unavailable. Keep the original rendering assertions,
+use the sibling application's supported temporary-store overrides, and stop the owned instance
+after verification. The live agenticContext status remains tied to its real service on `8666`.
 
 The sidebar E2E layer may use Playwright-managed Chromium or an installed Chrome or Edge binary,
 but always launches a clean browser context without a user-data directory. Its Flask server uses

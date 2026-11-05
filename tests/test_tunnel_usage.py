@@ -1,7 +1,8 @@
-"""Tunnel call accounting and compact badge acceptance. Code version: v1.7.2-codex.0."""
+"""Tunnel call accounting and compact badge acceptance. Code version: v1.7.3-codex.0."""
 
 from __future__ import annotations
 
+import os
 import threading
 import time
 from contextlib import contextmanager
@@ -917,7 +918,12 @@ def test_live_reference_badge_contract(disposable_browser, sidebar_server_url, w
         };
     }"""
     try:
-        reference_page.goto("http://127.0.0.1:8688/settings/style-tokens")
+        reference_page.goto(
+            os.environ.get(
+                "AGENTIC_CONTEXT_REFERENCE_STYLE_URL",
+                "http://127.0.0.1:8688/settings/style-tokens",
+            )
+        )
         reference_badge = reference_page.locator(
             ".style-token-holdings-allocation-badge-demo .investment-holdings-allocation-badge"
         ).first
