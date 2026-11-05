@@ -1,6 +1,6 @@
 """Owner-only secret-file boundary on POSIX and Windows, and its Tunnel consumers.
 
-Code version: v1.1.0-codex.0
+Code version: v1.2.0-codex.0
 """
 
 from __future__ import annotations
@@ -71,10 +71,38 @@ def test_file_boundary_rejects_multiple_hard_links(tmp_path: Path) -> None:
     path.write_bytes(b"preserved")
     linked = tmp_path / "linked"
     os.link(path, linked)
+    before = path.stat()
     with pytest.raises(OwnerOnlyFileError, match="multiple hard links"):
         ensure_owner_only(path)
     assert owner_only_problem(path) == "it has multiple hard links"
     assert linked.read_bytes() == b"preserved"
+    assert path.stat().st_mode == before.st_mode
+
+
+def test_mutable_canonical_aliases_keep_the_native_owner_only_boundary(tmp_path: Path) -> None:
+    path = tmp_path / "history.sqlite3"
+    path.write_bytes(b"preserved canonical bytes")
+    if os.name == "posix":
+        path.chmod(0o644)
+    linked = tmp_path / "initial-publication.tmp"
+    os.link(path, linked)
+
+    ensure_owner_only(path, allow_hard_links=True)
+
+    assert path.samefile(linked)
+    assert path.read_bytes() == linked.read_bytes() == b"preserved canonical bytes"
+    assert owner_only_problem(path, allow_hard_links=True) == ""
+    assert owner_only_problem(linked, allow_hard_links=True) == ""
+    assert owner_only_problem(path) == "it has multiple hard links"
+    if os.name == "posix":
+        assert stat.S_IMODE(path.stat().st_mode) == 0o600
+
+
+@pytest.mark.parametrize("allow_hard_links", [False, True])
+def test_alias_option_never_allows_a_nonregular_file(tmp_path: Path, allow_hard_links: bool) -> None:
+    with pytest.raises(OwnerOnlyFileError, match="not a regular file"):
+        ensure_owner_only(tmp_path, allow_hard_links=allow_hard_links)
+    assert owner_only_problem(tmp_path, allow_hard_links=allow_hard_links) == "it is not a regular file"
 
 
 @pytest.fixture
@@ -263,6 +291,44 @@ def test_windows_ensure_repairs_a_legacy_inherited_file(
 
     assert owner_only_problem(legacy) == ""
     assert security.sizes_when_protected == [len("secret")]
+
+
+def test_windows_mutable_aliases_are_narrowed_and_verified_as_one_file(
+    tmp_path: Path, simulated_windows
+) -> None:
+    security = simulated_windows(FakeWindowsSecurity())
+    path = tmp_path / "history.sqlite3"
+    path.write_bytes(b"preserved canonical bytes")
+    linked = tmp_path / "initial-publication.tmp"
+    os.link(path, linked)
+    assert owner_only_problem(path, allow_hard_links=True) == "its Windows DACL still inherits parent permissions"
+
+    ensure_owner_only(path, allow_hard_links=True)
+
+    assert security.sizes_when_protected == [len(b"preserved canonical bytes")]
+    assert owner_only_problem(path, allow_hard_links=True) == ""
+    assert owner_only_problem(linked, allow_hard_links=True) == ""
+    assert path.samefile(linked)
+    assert linked.read_bytes() == b"preserved canonical bytes"
+    with pytest.raises(OwnerOnlyFileError, match="multiple hard links"):
+        ensure_owner_only(path)
+
+
+@pytest.mark.parametrize("fail_set", [True, False])
+def test_windows_mutable_alias_option_never_bypasses_dacl_failure(
+    tmp_path: Path, simulated_windows, fail_set: bool
+) -> None:
+    simulated_windows(FakeWindowsSecurity(fail_set=fail_set, applied_dacl=INHERITED_DACL))
+    path = tmp_path / "history.sqlite3"
+    path.write_bytes(b"preserved canonical bytes")
+    linked = tmp_path / "initial-publication.tmp"
+    os.link(path, linked)
+
+    with pytest.raises(OwnerOnlyFileError):
+        ensure_owner_only(path, allow_hard_links=True)
+
+    assert owner_only_problem(path, allow_hard_links=True)
+    assert path.read_bytes() == linked.read_bytes() == b"preserved canonical bytes"
 
 
 @windows_only
