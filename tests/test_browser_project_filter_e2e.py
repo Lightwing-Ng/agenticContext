@@ -1,4 +1,4 @@
-"""Isolated Local resources Project filtering. Code version: v1.1.1-codex.0."""
+"""Isolated Local resources Project filtering. Code version: v1.1.2-codex.0."""
 
 from __future__ import annotations
 
@@ -121,6 +121,10 @@ def _sidebar(page: Page, *, opened: bool) -> None:
     if (toggle.get_attribute("aria-expanded") == "true") != opened:
         toggle.click()
     expect(toggle).to_have_attribute("aria-expanded", str(opened).lower())
+    _wait_for_session_table_layout(page, require_source_hit=not opened)
+
+
+def _wait_for_session_table_layout(page: Page, *, require_source_hit: bool) -> None:
     settled = page.wait_for_function(
         """token => {
             const rect = node => {
@@ -142,10 +146,15 @@ def _sidebar(page: Page, *, opened: bool) -> None:
                 rect(table), rect(header), rect(body), rect(trigger), headerCells, bodyCells,
             ]);
             const previous = window.__projectFilterLayoutSample;
-            const frames = previous?.token === token && previous.geometry === geometry
-                ? previous.frames + 1 : 1;
-            window.__projectFilterLayoutSample = {token, geometry, frames};
+            const frameTime = document.timeline.currentTime;
+            const sameGeometry = previous?.token === token && previous.geometry === geometry;
+            const frameAdvanced = Number.isFinite(frameTime)
+                && Number.isFinite(previous?.frameTime) && frameTime > previous.frameTime;
+            const frames = sameGeometry && Number.isFinite(frameTime)
+                ? previous.frames + Number(frameAdvanced) : 0;
+            window.__projectFilterLayoutSample = {token, geometry, frames, frameTime};
             // Aria updates before ResizeObserver queues the next header-column sync.
+            // The immediate first predicate and each geometry change are baselines.
             if (frames < 3) return false;
             const box = trigger?.getBoundingClientRect();
             const centerX = box ? box.x + box.width / 2 : null;
@@ -180,7 +189,7 @@ def _sidebar(page: Page, *, opened: bool) -> None:
         assert abs(header[2] - body[2] - scrollbar) <= 1, (
             "Header/body column widths differ."
         )
-    if not opened:
+    if require_source_hit:
         assert geometry["triggerHit"], "The settled Source trigger is obstructed."
 
 
@@ -250,6 +259,57 @@ def test_sidebar_layout_readiness_rejects_stable_geometry_defects(
         # Stability must not conceal a persistent alignment or hit-test defect.
         with pytest.raises(AssertionError, match=message):
             _sidebar(page, opened=False)
+    finally:
+        context.close()
+
+
+def test_sidebar_layout_readiness_waits_for_deferred_table_measurement(
+    disposable_browser: Browser,
+    project_browser_server_url: str,
+) -> None:
+    context = disposable_browser.new_context(
+        viewport={"width": 1_006, "height": 844},
+        reduced_motion="reduce",
+    )
+    context.add_init_script("""(() => {
+        const NativeResizeObserver = window.ResizeObserver;
+        const nextFrame = window.requestAnimationFrame.bind(window);
+        window.__deferredTableDeliveries = 0;
+        window.ResizeObserver = class extends NativeResizeObserver {
+            constructor(callback) {
+                super((entries, observer) => {
+                    if (entries.some(entry => entry.target.closest('.browser-session-index-shell'))) {
+                        // Retain the real table observer and column sync across deferred frames.
+                        nextFrame(() => nextFrame(() => {
+                            window.__deferredTableDeliveries += 1;
+                            callback(entries, observer);
+                        }));
+                    } else {
+                        callback(entries, observer);
+                    }
+                });
+            }
+        };
+    })();""")
+    page = context.new_page()
+    try:
+        page.goto(
+            f"{project_browser_server_url}/browser?view=text&source=chatgpt&session_view=1"
+        )
+        _choose_project(page, "No project")
+        expect(page.locator(SESSION_TITLES)).to_have_text(["Ordinary session"])
+        deliveries_before = page.evaluate("window.__deferredTableDeliveries")
+        _sidebar(page, opened=False)
+        assert page.evaluate("window.__deferredTableDeliveries") > deliveries_before
+        page.locator(
+            "[data-browser-header-filter] [data-browser-source-filter-trigger]"
+        ).click()
+        with page.expect_navigation(wait_until="domcontentloaded"):
+            page.locator(
+                '#browser_header_source_filter_options [data-browser-source-filter-option="chatgpt"]'
+            ).click()
+        assert _query(page)["project"] == [CHATGPT_NO_PROJECT_FILTER]
+        expect(page.locator(SESSION_TITLES)).to_have_text(["Ordinary session"])
     finally:
         context.close()
 
@@ -377,6 +437,7 @@ def test_project_filter_survives_navigation_and_clears_other_scopes(
             f"&session_view=1&project={ALPHA_PROJECT}"
         )
         page.goto(scoped_url)
+        _wait_for_session_table_layout(page, require_source_hit=True)
         page.locator("[data-browser-header-filter] [data-browser-source-filter-trigger]").click()
         with page.expect_navigation(wait_until="domcontentloaded"):
             page.locator(
@@ -442,6 +503,7 @@ def test_no_project_selection_survives_search_details_and_same_source_selection(
         expect(page.locator("#browser_search_input")).to_have_attribute(
             "data-browser-search-submit-copy", "Press Enter to search chats without a project.",
         )
+        _wait_for_session_table_layout(page, require_source_hit=True)
         page.locator("[data-browser-header-filter] [data-browser-source-filter-trigger]").click()
         with page.expect_navigation(wait_until="domcontentloaded"):
             page.locator(
