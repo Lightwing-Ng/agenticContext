@@ -1,6 +1,6 @@
 """Durable compute-job lifecycle and safety contract tests.
 
-Code version: v1.6.5-codex.0
+Code version: v1.6.6-codex.0
 """
 
 from __future__ import annotations
@@ -308,6 +308,52 @@ def _wait_for_terminal(manager: ComputeJobManager, job_id: str, timeout: float =
     raise AssertionError(f"compute job {job_id} did not reach a terminal state")
 
 
+def _print_synthetic_compute_failure(
+    manager: ComputeJobManager,
+    status: dict[str, object],
+) -> None:
+    """Expose bounded synthetic lifecycle evidence when a native assertion fails."""
+    job_id = str(status["job_id"])
+    job_root = manager.jobs_root / job_id
+    diagnostics = {
+        key: status.get(key)
+        for key in (
+            "state", "message", "exit_status", "can_resume", "active",
+            "started_at", "updated_at", "ended_at", "checkpoint_path",
+            "resumed_from", "max_runtime_seconds", "progress",
+        )
+    }
+    diagnostics["worker_log_exists"] = (job_root / "worker.log").is_file()
+    diagnostics["log_tail_chars"] = len(str(status.get("log_tail") or ""))
+    diagnostics["log_tail_end"] = str(status.get("log_tail") or "")[-512:]
+    try:
+        metadata = manager._load_metadata(job_id)
+        diagnostics["metadata"] = {
+            key: metadata.get(key)
+            for key in (
+                "state", "message", "error_type", "exit_status", "revision",
+                "pid", "process_identity", "child_pid", "child_process_identity",
+                "containment_kind", "containment_cleared_at", "updated_at", "ended_at",
+            )
+        }
+    except (ComputeJobError, OSError) as exc:
+        diagnostics["metadata_error_type"] = type(exc).__name__
+        diagnostics["metadata_error"] = str(exc)
+    checkpoint = job_root / "checkpoint.json"
+    diagnostics["checkpoint_exists"] = checkpoint.is_file()
+    if checkpoint.is_file():
+        try:
+            validate_optimizer_checkpoint(compute_jobs._read_json_object(
+                checkpoint, maximum_bytes=compute_jobs.MAX_CONFIG_BYTES,
+            ))
+            diagnostics["checkpoint_valid"] = True
+        except (ComputeJobError, OSError) as exc:
+            diagnostics["checkpoint_valid"] = False
+            diagnostics["checkpoint_error_type"] = type(exc).__name__
+            diagnostics["checkpoint_error"] = str(exc)
+    print("Synthetic compute failure: " + json.dumps(diagnostics, separators=(",", ":")))
+
+
 SUCCESS_SCRIPT = """
 import argparse
 import json
@@ -613,6 +659,8 @@ def test_checkpoint_is_atomic_validated_and_explicitly_resumable(tmp_path: Path)
         idempotency_key="resume-source-001",
     )
     completed = _wait_for_terminal(manager, str(first["job_id"]))
+    if not completed["can_resume"]:
+        _print_synthetic_compute_failure(manager, completed)
     assert completed["can_resume"]
 
     resumed = manager.start(
@@ -829,6 +877,8 @@ def test_parent_worker_handoff_cannot_overwrite_fast_terminal_state(
     finished = _wait_for_terminal(manager, str(started["job_id"]))
     metadata = manager._load_metadata(str(started["job_id"]))
 
+    if finished["state"] != "succeeded":
+        _print_synthetic_compute_failure(manager, finished)
     assert delayed_running_write
     assert finished["state"] == "succeeded"
     assert metadata["state"] == "succeeded"
@@ -1501,6 +1551,8 @@ print("x" * {MAX_LOG_BYTES + 256_000})
     )
     status = _wait_for_terminal(manager, str(started["job_id"]))
     log_path = manager.jobs_root / str(started["job_id"]) / "worker.log"
+    if not log_path.is_file():
+        _print_synthetic_compute_failure(manager, status)
     assert log_path.stat().st_size <= MAX_LOG_BYTES
     assert len(status["log_tail"]) <= compute_jobs.MAX_LOG_TAIL_CHARS
 
