@@ -1,6 +1,6 @@
 """OpenClaw preservation, live SQLite, and protected path regressions.
 
-Code version: v1.1.0-codex.0
+Code version: v1.1.1-codex.0
 """
 
 from contextlib import closing
@@ -46,7 +46,8 @@ def test_private_self_contained_snapshot_preserves_files_and_explicit_exclusions
     assert result["file_count"] == 3
     assert result["total_bytes"] == sum(entry["size"] for entry in result["files"])
     assert {entry["path"] for entry in result["exclusions"]} == {"npm", "cache", "browser", "workspace/node_modules"}
-    assert result["symlinks"] == [{"path": "alias", "target": str(source / "media")}]
+    assert (source / "alias").resolve() == (source / "media").resolve()
+    assert result["symlinks"] == [{"path": "alias", "target": os.readlink(source / "alias")}]
     assert not (state / "alias").exists()
     assert not (state / "browser").exists()
     assert pointer["archive_directory"] == str(archive)
