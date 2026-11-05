@@ -1,6 +1,6 @@
 """Exercise text-only WechatExporter ingestion and archive safety boundaries.
 
-Code version: v1.5.0
+Code version: v1.5.1
 """
 
 import html
@@ -265,7 +265,7 @@ def test_rendered_location_and_channel_metadata_preserve_text_and_sender_only(
     monkeypatch.setattr(zipfile.ZipFile, "open", only_text)
     result = export.parse_html_export(path)
     records = result["conversations"][0]["messages"]
-    assert result["parser_version"] == "v1.5.0"
+    assert result["parser_version"] == "v1.5.1"
     assert [(record["text_kind"], record["text"]) for record in records] == [
         ("rendered_location_metadata", location_text),
         ("rendered_location_metadata", "A second rendered location"),
@@ -486,6 +486,18 @@ def test_misflagged_utf8_zip_names_are_recovered_without_renaming(tmp_path):
     assert path.read_bytes() == original
 
 
+def raw_member_zip(tmp_path, name):
+    """Retain literal hostile names instead of letting the host ZIP writer sanitize them."""
+    path = fixture_zip(tmp_path)
+    with zipfile.ZipFile(path, "a") as archive:
+        member = zipfile.ZipInfo()
+        member.filename = member.orig_filename = name
+        archive.writestr(member, b"ignored")
+    with zipfile.ZipFile(path) as archive:
+        assert archive.infolist()[-1].orig_filename == name
+    return path
+
+
 @pytest.mark.parametrize(
     "bad_member",
     [
@@ -494,10 +506,30 @@ def test_misflagged_utf8_zip_names_are_recovered_without_renaming(tmp_path):
         "C:/drive.txt",
         "Export/../alias.txt",
         "Export\\escape.txt",
+        "Export/alias.txt\x00hidden",
     ],
 )
 def test_unsafe_archive_paths_are_rejected_without_extraction(tmp_path, bad_member):
-    path = fixture_zip(tmp_path, additional={bad_member: b"ignored"})
+    path = raw_member_zip(tmp_path, bad_member)
+    original = path.read_bytes()
+    with pytest.raises(ValueError, match="Unsafe ZIP"):
+        export.parse_html_export(path)
+    assert path.read_bytes() == original
+
+
+def test_windows_separator_normalization_cannot_hide_an_unsafe_original(
+    tmp_path, monkeypatch,
+):
+    path = raw_member_zip(tmp_path, "Export\\escape.txt")
+    sanitize = zipfile._sanitize_filename
+    monkeypatch.setattr(
+        zipfile, "_sanitize_filename",
+        lambda name: sanitize(name.replace("\\", "/")),
+    )
+    with zipfile.ZipFile(path) as archive:
+        member = archive.infolist()[-1]
+        assert member.filename == "Export/escape.txt"
+        assert member.orig_filename == "Export\\escape.txt"
     with pytest.raises(ValueError, match="Unsafe ZIP"):
         export.parse_html_export(path)
 
