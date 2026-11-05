@@ -1,6 +1,6 @@
 """Verify migration safety, exact rollback, and excluded protected histories.
 
-Code version: v1.2.1-codex.0
+Code version: v1.3.0-codex.0
 """
 
 from __future__ import annotations
@@ -9,6 +9,7 @@ import gzip
 import importlib.util
 import json
 import os
+from contextlib import contextmanager
 from pathlib import Path
 
 import pyarrow as pa
@@ -16,6 +17,9 @@ import pyarrow.parquet as pq
 import pytest
 
 from app.core.llm_sqlite import STORE_VERSION, read_sqlite_rows, write_sqlite_rows
+from app.core import owner_only_files
+from app.core.owner_only_files import OwnerOnlyFileError, owner_only_problem
+from tests.test_owner_only_files import FakeWindowsSecurity
 
 
 _SCRIPT = Path(__file__).parents[1] / "scripts" / "migrate_llm_sqlite.py"
@@ -67,14 +71,21 @@ def test_exact_rows_order_duplicates_schema_backup_and_retirement(history, tmp_p
     assert read_sqlite_rows(target) == rows
     assert migrator.read_sqlite_schema(target).equals(schema, check_metadata=True)
     assert gzip.decompress(Path(entry["rollback"]["path"]).read_bytes()) == original_bytes
-    assert Path(entry["rollback"]["path"]).stat().st_mode & 0o777 == 0o600
+    rollback = Path(entry["rollback"]["path"])
+    assert owner_only_problem(rollback) == ""
+    if os.name == "posix":
+        assert rollback.stat().st_mode & 0o777 == 0o600
     assert json.loads((tmp_path / "report.json").read_text())["totals"]["rows"] == 3
 
 
 def test_publication_preserves_history_modification_time(history, tmp_path):
     source, _rows, _schema = history
-    original_mtime_ns = 1_700_000_000_123_456_789
-    os.utime(source, ns=(original_mtime_ns, original_mtime_ns))
+    requested_mtime_ns = 1_700_000_000_123_456_789
+    os.utime(source, ns=(requested_mtime_ns, requested_mtime_ns))
+    # Preserve the source's native precision without rounding the migration result.
+    original_mtime_ns = source.stat().st_mtime_ns
+    if os.name == "posix":
+        assert original_mtime_ns == requested_mtime_ns
     migrator.migrate(source.parents[2], tmp_path / "report.json", apply=True)
     assert source.with_suffix(".sqlite3").stat().st_mtime_ns == original_mtime_ns
 
@@ -231,3 +242,65 @@ def test_failed_migration_releases_maintenance_gate(history, tmp_path, monkeypat
     gate = CacheTaskLock(root / CACHE_TASK_LOCK_NAME)
     assert gate.acquire("synthetic-gate-probe")
     gate.release()
+
+
+@pytest.fixture
+def windows_backup_boundary(monkeypatch):
+    @contextmanager
+    def install(security):
+        with monkeypatch.context() as scoped:
+            scoped.setattr(owner_only_files, "IS_WINDOWS", True)
+            scoped.setattr(owner_only_files, "_windows_security", lambda: security)
+            owner_only_files._windows_owner_sddl.cache_clear()
+            try:
+                yield security
+            finally:
+                owner_only_files._windows_owner_sddl.cache_clear()
+
+    return install
+
+
+def test_rollback_applies_windows_boundary_before_compressed_bytes(
+    tmp_path, windows_backup_boundary,
+):
+    source, backup = tmp_path / "source", tmp_path / "rollback.gz"
+    original = b"Synthetic private rollback bytes"
+    source.write_bytes(original)
+
+    with windows_backup_boundary(FakeWindowsSecurity()) as security:
+        migrator.preserve_backup(source, backup, migrator.sha256(source))
+        assert security.sizes_when_protected == [0]
+        assert owner_only_problem(backup) == ""
+    assert gzip.decompress(backup.read_bytes()) == original
+
+
+@pytest.mark.parametrize("failure", ["protect", "verify"])
+def test_rollback_windows_boundary_denial_prevents_publication_and_private_bytes(
+    history, tmp_path, windows_backup_boundary, failure, monkeypatch,
+):
+    security = FakeWindowsSecurity(
+        fail_set=failure == "protect",
+        applied_dacl="D:P(A;;FA;;;SY)" if failure == "verify" else None,
+    )
+    preserve = migrator.preserve_backup
+
+    def denying_backup(*arguments):
+        with windows_backup_boundary(security):
+            return preserve(*arguments)
+
+    monkeypatch.setattr(migrator, "preserve_backup", denying_backup)
+    source, _rows, _schema = history
+    original = source.read_bytes()
+    backup_root = tmp_path / "rollback"
+
+    with pytest.raises(OwnerOnlyFileError):
+        migrator.migrate(
+            source.parents[2], tmp_path / "report.json", apply=True,
+            retire_legacy=True, backup_directory=backup_root,
+        )
+
+    assert source.read_bytes() == original
+    assert not source.with_suffix(".sqlite3").exists()
+    preserved = list(backup_root.rglob("*.gz"))
+    assert len(preserved) == 1
+    assert preserved[0].read_bytes() == b""

@@ -1,6 +1,6 @@
 """Migrate canonical LLM Parquet stores with verified rollback and benchmarks.
 
-Code version: v1.2.1-codex.0
+Code version: v1.2.2-codex.0
 
 Only explicit canonical stores are eligible. Numbered histories, import
 evidence, media, unrelated catalogs, and browser profiles are never modified.
@@ -36,9 +36,14 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from app.core.llm_sqlite import read_sqlite_rows, read_sqlite_schema, write_sqlite_rows  # noqa: E402
+from app.core.owner_only_files import (  # noqa: E402
+    OwnerOnlyFileError,
+    ensure_owner_only,
+    owner_only_problem,
+)
 
 
-VERSION = "v1.2.1-codex.0"
+VERSION = "v1.2.2-codex.0"
 
 
 def file_state(path: Path) -> dict[str, int]:
@@ -194,11 +199,22 @@ def preserve_backup(source: Path, backup: Path, expected_sha256: str) -> dict[st
     if backup.exists():
         raise ValueError("The rollback backup already exists; preserve it and choose a new migration directory.")
     descriptor = os.open(backup, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-    with source.open("rb") as original, os.fdopen(descriptor, "wb") as output:
-        with gzip.GzipFile(filename="", mode="wb", fileobj=output, mtime=0) as compressed:
-            shutil.copyfileobj(original, compressed, length=4 * 1024**2)
-        output.flush()
-        os.fsync(output.fileno())
+    try:
+        # Windows mode bits do not replace a protected owner-only DACL.
+        ensure_owner_only(backup)
+        with os.fdopen(descriptor, "wb") as output:
+            descriptor = -1
+            with source.open("rb") as original:
+                with gzip.GzipFile(filename="", mode="wb", fileobj=output, mtime=0) as compressed:
+                    shutil.copyfileobj(original, compressed, length=4 * 1024**2)
+            output.flush()
+            os.fsync(output.fileno())
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+    problem = owner_only_problem(backup)
+    if problem:
+        raise OwnerOnlyFileError(f"The rollback backup is not owner-only: {problem}.")
     digest = hashlib.sha256()
     decoded_bytes = 0
     with gzip.open(backup, "rb") as stream:
@@ -311,11 +327,16 @@ def _migrate(
             entry["rows"] = table.num_rows
             entry["columns"] = table.num_columns
             entry["conversations"] = len({row.get("conversation_id") for row in original_rows}) if "conversation_id" in table.column_names else None
-            if target.exists():
+            existing_target = target.exists()
+            if existing_target:
                 if not read_sqlite_schema(target).equals(table.schema, check_metadata=True) or read_sqlite_rows(target) != original_rows:
                     raise ValueError("An existing SQLite target differs from its Parquet source; neither was overwritten.")
                 entry["status"] = "existing_target_verified"
-            else:
+            backup = backup_directory / source.relative_to(root).with_suffix(source.suffix + ".gz")
+            entry["rollback"] = preserve_backup(source, backup, original_hash)
+            if file_state(source) != original_identity or sha256(source) != original_hash:
+                raise ValueError("The Parquet source changed after backup; it was retained.")
+            if not existing_target:
                 with tempfile.TemporaryDirectory(prefix=".llm-sqlite-", dir=target.parent) as temporary:
                     candidate = Path(temporary) / source.parent.name / target.name
                     candidate.parent.mkdir()
@@ -338,8 +359,6 @@ def _migrate(
             with closing(sqlite3.connect(target.resolve().as_uri() + "?mode=ro", uri=True)) as connection:
                 entry["store_format_version"] = connection.execute("PRAGMA user_version").fetchone()[0]
             entry["benchmarks"] = benchmark(source, target, table, repeats)
-            backup = backup_directory / source.relative_to(root).with_suffix(source.suffix + ".gz")
-            entry["rollback"] = preserve_backup(source, backup, original_hash)
             _json_report(report_path, report)
             if file_state(source) != original_identity or sha256(source) != original_hash:
                 raise ValueError("The Parquet source changed after backup; it was retained.")
