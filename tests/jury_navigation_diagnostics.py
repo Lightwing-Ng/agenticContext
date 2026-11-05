@@ -1,10 +1,11 @@
 """Record bounded metadata only after an original Jury navigation timeout.
 
-Code version: v1.0.0-codex.0
+Code version: v1.0.1-codex.0
 """
 
 from __future__ import annotations
 
+import asyncio
 import datetime
 import faulthandler
 import json
@@ -12,6 +13,8 @@ import os
 from pathlib import Path
 import time
 from urllib.parse import urlsplit
+
+from playwright._impl._sync_base import mapping
 
 
 DIRECTORY = Path(os.environ.get("COVERAGE_FILE", "test-results/.coverage")).parent
@@ -25,7 +28,7 @@ def record(kind, nodeid, value):
         output.write(
             json.dumps(
                 {
-                    "version": "v1.0.0-codex.0",
+                    "version": "v1.0.1-codex.0",
                     "pid": os.getpid(),
                     "kind": kind,
                     "nodeid": nodeid,
@@ -70,10 +73,24 @@ def tree_state(tree):
     return resources
 
 
+def bounded_call(owner, coroutine, method, nodeid):
+    # Runtime's execution timeout does not bound a blocked CDP transport. Run the
+    # SDK coroutine through its sync wrapper with a separate Python deadline.
+    try:
+        return owner._sync(asyncio.wait_for(coroutine, timeout=0.75))
+    except TimeoutError:
+        record("cdp_deadline", nodeid, {"method": method, "budget_ms": 750})
+        raise
+
+
+def send(channel, method, nodeid, params=None):
+    return bounded_call(channel, channel._impl_obj.send(method, params), method, nodeid)
+
+
 def record_resource_tree(channel, nodeid, kind):
     record("resource_tree_begin", nodeid, {"state": kind})
     try:
-        tree = channel.send("Page.getResourceTree")["frameTree"]
+        tree = send(channel, "Page.getResourceTree", nodeid)["frameTree"]
         record(kind, nodeid, {"resources": tree_state(tree)})
     except Exception as error:
         record("resource_tree_error", nodeid, {"error_type": type(error).__name__})
@@ -119,12 +136,20 @@ def _capture(page, url, nodeid, error):
         output.flush()
     channel = None
     try:
-        channel = page.context.new_cdp_session(page)
+        implementation = bounded_call(
+            page.context,
+            page.context._impl_obj.new_cdp_session(page._impl_obj),
+            "BrowserContext.new_cdp_session",
+            nodeid,
+        )
+        channel = mapping.from_impl(implementation)
         responsive = False
         record("runtime_begin", nodeid, {})
         try:
-            result = channel.send(
+            result = send(
+                channel,
                 "Runtime.evaluate",
+                nodeid,
                 {"expression": EXPRESSION, "returnByValue": True, "timeout": 500},
             )
             if "exceptionDetails" in result:
@@ -161,14 +186,21 @@ def _capture(page, url, nodeid, error):
             channel.on("Debugger.scriptParsed", parsed)
             channel.on("Debugger.paused", paused)
             try:
-                channel.send("Debugger.enable")
-                channel.send("Debugger.pause")
-                channel.send("Runtime.getIsolateId")
+                try:
+                    send(channel, "Debugger.enable", nodeid)
+                except Exception as enable_error:
+                    record(
+                        "debugger_enable_error",
+                        nodeid,
+                        {"error_type": type(enable_error).__name__},
+                    )
+                send(channel, "Debugger.pause", nodeid)
+                send(channel, "Runtime.getIsolateId", nodeid)
                 record("paused_stack", nodeid, {"frames": stack})
                 record_resource_tree(channel, nodeid, "resource_tree_paused")
             finally:
                 try:
-                    channel.send("Debugger.resume")
+                    send(channel, "Debugger.resume", nodeid)
                     record("debugger_resumed", nodeid, {})
                 except Exception as resume_error:
                     record(
@@ -183,9 +215,14 @@ def _capture(page, url, nodeid, error):
     finally:
         if channel:
             try:
-                channel.detach()
-            except Exception:
-                pass
+                bounded_call(
+                    channel,
+                    channel._impl_obj.detach(),
+                    "CDPSession.detach",
+                    nodeid,
+                )
+            except Exception as detach_error:
+                record("cdp_detach_error", nodeid, {"error_type": type(detach_error).__name__})
     record(
         "capture_complete",
         nodeid,
