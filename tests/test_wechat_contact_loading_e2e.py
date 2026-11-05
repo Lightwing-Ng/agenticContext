@@ -1,6 +1,6 @@
 """Contact loading keeps one stable shared dialog and never refreshes the document.
 
-Code version: v1.1.0-codex.0
+Code version: v1.1.1-codex.0
 """
 
 from __future__ import annotations
@@ -162,6 +162,9 @@ def test_contact_loading_keeps_a_centered_shared_dialog_without_document_flashes
     )
     page = context.new_page()
     page.add_init_script(LOADING_PROBE)
+    page.expose_function(
+        "__contactJsonRequestCount", lambda: len(controlled.json_requests())
+    )
     document_requests = []
     errors = []
     page.on("pageerror", lambda error: errors.append(str(error)))
@@ -189,9 +192,22 @@ def test_contact_loading_keeps_a_centered_shared_dialog_without_document_flashes
             history_length = page.evaluate("history.length")
             samples = []
             for expected in (1, 2, 3):
+                # Resource entries need not map one-to-one to controlled JSON calls.
                 page.wait_for_function(
-                    "expected => performance.getEntriesByType('resource').filter(entry => "
-                    "entry.initiatorType === 'fetch' && entry.name.includes('/browser/wechat/contacts/')).length >= expected",
+                    """expected => {
+                        const probe = window.__contactLoadingProbe;
+                        if (!probe.jsonRequestPending) {
+                            probe.jsonRequestPending = true;
+                            window.__contactJsonRequestCount().then(count => {
+                                probe.jsonRequestCount = count;
+                                probe.jsonRequestPending = false;
+                            });
+                        }
+                        return performance.getEntriesByType('resource').filter(entry =>
+                            entry.initiatorType === 'fetch'
+                                && entry.name.includes('/browser/wechat/contacts/')
+                        ).length >= expected && probe.jsonRequestCount >= expected;
+                    }""",
                     arg=expected,
                     timeout=12000,
                 )
