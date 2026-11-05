@@ -1,6 +1,6 @@
 """Durable compute-job lifecycle and safety contract tests.
 
-Code version: v1.6.3-codex.0
+Code version: v1.6.4-codex.0
 """
 
 from __future__ import annotations
@@ -33,6 +33,130 @@ from app.core.computer_use_agent import ComputerUseSettings
 from app.core.workspace.controller import WorkspaceController
 from app.core.workspace.evidence import _workspace_mutation_fingerprint
 from app.web.app import create_app
+
+
+@pytest.fixture
+def windows_worker_probe(monkeypatch):
+    import ctypes
+
+    def install(*, handle=42, error=0, exit_code=259, query_ok=True, query_error=False):
+        closed = []
+
+        class Call:
+            def __init__(self, action):
+                self.action = action
+
+            def __call__(self, *args):
+                return self.action(*args)
+
+        def open_process(access, inherit, pid):
+            assert (access, inherit, pid) == (0x1000, False, 321)
+            return handle
+
+        def query(process, output):
+            assert process == handle
+            if query_error:
+                raise OSError("Synthetic native process query failure")
+            output._obj.value = exit_code
+            return query_ok
+
+        kernel = SimpleNamespace(
+            OpenProcess=Call(open_process),
+            GetExitCodeProcess=Call(query),
+            CloseHandle=Call(closed.append),
+        )
+        monkeypatch.setattr(ctypes, "WinDLL", lambda *_args, **_kwargs: kernel, raising=False)
+        monkeypatch.setattr(ctypes, "get_last_error", lambda: error, raising=False)
+        return closed
+
+    return install
+
+
+@pytest.mark.parametrize("error,expected", [(87, False), (5, True), (0, True), (123, True)])
+def test_windows_worker_absence_requires_a_definitive_native_result(windows_worker_probe, error, expected):
+    closed = windows_worker_probe(handle=0, error=error)
+
+    assert compute_jobs._windows_worker_may_be_alive(321) is expected
+    assert closed == []
+
+
+@pytest.mark.parametrize("exit_code,query_ok,query_error,expected", [
+    (259, True, False, True), (0, True, False, False),
+    (259, False, False, True), (259, True, True, True),
+])
+def test_windows_worker_probe_closes_handles_and_preserves_unknown_liveness(
+    windows_worker_probe, exit_code, query_ok, query_error, expected,
+):
+    closed = windows_worker_probe(exit_code=exit_code, query_ok=query_ok, query_error=query_error)
+
+    assert compute_jobs._windows_worker_may_be_alive(321) is expected
+    assert closed == [42]
+
+
+def test_windows_worker_current_pid_never_needs_a_signal_or_native_query(monkeypatch):
+    import ctypes
+
+    def unexpected_probe(*_args, **_kwargs):
+        pytest.fail("The current process is already known to be alive.")
+
+    monkeypatch.setattr(ctypes, "WinDLL", unexpected_probe, raising=False)
+    monkeypatch.setattr(compute_jobs.os, "kill", unexpected_probe)
+
+    assert compute_jobs._windows_worker_may_be_alive(os.getpid()) is True
+
+
+@pytest.mark.parametrize("observed,may_be_alive", [("", True), ("", False), ("different-birth", None)])
+def test_windows_reconciliation_requires_absence_when_worker_identity_is_unknown(
+    tmp_path, monkeypatch, observed, may_be_alive,
+):
+    metadata = {
+        "state": "running", "pid": 321, "process_identity": "expected-birth",
+        "containment_kind": "windows-job-object", "job_id": "1" * 32,
+        "updated_at": "2026-01-01T00:00:00+00:00",
+    }
+    windows_os = SimpleNamespace(**{**vars(os), "name": "nt"})
+    monkeypatch.setattr(compute_jobs, "os", windows_os)
+    monkeypatch.setattr(compute_jobs, "_process_identity", lambda _pid: observed)
+    monkeypatch.setattr(compute_jobs, "_update_metadata_file", lambda _path, update: update(metadata) or metadata)
+    monkeypatch.setattr(compute_jobs, "_release_sleep_assertion", lambda _metadata: None)
+    probes = []
+
+    def probe(pid):
+        assert pid == metadata["pid"] and may_be_alive is not None
+        probes.append(pid)
+        return may_be_alive
+
+    monkeypatch.setattr(compute_jobs, "_windows_worker_may_be_alive", probe)
+    if may_be_alive is True:
+        with pytest.raises(ComputeJobError, match="liveness could not be verified safely"):
+            compute_jobs._reconcile_scanned_compute_job_metadata(tmp_path / "metadata.json", metadata)
+        assert metadata["state"] == "running"
+    else:
+        result = compute_jobs._reconcile_scanned_compute_job_metadata(tmp_path / "metadata.json", metadata)
+        assert result["state"] == "interrupted"
+    assert probes == ([] if may_be_alive is None else [321])
+
+
+def test_native_worker_probe_observes_current_and_exited_owned_process(monkeypatch):
+    if os.name == "nt":
+        def unexpected_signal(*_args, **_kwargs):
+            pytest.fail("Windows liveness checks must not emit console signals.")
+        monkeypatch.setattr(compute_jobs.os, "kill", unexpected_signal)
+    options = {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP} if os.name == "nt" else {"start_new_session": True}
+    child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"], **options)
+    try:
+        assert compute_jobs._windows_worker_may_be_alive(os.getpid()) is True
+        if os.name == "nt":
+            assert compute_jobs._windows_worker_may_be_alive(child.pid) is True
+        else:
+            assert compute_jobs._process_identity(child.pid)
+    finally:
+        child.terminate()
+        child.wait(timeout=5)
+    if os.name == "nt":
+        assert compute_jobs._windows_worker_may_be_alive(child.pid) is False
+    else:
+        assert compute_jobs._process_identity(child.pid) == ""
 
 
 def test_ps_process_identity_forces_a_stable_locale_and_timezone(
@@ -686,8 +810,32 @@ def test_restart_reconciles_live_and_missing_worker_identity(tmp_path: Path, mon
     manager.reconcile()
     assert manager._load_metadata("a" * 32)["state"] == "running"
     monkeypatch.setattr(compute_jobs, "_process_identity", lambda _pid: "")
+    absence_probes = []
+    marker_scans = []
+
+    def absent_worker(pid, signal):
+        assert pid == metadata["pid"] and signal == 0
+        absence_probes.append(pid)
+        raise ProcessLookupError("Synthetic worker has exited")
+
+    def absent_windows_worker(pid):
+        assert pid == metadata["pid"]
+        absence_probes.append(pid)
+        return False
+
+    def no_job_descendants(job_id, **_options):
+        assert job_id == metadata["job_id"]
+        marker_scans.append(job_id)
+        return {}
+
+    monkeypatch.setattr(compute_jobs.os, "kill", absent_worker)
+    monkeypatch.setattr(compute_jobs, "_windows_worker_may_be_alive", absent_windows_worker)
+    monkeypatch.setattr(compute_jobs, "_scan_posix_job_marker_processes", no_job_descendants)
     manager.reconcile()
     assert manager._load_metadata("a" * 32)["state"] == "interrupted"
+    assert absence_probes and set(absence_probes) == {metadata["pid"]}
+    if os.name == "posix":
+        assert marker_scans and set(marker_scans) == {metadata["job_id"]}
 
 
 def test_stale_starting_job_without_worker_identity_remains_fail_closed(
@@ -1416,3 +1564,89 @@ def test_approved_file_read_preserves_crlf_bytes_in_windows_binary_mode(tmp_path
     assert digest == hashlib.sha256(payload).hexdigest()
     assert path.read_bytes() == payload
     assert opened and all(opened.values())
+
+
+@pytest.fixture
+def windows_approved_file(tmp_path, monkeypatch):
+    path = tmp_path / "approved.py"
+    payload = b"print('approved')\r\n# Preserve exact signed bytes\r\n"
+    path.write_bytes(payload)
+    lstat = Path.lstat
+    fstat = os.fstat
+    path_reads = []
+    handle_reads = []
+    native_reads = []
+
+    def install(*, tokens=(77, 77, 77, 77), changed_field="", changed_api=""):
+        def metadata(original, *, api, index):
+            fields = {field: getattr(original, field) for field in (
+                "st_dev", "st_ino", "st_mode", "st_nlink", "st_size", "st_mtime_ns",
+            )}
+            # Windows exposes different ctime meanings for path and descriptor stats.
+            fields["st_ctime_ns"] = 900 if api == "path" else 300
+            fields["st_birthtime_ns"] = 300
+            if changed_api == api and index == 1:
+                fields[changed_field] += 1
+            return SimpleNamespace(**fields)
+
+        def path_metadata(candidate):
+            original = lstat(candidate)
+            if candidate != path:
+                return original
+            index = len(path_reads)
+            path_reads.append(candidate)
+            return metadata(original, api="path", index=index)
+
+        def handle_metadata(descriptor):
+            index = len(handle_reads)
+            handle_reads.append(descriptor)
+            return metadata(fstat(descriptor), api="handle", index=index)
+
+        def native_change_time(candidate, *, descriptor=None):
+            assert candidate == path
+            index = len(native_reads)
+            native_reads.append(descriptor)
+            return tokens[index]
+
+        windows_os = SimpleNamespace(**{**vars(os), "name": "nt", "fstat": handle_metadata})
+        monkeypatch.setattr(compute_jobs, "os", windows_os)
+        monkeypatch.setattr(Path, "lstat", path_metadata)
+        monkeypatch.setattr(compute_jobs, "file_change_time", native_change_time, raising=False)
+        return path, payload, native_reads
+
+    return install
+
+
+def test_windows_approved_read_compares_one_native_change_time_across_stat_apis(windows_approved_file):
+    path, payload, native_reads = windows_approved_file()
+
+    result, digest = compute_jobs._stable_regular_file_bytes(path, maximum_bytes=4096, label="Approved entrypoint")
+
+    assert result == payload
+    assert digest == hashlib.sha256(payload).hexdigest()
+    assert path.read_bytes() == payload
+    assert len(native_reads) == 4 and native_reads[0] is None and native_reads[-1] is None
+    assert native_reads[1] == native_reads[2] and isinstance(native_reads[1], int)
+
+
+@pytest.mark.parametrize("tokens", [(77, 77, 78, 77), (77, 77, 77, 78)])
+def test_windows_approved_read_refuses_native_handle_or_path_change(windows_approved_file, tokens):
+    path, payload, _native_reads = windows_approved_file(tokens=tokens)
+
+    with pytest.raises(ComputeJobError, match="changed while it was being read"):
+        compute_jobs._stable_regular_file_bytes(path, maximum_bytes=4096, label="Approved entrypoint")
+
+    assert path.read_bytes() == payload
+
+
+@pytest.mark.parametrize("changed_api", ["path", "handle"])
+@pytest.mark.parametrize("changed_field", ["st_ctime_ns", "st_birthtime_ns"])
+def test_windows_approved_read_retains_each_apis_change_and_birth_guard(
+    windows_approved_file, changed_api, changed_field,
+):
+    path, payload, _native_reads = windows_approved_file(changed_api=changed_api, changed_field=changed_field)
+
+    with pytest.raises(ComputeJobError, match="changed while it was being read"):
+        compute_jobs._stable_regular_file_bytes(path, maximum_bytes=4096, label="Approved entrypoint")
+
+    assert path.read_bytes() == payload

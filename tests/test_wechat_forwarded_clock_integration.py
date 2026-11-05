@@ -1,8 +1,9 @@
 """Native packet clock links survive projection, export, and reversible cache upgrades.
 
-Code version: v1.0.0-codex.0
+Code version: v1.0.1-codex.0
 """
 
+from contextlib import closing
 from copy import deepcopy
 from dataclasses import replace
 from datetime import datetime, timedelta
@@ -38,7 +39,7 @@ def _record(fixture):
 
 def test_model_uses_native_child_clock_and_preserves_html_parent_and_raw_clock(pinned_clock_store):
     fixture = pinned_clock_store
-    with sqlite3.connect(fixture.history) as connection:
+    with closing(sqlite3.connect(fixture.history)) as connection, connection:
         connection.row_factory = sqlite3.Row
         parent = dict(connection.execute("SELECT * FROM messages WHERE id=?", (fixture.html_parent,)).fetchone())
         stamp = datetime.fromisoformat(parent["timestamp_value"]) + timedelta(seconds=10)
@@ -90,7 +91,7 @@ def test_existing_cache_and_csv_recover_then_revoke_only_derived_html_child_time
     initial = analysis.query_contact_analysis(fixture.store, CID)
     path = analysis.contact_analysis_cache_path(fixture.store, CID)
     identifier = fixture.html_parent + "_forwarded_" + str(fixture.html_paths[0][0])
-    with sqlite3.connect(path) as cache:
+    with closing(sqlite3.connect(path)) as cache, cache:
         assert cache.execute("SELECT has_time,source_clock FROM refs WHERE id=?", (identifier,)).fetchone() == (0, "1970-01-01 08:00:00")
 
     def no_rescan(*_args, **_kwargs):
@@ -110,7 +111,7 @@ def test_existing_cache_and_csv_recover_then_revoke_only_derived_html_child_time
     fixture.clock_registry.write_text(json.dumps({"schema_version": 1, "links": []}))
     revoked = analysis.query_contact_analysis(fixture.store, CID)
     assert revoked["source_fingerprint"] != recovered["source_fingerprint"]
-    with sqlite3.connect(path) as cache:
+    with closing(sqlite3.connect(path)) as cache, cache:
         assert cache.execute("SELECT has_time,timestamp_value,source_clock FROM refs WHERE id=?", (identifier,)).fetchone() == (0, "", "1970-01-01 08:00:00")
         assert cache.execute("SELECT count(*) FROM forwarded_clock_evidence").fetchone()[0] == 0
     assert before == (fixture.history.read_bytes(), fixture.registry.read_bytes())

@@ -1,6 +1,6 @@
 """Contact cache upgrades recover original clocks without borrowing reply authors.
 
-Code version: v1.1.3-codex.0
+Code version: v1.1.4-codex.0
 """
 
 from contextlib import closing
@@ -112,7 +112,7 @@ def quoted_clock_store(tmp_path):
         merge(tmp_path, [metadata], records, "synthetic-ipad-clock-snapshot")
         history = wechat_archive_path(tmp_path)
         registry = contact_registry_path(tmp_path)
-        with sqlite3.connect(registry) as connection:
+        with closing(sqlite3.connect(registry)) as connection, connection:
             initialize_contact_registry(connection)
             contacts = {}
             for sender in (TARGET, OTHER, MEMBER):
@@ -263,7 +263,7 @@ def test_complete_index_recovers_quoted_original_clock_without_rescanning(
     else:
         assert after == before
         assert updated["total_count"] == old["total_count"]
-    with sqlite3.connect(cache) as connection:
+    with closing(sqlite3.connect(cache)) as connection, connection:
         memberships = dict(
             connection.execute(
                 "SELECT reference_id,statement_id FROM statement_members"
@@ -283,7 +283,7 @@ def test_complete_index_recovers_quoted_original_clock_without_rescanning(
     assert exported_quote["timestamp_value"] == ORIGINAL_TIME
     assert exported_quote["source_clock"] == ""
     assert exported_quote["provenance"]["source_time"] == ""
-    with sqlite3.connect(cache) as connection:
+    with closing(sqlite3.connect(cache)) as connection, connection:
         proof = connection.execute(
             "SELECT original_message_id,original_server_id,original_sender_id "
             "FROM quoted_clock_evidence WHERE reference_id=?",
@@ -319,7 +319,7 @@ def test_wrong_quoted_author_is_excluded_without_losing_the_persons_reply(
     assert result["items"][0]["timestamp_value"] == REPLY_TIME
     assert _ref(cache, fixture.parent) is not None
     assert _ref(cache, fixture.quote) is None
-    with sqlite3.connect(cache) as connection:
+    with closing(sqlite3.connect(cache)) as connection, connection:
         proof = connection.execute(
             "SELECT status,original_message_id,original_sender_id,reference_before_json "
             "FROM quoted_clock_evidence WHERE reference_id=?",
@@ -342,7 +342,7 @@ def test_recovered_and_rejected_proofs_survive_a_compatible_cache_upgrade(
     cache = _cache(fixture)
     analysis.query_contact_analysis(fixture.store, fixture.target)
     corrected = _reference_state(cache)
-    with sqlite3.connect(cache) as connection:
+    with closing(sqlite3.connect(cache)) as connection, connection:
         proof_before = connection.execute(
             "SELECT * FROM quoted_clock_evidence ORDER BY reference_id"
         ).fetchall()
@@ -353,7 +353,7 @@ def test_recovered_and_rejected_proofs_survive_a_compatible_cache_upgrade(
     assert rebuilt["status"] == "ready"
     assert rebuilt["total_count"] == (2 if original_author == TARGET else 1)
     assert _reference_state(cache) == corrected
-    with sqlite3.connect(cache) as connection:
+    with closing(sqlite3.connect(cache)) as connection, connection:
         assert (
             connection.execute(
                 "SELECT * FROM quoted_clock_evidence ORDER BY reference_id"
@@ -393,7 +393,7 @@ def test_excluding_a_preferred_quote_keeps_the_valid_group_member(quoted_clock_s
     fixture = quoted_clock_store(original_author=OTHER)
     _old_index(fixture)
     cache = _cache(fixture)
-    with sqlite3.connect(cache) as connection:
+    with closing(sqlite3.connect(cache)) as connection, connection:
         group = connection.execute(
             "SELECT statement_id FROM statement_members WHERE reference_id=?",
             (fixture.quote,),
@@ -434,7 +434,7 @@ def test_quote_exclusion_cannot_remove_a_primary_message(quoted_clock_store):
     _old_index(fixture)
     cache = _cache(fixture)
     before = _reference_state(cache)
-    with sqlite3.connect(cache) as connection:
+    with closing(sqlite3.connect(cache)) as connection, connection:
         analysis._discard_misattributed_quoted_references(connection, [fixture.parent])
     assert _reference_state(cache) == before
     assert (
@@ -448,7 +448,7 @@ def test_recovered_quote_does_not_move_an_unrelated_primary_group(quoted_clock_s
     result = analysis.query_contact_analysis(fixture.store, fixture.target)
     assert result["status"] == "ready"
     cache = _cache(fixture)
-    with sqlite3.connect(cache) as connection:
+    with closing(sqlite3.connect(cache)) as connection, connection:
         original_group = connection.execute(
             "SELECT statement_id FROM statement_members WHERE reference_id=?",
             (fixture.original,),
@@ -468,11 +468,11 @@ def test_recovered_quote_does_not_move_an_unrelated_primary_group(quoted_clock_s
         )
     before = _reference_state(cache)
 
-    with sqlite3.connect(cache) as connection:
+    with closing(sqlite3.connect(cache)) as connection, connection:
         analysis._link_recovered_quoted_origins(connection)
 
     assert _reference_state(cache) == before
-    with sqlite3.connect(cache) as connection:
+    with closing(sqlite3.connect(cache)) as connection, connection:
         members = dict(
             connection.execute(
                 "SELECT reference_id,statement_id FROM statement_members"

@@ -1,6 +1,6 @@
 """Tunnel MCP adapter and /mcp route tests.
 
-Code version: v2.14.2-codex.0
+Code version: v2.14.3-codex.0
 """
 
 from __future__ import annotations
@@ -96,7 +96,7 @@ def workspace(tmp_path: Path) -> Path:
     project = tmp_path / "project"
     project.mkdir()
     (project / "AGENTS.md").write_text("# Rules\n")
-    (project / "app.py").write_text('print("hi")\n')
+    (project / "app.py").write_bytes(b'print("hi")\n')
     return project
 
 
@@ -881,8 +881,8 @@ def test_apply_edits_rolls_back_a_second_file_that_failed_after_publication(
 ) -> None:
     first = workspace / "first.txt"
     second = workspace / "second.txt"
-    first.write_text("first-before\n", encoding="utf-8")
-    second.write_text("second-before\n", encoding="utf-8")
+    first.write_bytes(b"first-before\n")
+    second.write_bytes(b"second-before\n")
     access = service._workspace_for(registry.resolve("main"))
     original_snapshot = access._current_file_sha256
     replacement_sha = hashlib.sha256(b"second-after\n").hexdigest()
@@ -974,8 +974,8 @@ def test_apply_edits_reports_a_recovery_write_failure_as_not_concurrent(
 ) -> None:
     first = workspace / "first.txt"
     second = workspace / "second.txt"
-    first.write_text("first-before\n", encoding="utf-8")
-    second.write_text("second-before\n", encoding="utf-8")
+    first.write_bytes(b"first-before\n")
+    second.write_bytes(b"second-before\n")
     access = service._workspace_for(registry.resolve("main"))
     original_replace = access._replace_text_file
 
@@ -1020,7 +1020,7 @@ def test_path_guarded_recovery_cleanup_removes_the_verified_copy_once(
     access = service._workspace_for(registry.resolve("main"))
     recovery = ".app.py.agent-backup-test.tmp"
     recovery_path = workspace / recovery
-    recovery_path.write_text('print("hi")\n', encoding="utf-8")
+    recovery_path.write_bytes(b'print("hi")\n')
     monkeypatch.setattr("app.core.workspace.controller._ANCHORED_MUTATION_SUPPORTED", False)
 
     removed = access._discard_recovery_file(
@@ -2991,6 +2991,57 @@ def test_registry_cache_invalidates_equal_size_replacement_with_preserved_mtime(
     assert current.identity != previous.identity
 
 
+@pytest.mark.parametrize("query_failure", [False, True])
+def test_windows_registry_change_time_invalidates_cached_authority_with_frozen_stat_fields(
+    tmp_path, monkeypatch, query_failure,
+):
+    from types import SimpleNamespace
+    from app.core import tunnel_projects
+
+    first, second = tmp_path / "first-root", tmp_path / "other-root"
+    first.mkdir()
+    second.mkdir()
+    registry_path = tmp_path / "projects.json"
+    registry = write_registry(registry_path, [{"id": "work", "root": str(first), "writable": True}])
+    original_stat = Path.stat
+    frozen = registry_path.stat()
+    change = [100]
+
+    def unchanged_stat(path, *args, **kwargs):
+        metadata = original_stat(path, *args, **kwargs)
+        if path != registry_path:
+            return metadata
+        return SimpleNamespace(**{
+            field: getattr(frozen, field)
+            for field in ("st_dev", "st_ino", "st_mtime_ns", "st_ctime_ns", "st_size", "st_mode")
+        })
+
+    def native_change(path):
+        assert path == registry_path
+        if query_failure and change[0] == 200:
+            raise OSError("Synthetic native registry metadata query failure")
+        return change[0]
+
+    windows_os = SimpleNamespace(**{**vars(os), "name": "nt"})
+    monkeypatch.setattr(tunnel_projects, "os", windows_os)
+    monkeypatch.setattr(tunnel_projects, "file_change_time", native_change)
+    monkeypatch.setattr(Path, "stat", unchanged_stat)
+    previous = registry.resolve("work")
+    replacement = json.dumps({"schema_version": 1, "projects": [{"id": "work", "root": str(second), "writable": True}]}).encode()
+    assert len(replacement) == frozen.st_size
+    registry_path.write_bytes(replacement)
+    change[0] = 200
+
+    if query_failure:
+        with pytest.raises(tunnel_projects.ProjectRegistryError, match="change metadata cannot be verified"):
+            registry.resolve("work")
+    else:
+        current = registry.resolve("work")
+        assert current.root == second.resolve()
+        assert current.identity != previous.identity
+    assert registry_path.read_bytes() == replacement
+
+
 def test_queued_mutation_rechecks_registry_authority_after_project_lock(
     service: TunnelMcpService,
     registry: ProjectRegistry,
@@ -3434,26 +3485,40 @@ def test_git_summaries_withhold_sensitive_paths_with_adversarial_names(
     service: TunnelMcpService,
     repo: Path,
 ) -> None:
-    status_parent = repo / "arrow -> parent\n"
-    patch_parent = repo / 'quote" parent'
-    status_parent.mkdir()
-    patch_parent.mkdir()
-    status_secret = status_parent / ".env"
-    patch_secret = patch_parent / ".env"
-    status_secret.write_text("status before\n")
-    patch_secret.write_text("patch before\n")
-    (repo / "rename source.txt").write_text("rename before\n")
-    (repo / "visible old.txt").write_text("visible rename\n")
-    (repo / " visible edge.txt").write_text("edge before\n")
-    commit_all(repo, "Adversarial Git path fixture")
+    # These are valid Git names but cannot be materialized on Windows. Only this
+    # synthetic repository's index accepts them; the working tree stays portable.
+    git(repo, "config", "core.protectNTFS", "false")
 
-    status_secret.write_text("status secret after\n")
+    def stage_virtual(path, payload, *, mode="100644"):
+        blob = subprocess.run(
+            ["git", "hash-object", "-w", "--stdin"], cwd=repo,
+            input=payload, capture_output=True, check=True,
+        ).stdout.decode("ascii").strip()
+        git(repo, "update-index", "--add", "--cacheinfo", f"{mode},{blob},{path}")
+        git(repo, "update-index", "--skip-worktree", "--", path)
+
+    status_secret = "arrow -> parent\n/.env"
+    patch_secret = 'quote" parent/.env'
+    (repo / "rename source.txt").write_bytes(b"rename before\n")
+    (repo / "visible old.txt").write_bytes(b"visible rename\n")
+    (repo / " visible edge.txt").write_bytes(b"edge before\n")
+    git(repo, "add", "--", "rename source.txt", "visible old.txt", " visible edge.txt")
+    stage_virtual(status_secret, b"status before\n")
+    stage_virtual(patch_secret, b"patch before\n")
+    git(repo, "commit", "-qm", "Adversarial Git path fixture")
+
+    stage_virtual(status_secret, b"status secret after\n")
     (repo / " visible edge.txt").write_text("edge after\n")
-    git(repo, "update-index", "--chmod=+x", "--", 'quote" parent/.env')
-    renamed_secret = repo / "rename -> parent" / ".env"
-    renamed_secret.parent.mkdir()
-    git(repo, "mv", "--", "rename source.txt", "rename -> parent/.env")
-    git(repo, "mv", "--", "visible old.txt", "visible -> new.txt")
+    stage_virtual(patch_secret, b"patch before\n", mode="100755")
+    stage_virtual("rename -> parent/.env", (repo / "rename source.txt").read_bytes())
+    stage_virtual("visible -> new.txt", (repo / "visible old.txt").read_bytes())
+    git(repo, "update-index", "--force-remove", "--", "rename source.txt", "visible old.txt")
+    (repo / "rename source.txt").unlink()
+    (repo / "visible old.txt").unlink()
+    physical_names = {path.name for path in repo.iterdir()}
+    assert not physical_names & {"arrow -> parent\n", 'quote" parent', "rename -> parent", "visible -> new.txt"}
+    index_names = git(repo, "ls-files", "-z").split("\0")
+    assert {status_secret, patch_secret, "rename -> parent/.env", "visible -> new.txt"}.issubset(index_names)
 
     overview = content(call(service, "project_overview"))
     unstaged = content(call(service, "show_changes", {"include_patch": True}))

@@ -1,6 +1,6 @@
 """Native placeholder fallback retains exact source and existing-text evidence.
 
-Code version: v1.0.2-codex.0
+Code version: v1.1.0-codex.0
 """
 
 from __future__ import annotations
@@ -8,14 +8,18 @@ from __future__ import annotations
 from contextlib import closing
 from copy import deepcopy
 from datetime import UTC, datetime
+import errno
 import hashlib
 import json
+import os
 from pathlib import Path
 import sqlite3
 from types import SimpleNamespace
 
 import pytest
 
+from app.core import wechat_native_resource_revalidation as revalidation
+from app.core.owner_only_files import OwnerOnlyFileError, owner_only_problem
 from app.core.wechat_archive import (
     WechatArchiveRepository,
     _file_identity,
@@ -206,6 +210,113 @@ def _stage(fixture):
     return candidate, stage_native_resource_revalidation(
         fixture.store, candidate, conversation_ids=[fixture.conversation["id"]]
     )
+
+
+def test_candidate_is_owner_only_before_sqlite_receives_private_bytes(
+    native_metadata, monkeypatch
+):
+    fixture = native_metadata
+    candidate = fixture.original.with_name("private-candidate.sqlite3")
+    preserved = fixture.history.read_bytes(), fixture.original.read_bytes()
+    connect = sqlite3.connect
+    writes = []
+
+    def protected_connect(path, *args, **kwargs):
+        if path == candidate:
+            assert path.stat().st_size == 0
+            assert owner_only_problem(path) == ""
+            writes.append(path)
+        return connect(path, *args, **kwargs)
+
+    monkeypatch.setattr(sqlite3, "connect", protected_connect)
+    stage_native_resource_revalidation(
+        fixture.store, candidate, conversation_ids=[fixture.conversation["id"]]
+    )
+    assert writes == [candidate]
+    assert owner_only_problem(candidate) == ""
+    if os.name == "posix":
+        assert candidate.stat().st_mode & 0o777 == 0o600
+    assert (fixture.history.read_bytes(), fixture.original.read_bytes()) == preserved
+
+
+def test_unverified_candidate_privacy_fails_before_database_bytes(
+    native_metadata, monkeypatch
+):
+    fixture = native_metadata
+    candidate = fixture.original.with_name("unverified-candidate.sqlite3")
+    preserved = fixture.history.read_bytes(), fixture.original.read_bytes()
+
+    def refuse(path):
+        assert path == candidate and path.stat().st_size == 0
+        raise OwnerOnlyFileError("Synthetic native candidate privacy failure")
+
+    monkeypatch.setattr(revalidation, "ensure_owner_only", refuse)
+    with pytest.raises(OwnerOnlyFileError, match="Synthetic native candidate privacy"):
+        stage_native_resource_revalidation(
+            fixture.store, candidate, conversation_ids=[fixture.conversation["id"]]
+        )
+    assert not candidate.exists()
+    assert (fixture.history.read_bytes(), fixture.original.read_bytes()) == preserved
+
+
+def test_concurrent_candidate_creation_is_never_overwritten_or_cleaned(
+    native_metadata, monkeypatch
+):
+    fixture = native_metadata
+    candidate = fixture.original.with_name("concurrent-candidate.sqlite3")
+    preserved = fixture.history.read_bytes(), fixture.original.read_bytes()
+    open_file = Path.open
+    concurrent = b"Keep independently created candidate evidence unchanged."
+
+    def publish_before_exclusive_creation(path, mode="r", *args, **kwargs):
+        if path == candidate and mode == "xb":
+            path.write_bytes(concurrent)
+        return open_file(path, mode, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", publish_before_exclusive_creation)
+    with pytest.raises(FileExistsError):
+        stage_native_resource_revalidation(
+            fixture.store, candidate, conversation_ids=[fixture.conversation["id"]]
+        )
+    assert candidate.read_bytes() == concurrent
+    assert (fixture.history.read_bytes(), fixture.original.read_bytes()) == preserved
+
+
+def test_candidate_flush_error_preserves_sources_and_refuses_publication(
+    native_metadata, monkeypatch
+):
+    fixture = native_metadata
+    candidate = fixture.original.with_name("failed-flush-candidate.sqlite3")
+    preserved = fixture.history.read_bytes(), fixture.original.read_bytes()
+
+    def fail(_descriptor):
+        raise OSError(errno.EIO, "Synthetic candidate flush failure")
+
+    monkeypatch.setattr(revalidation.os, "fsync", fail)
+    with pytest.raises(OSError, match="Synthetic candidate flush failure"):
+        stage_native_resource_revalidation(
+            fixture.store, candidate, conversation_ids=[fixture.conversation["id"]]
+        )
+    assert not candidate.exists()
+    assert (fixture.history.read_bytes(), fixture.original.read_bytes()) == preserved
+
+
+def test_previous_native_proof_version_remains_readable_without_source_changes(
+    native_metadata,
+):
+    fixture = native_metadata
+    preserved = fixture.history.read_bytes(), fixture.original.read_bytes()
+    candidate, _ = _stage(fixture)
+    with closing(sqlite3.connect(candidate)) as output, output:
+        output.execute(
+            "UPDATE archive_info SET value='v1.1.1-codex.0' WHERE key='proof_version'"
+        )
+    fallback = fixture.history.with_name("resource_revalidated.sqlite3")
+    candidate.replace(fallback)
+    assert select_resource_index(
+        fixture.history, conversation_id=fixture.conversation["id"]
+    ) == fallback
+    assert (fixture.history.read_bytes(), fixture.original.read_bytes()) == preserved
 
 
 def test_verified_scope_keeps_originals_excludes_only_same_native_event_and_exports(

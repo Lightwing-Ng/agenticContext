@@ -1,6 +1,6 @@
 """Regression tests for the one-way shadow cloud backup.
 
-Code version: v1.4.0-claude.0
+Code version: v1.4.1-codex.0
 """
 
 from __future__ import annotations
@@ -63,7 +63,7 @@ def test_settings_directory_browser_recovers_missing_initial_path_to_existing_pa
     )
 
     assert listing.path == root.resolve()
-    assert listing.recovered_from.endswith("deleted/child")
+    assert Path(listing.recovered_from) == root / "deleted" / "child"
 
 
 def test_settings_directory_browser_rejects_relative_navigation(tmp_path: Path) -> None:

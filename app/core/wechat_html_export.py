@@ -1,6 +1,6 @@
 """Read WechatExporter HTML text without extracting files or executing scripts.
 
-Code version: v1.5.0
+Code version: v1.5.1
 
 The exporter's ``msgid`` is MesLocalID, not a server message identifier. Portrait
 filenames retain native usernames; the displayed ``wxid`` attribute may be an alias.
@@ -26,7 +26,7 @@ from urllib.parse import unquote, urlsplit
 import zipfile
 
 
-PARSER_VERSION = "v1.5.0"
+PARSER_VERSION = "v1.5.1"
 MAX_ARCHIVE_BYTES = 2 * 1024**3
 MAX_MEMBERS = 100_000
 MAX_CENTRAL_DIRECTORY_BYTES = 32 * 1024**2
@@ -1037,6 +1037,9 @@ def parse_html_export(
         collision_keys = set()
         raw_names = set()
         for info in infos:
+            # ZipInfo rewrites native separators and truncates NULs on some hosts.
+            # Validate the archive's spelling before trusting its normalized name.
+            _safe_path(info.orig_filename)
             display = _display_path(info)
             _safe_path(info.filename)
             _safe_path(display)

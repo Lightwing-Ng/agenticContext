@@ -1,6 +1,6 @@
 """Focused tests for the Web Computer Use controller.
 
-Code version: v3.85.1-codex.0
+Code version: v3.85.2-codex.0
 """
 
 from __future__ import annotations
@@ -8470,9 +8470,11 @@ def test_action_loop_allows_one_final_response_after_last_controller_action(
     assert len(submitted) == 2
 
 
+@pytest.mark.parametrize("consume_deleted_receipt", [False, True])
 def test_action_loop_records_workspace_and_delete_receipt_provenance(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    consume_deleted_receipt: bool,
 ) -> None:
     import app.core.computer_use_agent as computer_use_agent
 
@@ -8494,6 +8496,17 @@ def test_action_loop_records_workspace_and_delete_receipt_provenance(
         ComputerUseSettings(workspace_path=str(workspace), max_turns=3),
         stop_requested.is_set,
     )
+    if consume_deleted_receipt:
+        execute = controller.execute
+
+        def execute_and_consume(payload):
+            result = execute(payload)
+            if result.get("ok") and payload.get("action") == "delete":
+                # The native Windows delete invalidates the consumed capability.
+                controller.state.read_receipts.pop("audit.txt", None)
+            return result
+
+        monkeypatch.setattr(controller, "execute", execute_and_consume)
     responses = iter(
         (
             '{"action":"read","path":"audit.txt"}',

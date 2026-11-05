@@ -1,4 +1,4 @@
-"""Isolated Cache lease acquisition and cancellation. Code version: v1.0.0-codex.0."""
+"""Isolated Cache lease acquisition and cancellation. Code version: v1.0.1-codex.0."""
 
 from importlib import import_module
 from pathlib import Path
@@ -27,7 +27,9 @@ def test_cache_waits_at_acquisition_without_replaying_sync_body(isolated_safari)
     messages = []
     body_calls = []
     context = safari.SafariContext("https://example.test/", lock_blocking=False)
-    with patch.object(safari, "lock_file", side_effect=[BlockingIOError(), BlockingIOError(), None]):
+    with patch.object(safari, "lock_file", side_effect=[BlockingIOError(), BlockingIOError(), None]), patch.object(
+        safari, "unlock_file"
+    ) as unlock:
         with safari.safari_cache_acquisition_scope(lambda: False, waits.append, messages.append):
             body_calls.append("persisted checkpoint")
             context._acquire_context_lock()
@@ -35,6 +37,8 @@ def test_cache_waits_at_acquisition_without_replaying_sync_body(isolated_safari)
     assert body_calls == ["persisted checkpoint"]
     assert waits == [0.25, 0.25]
     assert len(messages) == 1
+    unlock.assert_called_once()
+    assert unlock.call_args.args[0].closed
 
 
 def test_one_deadline_is_shared_by_sequential_contexts(monkeypatch, isolated_safari):
@@ -59,7 +63,7 @@ def test_one_deadline_is_shared_by_sequential_contexts(monkeypatch, isolated_saf
     monkeypatch.setattr(safari.time, "monotonic", clock)
     first = safari.SafariContext("https://example.test/", lock_blocking=False)
     second = safari.SafariContext("https://example.test/", lock_blocking=False)
-    with patch.object(safari, "lock_file", side_effect=lock):
+    with patch.object(safari, "lock_file", side_effect=lock), patch.object(safari, "unlock_file") as unlock:
         with safari.safari_cache_acquisition_scope(lambda: False, wait, lambda _message: None):
             first._acquire_context_lock()
             first._release_context_lock()
@@ -69,6 +73,8 @@ def test_one_deadline_is_shared_by_sequential_contexts(monkeypatch, isolated_saf
     assert elapsed == 60.0
     assert waits == [0.25] * 4
     assert second._context_lock_handle is None
+    unlock.assert_called_once()
+    assert unlock.call_args.args[0].closed
 
 
 def test_stop_before_enter_cleanup_closes_the_unacquired_handle(isolated_safari):
@@ -136,7 +142,7 @@ def test_probe_stays_fail_fast_and_real_errors_never_retry(isolated_safari):
             context._acquire_context_lock()
     assert lock.call_count == 1
     waits = []
-    with patch.object(safari, "lock_file"), patch.object(
+    with patch.object(safari, "lock_file"), patch.object(safari, "unlock_file") as unlock, patch.object(
         context, "_reconcile_context_lease_state", side_effect=RuntimeError("Ownership is unverified")
     ):
         with safari.safari_cache_acquisition_scope(lambda: False, waits.append, lambda _message: None):
@@ -144,6 +150,8 @@ def test_probe_stays_fail_fast_and_real_errors_never_retry(isolated_safari):
                 context._acquire_context_lock()
     assert waits == []
     assert context._context_lock_handle is None
+    unlock.assert_called_once()
+    assert unlock.call_args.args[0].closed
 
 
 def test_child_workers_inherit_scope_and_cannot_acquire_after_job_ends(isolated_safari):
@@ -155,7 +163,9 @@ def test_child_workers_inherit_scope_and_cannot_acquire_after_job_ends(isolated_
         context._acquire_context_lock()
         context._release_context_lock()
 
-    with patch.object(safari, "lock_file", side_effect=[BlockingIOError(), None]) as lock:
+    with patch.object(safari, "lock_file", side_effect=[BlockingIOError(), None]) as lock, patch.object(
+        safari, "unlock_file"
+    ) as unlock:
         with safari.safari_cache_acquisition_scope(lambda: False, lambda _seconds: None, lambda _message: None):
             active = Thread(target=safari.inherit_safari_cache_context(child))
             active.start()
@@ -167,6 +177,8 @@ def test_child_workers_inherit_scope_and_cannot_acquire_after_job_ends(isolated_
         late.join(timeout=2)
     assert calls == [True, True]
     assert lock.call_count == 2
+    unlock.assert_called_once()
+    assert unlock.call_args.args[0].closed
 
 
 def test_managed_x_scope_never_adds_legacy_collection_retries(isolated_safari):

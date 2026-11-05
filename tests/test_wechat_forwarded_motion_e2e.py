@@ -1,6 +1,6 @@
 """Forwarded disclosures reuse measured springs without losing native interaction.
 
-Code version: v1.0.0-codex.0
+Code version: v1.0.1-codex.0
 """
 
 from __future__ import annotations
@@ -95,6 +95,9 @@ def _finish(card):
     }""")
     card.page.wait_for_function("""() => window.forwardedMotions.every(animation =>
         animation.playState === 'idle' || animation.playState === 'finished')""")
+    # Finished promises clear motion state before the effects observer paints its cleanup.
+    card.evaluate("""() => new Promise(resolve =>
+        requestAnimationFrame(() => requestAnimationFrame(resolve)))""")
 
 
 def _assert_clean(disclosure):
@@ -384,10 +387,28 @@ def test_opening_a_child_during_parent_motion_settles_only_its_ancestor(
             const outer = details.parentElement.closest('details[data-wechat-forwarded]')
                 .getBoundingClientRect();
             return {innerBottom: inner.bottom, outerBottom: outer.bottom,
-                overflow: document.documentElement.scrollWidth - innerWidth};
+                overflow: document.documentElement.scrollWidth - innerWidth,
+                viewport: {innerWidth, clientWidth: document.documentElement.clientWidth,
+                    scrollWidth: document.documentElement.scrollWidth,
+                    bodyClientWidth: document.body.clientWidth,
+                    bodyScrollWidth: document.body.scrollWidth},
+                phase: 'after-finished-state-and-two-render-frames',
+                outsideRight: [...document.querySelectorAll('body *')].map(node => {
+                    const box = node.getBoundingClientRect();
+                    return {tag: node.tagName, id: node.id,
+                        classes: typeof node.className === 'string' ? node.className : '',
+                        left: box.left, right: box.right, width: box.width,
+                        transform: getComputedStyle(node).transform};
+                }).filter(box => box.width > 0 && box.right > innerWidth + 1).slice(0, 12),
+                animations: document.getAnimations().filter(animation =>
+                    animation.playState !== 'idle' && animation.playState !== 'finished')
+                    .map(animation => ({state: animation.playState,
+                        target: animation.effect?.target?.id,
+                        timeline: animation.timeline?.constructor.name,
+                        currentTime: String(animation.currentTime)}))};
         }""")
-        assert dimensions["innerBottom"] <= dimensions["outerBottom"] + 1
-        assert dimensions["overflow"] <= 1
+        assert dimensions["innerBottom"] <= dimensions["outerBottom"] + 1, dimensions
+        assert dimensions["overflow"] <= 1, dimensions
         _assert_clean(inner)
         assert nested_server.history.read_bytes() == nested_server.preserved
     finally:

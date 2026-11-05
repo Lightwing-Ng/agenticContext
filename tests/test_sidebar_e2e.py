@@ -1,6 +1,6 @@
 """Disposable-browser E2E coverage for the responsive sidebar and language boundaries.
 
-Code version: v1.58.1-codex.0
+Code version: v1.58.2-codex.0
 """
 
 from __future__ import annotations
@@ -3152,6 +3152,8 @@ def test_chatgpt_effort_footer_keeps_the_fifteen_pixel_label_on_one_line(
         expect(refresh).to_have_count(0)
         expect(submit).to_be_visible()
         expect(model.locator(".agent-model-trigger-label")).to_have_text("Latest")
+        page.evaluate("document.fonts.ready")
+        expect(effort.locator(".agent-effort-trigger-label")).to_have_css("font-size", "15px")
         geometry = page.evaluate(
             """() => {
                 const rect = selector => {
@@ -9547,17 +9549,23 @@ def test_agent_response_action_rail_survives_a_short_crowded_viewport(
         assert layout["horizontalOverflow"] <= 1
 
         page.set_viewport_size({"width": 1_159, "height": 863})
-        # Chromium can lay out the fixed container before its resized touch button.
+        _wait_for_responsive_layout(page)
+        # Resized response controls and the fixed title rail settle independently.
         page.wait_for_function(
             """() => {
                 const container = document.querySelector('.global-quick-actions').getBoundingClientRect();
                 const button = document.querySelector('#global_theme_toggle').getBoundingClientRect();
                 return Math.abs(button.width - container.width) <= 0.1
-                    && Math.abs(button.right - container.right) <= 0.1;
+                    && Math.abs(button.right - container.right) <= 0.1
+                    && ['[data-agent-open-conversation]',
+                        '.agent-response-question-header .agent-response-overflow-toggle',
+                        '[data-agent-response-copy]'].every(selector => {
+                        const action = document.querySelector(selector);
+                        return action && Math.abs(action.getBoundingClientRect().right - button.right) <= 1;
+                    });
             }""",
             timeout=5_000,
         )
-        _wait_for_responsive_layout(page)
         desktop_rail = page.evaluate(
             """() => {
                 const selectors = {

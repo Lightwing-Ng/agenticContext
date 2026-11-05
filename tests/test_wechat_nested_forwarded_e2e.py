@@ -1,6 +1,6 @@
 """Nested transcript cards preserve one outer clock rail and literal source text.
 
-Code version: v1.1.0-codex.0
+Code version: v1.1.1-codex.0
 """
 
 from __future__ import annotations
@@ -410,13 +410,27 @@ def _open(page, fixture, *, fragment=""):
 
 
 def _assert_clock_rail(page, fixture):
-    page.wait_for_function("""() => [...document.querySelectorAll('.wechat-message-row')]
-        .filter(row => !row.closest('details:not([open])'))
-        .every(row => !row.querySelector(':scope > time')
-            || row.style.getPropertyValue('--wechat-time-top'))""")
-    measurements = page.locator("#wechat_message_" + fixture.parent).evaluate("""async card => {
+    page.wait_for_function("""async selector => {
+        // Resize can publish the outer layout before the nested clock observer runs.
         await new Promise(requestAnimationFrame);
         await new Promise(requestAnimationFrame);
+        const card = document.querySelector(selector);
+        if (!card) return false;
+        const root = card.parentElement;
+        const reference = root.querySelector(':scope > time')?.getBoundingClientRect().right;
+        if (!Number.isFinite(reference)) return false;
+        return [root, ...card.querySelectorAll('.wechat-message-row')]
+            .filter(row => !row.closest('details:not([open])')).every(row => {
+                const time = row.querySelector(':scope > time');
+                if (!time) return true;
+                const slot = row.querySelector(':scope > article > details.wechat-provenance .wechat-time-slot');
+                const box = time.getBoundingClientRect();
+                return row.style.getPropertyValue('--wechat-time-top') && slot
+                    && Math.abs(box.right - reference) <= 1
+                    && Math.abs(box.top - slot.getBoundingClientRect().top) <= 1;
+            });
+    }""", arg="#wechat_message_" + fixture.parent)
+    measurements = page.locator("#wechat_message_" + fixture.parent).evaluate("""card => {
         const root = card.parentElement;
         const reference = root.querySelector(':scope > time').getBoundingClientRect().right;
         const rows = [root, ...card.querySelectorAll('.wechat-message-row')]

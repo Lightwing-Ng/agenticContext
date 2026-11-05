@@ -1,10 +1,11 @@
 """Short transcript copies require paired independent native/HTML parent proof.
 
-Code version: v1.0.0-codex.0
+Code version: v1.0.1-codex.0
 """
 
 from __future__ import annotations
 
+from contextlib import closing
 from copy import deepcopy
 from datetime import datetime, timedelta, timezone
 import hashlib
@@ -49,7 +50,7 @@ def _write_parent(connection, row, proof):
 
 
 def _mutate(fixture, identifier, change):
-    with sqlite3.connect(fixture.history) as connection:
+    with closing(sqlite3.connect(fixture.history)) as connection, connection:
         connection.row_factory = sqlite3.Row
         row = dict(
             connection.execute(
@@ -73,7 +74,7 @@ def paired_two_item_store(identified_packet_store):
     fixture = identified_packet_store
     native = fixture.parents[:2]
     html = []
-    with sqlite3.connect(fixture.history) as connection:
+    with closing(sqlite3.connect(fixture.history)) as connection, connection:
         connection.row_factory = sqlite3.Row
         connection.execute("DELETE FROM messages WHERE id=?", (fixture.parents[2],))
         conversation = connection.execute(
@@ -229,7 +230,7 @@ def test_paired_short_copies_prefer_ipad_keep_all_receipts_and_replay_unchanged(
         if item["reference_kind"] == "html_forwarded"
     )
     cache = analysis.contact_analysis_cache_path(fixture.store, CID)
-    with sqlite3.connect(cache) as connection:
+    with closing(sqlite3.connect(cache)) as connection, connection:
         baseline = (
             connection.execute("SELECT * FROM refs ORDER BY id").fetchall(),
             connection.execute(
@@ -245,7 +246,7 @@ def test_paired_short_copies_prefer_ipad_keep_all_receipts_and_replay_unchanged(
         item["id"] for item in page["items"]
     ]
     assert {item["id"] for item in replay_receipts} == {item["id"] for item in receipts}
-    with sqlite3.connect(cache) as connection:
+    with closing(sqlite3.connect(cache)) as connection, connection:
         assert baseline == (
             connection.execute("SELECT * FROM refs ORDER BY id").fetchall(),
             connection.execute(
@@ -297,7 +298,7 @@ def test_short_packets_need_the_whole_unique_paired_source_proof(
             if damage == "missing_html"
             else fixture.native_parents[-1]
         )
-        with sqlite3.connect(fixture.history) as connection:
+        with closing(sqlite3.connect(fixture.history)) as connection, connection:
             connection.execute("DELETE FROM messages WHERE id=?", (identifier,))
     else:
         identifier = (
@@ -324,7 +325,7 @@ def test_short_packets_need_the_whole_unique_paired_source_proof(
             elif damage == "different_group":
                 row["conversation_id"] = fixture.receiving_contexts[-1]
             elif damage == "different_snapshot":
-                with sqlite3.connect(fixture.history) as connection:
+                with closing(sqlite3.connect(fixture.history)) as connection, connection:
                     connection.row_factory = sqlite3.Row
                     snapshot = dict(
                         connection.execute(
@@ -340,7 +341,7 @@ def test_short_packets_need_the_whole_unique_paired_source_proof(
                 "same_native_local",
                 "ambiguous_parent_clocks",
             }:
-                with sqlite3.connect(fixture.history) as connection:
+                with closing(sqlite3.connect(fixture.history)) as connection, connection:
                     first = connection.execute(
                         "SELECT timestamp_value,provenance FROM messages WHERE id=?",
                         (fixture.native_parents[0],),
@@ -437,7 +438,7 @@ def test_an_extra_unmatched_html_copy_blocks_the_whole_short_cohort(
     paired_two_item_store,
 ):
     fixture = paired_two_item_store
-    with sqlite3.connect(fixture.history) as connection:
+    with closing(sqlite3.connect(fixture.history)) as connection, connection:
         connection.row_factory = sqlite3.Row
         row = dict(
             connection.execute(
@@ -471,7 +472,7 @@ def test_a_different_verified_html_owner_cannot_corroborate_short_native_copies(
 ):
     fixture = paired_two_item_store
     owner = fixture.html_owner
-    with sqlite3.connect(fixture.history) as connection:
+    with closing(sqlite3.connect(fixture.history)) as connection, connection:
         proof = json.loads(
             connection.execute(
                 "SELECT provenance FROM messages WHERE id=?",
@@ -517,7 +518,7 @@ def test_short_packet_copy_does_not_override_a_whole_group_original_conflict(
 ):
     fixture = paired_two_item_store
     originals = []
-    with sqlite3.connect(fixture.history) as connection:
+    with closing(sqlite3.connect(fixture.history)) as connection, connection:
         connection.row_factory = sqlite3.Row
         template = dict(
             connection.execute(
@@ -564,7 +565,7 @@ def test_short_packet_copy_does_not_override_a_whole_group_original_conflict(
         page, _ = _read(fixture)
     assert page["total_count"] == page["observation_count"] == 10
     cache = analysis.contact_analysis_cache_path(fixture.store, CID)
-    with sqlite3.connect(cache) as connection:
+    with closing(sqlite3.connect(cache)) as connection, connection:
         for parent, primary in zip(fixture.native_parents, originals):
             reference = parent + "_forwarded_1"
             winner = connection.execute(
@@ -593,7 +594,7 @@ def test_short_packet_copy_does_not_override_a_whole_group_original_conflict(
     before = fixture.history.read_bytes(), fixture.registry.read_bytes()
     page, receipts = _read(fixture)
     assert page["total_count"] == 8 and page["observation_count"] == len(receipts) == 10
-    with sqlite3.connect(cache) as connection:
+    with closing(sqlite3.connect(cache)) as connection, connection:
         assert (
             baseline
             == connection.execute(

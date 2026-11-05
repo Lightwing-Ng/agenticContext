@@ -1,6 +1,6 @@
 """Native subset restoration preserves old rows without a full database copy.
 
-Code version: v1.3.0-codex.0
+Code version: v1.4.0-codex.0
 """
 
 from contextlib import closing
@@ -16,6 +16,7 @@ import sys
 import pytest
 
 from app.core import wechat_native_restore as restore
+from app.core import wechat_reconcile as reconcile
 from app.core.owner_only_files import OwnerOnlyFileError, owner_only_problem
 from app.core.wechat_archive import _identifier, wechat_archive_path
 from app.core.wechat_reconcile import reconcile_wechat_records
@@ -548,6 +549,10 @@ def test_stage_sync_uses_a_windows_writable_handle_and_preserves_posix_read_only
             if self.name == "nt" and not handle.writable():
                 raise OSError(errno.EBADF, "Windows cannot fsync a read-only stage descriptor")
             assert handle.writable() == (self.name == "nt")
+            if os.name == "nt" and self.name == "posix":
+                # Model a POSIX read-only flush while still using a legal native CRT handle.
+                with open_file(Path(handle.name), "r+b") as native:
+                    return os.fsync(native.fileno())
             return os.fsync(descriptor)
 
     monkeypatch.setattr(Path, "open", track_stage)
@@ -632,10 +637,59 @@ def test_each_incoming_conversation_checks_actual_retained_index_counts(tmp_path
 def change_ctime_only(path):
     before = restore._file_identity(path)
     permissions = path.stat().st_mode & 0o777
-    path.chmod(permissions ^ 0o100)
+    # The owner-write bit also toggles Windows' native read-only attribute.
+    path.chmod(permissions ^ 0o200)
     path.chmod(permissions)
     after = restore._file_identity(path)
     assert before[:4] == after[:4] and before[4] != after[4]
+
+
+def test_windows_identity_retains_native_birth_and_change_tokens(tmp_path, monkeypatch):
+    path = tmp_path / "synthetic-policy.json"
+    path.write_bytes(b"unchanged synthetic policy")
+    metadata = path.stat()
+    token = [101]
+
+    class WindowsOs:
+        name = "nt"
+
+        def __getattr__(self, name):
+            return getattr(os, name)
+
+    def change_time(observed):
+        assert observed == path
+        return token[0]
+
+    monkeypatch.setattr(reconcile, "os", WindowsOs())
+    monkeypatch.setattr(reconcile, "file_change_time", change_time)
+    before = reconcile._file_identity(path)
+    token[0] += 1
+    after = reconcile._file_identity(path)
+    assert before[:4] == after[:4]
+    assert (before[4], after[4]) == (101, 102)
+    assert before[5] == after[5] == getattr(
+        metadata, "st_birthtime_ns", metadata.st_ctime_ns
+    )
+
+    def unavailable(_path):
+        raise OSError("Synthetic native metadata failure")
+
+    monkeypatch.setattr(reconcile, "file_change_time", unavailable)
+    with pytest.raises(OSError, match="Synthetic native metadata failure"):
+        reconcile._file_identity(path)
+
+
+def test_birth_drift_cannot_enter_the_change_time_only_hash_fallback(tmp_path, monkeypatch):
+    path = tmp_path / "synthetic-policy.json"
+    path.write_bytes(b"unchanged synthetic policy")
+    original = (1, 2, path.stat().st_size, 3, 101, 201)
+    monkeypatch.setattr(restore, "_file_identity", lambda _path: (*original[:4], 102, 202))
+
+    def unexpected_content_read(_path):
+        pytest.fail("A changed birth identity must be refused before fallback hashing.")
+
+    monkeypatch.setattr(restore, "_stream_sha256", unexpected_content_read)
+    assert restore._content_identity_matches(path, original, "f" * 64) is False
 
 
 @pytest.mark.parametrize("phase", ["clone", "final"])

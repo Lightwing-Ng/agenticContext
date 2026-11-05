@@ -1,4 +1,4 @@
-"""Session switching, capacity, and selected controls. Code version: v1.37.1-codex.0."""
+"""Session switching, capacity, and selected controls. Code version: v1.37.2-codex.0."""
 
 import re
 from copy import deepcopy
@@ -15,6 +15,18 @@ from app.web.presentation import render_agent_response
 
 disposable_browser = fixtures.disposable_browser
 sidebar_server_url = fixtures.sidebar_server_url
+
+
+@pytest.fixture
+def macos_agent_settings(tmp_path, macos_host, monkeypatch):
+    from app.core.computer_use_agent import ComputerUseSettings, save_computer_use_settings
+
+    # The dataclass host default is fixed at import, so seed this Mac-only fixture explicitly.
+    save_computer_use_settings(
+        ComputerUseSettings(operating_system="macos"),
+        settings_path=tmp_path / "settings" / "computer-use-agent.json",
+    )
+    monkeypatch.setattr(fixtures, "detect_host_operating_system", lambda: "macos")
 
 
 @pytest.fixture()
@@ -3673,6 +3685,7 @@ def test_grok_composer_snapshot_uses_one_rendered_provider_scoped_surface(
 )
 def test_safari_selection_persists_for_source_only_providers_without_edge_fallback(
     disposable_browser,
+    macos_agent_settings,
     agent_selection_server_url,
     viewport,
 ):
@@ -4278,6 +4291,7 @@ def test_agent_preference_save_retries_an_unchanged_failed_payload(
 
 def test_agent_preference_save_newer_selection_supersedes_failed_payload(
     disposable_browser,
+    macos_agent_settings,
     agent_selection_server_url,
 ):
     context = disposable_browser.new_context(viewport={"width": 1_160, "height": 900})
@@ -4363,6 +4377,7 @@ def test_agent_preference_save_newer_selection_supersedes_failed_payload(
 
 def test_agent_preference_outbox_restores_selection_and_replays_on_first_reload(
     disposable_browser,
+    macos_agent_settings,
     agent_selection_server_url,
 ):
     context = disposable_browser.new_context(viewport={"width": 1_160, "height": 900})
