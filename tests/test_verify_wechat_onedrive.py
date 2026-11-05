@@ -1,6 +1,6 @@
 """Verify metadata-only OneDrive inspection, exact size binding, and exclusions.
 
-Code version: v1.3.1-codex.0
+Code version: v1.3.2-codex.0
 """
 
 from __future__ import annotations
