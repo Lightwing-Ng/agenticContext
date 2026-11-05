@@ -1,6 +1,6 @@
 """Browser-mediated Computer Use agent for signed-in Web AI sessions.
 
-Code version: v3.85.1-codex.0
+Code version: v3.85.2-codex.0
 """
 
 from __future__ import annotations
@@ -6737,6 +6737,11 @@ def _run_web_action_loop(
             conversation_url=conversation_url,
             turn_count=turn_index,
         )
+        delete_audit_metadata = (
+            controller.action_event_metadata(action, include_read_receipt=False)
+            if event_chain is not None and action_id and action_name == "delete"
+            else {}
+        )
         try:
             observation = controller.execute(action)
         except Exception as exc:
@@ -6759,6 +6764,9 @@ def _run_web_action_loop(
         activity[-1]["status"] = "completed" if observation.get("ok") else "failed"
         if event_chain is not None and action_id:
             audit_observation = event_observation_payload(action, observation)
+            if observation.get("ok"):
+                # Successful deletion consumes the read capability before audit persistence.
+                audit_observation.update(delete_audit_metadata)
             persisted_observation = event_chain.observation(
                 action_id,
                 action_capability_key,
