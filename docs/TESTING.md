@@ -1,6 +1,6 @@
 # Testing guide
 
-Documentation version: `v1.44.0-codex.0`
+Documentation version: `v1.45.0-codex.0`
 
 ## LLM SQLite persistence checks
 
@@ -32,6 +32,14 @@ catalog and coverage fixtures additionally verify that a legacy Parquet read cre
 no SQLite file. Browser equivalence checks cover overview, detail, direct message
 lookup, source selection, discovery overlays, project membership, and pagination;
 search and Zhihu remain covered through their full-history paths.
+
+Gemini Takeout fixtures cover both canonical SQLite and read-only Parquet baselines,
+exact same-format backups, schema and content-hash validation, separate legacy/canonical
+compare-and-swap checks, and versioned receipt recovery before and after publication.
+Real version 1 receipt envelopes must replay without rewriting completed metadata and
+must refuse adoption after an unrelated migration. Initial SQLite writes must verify the
+native owner-only boundary before any transcript bytes and leave the source unchanged
+when that boundary fails. These tests use synthetic source bundles and isolated stores.
 
 For private real-data benchmarks, use the migration report's warmup, repeated samples,
 median, P95, operation scope, and query plan. Compare identical source rows and

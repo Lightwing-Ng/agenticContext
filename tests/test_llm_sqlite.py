@@ -1,9 +1,11 @@
 """Protect lossless SQLite histories, atomic publication, and incremental updates."""
 
-# Code version: v2.0.0-codex.0
+# Code version: v2.1.0-codex.0
 
 from __future__ import annotations
 
+from contextlib import closing
+import os
 import sqlite3
 import hashlib
 import json
@@ -20,6 +22,7 @@ from app.core.llm_sqlite import (
     write_sqlite_rows,
 )
 from app.core.resource_persistence import read_resource_rows, write_resource_rows_atomic
+from app.core.owner_only_files import OwnerOnlyFileError, owner_only_problem
 
 
 SCHEMA = pa.schema(
@@ -56,7 +59,7 @@ def test_lossless_interleaved_rows_and_indexed_scope(tmp_path: Path):
     assert read_sqlite_rows(path, "a") == [rows[0], rows[2]]
     assert read_sqlite_rows(path, "missing") == []
     assert read_sqlite_schema(path).equals(SCHEMA, check_metadata=True)
-    with sqlite3.connect(path) as connection:
+    with closing(sqlite3.connect(path)) as connection, connection:
         plan = connection.execute(
             "EXPLAIN QUERY PLAN SELECT payload FROM row_groups WHERE group_key=?",
             ("a",),
@@ -71,16 +74,16 @@ def test_updates_do_not_rewrite_other_groups_and_remove_only_requested_rows(
     path = tmp_path / "data.sqlite3"
     rows = _rows()
     write_sqlite_rows(path, rows, SCHEMA)
-    with sqlite3.connect(path) as connection:
+    with closing(sqlite3.connect(path)) as connection, connection:
         connection.executescript(
             "CREATE TABLE updates (id TEXT); CREATE TRIGGER changed AFTER UPDATE ON row_groups BEGIN INSERT INTO updates VALUES (new.group_key); END;"
         )
     write_sqlite_rows(path, rows, SCHEMA)
-    with sqlite3.connect(path) as connection:
+    with closing(sqlite3.connect(path)) as connection, connection:
         assert connection.execute("SELECT * FROM updates").fetchall() == []
     rows[0]["content_text"] = "changed"
     write_sqlite_rows(path, rows, SCHEMA)
-    with sqlite3.connect(path) as connection:
+    with closing(sqlite3.connect(path)) as connection, connection:
         expected = connection.execute(
             "SELECT group_key FROM conversation_groups WHERE conversation_id='a'"
         ).fetchone()[0]
@@ -93,7 +96,7 @@ def test_failed_transaction_keeps_existing_data(tmp_path: Path):
     path = tmp_path / "data.sqlite3"
     rows = _rows()
     write_sqlite_rows(path, rows, SCHEMA)
-    with sqlite3.connect(path) as connection:
+    with closing(sqlite3.connect(path)) as connection, connection:
         connection.execute(
             "CREATE TRIGGER reject_update BEFORE UPDATE ON row_groups BEGIN SELECT RAISE(ABORT,'test failure'); END"
         )
@@ -160,7 +163,7 @@ def _write_format_two(path: Path, rows: list[dict], schema: pa.Schema) -> None:
         key = f"bucket:{bucket}"
         mappings[identity] = key
         groups.setdefault(key, []).append([ordinal, [row[name] for name in schema.names]])
-    with sqlite3.connect(path) as connection:
+    with closing(sqlite3.connect(path)) as connection, connection:
         connection.executescript(
             "CREATE TABLE store_info(key TEXT PRIMARY KEY,value BLOB NOT NULL);"
             "CREATE TABLE row_groups(group_key TEXT PRIMARY KEY,first_ordinal INTEGER NOT NULL,"
@@ -192,7 +195,7 @@ def test_format_two_remains_readable_and_upgrades_without_changing_rows(tmp_path
     write_sqlite_rows(path, rows, SCHEMA)
     assert read_sqlite_rows(path) == rows
     assert read_sqlite_rows(path, "a") == [rows[0], rows[2]]
-    with sqlite3.connect(path) as connection:
+    with closing(sqlite3.connect(path)) as connection, connection:
         assert connection.execute("PRAGMA user_version").fetchone() == (STORE_VERSION,)
         assert connection.execute("SELECT value FROM store_info WHERE key='format_version'").fetchone() == (str(STORE_VERSION),)
         raw_bytes, payload = connection.execute("SELECT raw_bytes,payload FROM row_groups LIMIT 1").fetchone()
@@ -206,12 +209,12 @@ def test_failed_format_upgrade_preserves_previous_payload_and_version(tmp_path: 
     path = tmp_path / "legacy.sqlite3"
     rows = _rows()
     _write_format_two(path, rows, SCHEMA)
-    with sqlite3.connect(path) as connection:
+    with closing(sqlite3.connect(path)) as connection, connection:
         connection.execute("CREATE TRIGGER reject_upgrade BEFORE UPDATE ON row_groups BEGIN SELECT RAISE(ABORT,'upgrade failure'); END")
     with pytest.raises(sqlite3.IntegrityError, match="upgrade failure"):
         write_sqlite_rows(path, rows, SCHEMA)
     assert read_sqlite_rows(path) == rows
-    with sqlite3.connect(path) as connection:
+    with closing(sqlite3.connect(path)) as connection, connection:
         assert connection.execute("PRAGMA user_version").fetchone() == (2,)
         assert connection.execute("SELECT value FROM store_info WHERE key='format_version'").fetchone() == ("2",)
 
@@ -256,3 +259,45 @@ def test_scoped_arrow_reads_preserve_python_whitespace_matching(tmp_path: Path):
     assert read_sqlite_rows(path, "a") == [rows[0], rows[2]]
     assert read_sqlite_conversations(path, {"a", "b"}) == rows
     assert read_sqlite_conversations(path, set()) == []
+
+
+def test_initial_sqlite_bytes_have_verified_owner_only_access(tmp_path: Path, monkeypatch):
+    from app.core import llm_sqlite
+
+    path = tmp_path / "data.sqlite3"
+    write = llm_sqlite._write_store
+    written = []
+
+    def private_write(temporary, *args, **kwargs):
+        assert temporary.read_bytes() == b""
+        assert owner_only_problem(temporary) == ""
+        if os.name == "posix":
+            assert temporary.stat().st_mode & 0o777 == 0o600
+        written.append(temporary)
+        return write(temporary, *args, **kwargs)
+
+    monkeypatch.setattr(llm_sqlite, "_write_store", private_write)
+    write_resource_rows_atomic(path, _rows(), SCHEMA)
+    assert written
+    assert owner_only_problem(path) == ""
+    assert read_sqlite_rows(path) == _rows()
+
+
+def test_failed_native_boundary_never_writes_or_publishes_private_sqlite(tmp_path: Path, monkeypatch):
+    from app.core import llm_sqlite
+
+    legacy = tmp_path / "data.parquet"
+    write_resource_rows_atomic(legacy, _rows(), SCHEMA)
+    before = legacy.read_bytes()
+    written = []
+
+    def refuse(_path):
+        raise OwnerOnlyFileError("Synthetic native SQLite boundary failure")
+
+    monkeypatch.setattr(llm_sqlite, "ensure_owner_only", refuse)
+    monkeypatch.setattr(llm_sqlite, "_write_store", lambda *args: written.append(args))
+    with pytest.raises(OwnerOnlyFileError, match="Synthetic native SQLite boundary failure"):
+        write_resource_rows_atomic(legacy.with_suffix(".sqlite3"), _rows(), SCHEMA)
+    assert written == []
+    assert legacy.read_bytes() == before
+    assert list(tmp_path.iterdir()) == [legacy]

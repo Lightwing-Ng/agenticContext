@@ -1,6 +1,6 @@
 """Synthetic source, preservation, and crash-recovery tests for Takeout imports."""
 
-# Code version: v1.2.0-codex.0
+# Code version: v2.0.0-codex.0
 
 from __future__ import annotations
 
@@ -9,19 +9,20 @@ import errno
 import json
 import os
 from pathlib import Path
+import shutil
 
-import pyarrow.parquet as pq
 import pytest
 
 from app.core import gemini_export_import as importer
 from app.core.gemini_downloader import GeminiConversationLink, GeminiHistoryStore, gemini_history_path
 from app.core.job_lock import CacheTaskLock, cache_task_resource_lock_path
+from app.core.llm_sqlite import read_sqlite_schema, read_sqlite_summaries
 from app.core.owner_only_files import (
     OwnerOnlyFileError,
     owner_only_directory_problem,
     owner_only_problem,
 )
-from app.core.resource_persistence import GEMINI_HISTORY_SCHEMA, write_parquet_rows_atomic
+from app.core.resource_persistence import GEMINI_HISTORY_SCHEMA, read_resource_rows, write_parquet_rows_atomic
 
 
 def _card(prompt="Question", reply="<p>Answer</p>", ids=("example-session",), kind="Prompted", date="Jan 2, 2026, 9:30:13 PM CST", attachments=""):
@@ -45,8 +46,9 @@ def _plan(source, root):
     return importer.plan_import(source, timezone="Asia/Taipei", local_store_root=root)
 
 
-def _seed(root, prompt="Question", reply="Answer", timestamp="2026-01-02T13:30:13.123456Z"):
-    store = GeminiHistoryStore(gemini_history_path(root))
+def _seed(root, prompt="Question", reply="Answer", timestamp="2026-01-02T13:30:13.123456Z", storage_format="sqlite"):
+    path = gemini_history_path(root).with_suffix(".parquet" if storage_format == "parquet" else ".sqlite3")
+    store = GeminiHistoryStore(path)
     store.replace_conversation(
         GeminiConversationLink("example-session", "https://gemini.google.com/app/example-session", "Original title"),
         [{"role": role, "message_index": index, "turn_index": 0, "content_text": text,
@@ -58,6 +60,35 @@ def _seed(root, prompt="Question", reply="Answer", timestamp="2026-01-02T13:30:1
     )
     store.save()
     return store.rows
+
+
+def _legacy_receipt(source, root, state):
+    """Build the published v1 Parquet envelope without invoking the new writer."""
+    original = _seed(root, storage_format="parquet")
+    legacy = gemini_history_path(root).with_suffix(".parquet")
+    plan = _plan(source, root)
+    bundle = legacy.parent / "imports" / f"takeout-{plan.catalog['source_digest']}"
+    bundle.mkdir(parents=True)
+    shutil.copytree(source, bundle / "source")
+    catalog = {**plan.catalog, "version": "v1.0.0-codex.0"}
+    importer._atomic_json(bundle / "events.json", catalog)
+    importer._atomic_json(bundle / "provenance.json", plan.provenance)
+    shutil.copyfile(legacy, bundle / "history-before.parquet")
+    candidate = bundle / "history-candidate.parquet"
+    write_parquet_rows_atomic(candidate, plan.rows, GEMINI_HISTORY_SCHEMA)
+    receipt = {
+        "version": "v1.0.0-codex.0", "state": "prepared" if state != "committed" else "committed",
+        "source_digest": catalog["source_digest"], "timezone": catalog["timezone"],
+        "baseline_sha256": importer._file_sha(legacy), "candidate_sha256": importer._file_sha(candidate),
+        "added_rows": plan.summary["added_rows"],
+        "source_event_ids": [event["source_event_id"] for event in catalog["events"]],
+        "provenance_sha256": importer._file_sha(bundle / "provenance.json"),
+        "catalog_sha256": importer._file_sha(bundle / "events.json"),
+    }
+    importer._atomic_json(bundle / "receipt.json", receipt)
+    if state in {"committed", "published"}:
+        os.replace(candidate, legacy)
+    return bundle, plan.rows, original
 
 
 def test_dry_run_has_no_files_locks_or_backups(tmp_path):
@@ -80,9 +111,9 @@ def test_exact_source_second_anchors_preserve_all_original_fields(tmp_path):
     assert plan.rows == original
     result = importer.apply_import(plan)
     assert not result["dry_run"]
-    assert pq.read_table(gemini_history_path(root)).to_pylist() == original
-    backup = Path(result["bundle"]) / "history-before.parquet"
-    assert pq.read_table(backup).to_pylist() == original
+    assert read_resource_rows(gemini_history_path(root)) == original
+    backup = Path(result["bundle"]) / "history-before.sqlite3"
+    assert read_resource_rows(backup) == original
 
 
 def test_unmatched_source_appends_visible_tail_without_reindexing_old_rows(tmp_path):
@@ -219,7 +250,7 @@ def test_compare_and_swap_rejects_changed_input(tmp_path, change):
     with pytest.raises(importer.TakeoutImportError, match="changed after preview"):
         importer.apply_import(plan)
     if change == "history":
-        assert pq.read_table(gemini_history_path(root)).to_pylist() == original
+        assert read_resource_rows(gemini_history_path(root)) == original
     else:
         assert not gemini_history_path(root).exists()
 
@@ -238,7 +269,7 @@ def test_under_lock_guard_rejects_a_plan_that_does_not_preserve_exact_baseline(t
         plan.rows.pop()
     with pytest.raises(importer.TakeoutImportError, match="preserve every existing"):
         importer.apply_import(plan)
-    assert pq.read_table(gemini_history_path(root)).to_pylist() == original
+    assert read_resource_rows(gemini_history_path(root)) == original
     assert not (gemini_history_path(root).parent / "imports").exists()
 
 
@@ -272,7 +303,7 @@ def test_prepared_candidate_is_verified_and_resumed_after_precommit_failure(tmp_
     replace = importer.os.replace
 
     def fail_history_replace(incoming, destination):
-        if Path(incoming).name == "history-candidate.parquet":
+        if Path(incoming).name == "history-candidate.sqlite3":
             raise OSError("Synthetic precommit failure")
         return replace(incoming, destination)
 
@@ -285,7 +316,7 @@ def test_prepared_candidate_is_verified_and_resumed_after_precommit_failure(tmp_
     assert resumed.summary["resuming_prepared_import"]
     expected_rows = resumed.rows
     assert importer.apply_import(resumed)["added_rows"] == 1
-    assert pq.read_table(gemini_history_path(root)).to_pylist() == expected_rows
+    assert read_resource_rows(gemini_history_path(root)) == expected_rows
     assert importer.apply_import(_plan(source, root))["added_rows"] == 0
 
 
@@ -303,7 +334,7 @@ def test_changed_asset_cannot_be_silently_treated_as_same_import(tmp_path):
     assert (Path(second["bundle"]) / "source" / "upload.bin").read_bytes() == b"second"
 
 
-@pytest.mark.parametrize("member", ["source/MyActivity.html", "events.json", "provenance.json", "history-before.parquet"])
+@pytest.mark.parametrize("member", ["source/MyActivity.html", "events.json", "provenance.json", "history-before.sqlite3"])
 def test_replay_refuses_damaged_durable_source_provenance_or_backup(tmp_path, member):
     source = _source(tmp_path)
     root = tmp_path / "store"
@@ -317,10 +348,12 @@ def test_replay_refuses_damaged_durable_source_provenance_or_backup(tmp_path, me
 
 
 @pytest.mark.parametrize("damage", ["duplicate_key", "duplicate_index", "hash", "schema"])
-def test_corrupt_existing_history_fails_closed_before_writes(tmp_path, damage):
+@pytest.mark.parametrize("storage_format", ["sqlite", "parquet"])
+def test_corrupt_existing_history_fails_closed_before_writes(tmp_path, damage, storage_format):
     source = _source(tmp_path)
     root = tmp_path / "store"
-    rows = _seed(root)
+    rows = _seed(root, storage_format=storage_format)
+    history = gemini_history_path(root).with_suffix(".sqlite3" if storage_format == "sqlite" else ".parquet")
     if damage == "duplicate_key":
         rows.append(dict(rows[0]))
     elif damage == "duplicate_index":
@@ -329,13 +362,13 @@ def test_corrupt_existing_history_fails_closed_before_writes(tmp_path, damage):
     elif damage == "hash":
         rows[0]["content_sha256"] = "incorrect"
     if damage == "schema":
-        pq.write_table(pq.read_table(gemini_history_path(root)).drop(["model_label"]), gemini_history_path(root))
+        write_parquet_rows_atomic(history, rows, GEMINI_HISTORY_SCHEMA.remove(GEMINI_HISTORY_SCHEMA.get_field_index("model_label")))
     else:
-        write_parquet_rows_atomic(gemini_history_path(root), rows, GEMINI_HISTORY_SCHEMA)
-    before = gemini_history_path(root).read_bytes()
+        write_parquet_rows_atomic(history, rows, GEMINI_HISTORY_SCHEMA)
+    before = history.read_bytes()
     with pytest.raises(importer.TakeoutImportError):
         _plan(source, root)
-    assert gemini_history_path(root).read_bytes() == before
+    assert history.read_bytes() == before
     assert not (gemini_history_path(root).parent / "imports").exists()
 
 
@@ -435,7 +468,7 @@ def test_ambiguous_dst_clock_is_not_guessed(tmp_path):
 
 
 def test_sync_file_uses_a_windows_syncable_handle_without_changing_backup_bytes(tmp_path, monkeypatch):
-    backup = tmp_path / "history-before.parquet"
+    backup = tmp_path / "history-before.sqlite3"
     original = b"exact backup bytes\x00\xff"
     backup.write_bytes(original)
     open_file = Path.open
@@ -482,7 +515,7 @@ def test_backup_fsync_failure_propagates_without_publishing_or_changing_source(t
 
     def tracked_open(path, *args, **kwargs):
         handle = open_file(path, *args, **kwargs)
-        if path.name == "history-before.parquet":
+        if path.name == "history-before.sqlite3":
             handles.append(handle)
         return handle
 
@@ -498,26 +531,11 @@ def test_backup_fsync_failure_propagates_without_publishing_or_changing_source(t
     assert handles and all(handle.closed for handle in handles)
     assert history.read_bytes() == before
     bundle = history.parent / "imports" / f"takeout-{plan.catalog['source_digest']}"
-    assert (bundle / "history-before.parquet").read_bytes() == before
+    assert (bundle / "history-before.sqlite3").read_bytes() == before
     assert not (bundle / "receipt.json").exists()
     assert source_before == {path.relative_to(source): path.read_bytes() for path in source.rglob("*") if path.is_file()}
 
 
-def test_existing_receipt_format_replays_without_rewriting_preserved_metadata(tmp_path):
-    source = _source(tmp_path)
-    root = tmp_path / "store"
-    result = importer.apply_import(_plan(source, root))
-    receipt_path = Path(result["bundle"]) / "receipt.json"
-    receipt = json.loads(receipt_path.read_text())
-    receipt["version"] = "v1.0.0-codex.0"
-    receipt_path.write_bytes(importer._json_bytes(receipt))
-    before_receipt = receipt_path.read_bytes()
-    before_history = gemini_history_path(root).read_bytes()
-    plan = _plan(source, root)
-    assert plan.summary["already_imported"]
-    assert importer.apply_import(plan)["added_rows"] == 0
-    assert receipt_path.read_bytes() == before_receipt
-    assert gemini_history_path(root).read_bytes() == before_history
 
 
 def test_private_bundle_boundary_is_verified_before_source_bytes_are_copied(tmp_path, monkeypatch):
@@ -558,3 +576,205 @@ def test_unverifiable_private_bundle_fails_before_private_content_is_written(tmp
     assert list(bundle.iterdir()) == []
     assert not gemini_history_path(root).exists()
     assert source_before == {path.relative_to(source): path.read_bytes() for path in source.rglob("*") if path.is_file()}
+
+
+def test_legacy_parquet_preview_and_sqlite_publication_preserve_exact_source_and_backup(tmp_path):
+    source = _source(tmp_path, _card(reply="<p>New recovered response</p>"))
+    root = tmp_path / "store"
+    old_rows = _seed(root, storage_format="parquet")
+    history = gemini_history_path(root)
+    legacy = history.with_suffix(".parquet")
+    original = legacy.read_bytes()
+    plan = _plan(source, root)
+    assert plan.rows[:len(old_rows)] == old_rows
+    assert not history.exists()
+    assert legacy.read_bytes() == original
+    result = importer.apply_import(plan)
+    bundle = Path(result["bundle"])
+    assert legacy.read_bytes() == (bundle / "history-before.parquet").read_bytes() == original
+    assert history.read_bytes().startswith(b"SQLite format 3\x00")
+    assert read_resource_rows(history) == plan.rows
+    assert read_sqlite_schema(history).equals(GEMINI_HISTORY_SCHEMA, check_metadata=True)
+    assert read_sqlite_summaries(history)
+    receipt = json.loads((bundle / "receipt.json").read_text())
+    assert receipt["version"] == "v2.0.0-codex.0"
+    assert receipt["baseline_format"] == "parquet"
+    assert receipt["candidate_format"] == "sqlite"
+    assert receipt["canonical_baseline_sha256"] is None
+    before_history = history.read_bytes()
+    before_receipt = (bundle / "receipt.json").read_bytes()
+    assert importer.apply_import(_plan(source, root))["added_rows"] == 0
+    assert history.read_bytes() == before_history
+    assert (bundle / "receipt.json").read_bytes() == before_receipt
+
+
+@pytest.mark.parametrize("change", ["legacy_bytes", "canonical_appeared"])
+def test_legacy_fallback_compare_and_swap_checks_both_authorities(tmp_path, change):
+    source = _source(tmp_path)
+    root = tmp_path / "store"
+    _seed(root, storage_format="parquet")
+    plan = _plan(source, root)
+    history = gemini_history_path(root)
+    changed = history if change == "canonical_appeared" else history.with_suffix(".parquet")
+    _seed(root, reply="Concurrent writer", storage_format="sqlite" if change == "canonical_appeared" else "parquet")
+    before = changed.read_bytes()
+    with pytest.raises(importer.TakeoutImportError, match="changed after preview"):
+        importer.apply_import(plan)
+    assert changed.read_bytes() == before
+    assert not (history.parent / "imports").exists()
+
+
+@pytest.mark.parametrize("change", ["legacy_bytes", "canonical_appeared"])
+def test_legacy_and_canonical_changes_during_staging_refuse_publication(tmp_path, monkeypatch, change):
+    source = _source(tmp_path)
+    root = tmp_path / "store"
+    _seed(root, storage_format="parquet")
+    plan = _plan(source, root)
+    write = importer.write_sqlite_rows
+    changed_bytes = []
+
+    def change_after_candidate(*args, **kwargs):
+        write(*args, **kwargs)
+        _seed(root, reply="Concurrent writer", storage_format="sqlite" if change == "canonical_appeared" else "parquet")
+        path = gemini_history_path(root).with_suffix(".sqlite3" if change == "canonical_appeared" else ".parquet")
+        changed_bytes.append((path, path.read_bytes()))
+
+    monkeypatch.setattr(importer, "write_sqlite_rows", change_after_candidate)
+    with pytest.raises(importer.TakeoutImportError, match="changed during staging"):
+        importer.apply_import(plan)
+    assert changed_bytes and all(path.read_bytes() == body for path, body in changed_bytes)
+    if change == "legacy_bytes":
+        assert not gemini_history_path(root).exists()
+
+
+def test_absent_canonical_publication_does_not_clobber_a_last_instant_writer(tmp_path, monkeypatch):
+    source = _source(tmp_path)
+    root = tmp_path / "store"
+    history = gemini_history_path(root)
+    _seed(root, storage_format="parquet")
+    plan = _plan(source, root)
+    competitor = tmp_path / "competing-store"
+    _seed(competitor, reply="Concurrent authoritative SQLite")
+    competing_bytes = gemini_history_path(competitor).read_bytes()
+    link = importer.os.link
+
+    def race(incoming, destination, *args, **kwargs):
+        if Path(destination) == history:
+            history.write_bytes(competing_bytes)
+        return link(incoming, destination, *args, **kwargs)
+
+    monkeypatch.setattr(importer.os, "link", race)
+    with pytest.raises(FileExistsError):
+        importer.apply_import(plan)
+    assert history.read_bytes() == competing_bytes
+
+
+def test_interrupted_initial_publication_link_is_reconciled_without_rewriting_history(tmp_path, monkeypatch):
+    source = _source(tmp_path)
+    root = tmp_path / "store"
+    unlink = Path.unlink
+
+    def fail_candidate_unlink(path, *args, **kwargs):
+        if path.name == "history-candidate.sqlite3":
+            raise OSError("Synthetic link publication interruption")
+        return unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", fail_candidate_unlink)
+    with pytest.raises(OSError, match="Synthetic link publication interruption"):
+        importer.apply_import(_plan(source, root))
+    history = gemini_history_path(root)
+    before = history.read_bytes()
+    candidate = next(history.parent.glob("imports/*/history-candidate.sqlite3"))
+    assert candidate.samefile(history)
+    monkeypatch.setattr(Path, "unlink", unlink)
+    replay = _plan(source, root)
+    assert replay.summary["already_imported"]
+    assert importer.apply_import(replay)["added_rows"] == 0
+    assert history.read_bytes() == before
+    assert not candidate.exists()
+    assert owner_only_problem(history) == ""
+
+
+@pytest.mark.parametrize("state", ["committed", "prepared", "published"])
+def test_legacy_receipts_replay_and_recover_in_their_original_format(tmp_path, state):
+    source = _source(tmp_path, _card(reply="<p>Legacy recovered response</p>"))
+    root = tmp_path / "store"
+    bundle, expected, original = _legacy_receipt(source, root, state)
+    receipt_path = bundle / "receipt.json"
+    before_receipt = receipt_path.read_bytes()
+    legacy = gemini_history_path(root).with_suffix(".parquet")
+    before_history = legacy.read_bytes()
+    preserved = {name: (bundle / name).read_bytes() for name in (
+        "history-before.parquet", "events.json", "provenance.json", "source/MyActivity.html",
+    )}
+    plan = _plan(source, root)
+    assert plan.summary["resuming_prepared_import"] == (state == "prepared")
+    assert importer.apply_import(plan)["added_rows"] == (1 if state == "prepared" else 0)
+    assert not gemini_history_path(root).exists()
+    assert read_resource_rows(legacy) == expected
+    assert read_resource_rows(bundle / "history-before.parquet") == original
+    assert all((bundle / name).read_bytes() == body for name, body in preserved.items())
+    if state == "committed":
+        assert receipt_path.read_bytes() == before_receipt
+        assert legacy.read_bytes() == before_history
+    receipt = json.loads(receipt_path.read_text())
+    assert receipt["version"] == "v1.0.0-codex.0"
+    assert receipt["state"] == "committed"
+
+
+def test_legacy_receipt_after_an_unrelated_sqlite_migration_fails_closed(tmp_path):
+    source = _source(tmp_path, _card(reply="<p>Legacy recovered response</p>"))
+    root = tmp_path / "store"
+    bundle, rows, _original = _legacy_receipt(source, root, "committed")
+    history = gemini_history_path(root)
+    write_parquet_rows_atomic(history, rows, GEMINI_HISTORY_SCHEMA)
+    before = history.read_bytes()
+    before_receipt = (bundle / "receipt.json").read_bytes()
+    with pytest.raises(importer.TakeoutImportError, match="changed history"):
+        _plan(source, root)
+    assert history.read_bytes() == before
+    assert (bundle / "receipt.json").read_bytes() == before_receipt
+
+
+def test_invalid_canonical_sqlite_never_falls_back_to_valid_legacy_parquet(tmp_path):
+    source = _source(tmp_path)
+    root = tmp_path / "store"
+    _seed(root, storage_format="parquet")
+    history = gemini_history_path(root)
+    legacy_before = history.with_suffix(".parquet").read_bytes()
+    history.write_bytes(b"Synthetic corrupt canonical SQLite")
+    before = history.read_bytes()
+    with pytest.raises(importer.TakeoutImportError, match="cannot be verified"):
+        _plan(source, root)
+    assert history.read_bytes() == before
+    assert history.with_suffix(".parquet").read_bytes() == legacy_before
+    assert not (history.parent / "imports").exists()
+
+
+@pytest.mark.parametrize("sidecar", ["-wal", "-shm", "-journal"])
+def test_sqlite_sidecar_state_is_never_silently_omitted_from_a_byte_backup(tmp_path, sidecar):
+    source = _source(tmp_path)
+    root = tmp_path / "store"
+    _seed(root)
+    history = gemini_history_path(root)
+    before = history.read_bytes()
+    Path(f"{history}{sidecar}").write_bytes(b"Synthetic pending SQLite state")
+    with pytest.raises(importer.TakeoutImportError, match="active sidecar"):
+        _plan(source, root)
+    assert history.read_bytes() == before
+    assert not (history.parent / "imports").exists()
+
+
+@pytest.mark.parametrize("field,value", [("candidate_format", "parquet"), ("candidate_format", "../escape"), ("baseline_format", "unknown")])
+def test_receipt_format_discriminators_are_a_closed_contract(tmp_path, field, value):
+    source = _source(tmp_path)
+    root = tmp_path / "store"
+    result = importer.apply_import(_plan(source, root))
+    receipt_path = Path(result["bundle"]) / "receipt.json"
+    receipt = json.loads(receipt_path.read_text())
+    receipt[field] = value
+    receipt_path.write_bytes(importer._json_bytes(receipt))
+    before = gemini_history_path(root).read_bytes()
+    with pytest.raises(importer.TakeoutImportError, match="receipt format"):
+        _plan(source, root)
+    assert gemini_history_path(root).read_bytes() == before
