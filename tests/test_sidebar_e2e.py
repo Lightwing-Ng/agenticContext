@@ -1,6 +1,6 @@
 """Disposable-browser E2E coverage for the responsive sidebar and language boundaries.
 
-Code version: v1.58.2-codex.0
+Code version: v1.58.3-codex.0
 """
 
 from __future__ import annotations
@@ -413,6 +413,13 @@ def _open_page(
 def _wait_for_global_title_rail(page: Page, title_selector: str) -> None:
     page.wait_for_function(
         """selector => {
+            const surface = document.querySelector('.page');
+            if (matchMedia('(max-width: 560px)').matches) {
+                if (!(surface instanceof HTMLElement)) return false;
+                const style = getComputedStyle(surface);
+                // Viewport APIs can update before the compact CSS inset is applied.
+                if (style.paddingTop !== style.getPropertyValue('--page-compact-edge-pad').trim()) return false;
+            }
             const centerY = element => {
                 if (!(element instanceof HTMLElement)) return null;
                 const rect = element.getBoundingClientRect();

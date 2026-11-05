@@ -1,6 +1,6 @@
 """Native subset restoration preserves old rows without a full database copy.
 
-Code version: v1.4.0-codex.0
+Code version: v1.4.1-codex.0
 """
 
 from contextlib import closing
@@ -634,14 +634,108 @@ def test_each_incoming_conversation_checks_actual_retained_index_counts(tmp_path
     assert path.read_bytes() == before
 
 
+def _set_windows_change_time(path, value, *, api=None):
+    """Change only a synthetic file's native mutation timestamp."""
+    from ctypes import wintypes
+
+    if api is None:
+        from app.core.windows_file_metadata import _native_api
+
+        api = _native_api()
+    ctypes, kernel32, info_type = api
+    setter = kernel32.SetFileInformationByHandle
+    setter.argtypes = [
+        wintypes.HANDLE, ctypes.c_int, wintypes.LPVOID, wintypes.DWORD,
+    ]
+    setter.restype = wintypes.BOOL
+    handle = kernel32.CreateFileW(
+        str(path), 0x0100, 0x00000001 | 0x00000002 | 0x00000004,
+        None, 3, 0x00200000, None,
+    )
+    if handle is None or handle == ctypes.c_void_p(-1).value:
+        raise ctypes.WinError(ctypes.get_last_error())
+    try:
+        # Zero time/attribute fields preserve their existing native values.
+        info = info_type()
+        info.ChangeTime = value
+        if not setter(handle, 0, ctypes.byref(info), ctypes.sizeof(info)):
+            raise ctypes.WinError(ctypes.get_last_error())
+    finally:
+        kernel32.CloseHandle(handle)
+
+
 def change_ctime_only(path):
     before = restore._file_identity(path)
-    permissions = path.stat().st_mode & 0o777
-    # The owner-write bit also toggles Windows' native read-only attribute.
-    path.chmod(permissions ^ 0o200)
-    path.chmod(permissions)
+    if os.name == "nt":
+        _set_windows_change_time(path, before[4] + 10_000)
+    else:
+        permissions = path.stat().st_mode & 0o777
+        path.chmod(permissions ^ 0o200)
+        path.chmod(permissions)
     after = restore._file_identity(path)
     assert before[:4] == after[:4] and before[4] != after[4]
+    assert before[5:] == after[5:]
+
+
+@pytest.mark.parametrize("set_succeeds", [True, False])
+def test_windows_change_fixture_sets_only_change_time_and_closes_its_handle(
+    tmp_path, set_succeeds
+):
+    import ctypes
+    from ctypes import wintypes
+    from types import SimpleNamespace
+
+    class FileBasicInfo(ctypes.Structure):
+        _fields_ = [
+            ("CreationTime", ctypes.c_longlong),
+            ("LastAccessTime", ctypes.c_longlong),
+            ("LastWriteTime", ctypes.c_longlong),
+            ("ChangeTime", ctypes.c_longlong),
+            ("FileAttributes", wintypes.DWORD),
+        ]
+
+    opened, changes, closed = [], [], []
+
+    def create(*args):
+        opened.append(args)
+        return 99
+
+    def update(handle, information_class, payload, size):
+        assert handle == 99 and information_class == 0
+        assert size == ctypes.sizeof(FileBasicInfo)
+        info = ctypes.cast(payload, ctypes.POINTER(FileBasicInfo)).contents
+        changes.append(tuple(getattr(info, field) for field, _ in info._fields_))
+        return set_succeeds
+
+    class CtypesApi:
+        def __getattr__(self, name):
+            return getattr(ctypes, name)
+
+        @staticmethod
+        def get_last_error():
+            return 5
+
+        @staticmethod
+        def WinError(code):
+            return OSError(code, "Synthetic native ChangeTime setter failure")
+
+    api = (
+        CtypesApi(),
+        SimpleNamespace(
+            CreateFileW=create, SetFileInformationByHandle=update,
+            CloseHandle=closed.append,
+        ),
+        FileBasicInfo,
+    )
+    path = tmp_path / "synthetic-metadata.sqlite3"
+    if set_succeeds:
+        _set_windows_change_time(path, 12345, api=api)
+    else:
+        with pytest.raises(OSError, match="Synthetic native ChangeTime setter"):
+            _set_windows_change_time(path, 12345, api=api)
+    assert opened == [(str(path), 0x0100, 7, None, 3, 0x00200000, None)]
+    assert changes == [(0, 0, 0, 12345, 0)]
+    assert closed == [99]
 
 
 def test_windows_identity_retains_native_birth_and_change_tokens(tmp_path, monkeypatch):

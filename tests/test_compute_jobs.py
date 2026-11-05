@@ -1,6 +1,6 @@
 """Durable compute-job lifecycle and safety contract tests.
 
-Code version: v1.6.4-codex.0
+Code version: v1.6.5-codex.0
 """
 
 from __future__ import annotations
@@ -340,6 +340,72 @@ temporary.replace(runtime / "checkpoint.json")
 (runtime / "result.json").write_text(json.dumps({"best_objective": 0.25}))
 print("optimization complete")
 """
+
+
+@pytest.fixture
+def captured_compute_worker_environment(tmp_path, monkeypatch):
+    profile = tmp_path / "profile"
+    temporary = tmp_path / "temporary"
+    profile.mkdir()
+    temporary.mkdir()
+    platform_values = {
+        "USERPROFILE": str(profile), "HOMEDRIVE": profile.drive or "C:",
+        "HOMEPATH": "\\synthetic-profile", "APPDATA": str(profile / "AppData" / "Roaming"),
+        "LOCALAPPDATA": str(profile / "AppData" / "Local"),
+        "TEMP": str(temporary), "TMP": str(temporary),
+    }
+    for name, value in platform_values.items():
+        monkeypatch.setenv(name, value)
+    for name in ("ARBITRARY_SECRET", "CREDENTIAL_TEST_SECRET", "TOKEN_TEST_SECRET"):
+        monkeypatch.setenv(name, "synthetic-do-not-forward")
+    workspace, _config = _prepare_workspace(tmp_path, script_body=SUCCESS_SCRIPT)
+    manager = ComputeJobManager(workspace, tmp_path / "runtime")
+    captured = {}
+
+    def capture_launch(command, **options):
+        assert command[:3] == [sys.executable, "-m", "app.core.agent.compute_jobs"]
+        captured.update(options["env"])
+        raise OSError("Synthetic launch boundary after environment capture")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(compute_jobs.subprocess, "Popen", capture_launch)
+        with pytest.raises(ComputeJobError, match="worker could not start"):
+            manager.start(entrypoint_id="optimizer", config_path="optimizer.json", idempotency_key="environment-bootstrap-001")
+    return captured, platform_values
+
+
+def test_compute_worker_environment_keeps_only_explicit_platform_and_runtime_keys(captured_compute_worker_environment):
+    environment, platform_values = captured_compute_worker_environment
+
+    assert all(environment[name] == value for name, value in platform_values.items())
+    assert not {"ARBITRARY_SECRET", "CREDENTIAL_TEST_SECRET", "TOKEN_TEST_SECRET"} & environment.keys()
+    assert environment["AGENTIC_CONTEXT_COMPUTE_JOB"]
+    assert environment["PYTHONUNBUFFERED"] == "1"
+    assert environment["PYTHONPATH"] == str(Path(compute_jobs.__file__).resolve().parents[3])
+
+
+def test_sanitized_worker_bootstrap_preserves_windows_home_resolution(captured_compute_worker_environment):
+    environment, platform_values = captured_compute_worker_environment
+    script = """import ntpath
+from pathlib import Path
+import runpy
+def windows_home(cls):
+    value = ntpath.expanduser('~')
+    if value == '~':
+        raise RuntimeError('Could not determine home directory.')
+    return Path(value)
+Path.home = classmethod(windows_home)
+runpy.run_module('app.core.agent.compute_jobs', run_name='__main__')
+"""
+    stripped = {name: value for name, value in environment.items() if name not in platform_values}
+    before = subprocess.run([sys.executable, "-c", script], env=stripped, capture_output=True, text=True, timeout=15)
+    assert before.returncode == 1
+    assert "Could not determine home directory." in before.stderr
+    after = subprocess.run([sys.executable, "-c", script], env=environment, capture_output=True, text=True, timeout=15)
+    assert after.returncode == 64
+    assert "Could not determine home directory." not in after.stderr
+    native = subprocess.run([sys.executable, "-m", "app.core.agent.compute_jobs"], env=environment, capture_output=True, text=True, timeout=15)
+    assert native.returncode == 64
 
 
 def _install_concurrent_start_harness(
