@@ -1,7 +1,9 @@
 """Finish pinned reference scans when only derived event proofs change.
 
-Code version: v1.0.0-codex.0
+Code version: v1.0.1-codex.0
 """
+
+from contextlib import closing
 
 import hashlib
 import json
@@ -19,7 +21,7 @@ CID = fixtures.CID
 
 
 def _refs(cache):
-    with sqlite3.connect(cache) as connection:
+    with closing(sqlite3.connect(cache)) as connection, connection:
         return connection.execute("SELECT * FROM refs ORDER BY id").fetchall()
 
 
@@ -53,7 +55,7 @@ def test_event_only_drift_keeps_complete_checkpoint_and_next_query_reuses_every_
     cache = analysis.contact_analysis_cache_path(f.store, CID)
     checkpoint_refs = _refs(cache)
     assert checkpoint_refs
-    with sqlite3.connect(cache) as connection:
+    with closing(sqlite3.connect(cache)) as connection, connection:
         info = dict(connection.execute("SELECT key,value FROM info"))
     assert info["fingerprint"] == before
     assert analysis._cache_ready(cache, before)

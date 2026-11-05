@@ -1,6 +1,6 @@
 """Mac text observations add quote context without rewriting native message rows.
 
-Code version: v1.1.0-codex.0
+Code version: v1.1.1-codex.0
 """
 
 from __future__ import annotations
@@ -246,7 +246,7 @@ def test_invalid_mac_observation_retains_the_original_unavailable_quote(
         else:
             value = json.loads(registry)
             value["observations"][0]["account_id"] = "wxid_wrong_synthetic_account"
-            fixture.registry_path.write_text(json.dumps(value, ensure_ascii=False))
+            fixture.registry_path.write_text(json.dumps(value, ensure_ascii=False), encoding="utf-8")
         parent = open_observed_quote(page, fixture)
         expect(parent.locator(":scope > .wechat-message-text")).to_have_text(
             fixture.original_text

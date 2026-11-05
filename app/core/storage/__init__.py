@@ -1,6 +1,6 @@
 """Durable local-resource boundary for catalogs, history, and backups."""
 
-# Code version: v1.5.0-codex.0
+# Code version: v1.6.0-codex.0
 
 from ..chat_history_browser import (
     attach_media_references,
@@ -13,6 +13,7 @@ from ..wechat_resources import resolve_resource_for_reveal
 from ..local_media_browser import (
     DISPLAY_TIMEZONE,
     LocalMediaCatalog,
+    build_local_store_pagination,
     format_captured_at_label,
     format_captured_at_timestamp_label,
     format_datetime_label,
@@ -40,6 +41,28 @@ from ..shadow_backup import (
     browse_settings_directory,
 )
 
+_LAZY_EXPORTS = {
+    "wechat_contact_analysis": frozenset({
+        "ContactAnalysisSourceChanged", "query_contact_analysis",
+        "contact_analysis_export_context", "export_contact_analysis_items",
+        "message_source_location",
+    }),
+    "wechat_display_names": frozenset({"WechatDisplayNames"}),
+    "wechat_html_export": frozenset({"normalize_html_clock"}),
+    "wechat_session_export": frozenset({"WechatSessionExport", "WechatSessionSourceChanged"}),
+}
+
+
+def __getattr__(name: str):
+    """Keep optional history projections behind the local-resource facade."""
+    from importlib import import_module
+
+    for module, names in _LAZY_EXPORTS.items():
+        if name in names:
+            return getattr(import_module(f"..{module}", __package__), name)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
 __all__ = [
     "LocalMediaCatalog",
     "PromptPage",
@@ -52,6 +75,7 @@ __all__ = [
     "attach_media_references",
     "browse_settings_directory",
     "build_chat_history_markdown",
+    "build_local_store_pagination",
     "DISPLAY_TIMEZONE",
     "file_manager_open_directory_command",
     "format_captured_at_label",
@@ -71,4 +95,5 @@ __all__ = [
     "resolve_local_media_path",
     "resolve_resource_for_reveal",
     "reveal_media_path",
+    *(name for names in _LAZY_EXPORTS.values() for name in sorted(names)),
 ]

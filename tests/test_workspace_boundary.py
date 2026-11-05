@@ -5,7 +5,7 @@ break: path isolation, read-only refusal, read-receipt expiry, MCP response cont
 route compatibility, application-instance isolation, and shutdown behavior.
 """
 
-# Code version: v1.0.6-claude.0
+# Code version: v1.0.7-codex.0
 
 from __future__ import annotations
 
@@ -37,10 +37,10 @@ class _Settings:
 def project(tmp_path: Path) -> Path:
     root = tmp_path / "project"
     root.mkdir()
-    (root / "AGENTS.md").write_text("# Rules\n", encoding="utf-8")
-    (root / "app.py").write_text("print('hi')\n", encoding="utf-8")
+    (root / "AGENTS.md").write_bytes(b"# Rules\n")
+    (root / "app.py").write_bytes(b"print('hi')\n")
     (root / "nested").mkdir()
-    (root / "nested" / "inner.txt").write_text("inner\n", encoding="utf-8")
+    (root / "nested" / "inner.txt").write_bytes(b"inner\n")
     return root
 
 

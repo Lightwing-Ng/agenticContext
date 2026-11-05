@@ -1,10 +1,11 @@
 """Reviewed packet preferences upgrade retained references without rescanning sources.
 
-Code version: v1.0.1-codex.0
+Code version: v1.0.2-codex.0
 """
 
 from __future__ import annotations
 
+from contextlib import closing
 import csv
 from datetime import datetime
 import hashlib
@@ -35,7 +36,7 @@ def _hash(value):
 
 
 def _snapshot(cache):
-    with sqlite3.connect(cache) as connection:
+    with closing(sqlite3.connect(cache)) as connection:
         return {
             table: connection.execute(
                 "SELECT * FROM " + table + " ORDER BY 1"
@@ -150,7 +151,7 @@ def retained_review_store(reviewed_store):
         )
     cache = analysis.contact_analysis_cache_path(store, CONTACT)
     cache.parent.mkdir(parents=True, exist_ok=True)
-    with sqlite3.connect(cache) as connection:
+    with closing(sqlite3.connect(cache)) as connection, connection:
         connection.executescript(analysis._REFERENCE_SCHEMA)
         for table in ("refs", "statement_groups", "statement_members"):
             for raw in fixture.output.execute("SELECT * FROM " + table):

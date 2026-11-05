@@ -1,6 +1,6 @@
 """Workspace evidence: bounded Git status and mutation fingerprints."""
 
-# Code version: v1.0.1-codex.0
+# Code version: v1.0.2-codex.0
 
 from __future__ import annotations
 
@@ -573,7 +573,7 @@ def _workspace_mutation_fingerprint(
             ):
                 continue
             try:
-                entry_stat = entry.stat(follow_symlinks=False)
+                entry_stat = os.stat(entry_path, follow_symlinks=False)
             except OSError:
                 return digest.hexdigest(), False
             current_directory_entries.append(

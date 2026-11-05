@@ -5,7 +5,7 @@ for a browser, an Agent, or a cache worker. Serialization of one stored item int
 public shape lives here too, so a template global and a JSON response cannot drift.
 """
 
-# Code version: v1.20.1-codex.0
+# Code version: v1.20.2-codex.0
 
 from __future__ import annotations
 
@@ -229,8 +229,8 @@ def register_local_resource_routes(app: Flask, context: LocalResourceRouteContex
     @blueprint.get("/browser/wechat/contacts/<contact_id>")
     def wechat_contact_analysis(contact_id: str):
         """Project all proven source occurrences of one contact into a standard table."""
-        from app.core.local_media_browser import build_local_store_pagination
-        from app.core.wechat_contact_analysis import (
+        from app.core.storage import (
+            build_local_store_pagination,
             ContactAnalysisSourceChanged,
             query_contact_analysis,
         )
@@ -351,7 +351,7 @@ def register_local_resource_routes(app: Flask, context: LocalResourceRouteContex
     @blueprint.get("/browser/wechat/contacts/<contact_id>/export.csv")
     def wechat_contact_csv(contact_id: str):
         """Stream every filtered statement without writing an export to local storage."""
-        from app.core.wechat_contact_analysis import (
+        from app.core.storage import (
             ContactAnalysisSourceChanged,
             contact_analysis_export_context,
             export_contact_analysis_items,
@@ -417,7 +417,7 @@ def register_local_resource_routes(app: Flask, context: LocalResourceRouteContex
     @blueprint.get("/browser/wechat/messages/<message_id>")
     def wechat_message_source(message_id: str):
         """Open the exact source message, including its original account and page."""
-        from app.core.wechat_contact_analysis import (
+        from app.core.storage import (
             ContactAnalysisSourceChanged,
             message_source_location,
         )
@@ -626,7 +626,7 @@ def register_local_resource_routes(app: Flask, context: LocalResourceRouteContex
     @blueprint.get("/browser/wechat/session/<session_id>/export.csv")
     def browser_wechat_session_csv(session_id: str):
         """Download the complete scoped timeline in chronological order."""
-        from app.core.wechat_session_export import (
+        from app.core.storage import (
             WechatSessionExport,
             WechatSessionSourceChanged,
         )

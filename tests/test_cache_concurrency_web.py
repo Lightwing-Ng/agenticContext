@@ -1,6 +1,6 @@
 """Route-level coverage for Cache tasks that run together or wait in the queue.
 
-Code version: v1.0.2-codex.1
+Code version: v1.0.3-codex.0
 """
 
 from __future__ import annotations
@@ -53,6 +53,8 @@ def cache_app(tmp_path: Path, macos_host) -> Iterator[Flask]:
         zhihu_browser="edge",
     )
     with ExitStack() as stack:
+        # Safari cases model cloneable macOS Chromium profiles.
+        stack.enter_context(patch("app.core.cache_task_coordinator.is_windows_host", return_value=False))
         stack.enter_context(patch("app.web.config_store.load_saved_config", return_value=config))
         stack.enter_context(patch("app.web.config_store.save_config"))
         for module in SERVICE_MODULES:

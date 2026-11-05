@@ -1,6 +1,6 @@
 """Prepare and verify one lossless SQLite compaction outside the runtime directory.
 
-Code version: v1.2.2-codex.0
+Code version: v1.2.4-codex.0
 
 This tool never publishes, removes, or backs up a live database. The caller must
 preserve an independently verified external rollback before an atomic pathname
@@ -23,8 +23,8 @@ import subprocess
 import sys
 
 
-VERSION = "v1.2.2-codex.0"
-_SUPPORTED_VERSIONS = {"v1.0.0-codex.0", "v1.1.0-codex.0", "v1.1.1-codex.0", "v1.2.0-codex.0", "v1.2.1-codex.0", VERSION}
+VERSION = "v1.2.4-codex.0"
+_SUPPORTED_VERSIONS = {"v1.0.0-codex.0", "v1.1.0-codex.0", "v1.1.1-codex.0", "v1.2.0-codex.0", "v1.2.1-codex.0", "v1.2.2-codex.0", "v1.2.3-codex.0", VERSION}
 _MODULUS = 1 << 256
 _DATALESS = 0x40000000
 _PIN = "history_file_identity"
@@ -41,6 +41,12 @@ def identity(path):
         "size": state.st_size,
         "mtime_ns": state.st_mtime_ns,
     }
+
+
+def _allocated_bytes(path):
+    """Leave unavailable filesystem allocation unknown instead of claiming zero."""
+    blocks = getattr(Path(path).stat(), "st_blocks", None)
+    return blocks * 512 if blocks is not None else None
 
 
 def resident(path):
@@ -332,7 +338,7 @@ def adopt_existing(database, candidate, receipt, *, page_size=32768, compression
         "hfs_compression": {
             "enabled": bool(getattr(candidate.stat(), "st_flags", 0) & 0x20),
             "status": compression_status,
-            "allocated_bytes_after": candidate.stat().st_blocks * 512,
+            "allocated_bytes_after": _allocated_bytes(candidate),
             "reason": "The optional compression attempt was not adopted; no general format-size limit is inferred."
             if compression_status == "unsupported_recorded" else "No new filesystem compression was attempted.",
         },

@@ -1,6 +1,6 @@
 """Microsoft Copilot participates in the existing text-only Cache contracts.
 
-Code version: v1.2.0-codex.0
+Code version: v1.2.1-codex.0
 """
 
 from __future__ import annotations
@@ -25,7 +25,7 @@ from app.web.cache_sources import get_cache_source_view
 from app.web.form_config import parse_form_config
 
 
-def test_copilot_browser_default_and_persisted_configuration(tmp_path, monkeypatch):
+def test_copilot_browser_default_and_persisted_configuration(tmp_path, monkeypatch, macos_host):
     monkeypatch.setattr("app.core.config.is_macos_host", lambda: True)
     assert CrawlConfig().copilot_browser == "safari"
     monkeypatch.setattr("app.core.config.is_macos_host", lambda: False)

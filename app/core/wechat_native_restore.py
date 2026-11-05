@@ -1,6 +1,6 @@
 """Restore bounded native text subsets through an append-only APFS clone.
 
-Code version: v1.2.1-codex.0
+Code version: v1.3.0-codex.0
 """
 
 from __future__ import annotations
@@ -13,6 +13,8 @@ import os
 from pathlib import Path
 import sqlite3
 import tempfile
+
+from .owner_only_files import ensure_owner_only
 
 from .wechat_archive import (
     _SCHEMA,
@@ -440,7 +442,7 @@ def restore_wechat_text_batches(
                 target, initial, original_sha256, database=True
             ):
                 raise ValueError("The archive changed while creating its APFS clone.")
-        os.chmod(stage, 0o600)
+        ensure_owner_only(stage)
         connection = sqlite3.connect(stage)
         connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA journal_mode=DELETE")
@@ -951,7 +953,8 @@ def restore_wechat_text_batches(
         connection = None
         report["staged_database_bytes"] = stage.stat().st_size
         if apply and report["changed"]:
-            with stage.open("rb") as stream:
+            # A writable open can decompress APFS files; Windows needs it for fsync.
+            with stage.open("r+b" if os.name == "nt" else "rb") as stream:
                 os.fsync(stream.fileno())
         if not _content_identity_matches(
             target, initial, original_sha256, database=True

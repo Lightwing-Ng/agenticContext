@@ -10,7 +10,7 @@ registered first because it owns the access gate and the exclusive-browser rule 
 Tunnel, Jury, iPhone, and Cache blueprints borrow through :class:`AgentSurface`.
 """
 
-# Code version: v2.10.2-codex.0
+# Code version: v2.10.3-codex.0
 
 from __future__ import annotations
 
@@ -815,6 +815,13 @@ def create_app(
     @app.after_request
     def apply_local_security_headers(response: Response) -> Response:
         """Prevent framing, MIME sniffing, and storage of Agent credentials or state."""
+        if (
+            request.endpoint == "static"
+            and request.path.endswith((".js", ".mjs"))
+            and response.status_code in {200, 206}
+        ):
+            # Host MIME registries can mislabel modules and disable their imports.
+            response.mimetype = "text/javascript"
         response.vary.update(
             ("Sec-Fetch-Site", "Sec-Fetch-Mode", "Sec-Fetch-Dest", "Sec-Fetch-User")
         )
