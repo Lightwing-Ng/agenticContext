@@ -1,10 +1,11 @@
 """Verified transcript chains keep one native original and all receiving evidence.
 
-Code version: v1.4.2-codex.0
+Code version: v1.4.3-codex.0
 """
 
 from __future__ import annotations
 
+from contextlib import closing
 from copy import deepcopy
 from datetime import datetime, timedelta
 import hashlib
@@ -81,7 +82,7 @@ def forwarded_origin_store(native_html_store, monkeypatch):
         "export_msgtype": "49",
     }
     native_parts, html_parts, native_paths, html_paths = [], [], [], []
-    with sqlite3.connect(fixture.history) as connection:
+    with closing(sqlite3.connect(fixture.history)) as connection, connection:
         connection.row_factory = sqlite3.Row
         originals = [
             dict(
@@ -324,7 +325,7 @@ def forwarded_origin_store(native_html_store, monkeypatch):
         ],
     )
     owner_id = canonical_contact_id(fixture.owner, authority="native_account_owner")
-    with sqlite3.connect(fixture.registry) as connection:
+    with closing(sqlite3.connect(fixture.registry)) as connection, connection:
         connection.execute(
             "INSERT OR IGNORE INTO contacts VALUES(?,?,?,?,?,?)",
             (owner_id, "wechat", "", fixture.owner, "wechat_account", "verified"),
@@ -370,7 +371,7 @@ def forwarded_origin_store(native_html_store, monkeypatch):
 
 
 def _update_proof(fixture, parent, mutate):
-    with sqlite3.connect(fixture.history) as connection:
+    with closing(sqlite3.connect(fixture.history)) as connection, connection:
         proof = json.loads(
             connection.execute(
                 "SELECT provenance FROM messages WHERE id=?", (parent,)
