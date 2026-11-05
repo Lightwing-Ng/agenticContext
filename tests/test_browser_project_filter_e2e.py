@@ -1,10 +1,11 @@
-"""Isolated Local resources Project filtering. Code version: v1.1.0-codex.0."""
+"""Isolated Local resources Project filtering. Code version: v1.1.1-codex.0."""
 
 from __future__ import annotations
 
 from collections.abc import Iterator
 from threading import Thread
 from urllib.parse import parse_qs, urlsplit
+from uuid import uuid4
 
 import pytest
 from playwright.sync_api import Browser, Locator, Page, expect
@@ -120,6 +121,67 @@ def _sidebar(page: Page, *, opened: bool) -> None:
     if (toggle.get_attribute("aria-expanded") == "true") != opened:
         toggle.click()
     expect(toggle).to_have_attribute("aria-expanded", str(opened).lower())
+    settled = page.wait_for_function(
+        """token => {
+            const rect = node => {
+                if (!node) return null;
+                const box = node.getBoundingClientRect();
+                return [box.x, box.y, box.width, box.height];
+            };
+            const table = document.querySelector('.browser-session-index-shell');
+            const header = table?.querySelector('[data-table-header]');
+            const body = table?.querySelector('[data-table-body]');
+            const scrollport = table?.querySelector('[data-table-scroll]');
+            const trigger = document.querySelector(
+                '[data-browser-header-filter] [data-browser-source-filter-trigger]');
+            const headerCells = Array.from(header?.rows[0]?.cells || [], rect);
+            const bodyCells = Array.from(body?.rows[0]?.cells || [], rect);
+            const geometry = JSON.stringify([
+                rect(document.querySelector('.app-shell')),
+                rect(document.querySelector('.sidebar')),
+                rect(table), rect(header), rect(body), rect(trigger), headerCells, bodyCells,
+            ]);
+            const previous = window.__projectFilterLayoutSample;
+            const frames = previous?.token === token && previous.geometry === geometry
+                ? previous.frames + 1 : 1;
+            window.__projectFilterLayoutSample = {token, geometry, frames};
+            // Aria updates before ResizeObserver queues the next header-column sync.
+            if (frames < 3) return false;
+            const box = trigger?.getBoundingClientRect();
+            const centerX = box ? box.x + box.width / 2 : null;
+            const centerY = box ? box.y + box.height / 2 : null;
+            const centerInViewport = box && centerX >= 0 && centerX < innerWidth
+                && centerY >= 0 && centerY < innerHeight;
+            return {
+                headerCells, bodyCells,
+                hasTable: Boolean(table),
+                scrollbarWidth: scrollport ? scrollport.offsetWidth - scrollport.clientWidth : 0,
+                triggerHit: Boolean(centerInViewport
+                    && trigger.contains(document.elementFromPoint(centerX, centerY))),
+            };
+        }""",
+        arg=uuid4().hex,
+        polling="raf",
+    )
+    try:
+        geometry = settled.json_value()
+    finally:
+        settled.dispose()
+    header_cells = geometry["headerCells"]
+    body_cells = geometry["bodyCells"]
+    if geometry["hasTable"]:
+        assert header_cells and body_cells, (
+            "The session table must have header and body columns."
+        )
+    assert len(header_cells) == len(body_cells)
+    for index, (header, body) in enumerate(zip(header_cells, body_cells, strict=True)):
+        scrollbar = geometry["scrollbarWidth"] if index == len(body_cells) - 1 else 0
+        assert abs(header[0] - body[0]) <= 1, "Header/body column left edges differ."
+        assert abs(header[2] - body[2] - scrollbar) <= 1, (
+            "Header/body column widths differ."
+        )
+    if not opened:
+        assert geometry["triggerHit"], "The settled Source trigger is obstructed."
 
 
 def _project_trigger(page: Page) -> Locator:
@@ -144,6 +206,52 @@ def _assert_no_horizontal_overflow(page: Page) -> None:
         "Math.max(document.documentElement.scrollWidth, document.body.scrollWidth)"
         " <= window.innerWidth + 1"
     )
+
+
+@pytest.mark.parametrize(
+    ("fault", "message"),
+    (
+        ("column-offset", "Header/body column left edges"),
+        ("obstruction", "Source trigger is obstructed"),
+    ),
+)
+def test_sidebar_layout_readiness_rejects_stable_geometry_defects(
+    disposable_browser: Browser,
+    project_browser_server_url: str,
+    fault: str,
+    message: str,
+) -> None:
+    context = disposable_browser.new_context(
+        viewport={"width": 1_006, "height": 844},
+        reduced_motion="reduce",
+    )
+    page = context.new_page()
+    try:
+        page.goto(
+            f"{project_browser_server_url}/browser?view=text&source=chatgpt&session_view=1"
+        )
+        _sidebar(page, opened=False)
+        if fault == "column-offset":
+            page.add_style_tag(
+                content=".browser-session-index-shell > [data-table-header] { transform: translateX(4px); }",
+            )
+        else:
+            page.locator(
+                "[data-browser-header-filter] [data-browser-source-filter-trigger]",
+            ).evaluate("""trigger => {
+                const rect = trigger.getBoundingClientRect();
+                const obstruction = document.createElement('div');
+                Object.assign(obstruction.style, {
+                    position: 'fixed', left: `${rect.x}px`, top: `${rect.y}px`,
+                    width: `${rect.width}px`, height: `${rect.height}px`, zIndex: '2147483647',
+                });
+                document.body.append(obstruction);
+            }""")
+        # Stability must not conceal a persistent alignment or hit-test defect.
+        with pytest.raises(AssertionError, match=message):
+            _sidebar(page, opened=False)
+    finally:
+        context.close()
 
 
 @pytest.mark.parametrize(
