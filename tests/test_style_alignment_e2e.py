@@ -1,4 +1,4 @@
-"""Shared component annotation regressions. Code version: v1.8.2-codex.0."""
+"""Shared component annotation regressions. Code version: v1.8.3-codex.0."""
 
 import pytest
 from playwright.sync_api import expect
@@ -351,7 +351,18 @@ def test_shared_primitive_catalog_geometry_and_states(
         page.keyboard.press("Shift+Tab")
         page.keyboard.press("Tab")
         expect(next_button).to_be_focused()
-        page.wait_for_timeout(220)
+        expected_pagination_color = next_button.evaluate(
+            """node => {
+                const probe = document.createElement('span');
+                probe.style.color = 'var(--local-store-pagination-button-color-hover)';
+                node.append(probe);
+                const color = getComputedStyle(probe).color;
+                probe.remove();
+                return color;
+            }"""
+        )
+        expect(next_button).to_have_css("color", expected_pagination_color)
+        expect(next_button.locator(".icon")).to_have_css("background-color", expected_pagination_color)
         pagination_state = next_button.evaluate(
             """node => {
                 const icon = node.querySelector('.icon');
@@ -374,11 +385,9 @@ def test_shared_primitive_catalog_geometry_and_states(
             assert pagination_state["transitionDuration"].split(",")[0].strip() == "0.001s"
         if not touch:
             page.mouse.move(0, 0)
-            page.get_by_role("button", name="Session page 2", exact=True).hover()
-            page.wait_for_timeout(220)
-            assert page.get_by_role("button", name="Session page 2", exact=True).evaluate(
-                "node => getComputedStyle(node).color"
-            ) == pagination_state["expected"]
+            second_page = page.get_by_role("button", name="Session page 2", exact=True)
+            second_page.hover()
+            expect(second_page).to_have_css("color", pagination_state["expected"])
     finally:
         context.close()
 
