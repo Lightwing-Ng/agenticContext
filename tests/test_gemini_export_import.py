@@ -1,6 +1,6 @@
 """Synthetic source, preservation, and crash-recovery tests for Takeout imports."""
 
-# Code version: v1.2.0-codex.0
+# Code version: v1.2.1-codex.0
 
 from __future__ import annotations
 
@@ -175,7 +175,7 @@ def test_full_source_bundle_is_preserved_without_executing_uploads(tmp_path):
     bundle = Path(result["bundle"])
     for name in ("MyActivity.html", "upload.py", "unreferenced.bin"):
         assert (bundle / "source" / name).read_bytes() == (source / name).read_bytes()
-    catalog = json.loads((bundle / "events.json").read_text())
+    catalog = json.loads((bundle / "events.json").read_text(encoding="utf-8"))
     assert catalog["events"][0]["raw_html_sha256"] == importer._sha(catalog["events"][0]["raw_html"].encode())
     assert owner_only_directory_problem(bundle) == ""
     for path in bundle.rglob("*"):
@@ -261,7 +261,7 @@ def test_crash_after_history_replace_is_idempotently_reconciled(tmp_path, monkey
     assert replay.summary["already_imported"]
     assert importer.apply_import(replay)["added_rows"] == 0
     assert gemini_history_path(root).read_bytes() == original
-    assert json.loads(next((root / "llm" / "gemini" / "imports").glob("*/receipt.json")).read_text())["state"] == "committed"
+    assert json.loads(next((root / "llm" / "gemini" / "imports").glob("*/receipt.json")).read_text(encoding="utf-8"))["state"] == "committed"
 
 
 def test_prepared_candidate_is_verified_and_resumed_after_precommit_failure(tmp_path, monkeypatch):
@@ -508,7 +508,7 @@ def test_existing_receipt_format_replays_without_rewriting_preserved_metadata(tm
     root = tmp_path / "store"
     result = importer.apply_import(_plan(source, root))
     receipt_path = Path(result["bundle"]) / "receipt.json"
-    receipt = json.loads(receipt_path.read_text())
+    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
     receipt["version"] = "v1.0.0-codex.0"
     receipt_path.write_bytes(importer._json_bytes(receipt))
     before_receipt = receipt_path.read_bytes()
