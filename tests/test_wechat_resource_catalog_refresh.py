@@ -1,10 +1,11 @@
 """Full native catalog refresh reuses source evidence without broadening reads.
 
-Code version: v1.0.0-codex.0
+Code version: v1.0.1-codex.0
 """
 
 from __future__ import annotations
 
+from contextlib import closing
 from copy import deepcopy
 import json
 import sqlite3
@@ -44,7 +45,7 @@ def test_full_candidate_reproves_events_and_preserves_both_inputs(native_metadat
     assert report["published"] is False
     assert updates[-1]["phase"] == "conversation"
     assert updates[-1]["checked_resources"] == 3
-    with sqlite3.connect(candidate) as output:
+    with closing(sqlite3.connect(candidate)) as output, output:
         assert (
             output.execute("SELECT * FROM messages ORDER BY ordinal").fetchall()
             == fixture.resources[1:]

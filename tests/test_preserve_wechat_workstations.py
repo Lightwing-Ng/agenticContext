@@ -1,8 +1,9 @@
-"""Verify source-preserving workstation relocation. Code version: v1.0.1-codex.0."""
+"""Verify source-preserving workstation relocation. Code version: v1.2.1-codex.0."""
 
 from __future__ import annotations
 
 import importlib.util
+import errno
 import json
 import os
 from pathlib import Path
@@ -132,10 +133,14 @@ def test_source_changes_before_hash_blocks_rename(tool, tmp_path, monkeypatch):
     assert not (target / source.relative_to(root)).exists()
 
 
-def test_interrupted_rename_resumes_from_sealed_receipt(tool, tmp_path):
+@pytest.mark.parametrize("legacy_metadata", [False, True])
+def test_interrupted_rename_resumes_from_sealed_receipt(tool, tmp_path, legacy_metadata):
     root, target = tmp_path / "wechat", tmp_path / "workstation"
     source = write(root, "recovery/receipt.json")
     before = tool.identity(source)
+    if legacy_metadata:
+        before.pop("file_attributes", None)
+        before.pop("reparse_tag", None)
     checksum = tool.hash_local(source, before)
     target.mkdir()
     moved = target / "recovery/receipt.json"
@@ -342,12 +347,256 @@ def test_native_exclusive_rename_dispatch_uses_no_replace_flag(native_tool, monk
 def test_unsupported_apply_and_rename_fail_before_native_or_file_changes(native_tool, tmp_path, monkeypatch):
     root, destination = tmp_path / "wechat", tmp_path / "workstation"
     source = write(root, "recovery/evidence.json")
-    monkeypatch.setattr(native_tool, "sys", SimpleNamespace(platform="win32"))
+    monkeypatch.setattr(native_tool, "sys", SimpleNamespace(platform="unsupported-platform"))
     monkeypatch.setattr(native_tool.ctypes, "CDLL", lambda *args, **kwargs: pytest.fail("Unsupported native dispatch"))
-    with pytest.raises(ValueError, match="only on macOS and Linux"):
+    with pytest.raises(ValueError, match="only on macOS, Windows, and Linux"):
         native_tool.rename_exclusive(source, destination)
-    with pytest.raises(ValueError, match="only on macOS and Linux"):
+    with pytest.raises(ValueError, match="only on macOS, Windows, and Linux"):
         native_tool.preserve(root, destination, apply=True)
     assert source.exists()
     assert not destination.exists()
     assert not (root / native_tool.LOCATOR).exists()
+
+
+def test_missing_allocation_metadata_retains_flags_and_never_reads_payloads(tool, tmp_path, monkeypatch):
+    root, target = tmp_path / "wechat", tmp_path / "workstation"
+    resident = write(root, "storage_backups/run/history.sqlite3")
+    placeholder = write(root, "contacts 2.sqlite3")
+    lstat = Path.lstat
+
+    class NoAllocation:
+        def __init__(self, metadata, dataless):
+            self.metadata = metadata
+            self.st_flags = getattr(metadata, "st_flags", 0) | (tool.DATALESS if dataless else 0)
+
+        def __getattr__(self, name):
+            if name == "st_blocks":
+                raise AttributeError("Windows does not expose st_blocks")
+            return getattr(self.metadata, name)
+
+    def missing_blocks(path, *args, **kwargs):
+        state = lstat(path, *args, **kwargs)
+        return NoAllocation(state, path == placeholder) if path in {resident, placeholder} else state
+
+    monkeypatch.setattr(Path, "lstat", missing_blocks)
+    monkeypatch.setattr(Path, "open", lambda *args, **kwargs: pytest.fail("Metadata preview opened a payload"))
+    report = tool.preserve(root, target)
+    assert report["dry_run"] and not target.exists()
+    assert report["cloud_upload_verified"] is False
+    assert report["local_release_attempted"] is False
+    entries = report["entries"]
+    for relative, path in (("storage_backups/run/history.sqlite3", resident), ("contacts 2.sqlite3", placeholder)):
+        recorded = entries[relative]["source_identity"]
+        actual = lstat(path)
+        assert recorded["allocated_bytes"] is None
+        assert recorded["bytes"] == actual.st_size
+        assert recorded["inode"] == actual.st_ino and recorded["mtime_ns"] == actual.st_mtime_ns
+    assert entries["contacts 2.sqlite3"]["source_identity"]["flags"] & tool.DATALESS
+    assert entries["contacts 2.sqlite3"]["defer_reason"] == "cloud_placeholder_requires_separate_preservation"
+    assert entries["storage_backups/run/history.sqlite3"]["defer_reason"] is None
+
+
+@pytest.fixture
+def windows_filesystem(native_tool, monkeypatch):
+    tool = native_tool
+    state = SimpleNamespace(rename_calls=[], create_collision=False, fail_sync=False, binary_opens=[])
+    binary = getattr(os, "O_BINARY", 0x40000000)
+
+    class WindowsOS:
+        name = "nt"
+        O_BINARY = binary
+
+        def __getattr__(self, name):
+            return getattr(os, name)
+
+        def open(self, path, flags, *args, **kwargs):
+            if Path(path).is_dir():
+                raise OSError(errno.EACCES, "Windows CRT cannot open this directory")
+            assert flags & binary, "Preservation checksums require binary source descriptors"
+            state.binary_opens.append(Path(path))
+            return os.open(path, flags if os.name == "nt" else flags & ~binary, *args, **kwargs)
+
+        def rename(self, source, destination):
+            state.rename_calls.append((source, destination))
+            if state.create_collision:
+                destination.write_bytes(b"Independent concurrent destination")
+            if destination.exists() or destination.is_symlink():
+                raise FileExistsError(destination)
+            return os.rename(source, destination)
+
+        def fsync(self, descriptor):
+            if state.fail_sync:
+                raise OSError(errno.EIO, "Synthetic preservation file sync failure")
+            return os.fsync(descriptor)
+
+    monkeypatch.setattr(tool, "os", WindowsOS())
+    monkeypatch.setattr(tool, "sys", SimpleNamespace(platform="win32"))
+    monkeypatch.setattr(tool, "open_handles", lambda paths: {})
+    return state
+
+
+@pytest.mark.parametrize("change", ["none", "destination_collision", "source_drift"])
+def test_windows_preservation_keeps_binary_bytes_and_refuses_collision_or_drift(
+    native_tool, tmp_path, windows_filesystem, monkeypatch, change,
+):
+    tool = native_tool
+    root, target = tmp_path / "wechat", tmp_path / "workstation"
+    body = b"Exact original\r\nbytes\x1aafter-marker\x00\xff"
+    source = write(root, "recovery/evidence.bin", body)
+    destination = target / "recovery/evidence.bin"
+    original = source.stat()
+    windows_filesystem.create_collision = change == "destination_collision"
+    if change == "source_drift":
+        calls = []
+
+        def drift(paths):
+            calls.append(list(paths))
+            if len(calls) == 2:
+                source.write_bytes(b"Concurrent source evidence")
+            return {}
+
+        monkeypatch.setattr(tool, "open_handles", drift)
+    if change == "none":
+        result = tool.preserve(root, target, apply=True)
+        assert destination.read_bytes() == body and not source.exists()
+        assert (destination.stat().st_ino, destination.stat().st_mtime_ns) == (original.st_ino, original.st_mtime_ns)
+        assert result["cloud_upload_verified"] is result["local_release_attempted"] is False
+        assert windows_filesystem.binary_opens == [source, destination]
+    elif change == "destination_collision":
+        with pytest.raises(FileExistsError):
+            tool.preserve(root, target, apply=True)
+        assert source.read_bytes() == body
+        assert destination.read_bytes() == b"Independent concurrent destination"
+    else:
+        with pytest.raises(ValueError, match="changed after planning"):
+            tool.preserve(root, target, apply=True)
+        assert source.read_bytes() == b"Concurrent source evidence"
+        assert not destination.exists()
+        assert windows_filesystem.rename_calls == []
+
+
+def test_windows_directory_sync_exception_does_not_suppress_file_sync_failures(native_tool, tmp_path, windows_filesystem):
+    tool = native_tool
+    root, target = tmp_path / "wechat", tmp_path / "workstation"
+    source = write(root, "recovery/evidence.bin", b"Retain source evidence")
+    windows_filesystem.fail_sync = True
+    with pytest.raises(OSError, match="Synthetic preservation file sync failure"):
+        tool.preserve(root, target, apply=True)
+    assert source.read_bytes() == b"Retain source evidence"
+    assert not (target / "recovery/evidence.bin").exists()
+    assert windows_filesystem.rename_calls == []
+
+
+@pytest.mark.parametrize("attributes", [0x1000, 0x40000, 0x400000, 0x400])
+@pytest.mark.parametrize("kind", ["payload", "control"])
+def test_native_placeholder_attributes_are_retained_and_refused_before_reads(
+    tool, tmp_path, monkeypatch, attributes, kind,
+):
+    root, target = tmp_path / "wechat", tmp_path / "workstation"
+    relative = "storage_backups/run/history.sqlite3" if kind == "payload" else "text_observations.json"
+    source = write(root, relative, b"Private synthetic source bytes")
+    lstat = Path.lstat
+
+    class NativeAttributes:
+        st_file_attributes = attributes
+        st_reparse_tag = 0x9000001A
+
+        def __init__(self, metadata):
+            self.metadata = metadata
+
+        def __getattr__(self, name):
+            return getattr(self.metadata, name)
+
+    def native_metadata(path, *args, **kwargs):
+        value = lstat(path, *args, **kwargs)
+        return NativeAttributes(value) if path == source else value
+
+    monkeypatch.setattr(Path, "lstat", native_metadata)
+    metadata = tool.identity(source)
+    assert metadata["file_attributes"] == attributes
+    assert metadata["reparse_tag"] == 0x9000001A
+    monkeypatch.setattr(Path, "open", lambda *args, **kwargs: pytest.fail("A native placeholder was opened"))
+    if kind == "control":
+        with pytest.raises(ValueError, match="bounded local JSON"):
+            tool.local_json(source)
+    else:
+        checksum = tool.hash_local
+        monkeypatch.setattr(tool, "hash_local", lambda *args: pytest.fail("A native placeholder was hashed"))
+        report = tool.preserve(root, target)
+        expected_reason = ("native_reparse_requires_separate_preservation" if attributes == 0x400
+                           else "cloud_placeholder_requires_separate_preservation")
+        assert report["entries"][relative]["defer_reason"] == expected_reason
+        with pytest.raises(ValueError, match="unavailable"):
+            checksum(source, metadata)
+        assert not target.exists()
+
+
+@pytest.mark.parametrize("flag", [0x400, 0x1000, 0x40000, 0x400000, "mac-dataless"])
+@pytest.mark.parametrize("location", ["root", "source_parent", "destination_parent", "child", "nested_child", "activity"])
+def test_unavailable_directory_never_allows_traversal_or_relocation(tool, tmp_path, monkeypatch, flag, location):
+    root = tmp_path / "source-parent/wechat" if location == "source_parent" else tmp_path / "wechat"
+    target = tmp_path / "destination-parent/workstation" if location == "destination_parent" else tmp_path / "workstation"
+    relative = ("recovery/blocked/evidence.bin" if location == "nested_child"
+                else "contact_activity/.contact-analysis-blocked.sqlite3" if location == "activity"
+                else "recovery/evidence.bin")
+    source = write(root, relative, b"Untouched synthetic source evidence")
+    target.parent.mkdir(parents=True, exist_ok=True)
+    blocked = {"root": root, "source_parent": root.parent, "destination_parent": target.parent,
+               "child": root / "recovery", "nested_child": root / "recovery/blocked",
+               "activity": root / "contact_activity"}[location]
+    lstat, scandir = Path.lstat, os.scandir
+
+    class FlaggedDirectory:
+        def __init__(self, value):
+            self.value = value
+            self.st_flags = getattr(value, "st_flags", 0) | (tool.DATALESS if flag == "mac-dataless" else 0)
+            self.st_file_attributes = 0x10 | (0 if flag == "mac-dataless" else flag)
+            self.st_reparse_tag = 0xA0000003 if flag == 0x400 else 0
+
+        def __getattr__(self, name):
+            return getattr(self.value, name)
+
+    def metadata(path, *args, **kwargs):
+        if path != blocked and path.is_relative_to(blocked):
+            pytest.fail("Metadata traversed an unavailable ancestor")
+        value = lstat(path, *args, **kwargs)
+        return FlaggedDirectory(value) if path == blocked else value
+
+    def no_descent(path):
+        if Path(path).is_relative_to(blocked):
+            pytest.fail("Enumeration entered an unavailable directory")
+        return scandir(path)
+
+    monkeypatch.setattr(Path, "lstat", metadata)
+    monkeypatch.setattr(tool.os, "scandir", no_descent)
+    monkeypatch.setattr(tool, "hash_local", lambda *args: pytest.fail("An unavailable subtree was read"))
+    monkeypatch.setattr(tool, "rename_exclusive", lambda *args: pytest.fail("An unavailable subtree was relocated"))
+    if location in {"child", "nested_child", "activity"}:
+        report = tool.preserve(root, target, apply=True)
+        relative_directory = blocked.relative_to(root).as_posix()
+        assert report["entries"][relative_directory]["defer_reason"] == "unavailable_directory_requires_review"
+        assert report["deferred_subtrees"] == [relative_directory]
+        assert report["enumeration_complete"] is False
+        assert not report["moved_entries"]
+    else:
+        with pytest.raises(ValueError, match="unavailable|reparse"):
+            tool.preserve(root, target, apply=True)
+        assert not target.exists()
+    assert lstat(source).st_size == len(b"Untouched synthetic source evidence")
+
+
+def test_directory_enumeration_error_cannot_report_complete_or_relocate_evidence(tool, tmp_path, monkeypatch):
+    root, target = tmp_path / "wechat", tmp_path / "workstation"
+    source = write(root, "recovery/evidence.bin", b"Untouched synthetic source evidence")
+
+    def unreadable(_path, **options):
+        if options.get("onerror"):
+            options["onerror"](PermissionError("Synthetic unavailable subtree"))
+        yield from ()
+
+    monkeypatch.setattr(tool.os, "walk", unreadable)
+    monkeypatch.setattr(tool, "hash_local", lambda *args: pytest.fail("An unverified namespace was read"))
+    monkeypatch.setattr(tool, "rename_exclusive", lambda *args: pytest.fail("An unverified namespace was relocated"))
+    with pytest.raises(PermissionError, match="Synthetic unavailable subtree"):
+        tool.preserve(root, target, apply=True)
+    assert source.exists() and not target.exists()

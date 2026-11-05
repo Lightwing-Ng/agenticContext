@@ -1,6 +1,6 @@
 """Owner-only secret files with one access boundary on POSIX and Windows.
 
-Code version: v1.1.0-codex.0
+Code version: v1.2.0-codex.0
 
 POSIX hosts express the boundary as a regular file with mode ``0600`` owned by
 the effective user. Windows honors only the read-only bit from a POSIX mode, so
@@ -289,15 +289,15 @@ def _windows_problem(path: Path) -> str:
     return ""
 
 
-def owner_only_problem(path: Path) -> str:
-    """Return why ``path`` is outside the owner-only boundary, or an empty string."""
+def owner_only_problem(path: Path, *, allow_hard_links: bool = False) -> str:
+    """Verify owner-only access, rejecting aliases unless explicitly permitted."""
     try:
         metadata = path.lstat()
     except OSError as exc:
         return f"it cannot be inspected ({exc.__class__.__name__})"
     if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode):
         return "it is not a regular file"
-    if metadata.st_nlink != 1:
+    if not allow_hard_links and metadata.st_nlink != 1:
         return "it has multiple hard links"
     if IS_WINDOWS:
         try:
@@ -321,17 +321,17 @@ def _apply_boundary(path: Path, descriptor: int | None = None) -> None:
         os.chmod(path, 0o600)
 
 
-def ensure_owner_only(path: Path) -> None:
-    """Narrow an existing regular file to the owner-only boundary and verify it."""
+def ensure_owner_only(path: Path, *, allow_hard_links: bool = False) -> None:
+    """Narrow a regular file; mutable canonical stores may explicitly allow aliases."""
     metadata = path.lstat()
     if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode):
         raise OwnerOnlyFileError(f"{path.name} is not a regular file.")
-    if metadata.st_nlink != 1:
+    if not allow_hard_links and metadata.st_nlink != 1:
         raise OwnerOnlyFileError(f"{path.name} has multiple hard links.")
-    if not owner_only_problem(path):
+    if not owner_only_problem(path, allow_hard_links=allow_hard_links):
         return
     _apply_boundary(path)
-    problem = owner_only_problem(path)
+    problem = owner_only_problem(path, allow_hard_links=allow_hard_links)
     if problem:
         raise OwnerOnlyFileError(f"{path.name} is not owner-only: {problem}.")
 

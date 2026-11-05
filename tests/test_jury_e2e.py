@@ -1,6 +1,6 @@
 """Rendered Jury readiness, review evidence, and one-question session behavior.
 
-Code version: v1.3.9-codex.0
+Code version: v1.3.10-codex.0
 """
 
 from copy import deepcopy
@@ -13,6 +13,7 @@ from playwright.sync_api import expect, sync_playwright
 from tests import test_sidebar_e2e as fixtures
 
 sidebar_server_url = fixtures.sidebar_server_url
+macos_sidebar_server_url = fixtures.macos_sidebar_server_url
 
 
 @pytest.fixture(scope="module")
@@ -957,8 +958,9 @@ def test_jury_browser_keyboard_selection_and_dock_restore(jury_browser, sidebar_
 
 def test_jury_mode_link_switches_into_and_out_of_safari_without_account_probe(
     jury_browser,
-    sidebar_server_url,
+    macos_sidebar_server_url,
 ):
+    sidebar_server_url = macos_sidebar_server_url
     checks = []
     page, context = open_jury(jury_browser, sidebar_server_url, 1007, checks, height=1232)
     try:

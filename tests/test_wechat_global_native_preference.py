@@ -1,6 +1,6 @@
 """Native preference survives local source-order anomalies across public views.
 
-Code version: v1.0.0-codex.0
+Code version: v1.0.1-codex.0
 """
 
 from __future__ import annotations
@@ -52,7 +52,7 @@ def _update_clock(connection, identifier, stamp, *, native):
         "provenance=? WHERE id=?",
         (
             clock.isoformat(),
-            stamp.strftime("%-d %b %Y %H:%M:%S"),
+            f"{stamp.day} {stamp:%b %Y %H:%M:%S}",
             stamp.timestamp(),
             json.dumps(provenance),
             identifier,

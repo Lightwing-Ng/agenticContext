@@ -1,6 +1,6 @@
 """Compact event proofs retain exact source observations within the cache budget.
 
-Code version: v1.0.0-codex.0
+Code version: v1.0.1-codex.0
 """
 
 from copy import deepcopy
@@ -187,9 +187,19 @@ def _bounded_fixture(fixture):
     return result, verbose_bytes, packed_bytes
 
 
+@pytest.mark.parametrize("windows_newlines", [False, True])
 def test_packed_proof_publishes_when_verbose_proof_exceeds_same_budget(
-    event_store, monkeypatch
+    event_store, monkeypatch, windows_newlines
 ):
+    if windows_newlines:
+        native_fdopen = events.os.fdopen
+
+        def translated_fdopen(descriptor, mode, *args, **kwargs):
+            if mode == "w":
+                kwargs.update(encoding="utf-8", newline="\r\n")
+            return native_fdopen(descriptor, mode, *args, **kwargs)
+
+        monkeypatch.setattr(events.os, "fdopen", translated_fdopen)
     fixture = event_store
     before = fixture.repository.path.read_bytes(), fixture.registry.read_bytes()
     expected, verbose_bytes, packed_bytes = _bounded_fixture(fixture)

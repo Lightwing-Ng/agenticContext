@@ -1,6 +1,6 @@
 """Contact aggregation defaults to chronological reading with matching row numbers.
 
-Code version: v1.0.0-codex.0
+Code version: v1.0.1-codex.0
 """
 
 from __future__ import annotations
@@ -103,7 +103,7 @@ def chronological_store(contact_analysis_store):
                 "timestamp_value": "" if unknown else stamp.isoformat(),
                 "timestamp_label": "Unknown time"
                 if unknown
-                else stamp.strftime("%-d %b %Y %H:%M:%S"),
+                else f"{stamp.day} {stamp:%b %Y %H:%M:%S}",
                 "time_sort": 0 if unknown else stamp.timestamp(),
                 "provenance": json.dumps(proof),
             }

@@ -1,6 +1,6 @@
 # Operations guide
 
-Documentation version: `v1.53.4-codex.0`
+Documentation version: `v1.53.5-codex.0`
 
 ## iPhone
 
@@ -99,16 +99,20 @@ operation journals inside runtime storage. Distinct directories on a case-sensit
 filesystem remain independent.
 
 [Workstation preservation](../scripts/preserve_wechat_workstations.py) rejects parent
-traversal and symlink paths before writing. Its exclusive rename backend supports macOS
-and Linux; unsupported platforms reject `--apply` before creating destination files.
+traversal, symlinks, and unavailable or native reparse directories before writing or
+descending into a subtree. Its exclusive rename backend supports macOS, Windows, and
+Linux; unsupported platforms reject `--apply` before creating destination files.
 Successive batches retain each earlier locator entry's workstation and receipt. A new
 file at an already preserved relative path requires conflict review before any move;
 it never silently replaces the earlier mapping. Legacy preservation receipts remain
 readable.
 
 [OneDrive inspection](../scripts/verify_wechat_onedrive.py) uses the current user's
-Personal sync root, rejects traversal and symlink escapes, and reports unavailable
-allocation as JSON `null`. Local File Provider flags remain preliminary evidence.
+Personal sync root, rejects traversal and symlink escapes, and leaves unavailable
+subtrees explicitly unverified. Native offline, recall, and reparse attributes never
+permit payload or transaction-control reads. Unavailable allocation is JSON `null`;
+failed cache inspection is distinct from a known missing file. Local File Provider
+flags remain preliminary evidence.
 Require independent cloud-content verification and separate public/canonical-cache
 allocation checks before releasing preserved local content or reporting disk reclamation.
 

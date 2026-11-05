@@ -1,11 +1,12 @@
 """Verify metadata-only OneDrive inspection, exact size binding, and exclusions.
 
-Code version: v1.1.2-codex.0
+Code version: v1.3.1-codex.0
 """
 
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 import stat
 from types import SimpleNamespace
@@ -92,7 +93,7 @@ def test_dataless_payload_and_cache_are_never_opened(workspace, monkeypatch):
     assert report["records"][0]["safe_to_release_local_content"] is False
     assert report["public_allocation_after"]["dataless_files"] == 1
     blocks = getattr(cached.stat(), "st_blocks", None)
-    assert report["canonical_cache_allocation_after"]["allocated_bytes"] == (None if blocks is None else blocks * 512)
+    assert report["canonical_cache_allocation_after"]["allocated_bytes"] == (blocks * 512 if blocks is not None else None)
     assert report["payload_bytes_read"] == 0
     assert report["remote_content_hash_verified"] is False
 
@@ -283,3 +284,158 @@ def test_explicit_cache_absence_remains_distinct_from_inspection_failure(workspa
     assert report["canonical_cache_missing_files"] == 1
     assert report["canonical_cache_unavailable_items"] == 0
     assert report["safe_to_release_local_content"] is False
+
+
+def test_missing_allocation_metadata_never_reads_payloads_or_claims_zero_allocation(workspace, monkeypatch):
+    root, cache = workspace
+    payload = root / "archive.zst"
+    payload.write_bytes(b"Synthetic public placeholder")
+    cached = cache / "workstation/archive.zst"
+    cached.parent.mkdir()
+    cached.write_bytes(b"Synthetic resident cache")
+    lstat = Path.lstat
+
+    class NoAllocation:
+        def __init__(self, state, dataless):
+            self.state = state
+            self.st_flags = getattr(state, "st_flags", 0) | (inspector.archiver.DATALESS if dataless else 0)
+
+        def __getattr__(self, name):
+            if name == "st_blocks":
+                raise AttributeError("Windows does not expose st_blocks")
+            return getattr(self.state, name)
+
+    def missing_blocks(path, *args, **kwargs):
+        state = lstat(path, *args, **kwargs)
+        return NoAllocation(state, path == payload) if path in {payload, cached} else state
+
+    monkeypatch.setattr(Path, "lstat", missing_blocks)
+    monkeypatch.setattr(Path, "open", lambda *args, **kwargs: pytest.fail("Metadata inspection opened a payload"))
+    monkeypatch.setattr(inspector.archiver, "_provider_state", _uploaded)
+    report = inspector.inspect_workspace(root, root / "report.json")
+    assert report["records"][0]["before"]["dataless"]
+    assert report["public_allocation_after"]["dataless_files"] == 1
+    for key in ("public_allocation_after", "canonical_cache_allocation_after"):
+        assert report[key]["files"] == 1
+        assert report[key]["allocated_bytes"] is None
+        assert report[key]["unique_inode_allocated_bytes"] is None
+        assert report[key]["allocation_unknown_files"] == 1
+    assert report["cloud_preservation_verified"] is False
+    assert report["safe_to_release_local_content"] is False
+    assert report["all_scanned_files_uploaded"] is False
+    assert report["remote_content_hash_verified"] is False
+    assert report["eviction_performed"] is False
+    assert report["source_files_deleted"] is False
+    assert report["payload_bytes_read"] == 0
+
+
+@pytest.mark.parametrize("allocation", [None, 4096])
+def test_allocation_summary_propagates_unknown_values_without_losing_inode_deduplication(allocation):
+    common = {"device": 1, "inode": 2, "bytes": 10, "kind": "file", "dataless": False}
+    summary = inspector._allocation_summary([
+        {**common, "allocated_bytes": 4096},
+        {**common, "allocated_bytes": allocation},
+    ])
+    assert summary["files"] == 2 and summary["logical_bytes"] == 20
+    assert summary["allocated_bytes"] == (None if allocation is None else 8192)
+    assert summary["unique_inode_allocated_bytes"] == (None if allocation is None else 4096)
+    assert summary["allocation_unknown_files"] == int(allocation is None)
+
+
+@pytest.mark.parametrize("attributes", [0x1000, 0x40000, 0x400000, 0x400])
+def test_native_placeholder_control_is_never_opened_or_queried(workspace, monkeypatch, attributes):
+    root, _cache = workspace
+    control = root / ".archive.unique.pending.json"
+    control.write_bytes(b"Private synthetic transaction control")
+    lstat = Path.lstat
+
+    class NativeAttributes:
+        st_file_attributes = attributes
+        st_reparse_tag = 0x9000001A
+
+        def __init__(self, metadata):
+            self.metadata = metadata
+
+        def __getattr__(self, name):
+            return getattr(self.metadata, name)
+
+    def native_metadata(path, *args, **kwargs):
+        value = lstat(path, *args, **kwargs)
+        return NativeAttributes(value) if path == control else value
+
+    monkeypatch.setattr(Path, "lstat", native_metadata)
+    monkeypatch.setattr(Path, "open", lambda *args, **kwargs: pytest.fail("A native placeholder was opened"))
+    monkeypatch.setattr(inspector.archiver, "_provider_state", lambda *args: pytest.fail("An in-progress native placeholder was queried"))
+    report = inspector.inspect_workspace(root, root / "report.json")
+    row = report["records"][0]
+    assert row["before"]["dataless"] is (attributes != 0x400)
+    assert row["before"]["file_attributes"] == attributes
+    assert row["before"]["reparse_tag"] == 0x9000001A
+    assert row["reason"] == "transaction_state_unavailable_without_downloading_payloads"
+    assert report["all_provider_uploads_reported"] is False
+    assert report["cloud_preservation_verified"] is report["safe_to_release_local_content"] is False
+    assert report["payload_bytes_read"] == 0
+
+
+@pytest.mark.parametrize("flag", [0x400, 0x1000, 0x40000, 0x400000, "mac-dataless"])
+@pytest.mark.parametrize("location", ["root", "source_parent", "report_parent", "child", "cache_parent"])
+def test_unavailable_directory_keeps_subtrees_unverified_without_entering_them(workspace, monkeypatch, flag, location):
+    root, cache = workspace
+    (root / "blocked").mkdir()
+    unsafe = root / "blocked/evidence.zst"
+    unsafe.write_bytes(b"Untouched synthetic archived evidence")
+    (root / "safe.zst").write_bytes(b"Known synthetic sibling")
+    report_parent = root.parent / "reports"
+    report_parent.mkdir()
+    cached_parent = cache / "workstation"
+    cached_parent.mkdir()
+    blocked = {"root": root, "source_parent": root.parent, "report_parent": report_parent,
+               "child": root / "blocked", "cache_parent": cached_parent}[location]
+    report_path = report_parent / "inspection.json" if location == "report_parent" else root / "inspection.json"
+    lstat, scandir = Path.lstat, os.scandir
+
+    class FlaggedDirectory:
+        def __init__(self, value):
+            self.value = value
+            self.st_flags = getattr(value, "st_flags", 0) | (inspector.archiver.DATALESS if flag == "mac-dataless" else 0)
+            self.st_file_attributes = 0x10 | (0 if flag == "mac-dataless" else flag)
+            self.st_reparse_tag = 0xA0000003 if flag == 0x400 else 0
+
+        def __getattr__(self, name):
+            return getattr(self.value, name)
+
+    def metadata(path, *args, **kwargs):
+        if path != blocked and path.is_relative_to(blocked):
+            pytest.fail("Metadata traversed an unavailable ancestor")
+        value = lstat(path, *args, **kwargs)
+        return FlaggedDirectory(value) if path == blocked else value
+
+    def no_descent(path):
+        if Path(path).is_relative_to(blocked):
+            pytest.fail("Enumeration entered an unavailable directory")
+        return scandir(path)
+
+    monkeypatch.setattr(Path, "lstat", metadata)
+    monkeypatch.setattr(inspector.os, "scandir", no_descent)
+    monkeypatch.setattr(Path, "open", lambda *args, **kwargs: pytest.fail("Metadata inspection read archived payloads"))
+    monkeypatch.setattr(inspector.archiver, "_provider_state", _uploaded)
+    if location in {"root", "source_parent", "report_parent"}:
+        with pytest.raises(ValueError, match="unavailable|reparse"):
+            inspector.inspect_workspace(root, report_path)
+    else:
+        report = inspector.inspect_workspace(root, report_path)
+        assert report["all_provider_uploads_reported"] is False
+        assert report["cloud_preservation_verified"] is report["safe_to_release_local_content"] is False
+        assert report["canonical_cache_allocation_after"]["allocated_bytes"] is None
+        if location == "child":
+            assert report["namespace"]["stable"] is False
+            assert any(row["path"] == str(blocked) and row["reason"] == "unavailable_directory_requires_review"
+                       for row in report["enumeration_errors"])
+            assert str(unsafe) not in {row["path"] for row in report["records"]}
+            assert report["public_allocation_after"]["allocated_bytes"] is None
+        else:
+            assert all(row.get("cache_inspection_error") for row in report["records"])
+            assert report["canonical_cache_missing_files"] == 0
+            assert report["canonical_cache_unverified_files"] == len(report["records"])
+        assert report["payload_bytes_read"] == 0
+    assert lstat(unsafe).st_size == len(b"Untouched synthetic archived evidence")

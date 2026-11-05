@@ -1,6 +1,6 @@
 # Testing guide
 
-Documentation version: `v1.43.1-codex.0`
+Documentation version: `v1.43.2-codex.0`
 
 ## Supported commands
 
@@ -247,7 +247,12 @@ Case checks follow the filesystem's real identity semantics rather than lowercas
 Phased relocation tests retain prior workstation/receipt mappings and reject conflicting
 relative paths before moving new files. Relocation unit tests replace native rename/durability
 primitives; unsupported-platform apply checks verify that no output is created. Missing
-allocation metadata stays unknown. File Provider success never certifies remote content or
+allocation metadata stays unknown. Separate Windows models exercise the production
+rename and directory-sync branches, exact binary checksums, late collisions, source
+drift, and file-sync failure. Native directory attributes must be checked root-first
+before entering source, destination, public, report, or cache subtrees; incomplete
+enumeration and failed cache metadata queries remain explicitly unverified.
+File Provider success never certifies remote content or
 authorizes local release. Native macOS compression and atomic-swap checks retain their
 explicit filesystem/platform requirements; no Windows execution is inferred from local results.
 
