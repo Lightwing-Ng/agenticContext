@@ -1,4 +1,4 @@
-"""Session switching, capacity, and selected controls. Code version: v1.37.2-codex.0."""
+"""Session switching, capacity, and selected controls. Code version: v1.37.3-codex.0."""
 
 import re
 from copy import deepcopy
@@ -27,6 +27,12 @@ def macos_agent_settings(tmp_path, macos_host, monkeypatch):
         settings_path=tmp_path / "settings" / "computer-use-agent.json",
     )
     monkeypatch.setattr(fixtures, "detect_host_operating_system", lambda: "macos")
+
+
+@pytest.fixture
+def macos_agent_selection_server_url(macos_agent_settings, request):
+    """Seed Mac settings before the generic server fixture creates its app."""
+    return request.getfixturevalue("agent_selection_server_url")
 
 
 @pytest.fixture()
@@ -3685,8 +3691,7 @@ def test_grok_composer_snapshot_uses_one_rendered_provider_scoped_surface(
 )
 def test_safari_selection_persists_for_source_only_providers_without_edge_fallback(
     disposable_browser,
-    macos_agent_settings,
-    agent_selection_server_url,
+    macos_agent_selection_server_url,
     viewport,
 ):
     context = disposable_browser.new_context(viewport=viewport)
@@ -3800,7 +3805,7 @@ def test_safari_selection_persists_for_source_only_providers_without_edge_fallba
             expect(shell).to_have_class(re.compile(r"\bis-sidebar-collapsed\b"))
 
     try:
-        page.goto(f"{agent_selection_server_url}/agent/edge/chatgpt")
+        page.goto(f"{macos_agent_selection_server_url}/agent/edge/chatgpt")
         ensure_sidebar_open()
         page.get_by_role("button", name="Web service: ChatGPT", exact=True).click()
         page.get_by_role("option", name="Grok", exact=True).click()
@@ -3833,7 +3838,7 @@ def test_safari_selection_persists_for_source_only_providers_without_edge_fallba
             "path": "/agent/safari/grok",
             "routeWrites": ["/agent/edge/grok", "/agent/safari/grok"],
         }
-        expect(page).to_have_url(f"{agent_selection_server_url}/agent/safari/grok")
+        expect(page).to_have_url(f"{macos_agent_selection_server_url}/agent/safari/grok")
         expect(
             page.locator('#agent_runtime_form input[name="platform"]')
         ).to_have_value("grok")
@@ -3870,11 +3875,11 @@ def test_safari_selection_persists_for_source_only_providers_without_edge_fallba
         expect(page.get_by_role("button", name="Web service: Grok", exact=True)).to_be_visible()
         expect(page.get_by_role("button", name="Browser: Safari", exact=True)).to_be_visible()
         expect(page.get_by_role("button", name="Model: Auto", exact=True)).to_be_visible()
-        page.goto(f"{agent_selection_server_url}/agent", wait_until="domcontentloaded")
+        page.goto(f"{macos_agent_selection_server_url}/agent", wait_until="domcontentloaded")
         ensure_sidebar_open()
-        expect(page).to_have_url(f"{agent_selection_server_url}/agent/tunnel/grok")
+        expect(page).to_have_url(f"{macos_agent_selection_server_url}/agent/tunnel/grok")
         page.locator('label[for="agent_connection_browser"]').click()
-        expect(page).to_have_url(f"{agent_selection_server_url}/agent/safari/grok")
+        expect(page).to_have_url(f"{macos_agent_selection_server_url}/agent/safari/grok")
 
         page.wait_for_function(
             "() => document.querySelector('[data-role=browser-session-account]')?.textContent === 'Signed in'"
@@ -3899,7 +3904,7 @@ def test_safari_selection_persists_for_source_only_providers_without_edge_fallba
         assert reloaded_payload["preference_revision"] > saved_payload[
             "preference_revision"
         ]
-        expect(page).to_have_url(f"{agent_selection_server_url}/agent/safari/gemini")
+        expect(page).to_have_url(f"{macos_agent_selection_server_url}/agent/safari/gemini")
         expect(page.get_by_role("button", name="Browser: Safari", exact=True)).to_be_visible()
         expect(page.locator("#agent_ask_button")).to_be_disabled()
         expect(page.locator(".agent-execution-session-title")).to_have_text(
@@ -3924,7 +3929,7 @@ def test_safari_selection_persists_for_source_only_providers_without_edge_fallba
             and response.request.post_data_json.get("browser") == "safari"
         ):
             page.get_by_role("option", name="Claude", exact=True).click()
-        expect(page).to_have_url(f"{agent_selection_server_url}/agent/safari/claude")
+        expect(page).to_have_url(f"{macos_agent_selection_server_url}/agent/safari/claude")
         expect(page.get_by_role("button", name="Browser: Safari", exact=True)).to_be_visible()
         expect(page.locator("#agent_ask_button")).to_be_enabled()
         expect(page.locator(".agent-execution-session-title")).to_have_text(
@@ -3946,7 +3951,7 @@ def test_safari_selection_persists_for_source_only_providers_without_edge_fallba
             and response.request.post_data_json.get("browser") == "safari"
         ):
             page.get_by_role("option", name="ChatGPT", exact=True).click()
-        expect(page).to_have_url(f"{agent_selection_server_url}/agent/safari/chatgpt")
+        expect(page).to_have_url(f"{macos_agent_selection_server_url}/agent/safari/chatgpt")
         expect(page.locator("#agent_ask_button")).to_be_enabled()
         expect(page.locator(".agent-execution-session-title")).to_have_text(
             "ChatGPT Safari recent session"
@@ -4291,8 +4296,7 @@ def test_agent_preference_save_retries_an_unchanged_failed_payload(
 
 def test_agent_preference_save_newer_selection_supersedes_failed_payload(
     disposable_browser,
-    macos_agent_settings,
-    agent_selection_server_url,
+    macos_agent_selection_server_url,
 ):
     context = disposable_browser.new_context(viewport={"width": 1_160, "height": 900})
     page = context.new_page()
@@ -4350,7 +4354,7 @@ def test_agent_preference_save_newer_selection_supersedes_failed_payload(
     )
     page.route("**/api/agent/preferences", fulfill_preference)
     try:
-        page.goto(f"{agent_selection_server_url}/agent/edge/chatgpt")
+        page.goto(f"{macos_agent_selection_server_url}/agent/edge/chatgpt")
         with page.expect_response(
             lambda response: response.url.endswith("/api/agent/preferences")
             and response.request.method == "POST"
@@ -4377,8 +4381,7 @@ def test_agent_preference_save_newer_selection_supersedes_failed_payload(
 
 def test_agent_preference_outbox_restores_selection_and_replays_on_first_reload(
     disposable_browser,
-    macos_agent_settings,
-    agent_selection_server_url,
+    macos_agent_selection_server_url,
 ):
     context = disposable_browser.new_context(viewport={"width": 1_160, "height": 900})
     page = context.new_page()
@@ -4429,7 +4432,7 @@ def test_agent_preference_outbox_restores_selection_and_replays_on_first_reload(
         ),
     )
     try:
-        page.goto(f"{agent_selection_server_url}/agent/edge/chatgpt")
+        page.goto(f"{macos_agent_selection_server_url}/agent/edge/chatgpt")
         payload = page.evaluate(
             """() => {
                 const payload = {

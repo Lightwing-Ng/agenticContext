@@ -1,4 +1,4 @@
-"""Isolated Codex cache and Local resources navigation. Code version: v1.0.0-codex.0."""
+"""Isolated Codex cache and Local resources navigation. Code version: v1.0.1-codex.0."""
 
 from collections.abc import Iterator
 from threading import Thread
@@ -98,7 +98,8 @@ def test_local_codex_filter_detail_and_content_mode_navigation(
         expect(page.locator("[data-browser-session-refresh-url]")).to_have_count(1)
         expect(page.locator("[data-browser-session-download-url]")).to_have_count(1)
         expect(page.get_by_text("Review the local parser.", exact=True).first).to_be_visible()
-        page.get_by_role("link", name="Back to all sessions", exact=True).click()
+        with page.expect_navigation(wait_until="domcontentloaded"):
+            page.get_by_role("link", name="Back to all sessions", exact=True).click()
         assert parse_qs(urlsplit(page.url).query)["source"] == ["codex"]
         expect(page.locator(".browser-session-table-title")).to_have_text(["Local Codex session"])
         _set_sidebar(page, opened=True)
