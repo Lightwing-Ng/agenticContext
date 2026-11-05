@@ -1,6 +1,6 @@
 """Durable compute-job lifecycle and safety contract tests.
 
-Code version: v1.6.6-codex.0
+Code version: v1.6.7-codex.0
 """
 
 from __future__ import annotations
@@ -11,6 +11,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import signal
 import subprocess
 import sys
 from threading import Barrier, Event, Lock
@@ -386,6 +387,169 @@ temporary.replace(runtime / "checkpoint.json")
 (runtime / "result.json").write_text(json.dumps({"best_objective": 0.25}))
 print("optimization complete")
 """
+
+
+@pytest.fixture
+def approved_child_inputs(tmp_path):
+    job_root = tmp_path / "job"
+    source = tmp_path / "source"
+    job_root.mkdir()
+    source.mkdir()
+    entrypoint = job_root / "entrypoint.py"
+    entrypoint.write_text("raise SystemExit(7)\n", encoding="utf-8")
+    config = job_root / "config.json"
+    config.write_bytes(b"{}")
+    ready = job_root / "launch.ready"
+    token = "a" * 64
+    ready.write_text(token, encoding="ascii")
+    return SimpleNamespace(
+        job_root=job_root, source=source, entrypoint=entrypoint, ready=ready,
+        token=token,
+        arguments=[str(ready), token, str(entrypoint), str(source), str(config), str(job_root)],
+    )
+
+
+@pytest.mark.parametrize("mode", ["host-process", "windows-model"])
+def test_approved_child_bridge_lives_until_script_exit(approved_child_inputs, mode):
+    inputs = approved_child_inputs
+    entered = inputs.job_root / "entered.json"
+    release = inputs.job_root / "release"
+    inputs.entrypoint.write_text(
+        "import json, os, sys, time\n"
+        "from pathlib import Path\n"
+        "runtime = Path(sys.argv[sys.argv.index('--job-runtime') + 1])\n"
+        "temporary = runtime / 'entered.tmp'\n"
+        "temporary.write_text(json.dumps({'pid': os.getpid(), 'ppid': os.getppid()}), encoding='utf-8')\n"
+        "temporary.replace(runtime / 'entered.json')\n"
+        "deadline = time.monotonic() + 10\n"
+        "while not (runtime / 'release').exists():\n"
+        "    if time.monotonic() >= deadline: raise SystemExit(99)\n"
+        "    time.sleep(0.01)\n"
+        "print('approved complete', flush=True)\n"
+        "raise SystemExit(7)\n",
+        encoding="utf-8",
+    )
+    # CRT exec creates a replacement PID and exits its caller on native Windows.
+    bootstrap = """
+import os, subprocess, sys
+from types import SimpleNamespace
+from app.core.agent import compute_jobs
+mode, *arguments = sys.argv[1:]
+if mode == 'windows-model':
+    def crt_execve(_path, command, environment):
+        subprocess.Popen(command, env=environment, close_fds=True)
+        os._exit(0)
+    compute_jobs.os = SimpleNamespace(
+        name='nt', environ=os.environ, chdir=os.chdir, execve=crt_execve,
+    )
+    compute_jobs.sys = SimpleNamespace(platform='win32', executable=sys.executable)
+elif os.name == 'posix':
+    # Test exec PID semantics independently of native macOS sandbox availability.
+    compute_jobs.sys = SimpleNamespace(platform='posix-exec-model', executable=sys.executable)
+raise SystemExit(compute_jobs._approved_child_main(arguments))
+"""
+    environment = dict(os.environ)
+    environment["PYTHONPATH"] = str(Path(compute_jobs.__file__).resolve().parents[3])
+    inputs.ready.write_text("not-authorized", encoding="ascii")
+    process = subprocess.Popen(
+        [sys.executable, "-c", bootstrap, mode, *inputs.arguments],
+        env=environment, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        close_fds=True,
+        **({"start_new_session": True} if os.name == "posix" else {}),
+    )
+    windows_job = None
+    try:
+        if os.name == "nt":
+            windows_job = compute_jobs._WindowsJob()
+            windows_job.assign(process)
+        inputs.ready.write_text(inputs.token, encoding="ascii")
+        deadline = time.monotonic() + 8
+        while not entered.is_file() and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert entered.is_file()
+        child = json.loads(entered.read_text(encoding="utf-8"))
+        assert process.poll() is None
+        if os.name == "nt" or mode == "windows-model":
+            assert child["pid"] != process.pid
+            assert child["ppid"] == process.pid
+        else:
+            assert child["pid"] == process.pid
+        if windows_job is not None:
+            assert windows_job.active_processes() == 2
+        release.touch()
+        output, errors = process.communicate(timeout=8)
+        assert process.returncode == 7, errors.decode("utf-8", errors="replace")
+        assert output.strip() == b"approved complete"
+        assert not inputs.ready.exists()
+        if windows_job is not None:
+            assert windows_job.wait_empty(2)
+    finally:
+        release.touch()
+        if windows_job is not None:
+            windows_job.close()
+        try:
+            process.communicate(timeout=8)
+        except subprocess.TimeoutExpired:
+            if os.name == "posix":
+                # This test created the session and owns its complete process group.
+                try:
+                    os.killpg(process.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+            else:
+                process.kill()
+            process.communicate(timeout=8)
+
+
+def test_approved_child_gate_refuses_a_wrong_token(approved_child_inputs, monkeypatch):
+    inputs = approved_child_inputs
+    inputs.ready.write_text("wrong-token", encoding="ascii")
+    launched = []
+
+    def reject_launch(*arguments, **options):
+        launched.append((arguments, options))
+        raise AssertionError("An incorrect ready token must never launch approved code")
+
+    monkeypatch.setattr(compute_jobs, "os", SimpleNamespace(
+        name="nt", environ={}, chdir=lambda _path: None, execve=reject_launch,
+    ))
+    monkeypatch.setattr(compute_jobs, "subprocess", SimpleNamespace(run=reject_launch))
+    ticks = iter([0.0, 0.0, compute_jobs.WORKER_OWNERSHIP_HANDSHAKE_SECONDS + 1])
+    monkeypatch.setattr(compute_jobs, "time", SimpleNamespace(
+        monotonic=lambda: next(ticks), sleep=lambda _seconds: None,
+    ))
+
+    assert compute_jobs._approved_child_main(inputs.arguments) == 75
+    assert inputs.ready.read_text(encoding="ascii") == "wrong-token"
+    assert launched == []
+
+
+def test_windows_approved_child_launch_error_keeps_exit_71(approved_child_inputs, monkeypatch):
+    inputs = approved_child_inputs
+    calls = []
+
+    def cannot_start(command, **options):
+        calls.append((command, options))
+        assert not inputs.ready.exists()
+        raise OSError("Synthetic approved child launch failure")
+
+    monkeypatch.chdir(inputs.source)
+    monkeypatch.setattr(compute_jobs, "os", SimpleNamespace(
+        name="nt", environ={"PATH": "synthetic-path"}, chdir=os.chdir,
+    ))
+    monkeypatch.setattr(compute_jobs, "sys", SimpleNamespace(
+        platform="win32", executable=sys.executable,
+    ))
+    monkeypatch.setattr(compute_jobs, "subprocess", SimpleNamespace(run=cannot_start))
+
+    assert compute_jobs._approved_child_main(inputs.arguments) == 71
+    assert len(calls) == 1
+    command, options = calls[0]
+    assert command[:2] == [sys.executable, str(inputs.entrypoint)]
+    assert options == {
+        "env": {"PATH": "synthetic-path", "AGENTIC_CONTEXT_COMPUTE_JOB_RUNTIME": str(inputs.job_root)},
+        "check": False, "close_fds": True,
+    }
 
 
 @pytest.fixture
