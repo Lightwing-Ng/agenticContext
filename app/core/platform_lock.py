@@ -1,6 +1,6 @@
 """Small cross-platform file-locking helpers."""
 
-# Code version: v1.0.0-codex.1
+# Code version: v1.0.1-codex.0
 
 from __future__ import annotations
 
@@ -16,10 +16,7 @@ else:
 def lock_file(handle: TextIO, *, blocking: bool = True) -> None:
     """Acquire an exclusive lock for the lifetime of an open file handle."""
     if os.name == "nt":
-        handle.seek(0, os.SEEK_END)
-        if handle.tell() == 0:
-            handle.write("0")
-            handle.flush()
+        # Windows byte locks may extend beyond EOF; initialization needs no write.
         handle.seek(0)
         mode = msvcrt.LK_LOCK if blocking else msvcrt.LK_NBLCK
         try:
