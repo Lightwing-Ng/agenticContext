@@ -1,4 +1,4 @@
-"""Session switching, capacity, and selected controls. Code version: v1.37.2-codex.0."""
+"""Session switching, capacity, and selected controls. Code version: v1.37.3-codex.0."""
 
 import re
 from copy import deepcopy
@@ -3663,6 +3663,7 @@ def test_grok_composer_snapshot_uses_one_rendered_provider_scoped_surface(
         context.close()
 
 
+@pytest.mark.usefixtures("macos_host")
 @pytest.mark.parametrize(
     "viewport",
     (
@@ -4276,6 +4277,7 @@ def test_agent_preference_save_retries_an_unchanged_failed_payload(
         context.close()
 
 
+@pytest.mark.usefixtures("macos_host")
 def test_agent_preference_save_newer_selection_supersedes_failed_payload(
     disposable_browser,
     agent_selection_server_url,
@@ -4361,6 +4363,7 @@ def test_agent_preference_save_newer_selection_supersedes_failed_payload(
         context.close()
 
 
+@pytest.mark.usefixtures("macos_host")
 def test_agent_preference_outbox_restores_selection_and_replays_on_first_reload(
     disposable_browser,
     agent_selection_server_url,
