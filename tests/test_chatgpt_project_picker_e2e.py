@@ -1,6 +1,6 @@
 """Saved ChatGPT project identity and icon browser regressions.
 
-Code version: v1.0.0-codex.0
+Code version: v1.0.1-codex.0
 """
 
 from __future__ import annotations
@@ -14,6 +14,9 @@ from playwright.sync_api import Browser, BrowserContext, Page, Route, expect
 
 from test_sidebar_e2e import disposable_browser as disposable_browser
 from test_sidebar_e2e import sidebar_server_url as sidebar_server_url
+
+
+pytestmark = pytest.mark.usefixtures("macos_host")
 
 
 PROJECT_ID = "0123456789abcdef0123456789abcdef"
