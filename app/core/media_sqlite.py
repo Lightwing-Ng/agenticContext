@@ -1,6 +1,6 @@
 """Typed, indexed media state with transactional keyed updates.
 
-Code version: v1.0.0-codex.0
+Code version: v1.0.1-codex.0
 
 Legacy Parquet is read without mutation. The first explicit write imports a
 matching legacy schema; callers repairing older schemas must explicitly replace
@@ -23,6 +23,8 @@ from typing import Any, TypeVar
 
 import pyarrow as pa
 import pyarrow.parquet as pq
+
+from .owner_only_files import ensure_owner_only
 
 STORE_VERSION = 1
 _ORDINAL = "__media_ordinal"
@@ -103,7 +105,8 @@ def _legacy_schema(parquet: pq.ParquetFile) -> pa.Schema:
 
 def read_media_legacy_schema(path: Path) -> pa.Schema:
     """Read original Arrow provenance before Parquet normalizes list child names."""
-    return _legacy_schema(pq.ParquetFile(path))
+    with Path(path).open("rb") as handle, pq.ParquetFile(handle) as parquet:
+        return _legacy_schema(parquet)
 
 
 def _sql_type(data_type: pa.DataType) -> str:
@@ -257,9 +260,9 @@ class MediaSQLiteStore:
         if not _exists(legacy):
             return []
         before = legacy.stat()
-        parquet = pq.ParquetFile(legacy)
-        table = parquet.read()
-        embedded_schema = _legacy_schema(parquet)
+        with legacy.open("rb") as handle, pq.ParquetFile(handle) as parquet:
+            table = parquet.read()
+            embedded_schema = _legacy_schema(parquet)
         after = legacy.stat()
         if (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns) != (
             after.st_dev,
@@ -468,6 +471,7 @@ class MediaSQLiteStore:
         os.close(descriptor)
         temporary = Path(temporary_name)
         try:
+            ensure_owner_only(temporary)
             with closing(_connect(temporary)) as connection:
                 connection.execute("PRAGMA journal_mode=DELETE")
                 connection.execute("BEGIN IMMEDIATE")
