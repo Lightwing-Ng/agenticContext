@@ -1,10 +1,11 @@
 """Native placeholder fallback retains exact source and existing-text evidence.
 
-Code version: v1.0.1-codex.0
+Code version: v1.0.2-codex.0
 """
 
 from __future__ import annotations
 
+from contextlib import closing
 from copy import deepcopy
 from datetime import UTC, datetime
 import hashlib
@@ -46,7 +47,7 @@ def native_metadata(tmp_path):
     store = tmp_path / "store"
     import_wechat_archive(make_archive(tmp_path / "archive"), store)
     history = wechat_archive_path(store)
-    with sqlite3.connect(history) as connection:
+    with closing(sqlite3.connect(history)) as connection, connection:
         connection.row_factory = sqlite3.Row
         conversation = dict(
             connection.execute(
@@ -149,7 +150,10 @@ def native_metadata(tmp_path):
             (json.dumps(primary_proof), primary_id),
         )
     original = history.with_name("resource_references.sqlite3")
-    with sqlite3.connect(original) as output, sqlite3.connect(history) as primary:
+    with (
+        closing(sqlite3.connect(original)) as output, output,
+        closing(sqlite3.connect(history)) as primary, primary,
+    ):
         output.executescript(_SCHEMA)
         # The original publication predates another primary revision.
         output.executemany(
@@ -182,7 +186,7 @@ def native_metadata(tmp_path):
             )
             + (3, first[7], last[7], first[8], last[8], last[6]),
         )
-    with sqlite3.connect(history) as connection:
+    with closing(sqlite3.connect(history)) as connection, connection:
         connection.execute(
             "INSERT INTO archive_info VALUES('later_primary_revision','preserved')"
         )

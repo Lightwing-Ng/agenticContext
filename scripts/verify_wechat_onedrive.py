@@ -1,6 +1,6 @@
 """Inspect one explicit OneDrive workstation without downloading or evicting payloads.
 
-Code version: v1.1.1-codex.0
+Code version: v1.3.0-codex.0
 """
 
 from __future__ import annotations
@@ -18,21 +18,45 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from scripts import archive_wechat_rollbacks as archiver
 
 
-VERSION = "v1.1.1-codex.0"
+VERSION = "v1.3.0-codex.0"
+_WINDOWS_CLOUD_FLAGS = 0x1000 | 0x40000 | 0x400000
+_WINDOWS_REPARSE_POINT = 0x400
 PUBLIC_ROOT = Path.home() / "Library/CloudStorage/OneDrive-Personal"
 CACHE_ROOT = Path.home() / "Library/Group Containers/UBF8T346G9.OneDriveSyncClientSuite/OneDrive.noindex/OneDrive"
 TRANSACTION_LIMIT = 65_536
 
 
+def _assert_plain_path(path):
+    for component in reversed((path, *path.parents)):
+        try:
+            state = component.lstat()
+        except FileNotFoundError:
+            continue
+        if stat.S_ISLNK(state.st_mode) or (
+            stat.S_ISDIR(state.st_mode) and (
+                getattr(state, "st_flags", 0) & archiver.DATALESS
+                or getattr(state, "st_file_attributes", 0) & (_WINDOWS_CLOUD_FLAGS | _WINDOWS_REPARSE_POINT)
+            )
+        ):
+            raise ValueError(f"An unavailable or reparse directory requires separate review: {component}")
+
+
 def _metadata(path):
+    _assert_plain_path(path.parent)
     value = path.lstat()
+    blocks = getattr(value, "st_blocks", None)
+    flags = getattr(value, "st_flags", 0)
+    attributes = getattr(value, "st_file_attributes", 0)
     return {
         "device": value.st_dev,
         "inode": value.st_ino,
         "bytes": value.st_size,
-        "allocated_bytes": value.st_blocks * 512,
+        "allocated_bytes": blocks * 512 if blocks is not None else None,
         "mtime_ns": value.st_mtime_ns,
-        "dataless": bool(getattr(value, "st_flags", 0) & archiver.DATALESS),
+        "flags": flags,
+        "file_attributes": attributes,
+        "reparse_tag": getattr(value, "st_reparse_tag", 0),
+        "dataless": bool(flags & archiver.DATALESS or attributes & _WINDOWS_CLOUD_FLAGS),
         "kind": "file" if stat.S_ISREG(value.st_mode) else "other",
     }
 
@@ -62,29 +86,39 @@ def _enumerate(root, report):
     while stack:
         directory = stack.pop()
         try:
+            _assert_plain_path(directory)
             with os.scandir(directory) as entries:
                 for entry in entries:
                     path = Path(entry.path)
                     if path == report:
                         continue
-                    if entry.is_dir(follow_symlinks=False):
-                        stack.append(path)
+                    if stat.S_ISDIR(path.lstat().st_mode):
+                        try:
+                            _assert_plain_path(path)
+                        except ValueError:
+                            errors.append({"path": str(path), "error_type": "UnavailableDirectory",
+                                           "reason": "unavailable_directory_requires_review"})
+                        else:
+                            stack.append(path)
                     else:
                         try:
                             records[str(path)] = _metadata(path)
-                        except OSError as error:
+                        except (OSError, ValueError) as error:
                             errors.append({"path": str(path), "error_type": type(error).__name__})
-        except OSError as error:
-            errors.append({"path": str(directory), "error_type": type(error).__name__})
+        except (OSError, ValueError) as error:
+            errors.append({"path": str(directory), "error_type": type(error).__name__,
+                           "reason": "unavailable_directory_requires_review" if isinstance(error, ValueError) else "enumeration_failed"})
     return records, errors
 
 
 def _in_progress_reason(path, before):
     if path.name.endswith(".pending.json"):
-        if before["dataless"] or before["bytes"] > TRANSACTION_LIMIT:
+        if (before["dataless"] or before.get("file_attributes", 0) & _WINDOWS_REPARSE_POINT
+                or before["bytes"] > TRANSACTION_LIMIT):
             return "transaction_state_unavailable_without_downloading_payloads"
         # This bounded control receipt is the only document body this inspector reads.
         try:
+            _assert_plain_path(path)
             with path.open("rb") as stream:
                 data = stream.read(TRANSACTION_LIMIT + 1)
             if len(data) > TRANSACTION_LIMIT:
@@ -144,7 +178,7 @@ def _inspect_file(path, before):
     finally:
         try:
             row["cache_after"] = _cache_metadata(path)
-        except OSError as error:
+        except (OSError, ValueError) as error:
             row["cache_inspection_error"] = type(error).__name__
     return row
 
@@ -152,11 +186,13 @@ def _inspect_file(path, before):
 def _allocation_summary(metadata):
     files = [value for value in metadata if value.get("kind") == "file"]
     unique = {(value["device"], value["inode"]): value for value in files}
+    unknown = sum(value.get("allocated_bytes") is None for value in files)
     return {
         "files": len(files),
         "logical_bytes": sum(value["bytes"] for value in files),
-        "allocated_bytes": sum(value["allocated_bytes"] for value in files),
-        "unique_inode_allocated_bytes": sum(value["allocated_bytes"] for value in unique.values()),
+        "allocated_bytes": None if unknown else sum(value["allocated_bytes"] for value in files),
+        "unique_inode_allocated_bytes": None if unknown else sum(value["allocated_bytes"] for value in unique.values()),
+        "allocation_unknown_files": unknown,
         "dataless_files": sum(value["dataless"] for value in files),
     }
 
@@ -167,6 +203,8 @@ def inspect_workspace(root, report, *, max_workers=4):
     if not 1 <= max_workers <= 4:
         raise ValueError("Use between one and four metadata workers.")
     canonical_cache_path(root)
+    _assert_plain_path(root)
+    _assert_plain_path(report.parent)
     if root.is_symlink() or not root.is_dir():
         raise ValueError("Select an existing, explicit workstation directory.")
     if os.path.lexists(report) or not report.parent.is_dir():
@@ -185,6 +223,16 @@ def inspect_workspace(root, report, *, max_workers=4):
     in_progress = sum(row["status"] == "excluded_in_progress" for row in records)
     excluded = sum(row["status"].startswith("excluded") for row in records)
     complete = bool(records) and namespace_stable and uploaded == len(records)
+    public_allocation = _allocation_summary(after.values())
+    cache_allocation = _allocation_summary(row.get("cache_after", {}) for row in records)
+    enumeration_complete = not (errors or final_errors)
+    public_allocation["enumeration_complete"] = enumeration_complete
+    cache_allocation["enumeration_complete"] = enumeration_complete and not any(
+        row.get("cache_inspection_error") for row in records
+    )
+    for allocation in (public_allocation, cache_allocation):
+        if not allocation["enumeration_complete"]:
+            allocation["allocated_bytes"] = allocation["unique_inode_allocated_bytes"] = None
     return {
         "version": VERSION,
         "started_utc": started,
@@ -204,9 +252,10 @@ def inspect_workspace(root, report, *, max_workers=4):
             "in_progress_files": in_progress,
             "excluded_items": excluded,
         },
-        "public_allocation_after": _allocation_summary(after.values()),
-        "canonical_cache_allocation_after": _allocation_summary(row.get("cache_after", {}) for row in records),
-        "canonical_cache_missing_files": sum(not row.get("cache_after", {}).get("exists", False) for row in records),
+        "public_allocation_after": public_allocation,
+        "canonical_cache_allocation_after": cache_allocation,
+        "canonical_cache_missing_files": sum(row.get("cache_after", {}).get("exists") is False for row in records),
+        "canonical_cache_unverified_files": sum("cache_after" not in row or bool(row.get("cache_inspection_error")) for row in records),
         "canonical_cache_mapping": {"public_prefix": str(PUBLIC_ROOT), "cache_prefix": str(CACHE_ROOT)},
         "namespace": {"stable": namespace_stable, "added": added, "removed": removed, "changed": changed},
         "enumeration_errors": errors + final_errors,
@@ -219,7 +268,7 @@ def inspect_workspace(root, report, *, max_workers=4):
         "eviction_performed": False,
         "source_files_deleted": False,
         "verification_boundary": "Preliminary local File Provider metadata can conflict with remote sync state; independent remote evidence is required before source retirement or local content release.",
-        "allocation_boundary": "Metadata allocation per inode; APFS shared extents and physical free space are not inferred.",
+        "allocation_boundary": "Totals cover observed files only. Unavailable platform or subtree allocation is null; APFS shared extents and physical free space are not inferred.",
     }
 
 
@@ -232,6 +281,7 @@ def main(argv=None):
     arguments = parser.parse_args(argv)
     try:
         result = inspect_workspace(arguments.root, arguments.report, max_workers=arguments.max_workers)
+        _assert_plain_path(arguments.report.expanduser().absolute().parent)
         archiver._write_json(arguments.report.expanduser().absolute(), result, exclusive=True)
     except (OSError, ValueError) as error:
         print(json.dumps({"version": VERSION, "status": "inspection_failed", "error": str(error)}), file=sys.stderr)

@@ -1,6 +1,6 @@
 """Localized payment cards share bubble geometry without activating payment links.
 
-Code version: v1.2.0-codex.0
+Code version: v1.2.1-codex.0
 """
 
 from __future__ import annotations
@@ -51,7 +51,7 @@ def payment_server(tmp_path_factory):
 @pytest.mark.parametrize("width", [1280, 390])
 @pytest.mark.parametrize("color_scheme", ["light", "dark"])
 def test_payment_cards_reuse_literal_bubbles_for_all_native_roles(
-    disposable_browser, payment_server, width, color_scheme
+    disposable_browser, payment_server, width, color_scheme, tmp_path
 ):
     fixture = payment_server
     context = disposable_browser.new_context(
@@ -181,7 +181,7 @@ def test_payment_cards_reuse_literal_bubbles_for_all_native_roles(
         artifacts = Path(
             os.environ.get(
                 "WECHAT_PAYMENT_E2E_ARTIFACTS",
-                "/private/tmp/wechat-payment-presentation-3-Nov-2026/browser",
+                str(tmp_path / "browser"),
             )
         )
         artifacts.mkdir(parents=True, exist_ok=True)
