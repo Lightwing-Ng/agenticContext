@@ -1,6 +1,6 @@
 """WeChat provenance keeps physical motion, native disclosure, and aligned shadows.
 
-Code version: v1.0.1-codex.0
+Code version: v1.0.2-codex.0
 """
 
 from __future__ import annotations
@@ -302,10 +302,10 @@ def test_wechat_provenance_shadows_follow_presented_spring_frames(
             const samples = [];
             const pane = card.closest('[data-browser-chat-pane]');
             const effect = pane.querySelector(`[data-chat-effect-for="${card.id}"]`);
-            const started = performance.now();
-            card.querySelector('summary').click();
             await new Promise(resolve => {
-                const sample = () => requestAnimationFrame(() => setTimeout(() => {
+                // Observe the layout delivered for paint. A later timer can advance
+                // the animation clock and force a layout before its observer delivery.
+                const observer = new ResizeObserver(() => {
                     const animations = card.getAnimations({subtree: true});
                     const running = animations.some(animation => animation.playState === 'running');
                     const actual = card.getBoundingClientRect();
@@ -315,10 +315,17 @@ def test_wechat_provenance_shadows_follow_presented_spring_frames(
                         error: Math.max(...['left', 'top', 'width', 'height'].map(key =>
                             Math.abs(actual[key] - shadow[key]))),
                     });
-                    if (running && performance.now() - started < 2000) sample();
-                    else resolve();
-                }, 0));
-                sample();
+                });
+                const finish = () => {
+                    clearTimeout(deadline);
+                    observer.disconnect();
+                    resolve();
+                };
+                observer.observe(card);
+                card.querySelector('summary').click();
+                const deadline = setTimeout(finish, 2000);
+                Promise.allSettled(card.getAnimations({subtree: true})
+                    .map(animation => animation.finished)).then(finish);
             });
             return samples;
         }""")

@@ -1,6 +1,6 @@
 """Fixture-only coverage for the formal Zhihu text cache.
 
-Code version: v1.6.0-codex.0
+Code version: v1.6.1-codex.0
 """
 
 from __future__ import annotations
@@ -492,4 +492,4 @@ def test_initial_snapshot_reads_the_formal_history_count(tmp_path: Path) -> None
 
     assert snapshot.downloaded_posts == 1
     assert snapshot.processed_tweets == 1
-    assert snapshot.output_dir.endswith("/llm/zhihu")
+    assert Path(snapshot.output_dir) == tmp_path / "llm" / "zhihu"

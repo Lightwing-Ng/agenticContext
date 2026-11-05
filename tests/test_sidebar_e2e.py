@@ -1,6 +1,6 @@
 """Disposable-browser E2E coverage for the responsive sidebar and language boundaries.
 
-Code version: v1.58.0-codex.0
+Code version: v1.58.1-codex.0
 """
 
 from __future__ import annotations
@@ -123,6 +123,12 @@ def sidebar_server_url(tmp_path_factory: pytest.TempPathFactory) -> Iterator[str
         server.shutdown()
         server.server_close()
         server_thread.join(timeout=5)
+
+
+@pytest.fixture()
+def macos_sidebar_server_url(tmp_path_factory, macos_host) -> Iterator[str]:
+    """Construct Mac-default settings after installing the coherent host boundary."""
+    yield from sidebar_server_url.__wrapped__(tmp_path_factory)
 
 
 @pytest.fixture()
@@ -5470,13 +5476,13 @@ def test_browser_text_media_switch_defaults_to_text_and_remembers_selection(
 @pytest.mark.parametrize("width", (1_280, 390))
 def test_cache_sidebar_text_media_switcher_defaults_to_text(
     disposable_browser: Browser,
-    sidebar_server_url: str,
+    macos_sidebar_server_url: str,
     source_key: str,
     width: int,
 ) -> None:
     page, context = _open_page(
         disposable_browser,
-        f"{sidebar_server_url}/cache/{source_key}",
+        f"{macos_sidebar_server_url}/cache/{source_key}",
         width,
         900,
         touch=False,

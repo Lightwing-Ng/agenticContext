@@ -1,6 +1,6 @@
 """Route and asset coverage for the formal Zhihu cache source.
 
-Code version: v1.8.1-codex.0
+Code version: v1.8.2-codex.0
 """
 
 from __future__ import annotations
@@ -127,7 +127,7 @@ def test_legacy_zhihu_route_and_status_use_the_formal_cache(tmp_path: Path) -> N
     assert redirect_response.headers["Location"].endswith("/cache/zhihu/text/edge?from=legacy")
     assert status["downloaded_posts"] == 0
     assert status["progress_unit"] == "answers"
-    assert status["output_dir"].endswith("/llm/zhihu")
+    assert Path(status["output_dir"]) == tmp_path / "local_store" / "llm" / "zhihu"
 
 
 def test_local_resources_renders_zhihu_rich_text_and_local_image_placeholders(

@@ -1,4 +1,4 @@
-{# Code version: v1.12.0-codex.0 #}
+{# Code version: v1.12.1-codex.0 #}
 {% from "_wechat_conversation_kind.html" import conversation_kind_badge %}
 {% set ready = analysis.status|default('ready') == 'ready' %}
 {% macro statement_columns() %}
@@ -37,7 +37,7 @@
                 {% for item in analysis['items'] %}
                 {% set linked_html_forward = item.reference_kind|default('') == 'native_forwarded' and (item.observations|default([])|selectattr('reference_kind', 'equalto', 'html_forwarded')|list|length) > 0 %}
                 <tr data-contact-statement-id="{{ item.statement_id|default(item.id) }}" data-contact-message-id="{{ item.id }}" data-contact-account-key="{{ item.account_key }}" data-wechat-account="{{ item.account_key }}" data-wechat-source="{{ item.source_id }}">
-                    <td>{{ item.sequence_number|default((analysis.current_page - 1) * analysis.page_size + loop.index) }}</td>
+                    <td data-numeric-display-cell>{{ '{:,}'.format(item.sequence_number|default((analysis.current_page - 1) * analysis.page_size + loop.index)) }}</td>
                     <td>{% if item.time_conflict|default(false) %}<span class="wechat-contact-cell-note" data-wechat-contact-time-conflict>Conflicting source times</span>{% elif item.time_uncertain|default(false) and item.has_observed_time|default(false) %}<span class="wechat-contact-cell-note" data-wechat-contact-time-uncertain>Unresolved source times</span>{% elif item.display_timestamp_value|default(item.timestamp_value) %}<time datetime="{{ item.display_timestamp_value|default(item.timestamp_value) }}" title="{{ item.time_basis|default('') }}">{{ item.timestamp_label or item.display_timestamp_label|default('Unknown time') }}</time>{% if linked_html_forward and item.time_basis|default('') == 'Source clock; timezone unknown' %}<span class="wechat-contact-cell-note" data-wechat-contact-timezone-unknown>Timezone unknown</span>{% endif %}{% else %}<span class="wechat-contact-cell-note" data-wechat-contact-unknown-time>Unknown time</span>{% endif %}</td>
                     {% set show_source_count = item.time_conflict|default(false) or item.time_uncertain|default(false) or linked_html_forward %}
                     {% set has_sources = item.observation_count|default(1) > 1 or show_source_count %}
