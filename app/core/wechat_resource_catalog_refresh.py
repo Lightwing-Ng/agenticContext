@@ -1,6 +1,6 @@
 """Stage a streaming, source-proven refresh of an existing native resource catalog.
 
-Code version: v1.0.0-codex.0
+Code version: v1.0.1-codex.0
 """
 
 from __future__ import annotations
@@ -30,7 +30,7 @@ from .wechat_native_resource_revalidation import (
 from .wechat_resource_index import _SCHEMA, _json, _readonly
 
 
-VERSION = "v1.0.0-codex.0"
+VERSION = "v1.0.1-codex.0"
 MAX_CONVERSATIONS = 10_000
 MAX_RESOURCE_ROWS = 20_000_000
 MAX_PRIMARY_OBSERVATIONS = 50_000_000
@@ -487,7 +487,7 @@ def stage_resource_catalog_refresh(local_store_root, candidate_path, *, progress
                 )
         if any(_resident(path) != identity for path, identity in identities.items()):
             raise ValueError("A resource input changed before refresh completion.")
-        with candidate.open("rb") as stream:
+        with candidate.open("r+b") as stream:
             os.fsync(stream.fileno())
         report["candidate_bytes"] = candidate.stat().st_size
         return report

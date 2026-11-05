@@ -1,6 +1,6 @@
 """Owner-only secret files with one access boundary on POSIX and Windows.
 
-Code version: v1.0.0-claude.0
+Code version: v1.1.0-codex.0
 
 POSIX hosts express the boundary as a regular file with mode ``0600`` owned by
 the effective user. Windows honors only the read-only bit from a POSIX mode, so
@@ -297,6 +297,8 @@ def owner_only_problem(path: Path) -> str:
         return f"it cannot be inspected ({exc.__class__.__name__})"
     if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode):
         return "it is not a regular file"
+    if metadata.st_nlink != 1:
+        return "it has multiple hard links"
     if IS_WINDOWS:
         try:
             return _windows_problem(path)
@@ -324,10 +326,54 @@ def ensure_owner_only(path: Path) -> None:
     metadata = path.lstat()
     if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode):
         raise OwnerOnlyFileError(f"{path.name} is not a regular file.")
+    if metadata.st_nlink != 1:
+        raise OwnerOnlyFileError(f"{path.name} has multiple hard links.")
     if not owner_only_problem(path):
         return
     _apply_boundary(path)
     problem = owner_only_problem(path)
+    if problem:
+        raise OwnerOnlyFileError(f"{path.name} is not owner-only: {problem}.")
+
+
+def owner_only_directory_problem(path: Path) -> str:
+    """Verify a real directory's POSIX mode or native protected Windows DACL."""
+    try:
+        metadata = path.lstat()
+    except OSError as exc:
+        return f"it cannot be inspected ({exc.__class__.__name__})"
+    if (
+        stat.S_ISLNK(metadata.st_mode)
+        or not stat.S_ISDIR(metadata.st_mode)
+        or getattr(metadata, "st_file_attributes", 0) & 0x400
+    ):
+        return "it is not a regular directory"
+    if IS_WINDOWS:
+        try:
+            return _windows_problem(path)
+        except OSError as exc:
+            return f"its Windows DACL could not be verified ({exc})"
+    if metadata.st_uid != os.geteuid():
+        return "it is owned by another user"
+    if stat.S_IMODE(metadata.st_mode) != 0o700:
+        return "its mode is not 0700"
+    return ""
+
+
+def ensure_owner_only_directory(path: Path) -> None:
+    """Narrow an existing real directory before any private child is created."""
+    metadata = path.lstat()
+    if (
+        stat.S_ISLNK(metadata.st_mode)
+        or not stat.S_ISDIR(metadata.st_mode)
+        or getattr(metadata, "st_file_attributes", 0) & 0x400
+    ):
+        raise OwnerOnlyFileError(f"{path.name} is not a regular directory.")
+    if IS_WINDOWS:
+        _windows_security().set_protected_dacl(str(path), _windows_owner_sddl())
+    else:
+        path.chmod(0o700)
+    problem = owner_only_directory_problem(path)
     if problem:
         raise OwnerOnlyFileError(f"{path.name} is not owner-only: {problem}.")
 
@@ -375,6 +421,8 @@ __all__ = [
     "IS_WINDOWS",
     "OwnerOnlyFileError",
     "ensure_owner_only",
+    "ensure_owner_only_directory",
+    "owner_only_directory_problem",
     "owner_only_problem",
     "write_owner_only_text",
 ]

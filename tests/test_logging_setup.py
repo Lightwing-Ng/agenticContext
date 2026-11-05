@@ -1,12 +1,13 @@
 """Focused regression tests for structured logging setup.
 
-Code version: v1.1.0-codex.1
+Code version: v1.2.0-codex.0
 """
 
 from __future__ import annotations
 
 import json
 import logging
+import os
 import stat
 import sys
 import tempfile
@@ -16,6 +17,13 @@ from pathlib import Path
 from unittest.mock import patch
 
 from app.core import logging_setup
+from app.core.owner_only_files import owner_only_problem
+
+
+def _assert_owner_only(path: Path) -> None:
+    assert owner_only_problem(path) == ""
+    if os.name == "posix":
+        assert stat.S_IMODE(path.stat().st_mode) == 0o600
 
 
 class LoggingSetupTests(unittest.TestCase):
@@ -41,7 +49,7 @@ class LoggingSetupTests(unittest.TestCase):
                             handler.flush()
 
                     self.assertTrue(log_file.exists())
-                    self.assertEqual(stat.S_IMODE(log_file.stat().st_mode), 0o600)
+                    _assert_owner_only(log_file)
                     payload = json.loads(log_file.read_text(encoding="utf-8").splitlines()[-1])
                     self.assertEqual(payload["message"], "Structured log smoke test.")
                     self.assertEqual(payload["probe"], "ok")
@@ -168,8 +176,8 @@ class LoggingSetupTests(unittest.TestCase):
                         handler.flush()
 
                     self.assertEqual(configured_log, active_log)
-                    self.assertEqual(stat.S_IMODE(active_log.stat().st_mode), 0o600)
-                    self.assertEqual(stat.S_IMODE(rotated_log.stat().st_mode), 0o600)
+                    _assert_owner_only(active_log)
+                    _assert_owner_only(rotated_log)
                     self.assertTrue(
                         active_log.read_text(encoding="utf-8").startswith(
                             active_content
@@ -214,7 +222,15 @@ class LoggingSetupTests(unittest.TestCase):
             self.assertTrue(rotated_files)
             for candidate in [log_file, *rotated_files]:
                 with self.subTest(path=candidate.name):
-                    self.assertEqual(stat.S_IMODE(candidate.stat().st_mode), 0o600)
+                    _assert_owner_only(candidate)
+
+    def test_failed_native_boundary_writes_no_log_content(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            log_file = Path(temp_dir) / "private.log"
+            with patch.object(logging_setup, "ensure_owner_only", side_effect=OSError("ACL denied")):
+                with self.assertRaisesRegex(OSError, "ACL denied"):
+                    logging_setup.OwnerOnlyRotatingFileHandler(log_file, encoding="utf-8")
+            self.assertFalse(log_file.exists() and log_file.read_bytes())
 
 
 if __name__ == "__main__":

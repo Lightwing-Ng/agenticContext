@@ -1,6 +1,6 @@
 """Verified transcript chains keep one native original and all receiving evidence.
 
-Code version: v1.4.1-codex.0
+Code version: v1.4.2-codex.0
 """
 
 from __future__ import annotations
@@ -9,12 +9,14 @@ from copy import deepcopy
 from datetime import datetime, timedelta
 import hashlib
 import json
+import shutil
 import sqlite3
 from types import SimpleNamespace
 
 import pytest
 
 from app.core import wechat_contact_analysis as analysis
+from app.core import wechat_export_merge as export_merge
 from app.core.wechat_archive import _identifier
 from app.core.wechat_contacts import canonical_contact_id
 from app.core.wechat_export_merge import _json, merge_wechat_export
@@ -44,9 +46,12 @@ def _insert(connection, table, row):
 
 
 @pytest.fixture
-def forwarded_origin_store(native_html_store):
+def forwarded_origin_store(native_html_store, monkeypatch):
     """Publish a whole native/HTML transcript with a resource-only position gap."""
     fixture = native_html_store
+    # These disposable provenance fixtures exercise merge proofs, not the native
+    # APFS syscall. The publication suite retains the real no-fallback boundary.
+    monkeypatch.setattr(export_merge, "_clonefile", shutil.copyfile)
     parent_clock = datetime.fromisoformat("2021-10-20T16:19:53+08:00")
     native_parent = _identifier(fixture.native_source, "native-forward-envelope")
     sha = hashlib.sha256(b"Synthetic source-preserving forwarded HTML").hexdigest()
@@ -286,6 +291,7 @@ def forwarded_origin_store(native_html_store):
     record_id = hashlib.sha256(
         ("html-text-v1\0" + sha + "\0" + _json(locator)).encode()
     ).hexdigest()
+    connection.close()
     merge_wechat_export(
         fixture.store,
         source=source,

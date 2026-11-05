@@ -1,8 +1,10 @@
 """Focused regression tests for the local web console."""
 
-# Code version: v1.155.6-codex.0
+# Code version: v1.155.7-codex.0
 
 from __future__ import annotations
+
+import pytest
 
 from dataclasses import asdict
 from datetime import datetime, timedelta, timezone
@@ -3924,6 +3926,7 @@ class WebAppTests(unittest.TestCase):
             with self.subTest(fragment=fragment):
                 self.assertIn(fragment, script)
 
+    @pytest.mark.usefixtures("macos_host")
     def test_cache_browser_session_offers_recheck_without_a_login_action(self) -> None:
         app = create_app()
         with app.test_client() as client:
@@ -7437,7 +7440,7 @@ def test_grok_remembered_text_submission_cannot_start_media(tmp_path: Path) -> N
     start.assert_not_called()
 
 
-def test_cache_grok_url_includes_content_mode_and_safari(tmp_path: Path) -> None:
+def test_cache_grok_url_includes_content_mode_and_safari(tmp_path: Path, macos_host) -> None:
     with patch("app.core.browser_sessions.is_macos_host", return_value=True):
         client = create_app(tmp_path / "local_store").test_client()
         safari = client.get("/cache/grok/text/safari")
@@ -7462,7 +7465,7 @@ def test_cache_grok_url_includes_content_mode_and_safari(tmp_path: Path) -> None
     assert zhihu_safari.status_code == 404
 
 
-def test_claude_media_mode_has_separate_safari_worker_and_counters(tmp_path: Path) -> None:
+def test_claude_media_mode_has_separate_safari_worker_and_counters(tmp_path: Path, macos_host) -> None:
     application = create_app(tmp_path / "local_store")
     client = application.test_client()
 
@@ -7571,3 +7574,16 @@ def test_all_text_cache_sources_dispatch_selected_browser(tmp_path: Path) -> Non
             assert start.call_args.kwargs == {"content_mode": "text"}
         elif source == "zhihu":
             assert start.call_args.kwargs == {"author_url": ""}
+
+
+def test_safari_cache_route_requires_the_macos_browser_boundary(tmp_path, monkeypatch):
+    from app.core import browser_sessions, config
+
+    monkeypatch.setattr(config, "is_macos_host", lambda: False)
+    monkeypatch.setattr(config, "is_windows_host", lambda: True)
+    monkeypatch.setattr(browser_sessions, "is_macos_host", lambda: False)
+    application = create_app(tmp_path / "store")
+    client = application.test_client()
+
+    assert client.get("/cache/claude/media/safari").status_code == 404
+    assert client.get("/cache/claude/text/edge").status_code == 200

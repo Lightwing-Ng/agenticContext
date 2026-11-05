@@ -1,6 +1,6 @@
 """Add native text observations without replacing earlier WeChat evidence."""
 
-# Code version: v1.6.2-codex.0
+# Code version: v1.6.3-codex.0
 
 from __future__ import annotations
 
@@ -1202,7 +1202,7 @@ def reconcile_wechat_records(
             )
         if report["changed"]:
             os.chmod(temporary, 0o600)
-            with temporary.open("rb") as stream:
+            with temporary.open("r+b") as stream:
                 os.fsync(stream.fileno())
             os.replace(temporary, target)
         report["database_bytes"] = target.stat().st_size if target.exists() else 0

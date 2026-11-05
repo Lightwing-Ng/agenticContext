@@ -1,6 +1,6 @@
 """Behavioral checks for offline documentation navigation.
 
-Code version: v1.1.0-codex.1
+Code version: v1.1.1-codex.0
 """
 
 from pathlib import Path
@@ -20,9 +20,10 @@ def test_links_images_references_and_duplicate_headings(tmp_path):
     (tmp_path / "README.md").write_text(
         "# Start\n[go][target]\n\n[target]: <Guide page.md#repeated-1>\n"
         "![icon](image.svg)\n[中文](Guide%20page.md#中文标题)\n"
-        "```md\n[example](absent.md)\n```\n"
+        "```md\n[example](absent.md)\n```\n",
+        encoding="utf-8",
     )
-    (tmp_path / "Guide page.md").write_text("# Repeated\n# Repeated\n# 中文标题\n")
+    (tmp_path / "Guide page.md").write_text("# Repeated\n# Repeated\n# 中文标题\n", encoding="utf-8")
     (tmp_path / "image.svg").write_text("<svg/>")
     assert check_documents(tmp_path) == ([], [], 2)
 

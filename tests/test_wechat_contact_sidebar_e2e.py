@@ -1,11 +1,10 @@
 """Contact detail stays inside the shared Local resources navigation context.
 
-Code version: v1.1.0-codex.0
+Code version: v1.1.1-codex.0
 """
 
 from __future__ import annotations
 
-from pathlib import Path
 import sqlite3
 from urllib.parse import parse_qs, urlencode, urlsplit
 
@@ -76,7 +75,7 @@ def _switch_source(page, label):
 
 @pytest.mark.parametrize("width", [1026, 390])
 def test_contact_keeps_shared_source_navigation_sort_and_exact_origin(
-    disposable_browser, contact_analysis_server, width
+    disposable_browser, contact_analysis_server, tmp_path, width
 ):
     fixture = contact_analysis_server
     context = disposable_browser.new_context(
@@ -113,9 +112,7 @@ def test_contact_keeps_shared_source_navigation_sort_and_exact_origin(
         )
         expect(sidebar.locator("#browser_wechat_kind")).to_have_value("group")
         expect(sidebar.locator('input[name="session"]')).to_have_value(fixture.session)
-        evidence = Path("/private/tmp/wechat-contact-sidebar-e2e-1-Nov-2026")
-        evidence.mkdir(exist_ok=True)
-        page.screenshot(path=str(evidence / f"contact-shared-sidebar-{width}.png"))
+        page.screenshot(path=str(tmp_path / f"contact-shared-sidebar-{width}.png"))
         page.locator("#sidebar_toggle").click()
         expect(page.locator("#sidebar_toggle")).to_have_attribute(
             "aria-expanded", "false"
@@ -204,7 +201,7 @@ def test_contact_keeps_shared_source_navigation_sort_and_exact_origin(
 
 @pytest.mark.parametrize("width", [1026, 390])
 def test_contact_mode_navigation_uses_shared_browser_destination(
-    disposable_browser, contact_analysis_server, width
+    disposable_browser, contact_analysis_server, tmp_path, width
 ):
     fixture = contact_analysis_server
     context = disposable_browser.new_context(

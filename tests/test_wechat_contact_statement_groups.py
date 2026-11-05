@@ -1,10 +1,11 @@
 """Unique contact statements preserve independent observations and native identity.
 
-Code version: v1.2.0-codex.0
+Code version: v1.2.1-codex.0
 """
 
 from __future__ import annotations
 
+from contextlib import closing
 import hashlib
 import json
 import sqlite3
@@ -249,9 +250,9 @@ def _legacy_cache(fixture, *, stale=False):
     fingerprint = hashlib.sha256(
         analysis._json([analysis._LEGACY_REFERENCE_VERSION, identities]).encode()
     ).hexdigest()
-    with sqlite3.connect(
+    with closing(sqlite3.connect(
         analysis.contact_analysis_cache_path(fixture.store, CID)
-    ) as cache:
+    )) as cache, cache:
         cache.execute("DROP TABLE statement_members")
         cache.execute("DROP TABLE statement_groups")
         cache.executemany(
