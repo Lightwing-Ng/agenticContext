@@ -1,4 +1,4 @@
-"""Compact chat padding and contained external shadows. Code version: v1.1.2-codex.0."""
+"""Compact chat padding and contained external shadows. Code version: v1.1.3-codex.0."""
 
 from io import BytesIO
 import math
@@ -13,6 +13,21 @@ from tests import test_browser_chat_ruler_e2e, test_sidebar_e2e
 
 disposable_browser = test_sidebar_e2e.disposable_browser
 seeded_ruler_browser_server_url = test_browser_chat_ruler_e2e.seeded_ruler_browser_server_url
+
+
+def _show_unoccluded_metrics(page: Page) -> None:
+    toggle = page.locator("#sidebar_toggle")
+    if toggle.get_attribute("aria-expanded") == "true":
+        toggle.click()
+    expect(toggle).to_have_attribute("aria-expanded", "false")
+    page.wait_for_function("""() => {
+        const grid = document.querySelector('.browser-text-metric-grid');
+        return grid && [...grid.children].every(card => {
+            const box = card.getBoundingClientRect();
+            const hit = document.elementFromPoint(box.left + box.width / 2, box.top + box.height / 2);
+            return box.width > 0 && box.height > 0 && card.contains(hit);
+        });
+    }""")
 
 
 def _wait_for_effect_sync(page: Page) -> None:
@@ -212,6 +227,7 @@ def test_chat_effects_keep_eight_pixel_padding_and_paint_outside_scrollport(
         page.goto(f"{seeded_ruler_browser_server_url}/browser?view=text&source=chatgpt&session_view=1")
         page.locator(".browser-session-index-table .browser-session-table-title").first.click()
         expect(page.locator("[data-chat-message-id]")).to_have_count(7)
+        _show_unoccluded_metrics(page)
         page.evaluate("document.fonts.ready")
         scrollport = page.locator("[data-chat-scrollport]")
         scroll_invariant_offsets = None
@@ -228,6 +244,7 @@ def test_chat_effects_keep_eight_pixel_padding_and_paint_outside_scrollport(
             _assert_shadow_pixels_outside_scrollport(page, geometry)
             _assert_metrics_unaffected_by_chat_effects(page, geometry)
         page.set_viewport_size({"width": 430 if touch else 720, "height": 700 if touch else 560})
+        _show_unoccluded_metrics(page)
         _wait_for_effect_sync(page)
         resized = _chat_geometry(page)
         _assert_compact_geometry(resized, has_ruler=True)
