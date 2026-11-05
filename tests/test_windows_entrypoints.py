@@ -1,4 +1,4 @@
-"""Native Windows launcher and fail-closed gate tests. Code version: v1.3.1-codex.1."""
+"""Native Windows launcher and fail-closed gate tests. Code version: v1.3.2-codex.0."""
 
 import os
 from pathlib import Path
@@ -71,12 +71,8 @@ def test_windows_gate_rejects_success_without_fresh_coverage(tmp_path, stale_rep
     (static / "probe.js").write_text("void 0;\n", encoding="utf-8")
     tests = tmp_path / "tests"
     tests.mkdir()
-    for name in (
-        "test_agent_optimization.mjs",
-        "test_beta_engines.mjs",
-        "test_select_controller.mjs",
-    ):
-        (tests / name).write_text(
+    for module in (PROJECT_ROOT / "tests").glob("test_*.mjs"):
+        (tests / module.name).write_text(
             "import test from 'node:test';\ntest('probe', () => {});\n",
             encoding="utf-8",
         )
