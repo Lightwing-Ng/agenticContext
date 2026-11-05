@@ -4,7 +4,7 @@ Run with ``python -m app.core.gemini_export_import SOURCE --timezone AREA/CITY``
 The default is a read-only preview; ``--apply`` explicitly publishes the plan.
 """
 
-# Code version: v2.0.0-codex.0
+# Code version: v2.0.1-codex.0
 
 from __future__ import annotations
 
@@ -40,8 +40,9 @@ from .resource_persistence import (
 )
 
 
-VERSION = "v2.0.0-codex.0"
+VERSION = "v2.0.1-codex.0"
 _LEGACY_RECEIPT_VERSION = "v1.0.0-codex.0"
+_RECEIPT_VERSION = "v2.0.0-codex.0"
 _HISTORY_SUFFIXES = {"parquet": ".parquet", "sqlite": ".sqlite3"}
 _VOID = {"area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "param", "source", "track", "wbr"}
 _DATE = re.compile(
@@ -446,7 +447,7 @@ def _matches_for_event(originals: list[dict], event: dict, aggregate: bool, used
 def _receipt_formats(receipt: dict) -> tuple[str | None, str]:
     if receipt.get("version") == _LEGACY_RECEIPT_VERSION:
         return "parquet" if receipt.get("baseline_sha256") is not None else None, "parquet"
-    if receipt.get("version") != VERSION:
+    if receipt.get("version") != _RECEIPT_VERSION:
         raise TakeoutImportError("Unsupported Gemini import receipt version.")
     baseline_format = receipt.get("baseline_format")
     if (baseline_format not in {None, "parquet", "sqlite"}
@@ -672,11 +673,13 @@ def apply_import(plan: ImportPlan) -> dict:
                 if _receipt_pending(receipt, plan.history_state):
                     if _history_state(history) != plan.history_state:
                         raise TakeoutImportError("Gemini history changed during staging; publication refused.")
+                    ensure_owner_only(candidate)
                     _publish_candidate(candidate, target, plan.history_state.canonical_sha256
                                        if candidate_format == "sqlite" else plan.baseline_sha256)
                     if _history_sha(target) != receipt["candidate_sha256"] or _baseline(target) != plan.rows:
                         raise TakeoutImportError("Resumed publication readback failed; preserve the verified backup.")
                 _remove_published_candidate(candidate, target, receipt["candidate_sha256"])
+                ensure_owner_only(target)
                 receipt["state"] = "committed"
                 _atomic_json(receipt_path, receipt)
             return {**plan.summary, "dry_run": False}
@@ -724,12 +727,14 @@ def apply_import(plan: ImportPlan) -> dict:
             if _history_sha(backup) != plan.baseline_sha256 or _baseline(backup) != baseline_rows:
                 raise TakeoutImportError("History backup verification failed.")
         candidate = _history_file(bundle, "history-candidate", "sqlite")
+        if candidate.exists():
+            ensure_owner_only(candidate)
         write_sqlite_rows(candidate, plan.rows, GEMINI_HISTORY_SCHEMA, source="gemini")
         ensure_owner_only(candidate)
         if _baseline(candidate) != plan.rows:
             raise TakeoutImportError("Typed candidate readback differs from the plan.")
         _sync_file(candidate)
-        receipt = {"version": VERSION, "state": "prepared", "source_digest": digest,
+        receipt = {"version": _RECEIPT_VERSION, "state": "prepared", "source_digest": digest,
                    "timezone": plan.catalog["timezone"], "baseline_sha256": plan.baseline_sha256,
                    "baseline_format": plan.history_state.format, "candidate_format": "sqlite",
                    "canonical_baseline_sha256": plan.history_state.canonical_sha256,
