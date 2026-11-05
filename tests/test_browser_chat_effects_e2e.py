@@ -1,4 +1,4 @@
-"""Compact chat padding and contained external shadows. Code version: v1.1.3-codex.0."""
+"""Compact chat padding and contained external shadows. Code version: v1.1.4-codex.0."""
 
 from io import BytesIO
 import math
@@ -225,7 +225,8 @@ def test_chat_effects_keep_eight_pixel_padding_and_paint_outside_scrollport(
     page.on("pageerror", lambda error: errors.append(str(error)))
     try:
         page.goto(f"{seeded_ruler_browser_server_url}/browser?view=text&source=chatgpt&session_view=1")
-        page.locator(".browser-session-index-table .browser-session-table-title").first.click()
+        with page.expect_navigation(wait_until="domcontentloaded"):
+            page.locator(".browser-session-index-table .browser-session-table-title").first.click()
         expect(page.locator("[data-chat-message-id]")).to_have_count(7)
         _show_unoccluded_metrics(page)
         page.evaluate("document.fonts.ready")
