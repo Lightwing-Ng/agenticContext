@@ -1,12 +1,13 @@
 """Account and conversation-type filters share desktop and narrow UI contracts.
 
-Code version: v1.7.1-codex.0
+Code version: v1.7.2-codex.0
 """
 
 from __future__ import annotations
 
 import csv
 from io import BytesIO, StringIO
+import json
 import math
 import re
 import sqlite3
@@ -70,14 +71,52 @@ def _assert_directional_shadow_pixels(page, geometry, direction):
     finally:
         _set_effect_layer_visibility(page, "")
     difference = ImageChops.difference(painted.crop(crop), hidden.crop(crop))
-    assert (
-        sum(
-            max(difference.getpixel((x, y))) >= 1
-            for x in range(difference.width)
-            for y in range(difference.height)
-        )
-        >= 24
+    changed_pixels = sum(
+        max(difference.getpixel((x, y))) >= 1
+        for x in range(difference.width)
+        for y in range(difference.height)
     )
+    if changed_pixels < 24:
+        details = page.evaluate("""({id, crop}) => {
+            const card = document.getElementById(id);
+            const pane = card?.closest('[data-browser-chat-pane]');
+            const list = pane?.querySelector('[data-chat-scrollport]');
+            const layer = pane?.querySelector('[data-chat-effects]');
+            if (!card || !pane || !list || !layer) return {missingStructure: true};
+            const effect = [...layer.querySelectorAll('[data-chat-effect-for]')]
+                .find(node => node.dataset.chatEffectFor === id);
+            const rect = node => {
+                if (!node) return null;
+                const box = node.getBoundingClientRect();
+                return {left: box.left, right: box.right, top: box.top,
+                    bottom: box.bottom, width: box.width, height: box.height};
+            };
+            const style = node => {
+                if (!node) return null;
+                const value = getComputedStyle(node);
+                return {display: value.display, visibility: value.visibility,
+                    opacity: value.opacity, shadow: value.boxShadow,
+                    clip: value.clipPath, transform: value.transform};
+            };
+            const hit = document.elementFromPoint((crop[0] + crop[2]) / 2, (crop[1] + crop[3]) / 2);
+            return {phase: 'after-restored-visible-render-frames',
+                viewport: [innerWidth, innerHeight], deviceScale: devicePixelRatio,
+                cropHit: hit ? {tag: hit.tagName, id: hit.id, classes: hit.className} : null,
+                fonts: document.fonts.status,
+                documentState: document.readyState,
+                sidebarExpanded: document.querySelector('#sidebar_toggle')?.getAttribute('aria-expanded'),
+                list: rect(list), client: [list.clientWidth, list.clientHeight],
+                scroll: [list.scrollWidth, list.scrollHeight, list.scrollTop],
+                card: rect(card), effect: rect(effect), effectStyle: style(effect),
+                layer: rect(layer), layerStyle: style(layer),
+                trackStyle: style(layer.querySelector('.browser-chat-effect-track'))};
+        }""", {"id": target["id"], "crop": crop})
+        print("Directional shadow comparison: " + json.dumps({
+            "direction": direction, "changedPixels": changed_pixels, "crop": crop,
+            "imageSize": painted.size, "measuredList": boundary,
+            "measuredCard": target["box"], "presented": details,
+        }, separators=(",", ":")))
+    assert changed_pixels >= 24
 
 
 def _assert_wechat_effect_geometry(page):
