@@ -1,8 +1,9 @@
 """Reviewed preview projections preserve source observations and archive bytes.
 
-Code version: v1.1.0-codex.0
+Code version: v1.1.1-codex.0
 """
 
+from contextlib import closing
 from copy import deepcopy
 import hashlib
 import json
@@ -27,7 +28,7 @@ def _sha(text):
 
 
 def _message(fixture, identifier):
-    with sqlite3.connect(fixture["history"]) as connection:
+    with closing(sqlite3.connect(fixture["history"])) as connection, connection:
         connection.row_factory = sqlite3.Row
         return dict(
             connection.execute(
@@ -95,7 +96,7 @@ def _update_tree(fixture, identifier, change):
     proof = json.loads(row["provenance"])
     change(proof)
     text = _render(proof["forwarded_components"])
-    with sqlite3.connect(fixture["history"]) as connection:
+    with closing(sqlite3.connect(fixture["history"])) as connection, connection:
         connection.execute(
             "UPDATE messages SET text=?,provenance=? WHERE id=?",
             (text, _json(proof), identifier),
@@ -106,7 +107,7 @@ def _update_tree(fixture, identifier, change):
 def previews(tmp_path):
     contacts = contact_registry_path(tmp_path)
     contacts.parent.mkdir(parents=True)
-    with sqlite3.connect(contacts) as connection:
+    with closing(sqlite3.connect(contacts)) as connection, connection:
         initialize_contact_registry(connection)
     fixture = _make_forwarded_html_store(tmp_path)
     target_id = fixture["request"]["id"]
@@ -173,7 +174,7 @@ def previews(tmp_path):
         "text": _render(donor_children),
         "provenance": _json(source_proof),
     }
-    with sqlite3.connect(fixture["history"]) as connection:
+    with closing(sqlite3.connect(fixture["history"])) as connection, connection:
         connection.execute(
             "UPDATE messages SET text=?,provenance=? WHERE id=?",
             (_render(target_children), _json(proof), target_id),
@@ -436,7 +437,7 @@ def test_ambiguous_or_unverified_donor_nodes_do_not_create_events(previews, muta
 )
 def test_source_scope_and_outer_forwarder_must_agree(previews, mutation):
     if mutation == "account":
-        with sqlite3.connect(previews["history"]) as connection:
+        with closing(sqlite3.connect(previews["history"])) as connection, connection:
             connection.execute("UPDATE partitions SET account_id='wxid_other'")
     else:
 
@@ -503,7 +504,7 @@ def test_reviewed_literal_preview_headers_never_become_authors_or_times(previews
 
 
 def test_distinct_verified_source_conversation_cannot_supply_an_excerpt(previews):
-    with sqlite3.connect(previews["history"]) as connection:
+    with closing(sqlite3.connect(previews["history"])) as connection, connection:
         connection.row_factory = sqlite3.Row
         original = dict(connection.execute("SELECT * FROM conversations").fetchone())
         other = {
@@ -541,7 +542,7 @@ def test_distinct_verified_source_conversation_cannot_supply_an_excerpt(previews
 
 
 def test_same_content_in_a_distinct_snapshot_cannot_supply_an_excerpt(previews):
-    with sqlite3.connect(previews["history"]) as connection:
+    with closing(sqlite3.connect(previews["history"])) as connection, connection:
         source = connection.execute(
             "SELECT snapshot_id,source_id,metadata FROM source_snapshots"
         ).fetchone()
