@@ -1,22 +1,32 @@
 """Exact HTML completion links enrich views without changing source occurrences.
 
-Code version: v1.0.1-codex.0
+Code version: v1.0.2-codex.0
 """
 
+from contextlib import closing
 from copy import deepcopy
 import hashlib
 import json
+import shutil
 import sqlite3
 from unittest.mock import patch
 
 import pytest
 
+from app.core import wechat_export_merge as export_merge
 from app.core.wechat_archive import _identifier
 from app.core.wechat_contacts import WechatContactRepository
 from app.core.wechat_context_links import WechatContextLinks
 from app.core.wechat_export_merge import merge_wechat_export
 from app.core.wechat_reconcile import _json
 from tests.test_wechat_contacts import _make_forwarded_html_store
+
+
+@pytest.fixture(autouse=True)
+def synthetic_export_clone(monkeypatch):
+    """Exercise exact context-link proofs on disposable archives on every host."""
+    # The dedicated publication suite retains the real APFS no-fallback contract.
+    monkeypatch.setattr(export_merge, "_clonefile", shutil.copyfile)
 
 
 def _sha(text):
@@ -28,7 +38,7 @@ def context_link_fixture(store):
     request = fixture["request"]
     target_id = request["id"]
     title = "Forward history"
-    with sqlite3.connect(fixture["history"]) as connection:
+    with closing(sqlite3.connect(fixture["history"])) as connection, connection:
         connection.row_factory = sqlite3.Row
         target = dict(
             connection.execute(
@@ -110,7 +120,7 @@ def context_link_fixture(store):
         ],
     )
     source_id = _identifier(source["source_id"], request["source_record_id"])
-    with sqlite3.connect(fixture["history"]) as connection:
+    with closing(sqlite3.connect(fixture["history"])) as connection, connection:
         evidence_id = connection.execute(
             "SELECT id FROM message_evidence WHERE message_id=?", (source_id,)
         ).fetchone()[0]

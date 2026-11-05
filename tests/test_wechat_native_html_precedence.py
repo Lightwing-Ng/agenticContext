@@ -1,12 +1,14 @@
 """Preferred native observations retain all source evidence and account boundaries.
 
-Code version: v1.4.0-codex.0
+Code version: v1.4.1-codex.0
 """
 
 from __future__ import annotations
 
+from contextlib import closing
 import hashlib
 import json
+import shutil
 import sqlite3
 from datetime import datetime, timedelta
 from types import SimpleNamespace
@@ -14,6 +16,7 @@ from types import SimpleNamespace
 import pytest
 
 from app.core import wechat_contact_analysis as analysis
+from app.core import wechat_export_merge as export_merge
 from app.core.wechat_archive import _identifier
 from tests import test_wechat_contact_statement_groups as grouping
 
@@ -174,8 +177,11 @@ def _change_provenance(fixture, message_id, change):
 
 
 @pytest.fixture
-def native_html_store(statement_store):
+def native_html_store(statement_store, monkeypatch):
     """Keep six proven source/account events with independent local locators."""
+    # Source-proof fixtures use disposable files; publication tests retain the
+    # real APFS no-fallback boundary.
+    monkeypatch.setattr(export_merge, "_clonefile", shutil.copyfile)
     fixture = statement_store
     first = fixture.rows[0]
     owner, source = first["account_id"], first["source_id"]
@@ -184,7 +190,7 @@ def native_html_store(statement_store):
     html_source = "html-" + digest[:24]
     html_conversation = "wechat:" + _identifier(html_source, grouping.TARGET)
     native_ids, html_ids = [], []
-    with sqlite3.connect(fixture.history) as connection:
+    with closing(sqlite3.connect(fixture.history)) as connection, connection:
         connection.row_factory = sqlite3.Row
         template = dict(
             connection.execute(
@@ -342,7 +348,7 @@ def native_html_store(statement_store):
             _insert_message(connection, html)
             native_ids.append(native["id"])
             html_ids.append(html["id"])
-    with sqlite3.connect(fixture.registry) as connection:
+    with closing(sqlite3.connect(fixture.registry)) as connection, connection:
         connection.execute(
             "INSERT INTO sender_bindings VALUES(?,?,?,?,?,?,?)",
             (
