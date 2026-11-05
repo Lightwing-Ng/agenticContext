@@ -1,6 +1,6 @@
 """Focused regression tests for the local web console."""
 
-# Code version: v1.155.7-codex.0
+# Code version: v1.155.8-codex.0
 
 from __future__ import annotations
 
@@ -9,6 +9,7 @@ import pytest
 from dataclasses import asdict
 from datetime import datetime, timedelta, timezone
 import json
+import os
 from pathlib import Path
 import re
 import subprocess
@@ -16,6 +17,7 @@ from tempfile import TemporaryDirectory
 import unittest
 from unittest.mock import ANY, patch
 
+from app.core.owner_only_files import owner_only_problem
 from app.core.state import TaskSnapshot
 from app.core.config import CrawlConfig
 from app.core.foundation import is_macos_host
@@ -493,6 +495,7 @@ class WebAppTests(unittest.TestCase):
             with self.subTest(fragment=fragment):
                 self.assertIn(fragment, script)
 
+    @pytest.mark.usefixtures("macos_host")
     def test_agent_uses_canonical_browser_provider_paths(self) -> None:
         with patch(
             "app.core.computer_use_agent.load_computer_use_settings",
@@ -1189,6 +1192,7 @@ class WebAppTests(unittest.TestCase):
                         aside,
                     )
 
+    @pytest.mark.usefixtures("macos_host")
     def test_agent_control_plane_allows_private_lan_with_password(self) -> None:
         with patch(
             "app.core.computer_use_agent.load_computer_use_settings",
@@ -1309,7 +1313,7 @@ class WebAppTests(unittest.TestCase):
         self.assertNotIn('class="trade-strategy-combobox agent-combobox agent-os-combobox"', local_body)
         self.assertNotIn('data-agent-terminal-authorization-button', local_body)
         self.assertNotIn('data-agent-terminal-authorization-status', local_body)
-        self.assertIn('name="operating_system" value="macos" data-agent-prompt-os', local_body)
+        self.assertIn(f'name="operating_system" value="{ComputerUseSettings().operating_system}" data-agent-prompt-os', local_body)
         self.assertIn('data-agent-combobox-option="safari"', local_body)
         self.assertNotIn('name="port"', local_body)
         self.assertIn('id="agent_project_path"', local_body)
@@ -2617,7 +2621,9 @@ class WebAppTests(unittest.TestCase):
             self.assertEqual(first_store.load().revision, 1)
             lock_path = registry_path.with_name(f".{registry_path.name}.lock")
             self.assertTrue(lock_path.is_file())
-            self.assertEqual(lock_path.stat().st_mode & 0o077, 0)
+            self.assertEqual(owner_only_problem(lock_path), "")
+            if os.name == "posix":
+                self.assertEqual(lock_path.stat().st_mode & 0o077, 0)
 
     def test_tunnel_project_change_reconnects_only_after_a_qualified_chatgpt_save(self) -> None:
         """A confirmed writable selection refreshes ChatGPT before the response."""
@@ -4223,6 +4229,7 @@ class WebAppTests(unittest.TestCase):
         self.assertIn('placeholder="Do anything"', body)
         self.assertIn('elements.promptInput.placeholder = "Do anything"', script)
 
+    @pytest.mark.usefixtures("macos_host")
     def test_agent_browser_alias_and_claude_route_render_the_shared_workspace(self) -> None:
         with patch(
             "app.core.computer_use_agent.load_computer_use_settings",
@@ -5244,7 +5251,7 @@ class WebAppTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertNotIn("Set-Cookie", response.headers)
         agent_body = agent_response.get_data(as_text=True)
-        self.assertIn('name="operating_system" value="macos"', agent_body)
+        self.assertIn(f'name="operating_system" value="{ComputerUseSettings().operating_system}"', agent_body)
         self.assertNotIn("Gemini Agent", agent_body)
 
     def test_settings_directory_browser_rejects_non_loopback_requests(self) -> None:
@@ -5944,14 +5951,14 @@ class WebAppTests(unittest.TestCase):
 
             app = create_app(root)
             with app.test_client() as client:
-                browser_response = client.get("/browser?view=media")
+                browser_response = client.get("/browser?view=media", buffered=True)
                 video_response = client.get(
                     "/browser/media/grok/clip.mp4",
-                    headers={"Range": "bytes=0-3"},
+                    headers={"Range": "bytes=0-3"}, buffered=True,
                 )
-                invalid_extension = client.get("/browser/media/grok/.grok_catalog.json")
-                traversal = client.get("/browser/media/grok/%2e%2e/%2e%2e/outside.mp4")
-                external_link = client.get("/browser/media/grok/outside.mp4")
+                invalid_extension = client.get("/browser/media/grok/.grok_catalog.json", buffered=True)
+                traversal = client.get("/browser/media/grok/%2e%2e/%2e%2e/outside.mp4", buffered=True)
+                external_link = client.get("/browser/media/grok/outside.mp4", buffered=True)
 
             body = browser_response.get_data(as_text=True)
             self.assertEqual(browser_response.status_code, 200)
@@ -6685,9 +6692,9 @@ class WebAppTests(unittest.TestCase):
             )
             app = create_app(root)
             with app.test_client() as client:
-                response = client.get("/browser?view=media&source=gemini&q=&sort=newest&session_view=1")
-                video_response = client.get("/browser?view=media&source=gemini&kind=video")
-                media_response = client.get("/browser/media/media/gemini/img_gemini.png")
+                response = client.get("/browser?view=media&source=gemini&q=&sort=newest&session_view=1", buffered=True)
+                video_response = client.get("/browser?view=media&source=gemini&kind=video", buffered=True)
+                media_response = client.get("/browser/media/media/gemini/img_gemini.png", buffered=True)
 
         body = response.get_data(as_text=True)
         self.assertEqual(response.status_code, 200)
@@ -7324,10 +7331,10 @@ class WebAppTests(unittest.TestCase):
             app = create_app(root)
             with app.test_client() as client:
                 delete_response = client.post(f"/api/browser/media/{stable_id}/delete")
-                deleted_preview = client.get(f"/browser/deleted-preview/{stable_id}")
-                deleted_browser = client.get("/browser?view=media")
+                deleted_preview = client.get(f"/browser/deleted-preview/{stable_id}", buffered=True)
+                deleted_browser = client.get("/browser?view=media", buffered=True)
                 restore_response = client.post(f"/api/browser/media/{stable_id}/restore")
-                restored_media = client.get("/browser/media/x/demo/image.jpg")
+                restored_media = client.get("/browser/media/x/demo/image.jpg", buffered=True)
 
         self.assertEqual(delete_response.status_code, 200)
         self.assertFalse(image_path.exists())
@@ -7489,8 +7496,8 @@ def test_claude_media_mode_has_separate_safari_worker_and_counters(tmp_path: Pat
     assert 'data-cache-page-content-mode="media"' in body
     assert 'id="claude_media_cached"' in body
     assert "Other attachments and videos are not included." in body
-    assert media_status["output_dir"].endswith("/media/claude")
-    assert text_status["output_dir"].endswith("/llm/claude")
+    assert Path(media_status["output_dir"]).as_posix().endswith("/media/claude")
+    assert Path(text_status["output_dir"]).as_posix().endswith("/llm/claude")
 
 
 def test_local_resources_offers_x_text_and_claude_media_sources(tmp_path: Path) -> None:

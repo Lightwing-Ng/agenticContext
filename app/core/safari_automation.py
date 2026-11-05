@@ -1,6 +1,6 @@
 """Minimal Safari automation primitives backed by Apple Events."""
 
-# Code version: v2.18.0-codex.0
+# Code version: v2.18.1-codex.0
 
 from __future__ import annotations
 
@@ -521,10 +521,43 @@ def _safari_process_identity(*, allow_not_running: bool = False) -> str | None:
     return f"{raw_pid}:{started_at}"
 
 
+def _windows_safari_owner_is_alive(pid: int) -> bool:
+    """Query a recorded owner without Windows' signal-zero console side effect."""
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+        kernel.OpenProcess.restype = wintypes.HANDLE
+        kernel.GetExitCodeProcess.argtypes = [wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD)]
+        kernel.GetExitCodeProcess.restype = wintypes.BOOL
+        kernel.CloseHandle.argtypes = [wintypes.HANDLE]
+        kernel.CloseHandle.restype = wintypes.BOOL
+        handle = kernel.OpenProcess(0x1000, False, pid)
+        if not handle:
+            # Only an invalid PID proves absence. Denied or unknown probes must
+            # preserve the recorded owner's lease instead of recovering it.
+            return ctypes.get_last_error() != 87
+        try:
+            exit_code = wintypes.DWORD()
+            if not kernel.GetExitCodeProcess(handle, ctypes.byref(exit_code)):
+                return True
+            return exit_code.value == 259
+        finally:
+            kernel.CloseHandle(handle)
+    except (AttributeError, OSError):
+        return True
+
+
 def _safari_pid_is_alive(pid: int) -> bool:
     """Return whether a recorded Safari-task owner process still exists."""
     if type(pid) is not int or pid <= 0:
         return False
+    if pid == os.getpid():
+        return True
+    if os.name == "nt":
+        return _windows_safari_owner_is_alive(pid)
     try:
         os.kill(pid, 0)
     except ProcessLookupError:
@@ -2741,8 +2774,8 @@ class SafariContext:
                     self._adopted_window_was_empty = True
                     return
                 foreign_owner = (
-                    _safari_pid_is_alive(payload["owner_pid"])
-                    and payload["owner_pid"] != os.getpid()
+                    payload["owner_pid"] != os.getpid()
+                    and _safari_pid_is_alive(payload["owner_pid"])
                 )
                 if foreign_owner:
                     raise RuntimeError(
