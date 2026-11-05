@@ -1,6 +1,6 @@
 """Durable local compute jobs for approved optimization entrypoints.
 
-Code version: v1.6.5-codex.0
+Code version: v1.6.6-codex.0
 """
 
 from __future__ import annotations
@@ -2563,7 +2563,7 @@ def _wait_for_worker_ownership(metadata_path: Path) -> dict[str, Any] | None:
 
 
 def _approved_child_main(arguments: list[str]) -> int:
-    """Wait for containment publication, then replace this process with approved bytes."""
+    """Wait for containment publication, then launch the approved bytes."""
     if len(arguments) not in {6, 7}:
         return 64
     ready_path = Path(arguments[0]).resolve(strict=False)
@@ -2617,6 +2617,12 @@ def _approved_child_main(arguments: list[str]) -> int:
     environment["AGENTIC_CONTEXT_COMPUTE_JOB_RUNTIME"] = str(job_root)
     os.chdir(source_directory)
     try:
+        if os.name == "nt":
+            # Windows CRT exec exits this registered PID after spawning another.
+            # Keep the bridge alive while its child inherits the same Job Object.
+            return subprocess.run(
+                command, env=environment, check=False, close_fds=True,
+            ).returncode
         os.execve(command[0], command, environment)
     except OSError:
         return 71
