@@ -1,6 +1,6 @@
 """Prepare and verify one lossless SQLite compaction outside the runtime directory.
 
-Code version: v1.2.1-codex.0
+Code version: v1.2.2-codex.0
 
 This tool never publishes, removes, or backs up a live database. The caller must
 preserve an independently verified external rollback before an atomic pathname
@@ -11,6 +11,7 @@ the runtime volume for that replacement to preserve its reader identity.
 from __future__ import annotations
 
 import argparse
+from contextlib import closing
 from datetime import UTC, datetime
 import hashlib
 import json
@@ -22,8 +23,8 @@ import subprocess
 import sys
 
 
-VERSION = "v1.2.1-codex.0"
-_SUPPORTED_VERSIONS = {"v1.0.0-codex.0", "v1.1.0-codex.0", "v1.1.1-codex.0", "v1.2.0-codex.0", VERSION}
+VERSION = "v1.2.2-codex.0"
+_SUPPORTED_VERSIONS = {"v1.0.0-codex.0", "v1.1.0-codex.0", "v1.1.1-codex.0", "v1.2.0-codex.0", "v1.2.1-codex.0", VERSION}
 _MODULUS = 1 << 256
 _DATALESS = 0x40000000
 _PIN = "history_file_identity"
@@ -111,7 +112,7 @@ def logical_content(path, *, original_pin=None):
     row, schema object, and application header is included. Pickle is used only
     as an internal typed encoder; no external pickle is ever deserialized.
     """
-    with readonly(path) as connection:
+    with closing(readonly(path)) as connection:
         schema = connection.execute(
             "SELECT type,name,tbl_name,sql FROM sqlite_master "
             "ORDER BY type,name,tbl_name"
@@ -148,7 +149,7 @@ def logical_content(path, *, original_pin=None):
 
 
 def _quick_check(path):
-    with readonly(path) as connection:
+    with closing(readonly(path)) as connection:
         if connection.execute("PRAGMA quick_check").fetchall() != [("ok",)]:
             raise ValueError("The candidate SQLite quick_check failed.")
         return {
@@ -169,11 +170,13 @@ def _write_receipt(path, report, *, replace=False):
         stream.flush()
         os.fsync(stream.fileno())
     os.replace(temporary, path)
-    descriptor = os.open(path.parent, os.O_RDONLY)
-    try:
-        os.fsync(descriptor)
-    finally:
-        os.close(descriptor)
+    # Windows cannot open directories through the CRT descriptor API.
+    if os.name != "nt":
+        descriptor = os.open(path.parent, os.O_RDONLY)
+        try:
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
 
 
 def _compress_path(candidate):
@@ -234,7 +237,7 @@ def prepare(database, candidate, receipt, *, page_size=32768, hfs_compression=Fa
     if resident(database) != baseline or sha256(database) != before_sha:
         raise ValueError("The source changed during preflight.")
     # immutable=1 suppresses the connection's requested destination page size.
-    with readonly(database, immutable=False) as source:
+    with closing(readonly(database, immutable=False)) as source:
         source.execute("PRAGMA page_size=" + str(page_size))
         source.execute("PRAGMA synchronous=FULL")
         source.execute("VACUUM INTO ?", (str(candidate),))
@@ -247,7 +250,8 @@ def prepare(database, candidate, receipt, *, page_size=32768, hfs_compression=Fa
     compression = _compress_path(candidate) if hfs_compression else {"enabled": False}
     if resident(database) != baseline or sha256(database) != before_sha:
         raise ValueError("The source changed while the candidate was prepared.")
-    with candidate.open("rb") as stream:
+    # Opening an APFS-compressed file for writing would decompress its bytes.
+    with candidate.open("rb" if hfs_compression else "r+b") as stream:
         os.fsync(stream.fileno())
     report = {
         "version": VERSION,
@@ -456,9 +460,9 @@ def refresh_mount(receipts, output_directory):
             or json.loads(changes[_PIN]["after"]) != history["candidate_identity"]
         ):
             raise ValueError("Do not refresh an independently stale sidecar pin.")
-        with readonly(report["database"]) as connection:
+        with closing(readonly(report["database"])) as connection:
             source_info = dict(connection.execute("SELECT key,value FROM archive_info"))
-        with readonly(report["candidate"]) as connection:
+        with closing(readonly(report["candidate"])) as connection:
             candidate_info = dict(connection.execute("SELECT key,value FROM archive_info"))
         if (
             source_info.get(_PIN) != changes[_PIN]["before"]
@@ -473,7 +477,7 @@ def refresh_mount(receipts, output_directory):
         if report is not history:
             _independent_candidate(report["database"], report["candidate"])
             replacement = json.dumps(new_history, sort_keys=True, separators=(",", ":"))
-            with sqlite3.connect(report["candidate"]) as connection:
+            with closing(sqlite3.connect(report["candidate"])) as connection, connection:
                 connection.execute("UPDATE archive_info SET value=? WHERE key=?", (replacement, _PIN))
             old_pin = report["intentional_changes"][_PIN]["before"]
             if logical_content(report["candidate"], original_pin=old_pin) != report["logical_content"]:
@@ -508,7 +512,7 @@ def rebind_sidecar(receipt, history_receipt):
     if report["intentional_changes"]:
         raise ValueError("Do not rebind an already modified candidate.")
     candidate = Path(report["candidate"])
-    with readonly(candidate) as connection:
+    with closing(readonly(candidate)) as connection:
         columns = connection.execute("PRAGMA table_info(archive_info)").fetchall()
         if [row[1:3] for row in columns] != [("key", "TEXT"), ("value", "TEXT")]:
             raise ValueError("The sidecar info schema is unsupported.")
@@ -521,14 +525,14 @@ def rebind_sidecar(receipt, history_receipt):
     if json.loads(info.get(_PIN, "null")) != history["source_identity"]:
         return {"status": "already_stale_unchanged", "receipt": str(receipt)}
     if "history_partitions_sha256" in info or Path(report["database"]).name != "media_events.sqlite3":
-        with readonly(history["database"]) as connection:
+        with closing(readonly(history["database"])) as connection:
             rows = connection.execute("SELECT id,account_key,account_id FROM partitions ORDER BY id").fetchall()
         fingerprint = hashlib.sha256(json.dumps(rows, ensure_ascii=False, separators=(",", ":")).encode()).hexdigest()
         if info.get("history_partitions_sha256") != fingerprint:
             return {"status": "partition_pin_stale_unchanged", "receipt": str(receipt)}
     replacement = json.dumps(history["candidate_identity"], sort_keys=True, separators=(",", ":"))
     _independent_candidate(report["database"], candidate)
-    with sqlite3.connect(candidate) as connection:
+    with closing(sqlite3.connect(candidate)) as connection, connection:
         connection.execute("UPDATE archive_info SET value=? WHERE key=?", (replacement, _PIN))
     if logical_content(candidate, original_pin=info[_PIN]) != report["logical_content"]:
         raise ValueError("Rebinding changed content outside the permitted history pin.")

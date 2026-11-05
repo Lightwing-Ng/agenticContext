@@ -4,7 +4,7 @@ The application is isolated (external Agent operations disabled) and every servi
 method that would reach the runtime is stubbed before a test enables operations, so
 nothing here creates the vendored runtime or contacts a device.
 
-Code version: v1.1.0-codex.0
+Code version: v1.1.1-codex.0
 """
 
 from __future__ import annotations
@@ -372,18 +372,23 @@ def test_operation_error_codes_map_to_http_statuses(iphone_app, code, status):
     }
 
 
-def test_unavailable_runtime_maps_to_501(iphone_app):
+@pytest.mark.parametrize("diagnostic", [
+    "Runtime state must be outside all Git checkouts.",
+    "Traceback: private runtime path /private/synthetic/token.txt",
+])
+def test_unavailable_runtime_maps_to_501_without_exposing_diagnostics(iphone_app, diagnostic):
     application, service = iphone_app
     enable_fake_operations(application)
-    service.ready.side_effect = IPhoneUnavailableError("Runtime state must be outside all Git checkouts.")
+    service.ready.side_effect = IPhoneUnavailableError(diagnostic)
 
     response = application.test_client().post("/api/iphone/ready", json={})
 
     assert response.status_code == 501
     assert response.get_json()["error"] == {
         "code": "iphone_unavailable",
-        "message": "Runtime state must be outside all Git checkouts.",
+        "message": "iPhone control is unavailable. Check this Mac's setup and try again.",
     }
+    assert diagnostic not in response.get_data(as_text=True)
 
 
 def test_responses_from_a_real_service_lose_host_paths(iphone_app):

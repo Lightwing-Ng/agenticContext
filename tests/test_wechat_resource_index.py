@@ -1,18 +1,21 @@
 """Native resource catalogs preserve accounts, source bytes, and undecoded records.
 
-Code version: v1.0.0-codex.0
+Code version: v1.0.1-codex.0
 """
 
 from __future__ import annotations
 
+from contextlib import closing
 import hashlib
 import json
+import os
 import sqlite3
 from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
 
+from app.core.owner_only_files import owner_only_problem
 from app.core.wechat_archive import import_wechat_archive, wechat_archive_path
 from app.core.wechat_resource_index import build_resource_index, resource_index_path
 from tests.test_wechat_archive import make_archive
@@ -47,7 +50,7 @@ def resources(tmp_path):
     )
     database = db_root / "message_1.sqlite"
     columns = "(CreateTime INTEGER,Des INTEGER,MesLocalID INTEGER PRIMARY KEY,Message TEXT,MesSvrID INTEGER,Type INTEGER,WCDB_CT_Message INTEGER)"
-    with sqlite3.connect(database) as connection:
+    with closing(sqlite3.connect(database)) as connection, connection:
         for peer in ("peer-direct", "peer-group", "attachments@chatroom"):
             connection.execute(f'CREATE TABLE "{_table(peer)}" {columns}')
         rows = [
@@ -98,11 +101,11 @@ def resources(tmp_path):
             f'INSERT INTO "{_table("attachments@chatroom")}" VALUES(?,?,?,?,?,?,?)',
             (NOW, 1, 10, b"only-resource-conversation", SERVER, 43, 2),
         )
-    with sqlite3.connect(db_root / "MM.sqlite") as connection:
+    with closing(sqlite3.connect(db_root / "MM.sqlite")) as connection, connection:
         connection.execute("CREATE TABLE Friend(UsrName TEXT PRIMARY KEY)")
         connection.execute("INSERT INTO Friend VALUES('attachments@chatroom')")
     (owner_root / "FileIndex").mkdir()
-    with sqlite3.connect(owner_root / "FileIndex/fileIndexInfo.db") as connection:
+    with closing(sqlite3.connect(owner_root / "FileIndex/fileIndexInfo.db")) as connection, connection:
         connection.execute(
             "CREATE TABLE FileIndexInfoTable(fileMD5 TEXT,filePath TEXT,fileSize INTEGER,indexType INTEGER,msgLocalId INTEGER,msgtime INTEGER,msgType INTEGER,userName TEXT)"
         )
@@ -124,7 +127,7 @@ def resources(tmp_path):
             ],
         )
     (owner_root / "FileBrowse").mkdir()
-    with sqlite3.connect(owner_root / "FileBrowse/fileInfo.db") as connection:
+    with closing(sqlite3.connect(owner_root / "FileBrowse/fileInfo.db")) as connection, connection:
         connection.execute(
             "CREATE TABLE BrowseInfoTable(msgWrapSvrID INTEGER PRIMARY KEY,msgLocalID INTEGER,fileTime INTEGER,desTitle TEXT,fileExt TEXT,fileMD5 TEXT,fileSize INTEGER,fromUserName TEXT,fromChatName TEXT)"
         )
@@ -215,7 +218,9 @@ def test_native_types_and_real_times_become_metadata_placeholders_without_payloa
     assert "sender_id_unavailable" in json.loads(group["quality_flags"])
     assert source_before == fixture.source.read_bytes()
     assert history_before == fixture.history.read_bytes()
-    assert resource_index_path(fixture.store).stat().st_mode & 0o777 == 0o600
+    assert owner_only_problem(resource_index_path(fixture.store)) == ""
+    if os.name == "posix":
+        assert resource_index_path(fixture.store).stat().st_mode & 0o777 == 0o600
 
 
 def test_schema_identity_and_attachment_only_conversations_follow_existing_contract(

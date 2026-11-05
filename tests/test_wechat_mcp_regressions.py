@@ -1,10 +1,11 @@
 """Keep read-only archive evidence usable without weakening its boundaries.
 
-Code version: v1.1.0-codex.0
+Code version: v1.1.1-codex.0
 """
 
 from __future__ import annotations
 
+from contextlib import closing
 import hashlib
 import json
 import os
@@ -108,7 +109,7 @@ def _resident_resource_store(tmp_path: Path) -> dict:
     )
     resource_session = list(session)
     resource_session[6:12] = [1, row[7], row[7], row[8], row[8], row[6]]
-    with sqlite3.connect(resource) as connection:
+    with closing(sqlite3.connect(resource)) as connection, connection:
         connection.executescript(_SCHEMA)
         connection.executemany(
             "INSERT INTO archive_info VALUES(?,?)",

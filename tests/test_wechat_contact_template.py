@@ -1,6 +1,6 @@
 """Contact identity metadata remains inside the existing compact disclosure.
 
-Code version: v1.1.1-codex.0
+Code version: v1.1.2-codex.0
 """
 
 from html.parser import HTMLParser
@@ -10,6 +10,7 @@ from types import SimpleNamespace
 from jinja2 import Environment, FileSystemLoader
 import pytest
 
+from app.core.wechat_record_presentation import compact_record_fields
 from app.web.presentation import format_wechat_source_clock
 
 
@@ -65,13 +66,15 @@ def test_contact_fields_are_escaped_and_do_not_add_a_closed_card_row(status, nam
         "provenance": {
             "locator": {
                 "member_path": "Synthetic/聊天记录.html",
-                "literal": "</dd><script>literal source text</script>",
+                "table": "</dd><script>literal source text</script>",
+                "literal": "Unselected raw receipt",
             },
             "server_id": None,
             "source_time": None,
         },
         "contact": {"id": "wechat:contact:<synthetic>", "identity_status": status},
     }
+    context["record_fields"] = compact_record_fields(context["provenance"])
     current = SimpleNamespace(
         messaging=context,
         conversation_title="Synthetic room",
@@ -112,3 +115,5 @@ def test_contact_fields_are_escaped_and_do_not_add_a_closed_card_row(status, nam
     assert "\\u804a\\u5929" not in rendered
     assert "&lt;script&gt;literal source text&lt;/script&gt;" in rendered
     assert "<script>literal source text</script>" not in rendered
+
+    assert "Unselected raw receipt" not in rendered

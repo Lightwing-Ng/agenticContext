@@ -5,7 +5,7 @@ for a browser, an Agent, or a cache worker. Serialization of one stored item int
 public shape lives here too, so a template global and a JSON response cannot drift.
 """
 
-# Code version: v1.20.0-codex.0
+# Code version: v1.20.1-codex.0
 
 from __future__ import annotations
 
@@ -47,6 +47,7 @@ from app.core.storage import (
     resolve_resource_for_reveal,
     reveal_media_path,
 )
+from app.web.public_errors import public_exception_message
 from app.web.cache_sources import get_cache_source_label
 from app.web.local_resource_navigation import (
     local_resource_source_context,
@@ -64,6 +65,33 @@ from app.web.presentation import (
 
 LOCAL_RESOURCES_BLUEPRINT_NAME = "local_resources"
 _WECHAT_CONTACT_ID = re.compile(r"wechat:contact:[0-9a-f]{64}")
+
+_PROMPT_PUBLIC_ERRORS = (
+    "A valid cached message pointer is required.",
+    "Only user messages can be saved as prompts.",
+    "A cached media prompt requires its source conversation.",
+    "This media item has no indexed prompt.",
+    "A remark is required.",
+    "Cached media was not found.",
+    "The cached message is no longer available.",
+    "The saved prompt was not found.",
+    "The saved prompt is no longer available.",
+    "The removed prompt can no longer be restored.",
+)
+_MEDIA_PUBLIC_ERRORS = (
+    "ChatGPT temporary media is exempt from browser deletion.",
+    "Invalid deleted-media path.",
+    "Removed media has an invalid restore path.",
+    "The original cache path is occupied.",
+)
+_WECHAT_RESOURCE_PUBLIC_ERRORS = (
+    "This resource reference is unavailable or needs refreshing.",
+    "The resource account or conversation could not be verified.",
+    "This source preserves attachment metadata only.",
+    "The local WeChat file or folder is no longer available.",
+    "Not found on this Mac",
+)
+
 
 
 def _wechat_contact_return_url(value: str) -> str:
@@ -670,9 +698,15 @@ def register_local_resource_routes(app: Flask, context: LocalResourceRouteContex
                     message_key=str(payload.get("message_key") or ""),
                 )
         except ValueError as exc:
-            return jsonify({"error": str(exc)}), 400
+            return jsonify({"error": public_exception_message(
+                exc, fallback="The saved prompt could not be updated.",
+                allowed=_PROMPT_PUBLIC_ERRORS, operation="saved prompt update",
+            )}), 400
         except LookupError as exc:
-            return jsonify({"error": str(exc)}), 404
+            return jsonify({"error": public_exception_message(
+                exc, fallback="The saved prompt could not be updated.",
+                allowed=_PROMPT_PUBLIC_ERRORS, operation="saved prompt update",
+            )}), 404
         return jsonify({"created": created, "item": serialize_prompt_item(item)})
 
     @blueprint.delete("/api/browser/prompts/<stable_id>")
@@ -680,7 +714,10 @@ def register_local_resource_routes(app: Flask, context: LocalResourceRouteContex
         try:
             duplicate_count = context.prompt_store.remove(stable_id)
         except LookupError as exc:
-            return jsonify({"error": str(exc)}), 404
+            return jsonify({"error": public_exception_message(
+                exc, fallback="The saved prompt could not be updated.",
+                allowed=_PROMPT_PUBLIC_ERRORS, operation="saved prompt update",
+            )}), 404
         return jsonify(
             {
                 "removed": True,
@@ -694,7 +731,10 @@ def register_local_resource_routes(app: Flask, context: LocalResourceRouteContex
         try:
             item = context.prompt_store.restore(stable_id)
         except LookupError as exc:
-            return jsonify({"error": str(exc)}), 404
+            return jsonify({"error": public_exception_message(
+                exc, fallback="The saved prompt could not be updated.",
+                allowed=_PROMPT_PUBLIC_ERRORS, operation="saved prompt update",
+            )}), 404
         return jsonify(
             {
                 "item": serialize_prompt_item(item),
@@ -708,9 +748,15 @@ def register_local_resource_routes(app: Flask, context: LocalResourceRouteContex
         try:
             item, created = context.prompt_store.add_remark(stable_id, payload.get("remark"))
         except ValueError as exc:
-            return jsonify({"error": str(exc)}), 400
+            return jsonify({"error": public_exception_message(
+                exc, fallback="The saved prompt could not be updated.",
+                allowed=_PROMPT_PUBLIC_ERRORS, operation="saved prompt update",
+            )}), 400
         except LookupError as exc:
-            return jsonify({"error": str(exc)}), 404
+            return jsonify({"error": public_exception_message(
+                exc, fallback="The saved prompt could not be updated.",
+                allowed=_PROMPT_PUBLIC_ERRORS, operation="saved prompt update",
+            )}), 404
         return jsonify(
             {
                 "created": created,
@@ -725,9 +771,15 @@ def register_local_resource_routes(app: Flask, context: LocalResourceRouteContex
         try:
             item = context.prompt_store.remove_remark(stable_id, payload.get("remark"))
         except ValueError as exc:
-            return jsonify({"error": str(exc)}), 400
+            return jsonify({"error": public_exception_message(
+                exc, fallback="The saved prompt could not be updated.",
+                allowed=_PROMPT_PUBLIC_ERRORS, operation="saved prompt update",
+            )}), 400
         except LookupError as exc:
-            return jsonify({"error": str(exc)}), 404
+            return jsonify({"error": public_exception_message(
+                exc, fallback="The saved prompt could not be updated.",
+                allowed=_PROMPT_PUBLIC_ERRORS, operation="saved prompt update",
+            )}), 404
         return jsonify(
             {
                 "item": serialize_prompt_item(item),
@@ -751,7 +803,10 @@ def register_local_resource_routes(app: Flask, context: LocalResourceRouteContex
         except FileNotFoundError:
             return jsonify({"error": "Cached media is no longer available."}), 404
         except (OSError, RuntimeError, ValueError) as exc:
-            return jsonify({"error": str(exc)}), 409
+            return jsonify({"error": public_exception_message(
+                exc, fallback="The cached media could not be updated. Please try again.",
+                allowed=_MEDIA_PUBLIC_ERRORS, operation="cached media update",
+            )}), 409
         return jsonify({"item": serialize_media_item(item)})
 
     @blueprint.post("/api/browser/media/<stable_id>/restore")
@@ -763,7 +818,10 @@ def register_local_resource_routes(app: Flask, context: LocalResourceRouteContex
         except FileNotFoundError:
             return jsonify({"error": "The retained preview is no longer available."}), 404
         except (OSError, ValueError) as exc:
-            return jsonify({"error": str(exc)}), 409
+            return jsonify({"error": public_exception_message(
+                exc, fallback="The cached media could not be updated. Please try again.",
+                allowed=_MEDIA_PUBLIC_ERRORS, operation="cached media update",
+            )}), 409
         return jsonify({"item": serialize_media_item(item)})
 
     @blueprint.post("/api/browser/media/<stable_id>/reveal")
@@ -777,7 +835,10 @@ def register_local_resource_routes(app: Flask, context: LocalResourceRouteContex
         try:
             reveal_media_path(resolved_path)
         except OSError as exc:
-            return jsonify({"error": f"Unable to open {local_file_manager_label()}: {exc}"}), 500
+            return jsonify({"error": public_exception_message(
+                exc, fallback=f"Unable to open {local_file_manager_label()}. Please try again.",
+                operation="reveal cached media",
+            )}), 500
         return jsonify({"revealed": True, "file_manager": local_file_manager_label()})
 
     @blueprint.post("/api/browser/wechat/resources/<message_id>/reveal")
@@ -791,7 +852,10 @@ def register_local_resource_routes(app: Flask, context: LocalResourceRouteContex
             else:
                 reveal_media_path(destination["path"])
         except LookupError as exc:
-            return jsonify({"error": str(exc)}), 404
+            return jsonify({"error": public_exception_message(
+                exc, fallback="The WeChat resource is unavailable or needs refreshing.",
+                allowed=_WECHAT_RESOURCE_PUBLIC_ERRORS, operation="reveal WeChat resource",
+            )}), 404
         except (OSError, ValueError):
             return jsonify({"error": f"Unable to open {local_file_manager_label()}. The local file or folder may have moved."}), 409
         return jsonify({"revealed": True, "target_kind": destination["status"], "file_manager": local_file_manager_label()})

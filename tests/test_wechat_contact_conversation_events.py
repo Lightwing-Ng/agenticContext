@@ -1,9 +1,10 @@
 """Contact statements reuse proven conversation events without losing sources.
 
-Code version: v1.1.3-codex.0
+Code version: v1.1.4-codex.0
 """
 
 from collections import Counter
+from contextlib import closing
 from datetime import datetime
 import hashlib
 import json
@@ -134,7 +135,7 @@ def _legacy_group_cache(fixture):
         analysis._json([old_version, identities]).encode()
     ).hexdigest()
     cache = analysis.contact_analysis_cache_path(fixture.store, CID)
-    with sqlite3.connect(cache) as connection:
+    with closing(sqlite3.connect(cache)) as connection, connection:
         rows = connection.execute("SELECT id FROM refs ORDER BY id").fetchall()
         connection.execute("DELETE FROM statement_members")
         connection.execute("DELETE FROM statement_groups")
@@ -422,7 +423,7 @@ def test_complete_upgrade_preserves_existing_embedded_original_membership(
     analysis.query_contact_analysis(fixture.store, CID)
     cache = analysis.contact_analysis_cache_path(fixture.store, CID)
     reference = parent + "_quoted_2"
-    with sqlite3.connect(cache) as connection:
+    with closing(sqlite3.connect(cache)) as connection, connection:
         linked = dict(
             connection.execute(
                 "SELECT reference_id,statement_id FROM statement_members "

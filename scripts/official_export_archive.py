@@ -1,6 +1,6 @@
 """Preserve, verify, and restore a complete official export without changing its source.
 
-Code version: v1.0.1-codex.0
+Code version: v1.0.2-codex.0
 """
 
 from __future__ import annotations
@@ -21,7 +21,7 @@ import tempfile
 import zipfile
 
 
-VERSION = "v1.0.1-codex.0"
+VERSION = "v1.0.2-codex.0"
 ARCHIVE = "official-export.zip"
 MANIFEST = "source-manifest.v1.json"
 VERIFICATION = "verification.v1.json"
@@ -260,6 +260,12 @@ def _verify_zip(path: Path, manifest: dict) -> dict:
 
 
 def _restore_metadata(path: Path, entry: dict) -> int:
+    current = path.lstat()
+    if (
+        not (stat.S_ISREG(current.st_mode) or stat.S_ISDIR(current.st_mode))
+        or any(parent.is_symlink() for parent in (path, *path.parents))
+    ):
+        raise ValueError("Restored metadata target must not contain symbolic links")
     reapplied = 0
     actual = _attributes(path)
     for name, encoded in entry["xattrs_base64"].items():
@@ -276,9 +282,16 @@ def _restore_metadata(path: Path, entry: dict) -> int:
     actual = _attributes(path)
     if any(actual.get(name) != value for name, value in entry["xattrs_base64"].items()):
         raise RuntimeError("Restored extended attribute mismatch")
-    current = path.stat()
-    os.utime(path, ns=(current.st_atime_ns, entry["mtime_ns"]), follow_symlinks=False)
-    if path.stat().st_mtime_ns != entry["mtime_ns"]:
+    # Windows cannot set follow_symlinks=False. Targets belong to the new,
+    # verified restore tree; reject links before applying metadata there.
+    options = {"follow_symlinks": False} if os.utime in os.supports_follow_symlinks else {}
+    os.utime(path, ns=(current.st_atime_ns, entry["mtime_ns"]), **options)
+    restored = path.lstat()
+    if (restored.st_dev, restored.st_ino, restored.st_mode) != (
+        current.st_dev, current.st_ino, current.st_mode,
+    ):
+        raise RuntimeError("Restored metadata target changed")
+    if restored.st_mtime_ns != entry["mtime_ns"]:
         raise RuntimeError("Restored modification time mismatch")
     return reapplied
 
@@ -287,6 +300,7 @@ def _restore_zip(path: Path, manifest: dict, destination: Path) -> dict:
     if destination.exists() or destination.is_symlink():
         raise FileExistsError("Restore destination already exists")
     destination.mkdir(mode=0o700)
+    destination = destination.resolve(strict=True)
     root = destination / manifest["archive_root"]
     native = _use_native_zip()
     if native:
@@ -416,7 +430,7 @@ def create_archive(source: Path, destination: Path) -> dict:
     archive = destination / ARCHIVE
     os.link(staged, archive)
     staged.unlink()
-    with archive.open("rb") as handle:
+    with archive.open("r+b") as handle:
         os.fsync(handle.fileno())
     report = {
         **_summary(manifest), **zip_report, **restore_report,

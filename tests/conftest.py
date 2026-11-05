@@ -1,6 +1,6 @@
 """Shared pytest fixtures for isolated agenticContext tests.
 
-Code version: v1.2.3-codex.1
+Code version: v1.2.4-codex.0
 """
 
 from __future__ import annotations
@@ -57,4 +57,6 @@ def macos_host(monkeypatch: pytest.MonkeyPatch) -> None:
     from app.core import browser_sessions, config
 
     monkeypatch.setattr(config, "is_macos_host", lambda: True)
+    monkeypatch.setattr(config, "is_windows_host", lambda: False)
+    monkeypatch.setattr(Path, "home", lambda: Path(_TEST_HOME.name))
     monkeypatch.setattr(browser_sessions, "is_macos_host", lambda: True)

@@ -1,6 +1,6 @@
 """Grok media sync helpers."""
 
-# Code version: v1.19.6-codex.0
+# Code version: v1.19.7-codex.0
 
 from __future__ import annotations
 
@@ -19,7 +19,7 @@ import time
 from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from threading import RLock
 from typing import Callable
 from urllib.error import HTTPError, URLError
@@ -275,7 +275,8 @@ def normalize_asset_name(raw_name: str) -> str:
     if not cleaned:
         return ""
 
-    stem = Path(cleaned).stem or cleaned
+    # Provider asset names use URL path rules, independent of the local host.
+    stem = PurePosixPath(cleaned).stem or cleaned
     stem = re.sub(r"[-_]+", "-", stem.lower())
     stem = re.sub(r"[^a-z0-9.-]+", "-", stem)
     return stem.strip("-.")

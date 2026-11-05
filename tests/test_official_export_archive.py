@@ -1,12 +1,13 @@
 """Complete, non-destructive official-export archival checks.
 
-Code version: v1.0.1-codex.0
+Code version: v1.0.2-codex.0
 """
 
 from __future__ import annotations
 
 import hashlib
 import json
+import io
 import os
 from pathlib import Path
 import stat
@@ -391,6 +392,66 @@ def test_restore_retains_original_nanosecond_modification_times(
 
     recovered = tmp_path / "restored" / source.name
     assert {relative: (recovered / relative).stat().st_mtime_ns for relative in expected} == expected
+
+
+def test_restore_metadata_without_nofollow_utime_preserves_exact_time(
+    source: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    native_utime = os.utime
+
+    def windows_utime(path, *, ns):
+        return native_utime(path, ns=ns)
+
+    monkeypatch.setattr(archive.os, "utime", windows_utime)
+    monkeypatch.setattr(archive.os, "supports_follow_symlinks", set())
+    expected = _source_metadata(source)
+    retained = tmp_path / "archive"
+
+    archive.create_archive(source, retained)
+    archive.restore_archive(retained, tmp_path / "restored")
+
+    assert _source_metadata(tmp_path / "restored" / source.name) == expected
+    assert _source_metadata(source) == expected
+
+
+def test_create_syncs_archive_through_a_writable_descriptor(
+    source: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    native_open = Path.open
+    native_fsync = os.fsync
+    read_only = []
+
+    def tracked_open(path, mode="r", *args, **kwargs):
+        stream = native_open(path, mode, *args, **kwargs)
+        if path.name == archive.ARCHIVE and "r" in mode and "+" not in mode:
+            read_only.append(stream)
+        return stream
+
+    def windows_fsync(descriptor):
+        if any(not stream.closed and stream.fileno() == descriptor for stream in read_only):
+            raise io.UnsupportedOperation("Windows cannot sync a read-only descriptor")
+        return native_fsync(descriptor)
+
+    monkeypatch.setattr(Path, "open", tracked_open)
+    monkeypatch.setattr(archive.os, "fsync", windows_fsync)
+
+    assert archive.create_archive(source, tmp_path / "archive")["ready_to_delete_source"] is True
+
+
+def test_restore_metadata_refuses_symlink_without_nofollow_utime(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    target = tmp_path / "outside"
+    target.write_bytes(b"preserved")
+    link = tmp_path / "restored-link"
+    _symlink(link, target)
+    before = target.stat().st_mtime_ns
+    monkeypatch.setattr(archive.os, "supports_follow_symlinks", set())
+
+    with pytest.raises(ValueError, match="symbolic links"):
+        archive._restore_metadata(link, {"xattrs_base64": {}, "mtime_ns": before - 1_000})
+
+    assert target.stat().st_mtime_ns == before
 
 
 def test_portable_zip_fallback_preserves_the_same_complete_tree(

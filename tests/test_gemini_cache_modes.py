@@ -1,6 +1,6 @@
 """Gemini mode isolation and truthful worker completion.
 
-Code version: v1.1.0-claude.0
+Code version: v1.1.1-codex.0
 """
 
 from dataclasses import asdict
@@ -93,7 +93,7 @@ def test_mode_snapshots_never_mix_text_and_media_status(tmp_path, selected_mode,
     assert other["downloaded_images"] == (999 if other_running else hydrated[other_mode].downloaded_images)
 
 
-def test_a_mode_that_ran_or_failed_keeps_its_task_status_over_the_store(tmp_path) -> None:
+def test_a_mode_that_ran_or_failed_keeps_its_task_status_over_the_store(tmp_path, caplog) -> None:
     state = TaskState("test", snapshot_factory=TaskSnapshot)
     hydrated = TaskSnapshot(version="test", downloaded_images=3, message="Ready. 3 images.")
     context = SimpleNamespace(
@@ -103,10 +103,15 @@ def test_a_mode_that_ran_or_failed_keeps_its_task_status_over_the_store(tmp_path
     # A single-mode registration answers every requested mode.
     assert build_reconciled_cache_snapshot(context, "gemini", "text") == asdict(hydrated)
 
-    state.finish_error("Unsupported Gemini browser: opera")
+    diagnostic = "Unsupported Gemini browser: opera"
+    state.finish_error(diagnostic)
     failed = build_reconciled_cache_snapshot(context, "gemini", "media")
     assert failed["phase"] == "failed"
-    assert failed["message"] == "Unsupported Gemini browser: opera"
+    assert failed["message"] == failed["last_error"] == "The cache task reported an error. Please try again."
+    private = state.snapshot()
+    assert private["message"] == private["last_error"] == diagnostic
+    assert private["task_failures"] == 1
+    assert diagnostic in caplog.text
 
     state.reset_for_run()
     state.update(downloaded_images=1)

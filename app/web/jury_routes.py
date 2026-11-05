@@ -5,7 +5,7 @@ snapshot. The application factory builds the service and hands this module the A
 request gate it shares with the rest of the Agent surface.
 """
 
-# Code version: v1.1.0-codex.0
+# Code version: v1.2.1-codex.0
 
 from __future__ import annotations
 
@@ -34,9 +34,30 @@ from app.core.agent import (
 )
 from app.core.foundation import APP_VERSION
 from app.web.presentation import render_prompt_markdown
+from app.web.public_errors import public_diagnostic_payload, public_exception_message
 
 
 JURY_BLUEPRINT_NAME = "jury"
+JURY_PUBLIC_ERRORS = (
+    'Choose a supported browser.',
+    'Choose two to four distinct jurors.',
+    'Choose model tiers only for the selected jurors.',
+    'Refusing to persist jury state through a linked path.',
+    'Enter a question containing 1 to 20,000 characters.',
+    'Choose two to six discussion rounds.',
+    'The Jury service is shutting down. No account check was opened.',
+    'The Jury service is shutting down. No jury session was opened.',
+    'A jury is already running. Wait for it to finish or stop it.',
+    'Unknown jury session.',
+    'Only failed Jury sessions can be deleted.',
+    'Wait for Jury browser cleanup to finish before deleting this session.',
+    'The failed Jury session record is not a safe regular file.',
+    'The failed Jury session record could not be deleted safely.',
+    'Safari Jury supports ChatGPT, Grok, and Gemini.',
+    'A Jury task is already running.',
+    'The selected browser is in use.',
+)
+
 
 
 @dataclass(frozen=True, slots=True)
@@ -51,9 +72,43 @@ class JuryRouteContext:
     reject_external_agent_operation: Callable[[], Any]
 
 
+def jury_diagnostic_payload(snapshot: dict[str, Any]) -> dict[str, Any]:
+    """Project the known Jury status and provider diagnostic nodes only."""
+    result = public_diagnostic_payload(
+        snapshot,
+        fallback="The Jury operation failed. Check local diagnostics and try again.",
+        allowed=JURY_PUBLIC_ERRORS,
+        operation="jury.snapshot",
+    )
+    if isinstance(result.get("providers"), list):
+        providers = []
+        for item in result["providers"]:
+            if not isinstance(item, dict):
+                providers.append(item)
+                continue
+            projected = public_diagnostic_payload(
+                item,
+                fallback="This juror is unavailable. Check its browser session and try again.",
+                allowed=JURY_PUBLIC_ERRORS,
+                operation="jury.provider_status",
+            )
+            if (item.get("status") == "unavailable" or item.get("ready") is False) and item.get("message"):
+                projected["message"] = public_exception_message(
+                    RuntimeError(item["message"]),
+                    fallback="This juror is unavailable. Check its browser session and try again.",
+                    allowed=JURY_PUBLIC_ERRORS,
+                    operation="jury.provider_status",
+                )
+            providers.append(projected)
+        result["providers"] = providers
+    if result.get("ready") is False and isinstance(result.get("providers"), list):
+        result["message"] = "Some jurors are unavailable. Review their browser sessions and check accounts again."
+    return result
+
+
 def jury_snapshot_payload(snapshot: dict[str, Any]) -> dict[str, Any]:
     """Render one deliberation snapshot's Markdown into the shape the page consumes."""
-    result = dict(snapshot)
+    result = jury_diagnostic_payload(snapshot)
     result["response_html"] = str(render_prompt_markdown(str(result.get("response") or "")))
     result["rounds"] = [
         {**item, "opinions": [
@@ -106,14 +161,24 @@ def register_jury_routes(app: Flask, context: JuryRouteContext) -> None:
             return context.reject_external_agent_operation()
         payload = jury_payload()
         try:
-            return jsonify(jury_service.check(
+            return jsonify(jury_diagnostic_payload(jury_service.check(
                 payload.get("browser", "edge"), payload.get("providers"),
                 payload.get("models"),
-            ))
+            )))
         except ValueError as exc:
-            return jsonify({"error": str(exc)}), 400
+            return jsonify({"error": public_exception_message(
+                exc,
+                fallback='Jury accounts could not be checked. Check the selected browser and try again.',
+                allowed=JURY_PUBLIC_ERRORS,
+                operation='jury.jury_check',
+            )}), 400
         except RuntimeError as exc:
-            return jsonify({"error": str(exc)}), 409
+            return jsonify({"error": public_exception_message(
+                exc,
+                fallback='Jury accounts could not be checked. Check the selected browser and try again.',
+                allowed=JURY_PUBLIC_ERRORS,
+                operation='jury.jury_check',
+            )}), 409
 
     @blueprint.post("/api/jury/start")
     def jury_start():
@@ -128,9 +193,19 @@ def register_jury_routes(app: Flask, context: JuryRouteContext) -> None:
                 payload.get("models"),
             )
         except ValueError as exc:
-            return jsonify({"error": str(exc)}), 400
+            return jsonify({"error": public_exception_message(
+                exc,
+                fallback='The Jury could not be started. Check local diagnostics and try again.',
+                allowed=JURY_PUBLIC_ERRORS,
+                operation='jury.jury_start',
+            )}), 400
         except (RuntimeError, OSError) as exc:
-            return jsonify({"error": str(exc)}), 409
+            return jsonify({"error": public_exception_message(
+                exc,
+                fallback='The Jury could not be started. Check local diagnostics and try again.',
+                allowed=JURY_PUBLIC_ERRORS,
+                operation='jury.jury_start',
+            )}), 409
         return jury_snapshot_response(snapshot), 202
 
     @blueprint.get("/api/jury/status")
@@ -141,7 +216,12 @@ def register_jury_routes(app: Flask, context: JuryRouteContext) -> None:
                 request.args.get("session_id", ""),
             ))
         except ValueError as exc:
-            return jsonify({"error": str(exc)}), 404
+            return jsonify({"error": public_exception_message(
+                exc,
+                fallback='Unknown jury session.',
+                allowed=JURY_PUBLIC_ERRORS,
+                operation='jury.jury_status',
+            )}), 404
 
     @blueprint.get("/api/jury/sessions")
     def jury_sessions():
@@ -149,7 +229,19 @@ def register_jury_routes(app: Flask, context: JuryRouteContext) -> None:
         browser = request.args.get("browser", "edge")
         if browser not in context.available_agent_browser_keys():
             return jsonify({"error": "Choose a supported browser."}), 400
-        return jsonify(jury_service.sessions(browser))
+        catalog = jury_service.sessions(browser)
+        return jsonify({
+            **catalog,
+            "sessions": [
+                public_diagnostic_payload(
+                    item,
+                    fallback="The Jury operation failed. Check local diagnostics and try again.",
+                    allowed=JURY_PUBLIC_ERRORS,
+                    operation="jury.session_catalog",
+                )
+                for item in catalog["sessions"]
+            ],
+        })
 
     @blueprint.post("/api/jury/stop")
     def jury_stop():
@@ -161,7 +253,12 @@ def register_jury_routes(app: Flask, context: JuryRouteContext) -> None:
         try:
             return jury_snapshot_response(jury_service.stop(session_id))
         except ValueError as exc:
-            return jsonify({"error": str(exc)}), 404
+            return jsonify({"error": public_exception_message(
+                exc,
+                fallback='The Jury session could not be stopped. Refresh its status and try again.',
+                allowed=JURY_PUBLIC_ERRORS,
+                operation='jury.jury_stop',
+            )}), 404
 
     @blueprint.delete("/api/jury/session")
     def delete_failed_jury_session():
@@ -176,9 +273,19 @@ def register_jury_routes(app: Flask, context: JuryRouteContext) -> None:
         try:
             dismissed = jury_service.dismiss_failed(session_id.strip())
         except ValueError as exc:
-            return jsonify({"error": str(exc), "code": "unknown_jury_session"}), 404
+            return jsonify({"error": public_exception_message(
+                exc,
+                fallback='The Jury session could not be deleted. Review its status and try again.',
+                allowed=JURY_PUBLIC_ERRORS,
+                operation='jury.delete_failed_jury_session',
+            ), "code": "unknown_jury_session"}), 404
         except (RuntimeError, OSError) as exc:
-            return jsonify({"error": str(exc), "code": "jury_session_not_deletable"}), 409
+            return jsonify({"error": public_exception_message(
+                exc,
+                fallback='The Jury session could not be deleted. Review its status and try again.',
+                allowed=JURY_PUBLIC_ERRORS,
+                operation='jury.delete_failed_jury_session',
+            ), "code": "jury_session_not_deletable"}), 409
         return jsonify({"deleted": True, **dismissed})
 
     app.register_blueprint(blueprint)

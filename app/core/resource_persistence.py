@@ -1,6 +1,6 @@
 """Shared Parquet schemas and atomic persistence for cached resource state."""
 
-# Code version: v1.11.0-codex.0
+# Code version: v1.11.2-codex.0
 
 from __future__ import annotations
 
@@ -12,6 +12,8 @@ from typing import Any
 
 import pyarrow as pa
 import pyarrow.parquet as pq
+
+from .owner_only_files import ensure_owner_only
 
 
 CHATGPT_CATALOG_FILENAME = ".chatgpt_catalog.parquet"
@@ -257,7 +259,9 @@ def read_parquet_rows(path: Path) -> list[dict[str, Any]] | None:
     if not path.is_file():
         return None
     try:
-        return [dict(row) for row in pq.read_table(path).to_pylist()]
+        with path.open("rb") as handle:
+            with pq.ParquetFile(handle) as reader:
+                return [dict(row) for row in reader.read().to_pylist()]
     except (OSError, ValueError, pa.ArrowException):
         return None
 
@@ -279,10 +283,14 @@ def write_parquet_rows_atomic(
     temporary_path = Path(temporary_name)
     try:
         table = pa.Table.from_pylist(materialized_rows, schema=schema)
-        pq.write_table(table, temporary_path, compression="zstd")
-        verified = pq.read_table(temporary_path)
-        if verified.num_rows != len(materialized_rows) or verified.schema.names != schema.names:
-            raise RuntimeError(f"Parquet verification failed for {path}.")
+        with temporary_path.open("wb") as handle:
+            ensure_owner_only(temporary_path)
+            pq.write_table(table, handle, compression="zstd")
+        with temporary_path.open("rb") as handle:
+            with pq.ParquetFile(handle) as reader:
+                verified = reader.read()
+                if verified.num_rows != len(materialized_rows) or verified.schema.names != schema.names:
+                    raise RuntimeError(f"Parquet verification failed for {path}.")
         os.replace(temporary_path, path)
     finally:
         if temporary_path.exists():

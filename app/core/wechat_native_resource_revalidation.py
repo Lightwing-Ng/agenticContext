@@ -1,6 +1,6 @@
 """Revalidate bounded native metadata scopes without touching original evidence.
 
-Code version: v1.1.0-codex.0
+Code version: v1.1.1-codex.0
 """
 
 from __future__ import annotations
@@ -26,8 +26,8 @@ from .wechat_archive import (
 from .wechat_resource_index import _KINDS, _LABELS, _SCHEMA, _json, _readonly
 
 
-VERSION = "v1.1.0-codex.0"
-_COMPATIBLE_PROOFS = {"v1.0.1-codex.0", "v1.0.2-codex.0", VERSION}
+VERSION = "v1.1.1-codex.0"
+_COMPATIBLE_PROOFS = {"v1.0.1-codex.0", "v1.0.2-codex.0", "v1.1.0-codex.0", VERSION}
 MAX_SCOPES = 128
 MAX_ROWS = 100_000
 MAX_BYTES = 128 * 1024**2
@@ -484,7 +484,7 @@ def stage_native_resource_revalidation(
                 )
         if any(_resident(path) != identity for path, identity in identities.items()):
             raise ValueError("A source changed before native candidate completion.")
-        with candidate.open("rb") as stream:
+        with candidate.open("r+b") as stream:
             os.fsync(stream.fileno())
         report["candidate_bytes"] = candidate.stat().st_size
         return report

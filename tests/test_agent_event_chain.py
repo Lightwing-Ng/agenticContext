@@ -1,16 +1,20 @@
 """Focused tests for the durable, bounded Agent event chain.
 
-Code version: v1.3.1-codex.1
+Code version: v1.4.0-codex.0
 """
 
 from __future__ import annotations
 
 import json
 import os
+from pathlib import Path
+import stat
+from types import SimpleNamespace
 
 import pytest
 
 from app.core.agent import event_chain as event_chain_module
+from app.core.owner_only_files import owner_only_problem, owner_only_directory_problem
 from app.core.agent.event_chain import (
     AgentEventChain,
     event_chain_for_snapshot,
@@ -93,8 +97,12 @@ def test_event_chain_links_action_observation_verification_and_bodycheck(tmp_pat
     assert "must not persist" not in serialized
     assert "PRIVATE_COMMAND_OUTPUT" not in serialized
     assert "PRIVATE_SOURCE_CONTENT" not in serialized
-    assert chain.path.stat().st_mode & 0o777 == 0o600
-    assert chain.path.parent.stat().st_mode & 0o777 == 0o700
+    assert owner_only_problem(chain.path) == ""
+    assert owner_only_directory_problem(chain.path.parent) == ""
+    assert owner_only_directory_problem(chain.runtime_root) == ""
+    if os.name == "posix":
+        assert chain.path.stat().st_mode & 0o777 == 0o600
+        assert chain.path.parent.stat().st_mode & 0o777 == 0o700
 
     reloaded = event_chain_for_snapshot(tmp_path / "runtime", run_id)
     assert reloaded is not None
@@ -236,12 +244,49 @@ def test_non_regular_event_file_is_rejected_without_reading_or_blocking(tmp_path
     event_directory = runtime_root / "events"
     event_directory.mkdir(parents=True)
     event_path = event_directory / f"{new_run_id()}.jsonl"
-    os.mkfifo(event_path)
+    if hasattr(os, "mkfifo"):
+        os.mkfifo(event_path)
+    else:
+        event_path.mkdir()
 
     chain = AgentEventChain(runtime_root, event_path.stem)
 
     assert chain.summary()["state"] == "invalid"
     assert chain.summary()["count"] == 0
+
+
+def test_non_regular_device_metadata_is_rejected_before_open(tmp_path, monkeypatch) -> None:
+    runtime = tmp_path / "runtime"
+    runtime.mkdir()
+    event_path = runtime / "events" / f"{new_run_id()}.jsonl"
+    original_lstat = Path.lstat
+
+    def device_stat(path, *args, **kwargs):
+        if path == event_path:
+            return SimpleNamespace(st_mode=stat.S_IFCHR | 0o600)
+        return original_lstat(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "lstat", device_stat)
+    monkeypatch.setattr(Path, "open", lambda *args, **kwargs: pytest.fail("Nonregular event opened."))
+
+    chain = AgentEventChain(runtime, event_path.stem)
+
+    assert chain.summary()["state"] == "invalid"
+    assert chain.summary()["count"] == 0
+
+
+@pytest.mark.parametrize("boundary", ["ensure_owner_only_directory", "ensure_owner_only"])
+def test_event_chain_boundary_failure_writes_no_event(tmp_path, monkeypatch, boundary) -> None:
+    chain = AgentEventChain(tmp_path / "runtime", new_run_id())
+
+    def denied(path):
+        raise OSError("Injected native privacy boundary failure")
+
+    monkeypatch.setattr(event_chain_module, boundary, denied)
+    assert chain.start(data={"action_name": "PRIVATE_EVENT_MARKER"}) is None
+    assert chain.summary()["state"] == "degraded"
+    assert chain.summary()["count"] == 0
+    assert not chain.path.exists() or chain.path.read_bytes() == b""
 
 
 def test_event_append_does_not_enter_memory_when_persistence_fails(

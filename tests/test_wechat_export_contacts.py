@@ -1,8 +1,9 @@
 """Export aliases, paired native evidence, and atomic publication regressions.
 
-Code version: v1.0.0-codex.0
+Code version: v1.0.1-codex.0
 """
 
+from contextlib import closing
 import errno
 import hashlib
 import json
@@ -84,7 +85,7 @@ def publish(root, **updates):
 
 
 def dump(path):
-    with sqlite3.connect(path) as connection:
+    with closing(sqlite3.connect(path)) as connection:
         return {
             table: connection.execute("SELECT * FROM " + table + " ORDER BY 1").fetchall()
             for (table,) in connection.execute(
@@ -98,7 +99,7 @@ def registry(tmp_path, monkeypatch):
     target = contact_registry_path(tmp_path)
     target.parent.mkdir(parents=True)
     identifier = canonical_contact_id(ALIAS, authority="native_contact_username")
-    with sqlite3.connect(target) as connection:
+    with closing(sqlite3.connect(target)) as connection, connection:
         initialize_contact_registry(connection)
         connection.execute(
             "INSERT INTO contacts VALUES(?,?,?,?,?,?)",
@@ -295,7 +296,7 @@ def test_live_registry_change_during_clone_is_detected(registry, monkeypatch):
         shutil.copyfile(source, destination)
         replacement = source.with_name("other-writer.sqlite3")
         shutil.copyfile(source, replacement)
-        with sqlite3.connect(replacement) as connection:
+        with closing(sqlite3.connect(replacement)) as connection, connection:
             connection.execute(
                 "INSERT INTO contact_registry_info VALUES('other-writer','preserve')"
             )
@@ -358,7 +359,7 @@ def test_openim_native_realms_stay_separate(registry):
 def test_existing_native_namespace_authority_and_kind_are_preserved(registry):
     path = contact_registry_path(registry)
     identifier = canonical_contact_id(ALIAS, authority="native_contact_username")
-    with sqlite3.connect(path) as connection:
+    with closing(sqlite3.connect(path)) as connection, connection:
         connection.execute(
             "UPDATE contacts SET kind='historical_native_kind' WHERE id=?", (identifier,),
         )

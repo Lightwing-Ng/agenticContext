@@ -1,12 +1,12 @@
 """Index native resource references without copying or decoding media payloads.
 
-Code version: v1.0.1-codex.0
+Code version: v1.0.2-codex.0
 """
 
 from __future__ import annotations
 
 from collections import Counter, defaultdict
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 from datetime import UTC, datetime
 import hashlib
 import json
@@ -17,6 +17,7 @@ import sqlite3
 import tempfile
 from xml.etree import ElementTree
 
+from .owner_only_files import ensure_owner_only
 from .wechat_archive import _identifier, _time_fields, wechat_archive_path
 
 
@@ -415,7 +416,6 @@ def build_resource_index(local_store_root, preservation_snapshot, *, account_ids
     )
     os.close(descriptor)
     temporary = Path(temporary_name)
-    temporary.chmod(0o600)
     report = {
         "version": "v1.0.0",
         "messages": 0,
@@ -429,7 +429,8 @@ def build_resource_index(local_store_root, preservation_snapshot, *, account_ids
     }
     pinned = {}
     try:
-        with _readonly(history_path) as history, sqlite3.connect(temporary) as output:
+        ensure_owner_only(temporary)
+        with _readonly(history_path) as history, closing(sqlite3.connect(temporary)) as output:
             output.executescript(_SCHEMA)
             fingerprint = wechat_history_partition_fingerprint(history)
             partitions = [
@@ -776,12 +777,12 @@ def build_resource_index(local_store_root, preservation_snapshot, *, account_ids
                 _identity(path) != identity for path, identity in pinned.items()
             ):
                 raise ValueError("A resource input changed while the index was built.")
-        with temporary.open("rb") as stream:
+        with temporary.open("r+b") as stream:
             os.fsync(stream.fileno())
         if _identity(history_path) != history_identity:
             raise ValueError("The text archive changed before resource publication.")
         os.replace(temporary, target)
-        target.chmod(0o600)
+        ensure_owner_only(target)
         return report
     finally:
         temporary.unlink(missing_ok=True)
