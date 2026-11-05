@@ -1,4 +1,4 @@
-"""Compact chat padding and contained external shadows. Code version: v1.1.0-codex.0."""
+"""Compact chat padding and contained external shadows. Code version: v1.1.1-codex.0."""
 
 from io import BytesIO
 import math
@@ -167,7 +167,19 @@ def _assert_metrics_unaffected_by_chat_effects(page: Page, geometry: dict) -> No
     finally:
         _set_effect_layer_visibility(page, "")
     difference = ImageChops.difference(painted, hidden)
-    assert difference.getbbox() is None, {"clip": clip, "changedBounds": difference.getbbox(), "geometry": geometry}
+    changed_bounds = difference.getbbox()
+    diagnostics = {"clip": clip, "changedBounds": changed_bounds, "geometry": geometry}
+    if changed_bounds is not None:
+        restored = Image.open(BytesIO(page.screenshot(clip=clip))).convert("RGB")
+        pixels = difference.load()
+        diagnostics.update({
+            "changedPixels": sum(
+                any(pixels[x, y]) for y in range(difference.height) for x in range(difference.width)
+            ),
+            "restoredChangedBounds": ImageChops.difference(painted, restored).getbbox(),
+            "hiddenRestoredChangedBounds": ImageChops.difference(hidden, restored).getbbox(),
+        })
+    assert changed_bounds is None, diagnostics
 
 
 @pytest.mark.parametrize(
