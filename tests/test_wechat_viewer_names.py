@@ -1,6 +1,6 @@
 """Viewer names project across native identities without rewriting source evidence.
 
-Code version: v1.5.1-codex.0
+Code version: v1.5.2-codex.0
 """
 
 from __future__ import annotations
@@ -77,15 +77,16 @@ def _write_preference(store, contact_id, name=ALIAS):
                 "contacts": {contact_id: name} if name is not None else {},
             },
             ensure_ascii=False,
-        )
+        ),
+        encoding="utf-8",
     )
 
 
 def _set_hidden_sources(store, sources):
     path = display_names_path(store)
-    preferences = json.loads(path.read_text())
+    preferences = json.loads(path.read_text(encoding="utf-8"))
     preferences["hidden_account_sources"] = sources
-    path.write_text(json.dumps(preferences, ensure_ascii=False))
+    path.write_text(json.dumps(preferences, ensure_ascii=False), encoding="utf-8")
     return path
 
 
@@ -797,12 +798,12 @@ def _prepare_html_only_owner(fixture):
             (session_id,),
         )
     path = display_names_path(fixture.store)
-    preferences = json.loads(path.read_text())
+    preferences = json.loads(path.read_text(encoding="utf-8"))
     identifier = canonical_contact_id(
         HTML_ONLY_OWNER, authority="corroborated_export_username"
     )
     preferences["contacts"][identifier] = "A native-only preference must stay unused"
-    path.write_text(json.dumps(preferences, ensure_ascii=False))
+    path.write_text(json.dumps(preferences, ensure_ascii=False), encoding="utf-8")
     return fixture
 
 
@@ -902,7 +903,7 @@ def test_hidden_account_option_preserves_old_links_search_exports_and_raw_record
     )
     expected_export = build_chat_history_markdown(baseline_detail)
     preference = _set_hidden_sources(fixture.store, [source])
-    contacts = json.loads(preference.read_text())["contacts"]
+    contacts = json.loads(preference.read_text(encoding="utf-8"))["contacts"]
     before = (
         fixture.history.read_bytes(),
         fixture.registry.read_bytes(),
@@ -986,7 +987,7 @@ def test_hidden_account_option_preserves_old_links_search_exports_and_raw_record
     assert (
         restored.messaging["account_options"] == baseline.messaging["account_options"]
     )
-    assert json.loads(preference.read_text())["contacts"] == contacts
+    assert json.loads(preference.read_text(encoding="utf-8"))["contacts"] == contacts
     assert before[:2] == (fixture.history.read_bytes(), fixture.registry.read_bytes())
 
 

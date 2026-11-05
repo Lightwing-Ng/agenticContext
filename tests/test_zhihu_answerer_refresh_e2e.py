@@ -3,7 +3,7 @@
 The real service, task state, collector, and Parquet merge run against injected
 Zhihu API pages, so no test contacts Zhihu or opens a signed-in browser profile.
 
-Code version: v1.0.0-codex.0
+Code version: v1.0.1-codex.0
 """
 
 from __future__ import annotations
@@ -266,7 +266,10 @@ def test_answerer_update_counts_re_served_answers_as_refreshed_not_new(
 def test_answerer_update_surfaces_a_provider_failure_and_releases_the_action(
     disposable_browser: Browser, zhihu_update_server: ZhihuUpdateServer,
 ) -> None:
-    message = "Zhihu requires human verification. Complete it in Edge, then retry."
+    message = (
+        "Zhihu requires human verification. Open Zhihu in the selected browser, "
+        "complete verification manually, then retry."
+    )
     zhihu_update_server.provider.failure = ZhihuVerificationRequiredError(message)
     page = _open_answerer(disposable_browser, zhihu_update_server.detail_url)
     dialogs: list[str] = []

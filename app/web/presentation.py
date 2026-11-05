@@ -7,7 +7,7 @@ touches a Flask request, a service, or an application instance, so route modules
 import it directly instead of receiving it through the application factory.
 """
 
-# Code version: v1.5.1-codex.0
+# Code version: v1.5.2-codex.0
 
 from __future__ import annotations
 
@@ -160,7 +160,7 @@ _SOURCE_CLOCK_ISO = re.compile(
 
 def format_wechat_source_clock(value: str | None) -> str:
     """Format a literal source clock without inferring precision or a timezone."""
-    from app.core.wechat_html_export import normalize_html_clock
+    from app.core.storage import normalize_html_clock
 
     if value is None:
         return ""

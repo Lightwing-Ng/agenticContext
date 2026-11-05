@@ -6,7 +6,7 @@ place. Nothing here reads a service or an application instance; it reads the req
 form and returns a validated configuration.
 """
 
-# Code version: v1.5.0-codex.0
+# Code version: v1.5.1-codex.0
 
 from __future__ import annotations
 
@@ -14,7 +14,6 @@ from pathlib import Path
 
 from flask import request
 
-from app.core.config import normalize_copilot_entry_url
 from app.core.foundation import (
     MAX_CHATGPT_SCAN_WAIT_SECONDS,
     MAX_CHATGPT_STARTUP_TIMEOUT_SECONDS,
@@ -24,6 +23,7 @@ from app.core.foundation import (
     MIN_CHATGPT_STARTUP_TIMEOUT_SECONDS,
     MIN_MAX_MEDIA_FILE_SIZE_MIB,
     CrawlConfig,
+    normalize_copilot_entry_url,
 )
 
 

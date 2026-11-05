@@ -1,6 +1,6 @@
 """Build lightweight Local resources navigation around nested detail pages.
 
-Code version: v1.0.0-codex.0
+Code version: v1.0.1-codex.0
 """
 
 from __future__ import annotations
@@ -11,9 +11,7 @@ import stat
 from types import SimpleNamespace
 from urllib.parse import parse_qs, urlsplit
 
-from app.core.local_media_browser import normalize_browser_filters
-from app.core.wechat_archive import wechat_archive_path
-from app.core.wechat_display_names import WechatDisplayNames
+from app.core.storage import WechatDisplayNames, normalize_browser_filters, wechat_archive_path
 from app.web.cache_sources import CACHE_SOURCE_VIEWS, LOCAL_RESOURCE_TEXT_SOURCE_VIEWS
 
 

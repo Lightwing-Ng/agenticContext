@@ -1,6 +1,6 @@
 """Stable foundation boundary for runtime configuration, identity, and task state."""
 
-# Code version: v1.4.1-codex.0
+# Code version: v1.4.2-codex.0
 
 from ..brand import PRODUCT_NAME
 from ..cache_task_coordinator import CacheTaskCoordinator, CacheTaskIdentity
@@ -20,6 +20,7 @@ from ..config import (
     is_macos_host,
     is_windows_host,
     load_saved_config,
+    normalize_copilot_entry_url,
     normalize_download_workers,
     save_config,
 )
@@ -78,6 +79,7 @@ __all__ = [
     "is_macos_host",
     "is_windows_host",
     "load_saved_config",
+    "normalize_copilot_entry_url",
     "normalize_download_workers",
     "save_config",
     "utc_now",
