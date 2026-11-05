@@ -1,6 +1,6 @@
 """Conflicting contact clocks retain source geometry and native interaction.
 
-Code version: v1.1.0-codex.0
+Code version: v1.1.1-codex.0
 """
 
 from __future__ import annotations
@@ -277,6 +277,11 @@ def test_contact_sources_respect_reduced_motion_and_midflight_preference_changes
         page.wait_for_function(
             "!matchMedia('(prefers-reduced-motion: reduce)').matches"
         )
+        # A media change can reload font faces and settle active disclosure motion.
+        details.evaluate("""details => {
+            details.getBoundingClientRect();
+            return document.fonts.ready;
+        }""")
         summary.press("Enter")
         assert _motion_frames(details)["count"] == 2
         _sample(details, 0.15)
