@@ -1,6 +1,6 @@
 """Exercise native Windows sync and closed-SQLite publication boundaries.
 
-Code version: v1.0.0-codex.0
+Code version: v1.0.1-codex.0
 """
 
 from __future__ import annotations
@@ -152,6 +152,16 @@ def _windows_lifecycle(monkeypatch, module, *, fail_sync=False):
         def __getattr__(self, name):
             return connect if name == "connect" else getattr(sqlite3, name)
 
+    if os.name != "nt":
+        from app.core import windows_file_metadata
+
+        # The foreign-host CRT facade also needs a metadata API boundary.
+        # Real Windows keeps its native ChangeTime inspection unchanged.
+        def change_time(path, *, descriptor=None):
+            value = path.stat() if descriptor is None else os.fstat(descriptor)
+            return value.st_ctime_ns
+
+        monkeypatch.setattr(windows_file_metadata, "file_change_time", change_time)
     monkeypatch.setattr(Path, "open", open_file)
     monkeypatch.setattr(module, "os", WindowsOS())
     monkeypatch.setattr(module, "sqlite3", SQLite())

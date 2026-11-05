@@ -1,6 +1,6 @@
 """Native subset restoration preserves old rows without a full database copy.
 
-Code version: v1.3.1-codex.0
+Code version: v1.3.2-codex.0
 """
 
 from contextlib import closing
@@ -637,10 +637,37 @@ def test_each_incoming_conversation_checks_actual_retained_index_counts(tmp_path
 
 def change_ctime_only(path):
     before = restore._file_identity(path)
-    permissions = path.stat().st_mode & 0o777
-    # The writable bit also changes the native Windows read-only attribute.
-    path.chmod(permissions ^ 0o200)
-    path.chmod(permissions)
+    if os.name == "nt":
+        from app.core.windows_file_metadata import _native_api
+
+        ctypes, kernel32, info_type = _native_api()
+        set_info = kernel32.SetFileInformationByHandle
+        set_info.argtypes = [
+            ctypes.c_void_p, ctypes.c_int, ctypes.c_void_p, ctypes.c_ulong,
+        ]
+        set_info.restype = ctypes.c_int
+        # NTFS need not advance ChangeTime for a chmod round trip. Set exactly
+        # that metadata field; retain native byte, inode, size and mtime guards.
+        handle = kernel32.CreateFileW(
+            str(path), 0x0080 | 0x0100, 0x7, None, 3, 0x00200000, None,
+        )
+        if handle is None or handle == ctypes.c_void_p(-1).value:
+            raise ctypes.WinError(ctypes.get_last_error())
+        try:
+            info = info_type()
+            if not kernel32.GetFileInformationByHandleEx(
+                handle, 0, ctypes.byref(info), ctypes.sizeof(info),
+            ):
+                raise ctypes.WinError(ctypes.get_last_error())
+            info.ChangeTime += 1
+            if not set_info(handle, 0, ctypes.byref(info), ctypes.sizeof(info)):
+                raise ctypes.WinError(ctypes.get_last_error())
+        finally:
+            kernel32.CloseHandle(handle)
+    else:
+        permissions = path.stat().st_mode & 0o777
+        path.chmod(permissions ^ 0o200)
+        path.chmod(permissions)
     after = restore._file_identity(path)
     assert before[:4] == after[:4] and before[4] != after[4]
 
@@ -828,3 +855,75 @@ def test_windows_archive_identity_fails_closed_when_native_metadata_is_unavailab
     monkeypatch.setattr(windows_file_metadata, "file_change_time", unavailable)
     with pytest.raises(OSError, match="Synthetic native metadata refusal"):
         wechat_reconcile._file_identity(path)
+
+
+def test_windows_ctime_fixture_changes_only_native_change_time(tmp_path, monkeypatch):
+    import ctypes
+    from types import SimpleNamespace
+    from unittest.mock import MagicMock
+
+    from app.core import windows_file_metadata
+
+    path = tmp_path / "metadata-only.sqlite3"
+    path.write_bytes(b"preserved original bytes")
+    before = path.stat()
+    state = {"change_time": 100}
+
+    class FileBasicInfo(ctypes.Structure):
+        _fields_ = [
+            ("CreationTime", ctypes.c_longlong),
+            ("LastAccessTime", ctypes.c_longlong),
+            ("LastWriteTime", ctypes.c_longlong),
+            ("ChangeTime", ctypes.c_longlong),
+            ("FileAttributes", ctypes.c_uint32),
+        ]
+
+    def read_info(handle, info_class, pointer, size):
+        assert (handle, info_class, size) == (173, 0, ctypes.sizeof(FileBasicInfo))
+        info = pointer._obj
+        info.CreationTime, info.LastAccessTime, info.LastWriteTime = 11, 22, 33
+        info.ChangeTime, info.FileAttributes = state["change_time"], 0x20
+        return True
+
+    def write_info(handle, info_class, pointer, size):
+        assert (handle, info_class, size) == (173, 0, ctypes.sizeof(FileBasicInfo))
+        info = pointer._obj
+        assert (
+            info.CreationTime, info.LastAccessTime, info.LastWriteTime, info.FileAttributes,
+        ) == (11, 22, 33, 0x20)
+        state["change_time"] = info.ChangeTime
+        return True
+
+    api = SimpleNamespace(
+        CreateFileW=MagicMock(return_value=173),
+        GetFileInformationByHandleEx=MagicMock(side_effect=read_info),
+        SetFileInformationByHandle=MagicMock(side_effect=write_info),
+        CloseHandle=MagicMock(),
+    )
+
+    host_os = os
+
+    class WindowsOS:
+        name = "nt"
+
+        def __getattr__(self, name):
+            return getattr(host_os, name)
+
+    def identity(candidate):
+        value = candidate.stat()
+        return (
+            value.st_dev, value.st_ino, value.st_size, value.st_mtime_ns, state["change_time"],
+        )
+
+    monkeypatch.setattr(sys.modules[__name__], "os", WindowsOS())
+    monkeypatch.setattr(
+        windows_file_metadata, "_native_api", lambda: (ctypes, api, FileBasicInfo),
+    )
+    monkeypatch.setattr(restore, "_file_identity", identity)
+    change_ctime_only(path)
+    assert state["change_time"] == 101
+    assert path.read_bytes() == b"preserved original bytes"
+    assert path.stat().st_mtime_ns == before.st_mtime_ns
+    api.CreateFileW.assert_called_once_with(str(path), 0x0180, 0x7, None, 3, 0x00200000, None)
+    api.SetFileInformationByHandle.assert_called_once()
+    api.CloseHandle.assert_called_once_with(173)
