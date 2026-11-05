@@ -1,10 +1,11 @@
 """Session export aliases retain verified source identity and bounded snapshots.
 
-Code version: v1.0.1-codex.0
+Code version: v1.0.2-codex.0
 """
 
 from __future__ import annotations
 
+from contextlib import closing
 import csv
 import hashlib
 import io
@@ -41,7 +42,7 @@ def named_export(tmp_path):
     import_wechat_archive(make_archive(tmp_path / "archive", repeated=215), store)
     history = wechat_archive_path(store)
     source = "ios-" + hashlib.md5(OWNER.encode()).hexdigest()
-    with sqlite3.connect(history) as connection:
+    with closing(sqlite3.connect(history)) as connection, connection:
         connection.row_factory = sqlite3.Row
         conversation = dict(
             connection.execute(
@@ -54,7 +55,7 @@ def named_export(tmp_path):
         ).fetchone()[0]
     registry = contact_registry_path(store)
     identifier = canonical_contact_id(SENDER, authority="native_message_sender")
-    with sqlite3.connect(registry) as connection:
+    with closing(sqlite3.connect(registry)) as connection, connection:
         initialize_contact_registry(connection)
         connection.execute(
             "INSERT INTO contacts VALUES(?,?,?,?,?,?)",
@@ -79,6 +80,26 @@ def named_export(tmp_path):
     )
 
 
+def test_fixture_releases_sqlite_handles_before_exposing_export_inputs(
+    tmp_path, monkeypatch,
+):
+    connections = []
+    connect = sqlite3.connect
+
+    def retained_connection(*args, **kwargs):
+        connection = connect(*args, **kwargs)
+        connections.append(connection)
+        return connection
+
+    monkeypatch.setattr(sqlite3, "connect", retained_connection)
+    named_export.__wrapped__(tmp_path)
+    # Strong references prevent garbage collection from hiding an unclosed handle.
+    assert connections
+    for connection in connections:
+        with pytest.raises(sqlite3.ProgrammingError, match="closed"):
+            connection.execute("SELECT 1")
+
+
 def _items(fixture, session=None):
     export = WechatSessionExport(fixture.store, session or fixture.conversation["id"])
     items = list(export.items())
@@ -92,7 +113,7 @@ def test_verified_alias_preserves_original_sender_body_and_source_bytes(named_ex
         path: path.read_bytes()
         for path in (fixture.history, fixture.registry, fixture.preferences)
     }
-    with sqlite3.connect(fixture.history) as connection:
+    with closing(sqlite3.connect(fixture.history)) as connection, connection:
         connection.row_factory = sqlite3.Row
         expected = [
             dict(row)
@@ -128,7 +149,7 @@ def test_same_sender_string_in_unverified_source_does_not_gain_alias(named_expor
 
 def test_missing_sender_id_keeps_source_label_without_guessing_alias(named_export):
     fixture = named_export
-    with sqlite3.connect(fixture.history) as connection:
+    with closing(sqlite3.connect(fixture.history)) as connection, connection:
         identifier = connection.execute(
             "SELECT id FROM messages WHERE conversation_id=? ORDER BY ordinal LIMIT 1",
             (fixture.conversation["id"],),
@@ -172,7 +193,7 @@ def test_alias_source_change_stops_before_next_batch(named_export, changed_sourc
             )
         )
     else:
-        with sqlite3.connect(fixture.registry) as connection:
+        with closing(sqlite3.connect(fixture.registry)) as connection, connection:
             connection.execute(
                 "UPDATE contacts SET username='wxid_different' WHERE id=?",
                 (fixture.contact_id,),
@@ -184,7 +205,7 @@ def test_alias_source_change_stops_before_next_batch(named_export, changed_sourc
 
 def test_snapshot_and_room_specific_binding_needs_exact_message_context(named_export):
     fixture = named_export
-    with sqlite3.connect(fixture.history) as connection:
+    with closing(sqlite3.connect(fixture.history)) as connection, connection:
         identifier, raw = connection.execute(
             "SELECT id,provenance FROM messages WHERE conversation_id=? AND sender_id=? "
             "ORDER BY ordinal LIMIT 1",
@@ -204,7 +225,7 @@ def test_snapshot_and_room_specific_binding_needs_exact_message_context(named_ex
             "UPDATE messages SET provenance=? WHERE id=?",
             (json.dumps(provenance), identifier),
         )
-    with sqlite3.connect(fixture.registry) as connection:
+    with closing(sqlite3.connect(fixture.registry)) as connection, connection:
         connection.execute(
             "UPDATE sender_bindings SET source_snapshot='source-snapshot',room_id=?",
             (fixture.conversation["peer_id"],),
