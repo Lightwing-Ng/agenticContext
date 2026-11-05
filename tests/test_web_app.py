@@ -1,6 +1,6 @@
 """Focused regression tests for the local web console."""
 
-# Code version: v1.155.4-codex.0
+# Code version: v1.155.6-codex.0
 
 from __future__ import annotations
 
@@ -806,7 +806,7 @@ class WebAppTests(unittest.TestCase):
                 self.assertIn("hidden", body[stop_form_start:stop_form_end])
                 self.assertIn(">Start</button>", body)
         self.assertIn('browser-session-status.js?v=browser-session-status-v1.14.1-codex.0', chatgpt_body)
-        self.assertIn('browser-session-picker.js?v=browser-session-picker-v1.10.0-codex.0', chatgpt_body)
+        self.assertIn('browser-session-picker.js?v=browser-session-picker-v1.10.1-codex.0', chatgpt_body)
         chatgpt_form_identifier = chatgpt_body.index('id="start_form_chatgpt"')
         chatgpt_form_start = chatgpt_body.rfind("<form", 0, chatgpt_form_identifier)
         chatgpt_form_end = chatgpt_body.index("</form>", chatgpt_form_start)
@@ -832,7 +832,7 @@ class WebAppTests(unittest.TestCase):
         self.assertIn("function cacheSelectionFromUrl()", picker_script)
         self.assertIn("function syncCacheBrowserUrl(browserId)", picker_script)
         self.assertIn("const urlSelection = cacheSelectionFromUrl();", picker_script)
-        self.assertIn('option.setAttribute("href", `/cache/${source}/${optionMode}/${browserId}`);', picker_script)
+        self.assertIn('option.setAttribute("href", `/cache/${sourceSegment}/${optionMode}/${browserSegment}`);', picker_script)
         self.assertIn('cacheActionRow.dataset.actionRunning = String(isRunning);', cache_page_script)
         self.assertIn('const startAction = document.querySelector(".sidebar-form-start");', cache_page_script)
         self.assertIn('startAction.hidden = isRunning;', cache_page_script)
@@ -935,7 +935,7 @@ class WebAppTests(unittest.TestCase):
                 self.assertIn('class="circular-icon-button global-quick-action-button global-theme-toggle"', body)
                 self.assertIn('class="sidebar-dock-label"', dock_markup)
                 self.assertNotIn("cachelikes:browser-sidebar-open", body)
-                self.assertIn('waiting-modal.js?v=waiting-modal-v1.1.0-codex.1', body)
+                self.assertIn('waiting-modal.js?v=waiting-modal-v1.2.0-codex.0', body)
                 self.assertIn('id="cache_wait_modal"', body)
                 self.assertIn('class="workspace-modal-overlay cache-wait-modal"', body)
                 self.assertIn('suggestion-loading-spinner workspace-modal-icon', body)
@@ -2028,7 +2028,8 @@ class WebAppTests(unittest.TestCase):
                 )
 
         self.assertEqual(response.status_code, 409)
-        self.assertEqual(response.get_json()["error"], "Admission reached.")
+        self.assertEqual(response.get_json()["error"], "The Agent task could not be started. Check local diagnostics and try again.")
+        self.assertNotIn("Admission reached.", response.get_data(as_text=True))
         admission.assert_called_once()
 
     def test_only_agent_gemini_readiness_prefers_the_initialized_debug_profile(self) -> None:
@@ -3455,7 +3456,7 @@ class WebAppTests(unittest.TestCase):
         self.assertEqual(payload["agent"]["phase"], "running")
         self.assertIn("another project", payload["agent"]["message"])
 
-    def test_agent_page_renders_error_traceback_in_a_collapsible_record(self) -> None:
+    def test_agent_page_keeps_retry_context_without_exposing_error_traceback(self) -> None:
         app = create_app()
         agent_service = app.extensions["computer_use_agent_service"]
         snapshot = agent_service.snapshot()
@@ -3483,8 +3484,9 @@ class WebAppTests(unittest.TestCase):
         self.assertNotIn("Execution record", body)
         self.assertNotIn("Error details", body)
         self.assertIn('data-agent-error-record-content', body)
-        self.assertIn("Traceback (most recent call last):", body)
-        self.assertIn("RuntimeError: &lt;unsafe&gt;", body)
+        self.assertNotIn("Traceback (most recent call last):", body)
+        self.assertNotIn("RuntimeError: &lt;unsafe&gt;", body)
+        self.assertIn("The Agent operation failed. Check local diagnostics and try again.", body)
         self.assertIn(
             'data-agent-prompt-input required>RETRY_PROMPT_SENTINEL</textarea>',
             body,
@@ -5958,7 +5960,7 @@ class WebAppTests(unittest.TestCase):
             self.assertIn("style-v2.159.1-codex.0", body)
             self.assertIn("/static/images/photo.stack.svg", body)
             self.assertIn('pagination-motion.js?v=pagination-motion-v1.1.0-codex.1', body)
-            self.assertIn('local-media-browser.js?v=local-media-browser-v1.44.1-codex.0', body)
+            self.assertIn('local-media-browser.js?v=local-media-browser-v1.45.1-codex.0', body)
             self.assertIn('data-media-source-link', body)
             self.assertIn('data-media-copy-source-url', body)
             self.assertIn('data-media-reveal', body)
@@ -6637,7 +6639,10 @@ class WebAppTests(unittest.TestCase):
         ):
             with self.subTest(fragment=fragment):
                 self.assertIn(fragment, media_script)
-        self.assertEqual(media_script.count('targetUrl.searchParams.delete("session_index");'), 2)
+        filters_script = (LOCAL_MEDIA_BROWSER_SCRIPT_PATH.parent / "browser-sidebar-filters.js").read_text(encoding="utf-8")
+        self.assertEqual(media_script.count('targetUrl.searchParams.delete("session_index");'), 1)
+        self.assertEqual(filters_script.count('targetUrl.searchParams.delete("session_index");'), 1)
+        self.assertIn('browser-sidebar-filters.js', BROWSER_TEMPLATE_PATH.read_text(encoding="utf-8"))
         self.assertIn('"session_view", "session_index", "media_view"]', sidebar_script)
         self.assertEqual(pagination_template.count("session_index=('1' if filters.session_index else none)"), 2)
 

@@ -1,4 +1,4 @@
-"""Version v1.0.0: Keep optional cloud resource indices out of text-only reads."""
+"""Version v1.0.1: Keep optional cloud resource indices out of text-only reads."""
 
 from __future__ import annotations
 
@@ -16,7 +16,7 @@ def archive_module():
     # The repository reader uses only the standard library. Do not load providers.
     source = Path(__file__).resolve().parents[1] / "app/core/wechat_archive.py"
     specification = importlib.util.spec_from_file_location(
-        "wechat_cloud_storage_target", source
+        "app.core.wechat_cloud_storage_target", source
     )
     assert specification is not None and specification.loader is not None
     module = importlib.util.module_from_spec(specification)

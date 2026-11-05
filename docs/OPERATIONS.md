@@ -1,6 +1,6 @@
 # Operations guide
 
-Documentation version: `v1.53.2-codex.0`
+Documentation version: `v1.53.3-codex.0`
 
 ## iPhone
 
@@ -232,8 +232,9 @@ prerequisites in Finder rather than downloading the entire media archive or rese
 
 ### Debug mode and hot reload
 
-`main.py` starts Flask with `debug=True`. Template edits apply on the next request, static files
-are read from disk, and a saved change to `main.py`, `app/`, or an installed dependency restarts
+`main.py` keeps Flask debug mode and Werkzeug's interactive debugger disabled. Explicit template
+auto-reload and file watching remain enabled: template edits apply on the next request, static
+files are read from disk, and a saved change to `main.py`, `app/`, or an installed dependency restarts
 the serving process automatically. Edits under `tests/`, `scripts/`, `local_store/`, and `logs/`
 never restart it.
 
@@ -259,8 +260,8 @@ Tunnel. Requests that arrive during a restart wait in the socket backlog.
   reload cannot replace the already-running parent process.
 - Stop the service with Ctrl+C in its terminal, or send `SIGTERM` to the supervisor. Either way the
   supervisor waits for the child to finish browser cleanup before exiting.
-- Werkzeug's interactive debugger is enabled only on a loopback bind (`127.0.0.1`). With LAN
-  access enabled, errors return a plain 500 response and the traceback stays in the log.
+- Werkzeug's interactive debugger stays disabled on both loopback and LAN binds. Unexpected
+  HTTP errors return a plain response; private traceback diagnostics stay in the server log.
 - Set `DEBUG = False` in `main.py` to return to a single process without automatic restarts.
 
 On macOS, the launcher prefers `python3` from `PATH`, then tries unversioned platform Python
@@ -1282,6 +1283,23 @@ you intend to discard that cache. Do not use reset operations as a routine troub
   archive until a later explicit run succeeds.
 - Cache inconsistency: use the local-media browser to inspect the affected source before choosing a
   source-specific reset. Avoid deleting catalog or manifest files by hand.
+
+## Public errors and security review
+
+HTTP routes return operation-specific public errors and retain documented validation messages
+through closed application-owned allowlists. Arbitrary exception text, traceback strings, OS paths,
+and provider diagnostics stay in server logs. Status adapters sanitize explicit diagnostic fields
+without recursively modifying user prompts, assistant responses, or tool content. The shared boundary
+is `app/web/public_errors.py`; adding a public error requires fixed actionable copy and a regression
+that injects a private diagnostic into the affected route.
+
+WeChat's native account and conversation directory names require their externally defined MD5
+locator format. These locators do not authenticate a user, protect credentials, or provide content
+integrity; exact source identities and separate SHA-256 evidence checks remain required. Reviewed
+CodeQL false positives retain per-alert rationale and the reviewed commit on GitHub. Intentional
+complete-directory selection and fixed same-origin legacy redirects likewise need individual flow
+review. This classification never excludes a query, disables scanning, or excuses an arbitrary
+exception string in a public response.
 
 ## Safe development checks
 

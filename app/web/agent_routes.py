@@ -10,7 +10,7 @@ Jury, and Cache route modules borrow those few Agent capabilities without import
 this module's internals or duplicating the gate.
 """
 
-# Code version: v1.3.0-codex.0
+# Code version: v1.4.1-codex.0
 
 from __future__ import annotations
 
@@ -95,6 +95,7 @@ from app.core.providers import (
 from app.web.cache_routes import CacheRuntimeAdapter
 from app.web.cache_sources import get_cache_source_view
 from app.web.config_store import SavedConfigStore
+from app.web.public_errors import public_diagnostic_payload, public_exception_message
 from app.web.navigation import is_supported_agent_selection
 from app.web.presentation import (
     format_agent_activity_time,
@@ -106,6 +107,103 @@ from app.web.tunnel_routes import TUNNEL_BLUEPRINT_NAME, tunnel_status_payload
 
 
 AGENT_BLUEPRINT_NAME = "agent"
+AGENT_PUBLIC_ERRORS = (
+    "The Agent operation failed. Check local diagnostics and try again.",
+    'The selected Agent session is unavailable. Choose a session from the sidebar.',
+    'The Agent source could not be loaded. Check the selected browser and try again.',
+    'The compute job could not be stopped. Review its current status and try again.',
+    'The Agent recovery action could not be completed. Check local diagnostics and try again.',
+    'The Agent preferences could not be saved. Review the selected settings and try again.',
+    'Terminal authorization could not be opened. Check the local terminal setup and try again.',
+    'The Agent conversation could not be opened. Check the selected browser and try again.',
+    'The Agent task could not be started. Check local diagnostics and try again.',
+    'The Agent task could not be stopped. Refresh its status and try again.',
+    'The Agent session could not be deleted. Review its current status and try again.',
+    'The browser could not be opened. Check the local browser setup and try again.',
+    'Unsupported platform or browser selection.',
+    'The project debug edge is busy with another operation.',
+    'The project debug edge is busy with another operation. Retry after it finishes.',
+    'The project debug chrome is busy with another operation.',
+    'The project debug chrome is busy with another operation. Retry after it finishes.',
+    'The project debug safari is busy with another operation.',
+    'The project debug safari is busy with another operation. Retry after it finishes.',
+    'Safari can browse ChatGPT Recent sessions here. Choose Edge or Chrome to start a ChatGPT Web Agent task.',
+    'Safari can browse Gemini Recent sessions here. Choose Edge or Chrome to start a Gemini Web Agent task.',
+    'Safari can browse Grok Recent sessions here. Choose Edge or Chrome to start a Grok Web Agent task.',
+    'Safari can browse Claude Recent sessions here. Choose Edge or Chrome to start a Claude Web Agent task.',
+    'The persisted Agent run revision is outside the safe range.',
+    'Choose macOS or Windows before opening terminal authorization.',
+    'The ChatGPT thinking effort label is too long.',
+    'The Agent operating system must be macOS or Windows.',
+    'The Agent platform must be ChatGPT, Gemini, Grok, or Claude.',
+    'The Agent browser must be Safari, Edge, or Chrome.',
+    'Windows Agent sessions require Edge or Chrome; Safari is macOS-only.',
+    'The macOS system prompt cannot be empty.',
+    'The Windows system prompt cannot be empty.',
+    'Choose a supported Web Agent session source.',
+    'Choose ChatGPT, Gemini, Grok, or Claude for the Web Agent.',
+    'Gemini Notebook session ownership cannot be verified; choose New session in Project.',
+    'Agent settings must be a JSON object.',
+    'The previous Agent context cleanup record crosses a linked runtime boundary; resolve it before starting another production run.',
+    'The previous Agent context cleanup record is invalid; resolve it before starting another production run.',
+    'The previous Agent context cleanup record is not a regular file; resolve it before starting another production run.',
+    'Enter a question or task for the agent.',
+    'Choose a supported Agent doctor recovery action.',
+    'The Agent preference revision must be a non-negative integer.',
+    'The Agent preference client id is invalid.',
+    'The selected session does not belong to the selected Project.',
+    'The previous Agent context cleanup record is outside the runtime root; resolve it before starting another production run.',
+    'The Agent service is shutting down.',
+    'An Agent request is already running.',
+    'The selected workspace changed during Agent admission; the task was not started.',
+    'The Agent has no paused turn to resume.',
+    'Stop the running Agent turn before cleaning its context.',
+    'A running Agent session cannot be deleted.',
+    'Only failed Agent sessions can be deleted.',
+    'The Agent session changed before it could be deleted.',
+    'Confirm that the remote conversation record is absent before deleting this session.',
+    'This failed Agent session still owns an active compute job and cannot be deleted.',
+    'The failed Agent session record is not a safe regular file.',
+    'The Agent preference revision must be an integer.',
+    'The Agent delivery checkpoint could not be persisted safely.',
+    'The Agent admission guard returned an invalid workspace identity.',
+    'The failed Agent session record could not be deleted safely.',
+    'The selected Agent session is unavailable. Choose a session from the sidebar.',
+    'The selected Agent session belongs to another browser or provider. Start a new session.',
+    'This conversation already has a running Agent task. Select that session to view or stop it.',
+    'Workspace identity components must be directories.',
+    'The selected workspace identity could not be verified safely.',
+    'The browser context has no pages for source discovery.',
+    'The project browser attachment count became invalid.',
+    'The project browser Page lease did not close cleanly.',
+    'The shared project browser profile is supported only for macOS Edge Jury.',
+    'The project-owned Edge Jury profile is not initialized. Choose Check accounts once to open its provider tabs, sign in there, then choose Check accounts again. The daily Edge profile will not be used.',
+    'The project Edge profile has no persistent browser context.',
+    'Choose a valid ChatGPT Project before loading its sessions.',
+    'Choose a valid Agent Project before loading its sessions.',
+    'Microsoft Edge could not be found on this host.',
+    'Choose a supported ChatGPT model.',
+    'The Agent target must use the official ChatGPT HTTPS host.',
+    'Choose a ChatGPT Project before starting a new Project session.',
+    'Choose a recent ChatGPT session before joining it.',
+    'Choose the ChatGPT Project that owns this session.',
+    'Choose a supported Gemini model.',
+    'The Agent target must use the official Gemini HTTPS host.',
+    'Choose a Gemini Project before starting a new Project session.',
+    'Choose a recent Gemini session before joining it.',
+    'Choose the Gemini Project that owns this session.',
+    'Choose a supported Grok model.',
+    'The Agent target must use the official Grok HTTPS host.',
+    'Choose a Grok Project before starting a new Project session.',
+    'Choose a recent Grok session before joining it.',
+    'Choose the Grok Project that owns this session.',
+    'Choose a supported Claude model.',
+    'The Agent target must use the official Claude HTTPS host.',
+    'Choose a Claude Project before starting a new Project session.',
+    'Choose a recent Claude session before joining it.',
+    'Choose the Claude Project that owns this session.',
+)
+
 AGENT_UNLOCK_FAILURE_LIMIT = 5
 AGENT_UNLOCK_FAILURE_WINDOW_SECONDS = 300.0
 
@@ -472,7 +570,12 @@ def register_agent_routes(app: Flask, context: AgentRouteContext) -> AgentSurfac
         try:
             return context.agent_session_pool.get(selected_agent_session_id())
         except ValueError as exc:
-            abort(404, description=str(exc))
+            abort(404, description=public_exception_message(
+                exc,
+                fallback='The selected Agent session is unavailable. Choose a session from the sidebar.',
+                allowed=AGENT_PUBLIC_ERRORS,
+                operation='agent.selected_agent_service',
+            ))
 
     def requested_agent_route(
         runtime_snapshot: dict[str, Any],
@@ -505,13 +608,32 @@ def register_agent_routes(app: Flask, context: AgentRouteContext) -> AgentSurfac
             ).strip()
         return selected_browser, selected_platform, selected_workspace
 
+    def agent_public_diagnostics(payload, operation):
+        projected = public_diagnostic_payload(
+            payload,
+            fallback="The Agent operation failed. Check local diagnostics and try again.",
+            allowed=AGENT_PUBLIC_ERRORS,
+            operation=operation,
+        )
+        if (
+            operation in {"agent.compute_job_status", "agent.stop_compute_job"}
+            and projected.get("state") == "unknown"
+            and projected.get("message")
+        ):
+            projected["message"] = public_exception_message(
+                RuntimeError(projected["message"]),
+                fallback="Compute-job metadata could not be reconciled safely. Check local diagnostics and try again.",
+                operation=operation,
+            )
+        return projected
+
     def render_agent_history_item(
         raw_item: dict[str, Any],
         *,
         provider: str,
     ) -> dict[str, Any]:
         """Add a safe display/copy projection while retaining provider provenance."""
-        item = dict(raw_item)
+        item = agent_public_diagnostics(raw_item, "agent.history_status")
         response = str(item.get("response", ""))
         citations = item.get("citations")
         citation_rows = citations if isinstance(citations, list) else []
@@ -544,6 +666,11 @@ def register_agent_routes(app: Flask, context: AgentRouteContext) -> AgentSurfac
         else:
             service = context.agent_session_pool.get(session_id) if session_id else selected_agent_service()
             snapshot = service.snapshot()
+        snapshot = agent_public_diagnostics(snapshot, "agent.snapshot")
+        if isinstance(snapshot.get("event_chain"), dict):
+            snapshot["event_chain"] = agent_public_diagnostics(
+                snapshot["event_chain"], "agent.event_chain_status",
+            )
         snapshot["session_id"] = selected_id
         provider = str(snapshot.get("platform") or "").strip().lower()
         rendered_snapshot = render_agent_history_item(snapshot, provider=provider)
@@ -563,7 +690,22 @@ def register_agent_routes(app: Flask, context: AgentRouteContext) -> AgentSurfac
 
     def build_agent_doctor() -> dict[str, Any]:
         """Combine run diagnostics with host readiness without exposing private content."""
-        doctor = selected_agent_service().doctor()
+        doctor = agent_public_diagnostics(selected_agent_service().doctor(), "agent.doctor")
+        if doctor.get("phase") in {"failed", "interrupted"}:
+            doctor["checks"] = [
+                {
+                    **check,
+                    "detail": public_exception_message(
+                        RuntimeError(check.get("detail") or ""),
+                        fallback="The previous Agent run needs attention. Check local diagnostics and review the recovery actions.",
+                        allowed=AGENT_PUBLIC_ERRORS,
+                        operation="agent.doctor.run_lifecycle",
+                    ),
+                }
+                if check.get("id") == "run_lifecycle" and check.get("status") == "warn"
+                else check
+                for check in doctor.get("checks", [])
+            ]
         doctor["runtime"] = context.computer_use_settings.snapshot()
         doctor["capability_registry_version"] = CAPABILITY_REGISTRY_VERSION
         return doctor
@@ -668,8 +810,9 @@ def register_agent_routes(app: Flask, context: AgentRouteContext) -> AgentSurfac
             platform,
             agent_settings.workspace_path,
         )
-        compute_job_snapshot = context.computer_use_agent_service.compute_job_status(
-            agent_settings.workspace_path
+        compute_job_snapshot = agent_public_diagnostics(
+            context.computer_use_agent_service.compute_job_status(agent_settings.workspace_path),
+            "agent.compute_job_status",
         )
         return render_template(
             "agent.html",
@@ -769,6 +912,16 @@ def register_agent_routes(app: Flask, context: AgentRouteContext) -> AgentSurfac
             code=303,
         )
 
+    def agent_public_catalog(browser, platform, workspace):
+        catalog = context.agent_session_pool.catalog(browser, platform, workspace)
+        return {
+            **catalog,
+            "sessions": [
+                agent_public_diagnostics(item, "agent.session_catalog")
+                for item in catalog.get("sessions", [])
+            ],
+        }
+
     @blueprint.get("/api/agent/status")
     def agent_status():
         require_local_agent_request()
@@ -780,7 +933,12 @@ def register_agent_routes(app: Flask, context: AgentRouteContext) -> AgentSurfac
             try:
                 context.agent_session_pool.get(selected_agent_session_id())
             except ValueError as exc:
-                return jsonify({"error": str(exc), "code": "unknown_agent_session"}), 404
+                return jsonify({"error": public_exception_message(
+                    exc,
+                    fallback='The selected Agent session is unavailable. Choose a session from the sidebar.',
+                    allowed=AGENT_PUBLIC_ERRORS,
+                    operation='agent.agent_status',
+                ), "code": "unknown_agent_session"}), 404
         compute_service = (
             context.computer_use_agent_service
             if selected_agent_session_id() == "new"
@@ -798,15 +956,16 @@ def register_agent_routes(app: Flask, context: AgentRouteContext) -> AgentSurfac
         return jsonify(
             {
                 "runtime": runtime_snapshot,
-                **context.agent_session_pool.catalog(selected_browser, selected_platform, selected_workspace),
+                **agent_public_catalog(selected_browser, selected_platform, selected_workspace),
                 "agent": agent_snapshot_for_route(
                     agent_snapshot,
                     selected_browser,
                     selected_platform,
                     selected_workspace,
                 ),
-                "compute_job": compute_service.compute_job_status(
-                    selected_workspace
+                "compute_job": agent_public_diagnostics(
+                    compute_service.compute_job_status(selected_workspace),
+                    "agent.compute_job_status",
                 ),
             }
         )
@@ -829,8 +988,13 @@ def register_agent_routes(app: Flask, context: AgentRouteContext) -> AgentSurfac
                 str(payload.get("job_id") or ""),
             )
         except (OSError, RuntimeError, ValueError) as exc:
-            return jsonify({"error": str(exc)}), 409
-        return jsonify({"compute_job": job})
+            return jsonify({"error": public_exception_message(
+                exc,
+                fallback='The compute job could not be stopped. Review its current status and try again.',
+                allowed=AGENT_PUBLIC_ERRORS,
+                operation='agent.stop_agent_compute_job',
+            )}), 409
+        return jsonify({"compute_job": agent_public_diagnostics(job, "agent.stop_compute_job")})
 
     @blueprint.get("/api/agent/capabilities")
     def agent_capabilities():
@@ -854,7 +1018,12 @@ def register_agent_routes(app: Flask, context: AgentRouteContext) -> AgentSurfac
         try:
             recovery = selected_agent_service().recover(str(payload.get("action", "")))
         except (RuntimeError, ValueError) as exc:
-            return jsonify({"error": str(exc)}), 409
+            return jsonify({"error": public_exception_message(
+                exc,
+                fallback='The Agent recovery action could not be completed. Check local diagnostics and try again.',
+                allowed=AGENT_PUBLIC_ERRORS,
+                operation='agent.recover_agent_from_doctor',
+            )}), 409
         return jsonify(
             {
                 "recovery": recovery,
@@ -885,7 +1054,12 @@ def register_agent_routes(app: Flask, context: AgentRouteContext) -> AgentSurfac
                 client_revision=payload.get("preference_revision", 0),
             )
         except (RuntimeError, ValueError) as exc:
-            return jsonify({"error": str(exc)}), 409
+            return jsonify({"error": public_exception_message(
+                exc,
+                fallback='The Agent preferences could not be saved. Review the selected settings and try again.',
+                allowed=AGENT_PUBLIC_ERRORS,
+                operation='agent.save_agent_preferences',
+            )}), 409
         return jsonify(
             {
                 "settings": asdict(settings),
@@ -906,9 +1080,19 @@ def register_agent_routes(app: Flask, context: AgentRouteContext) -> AgentSurfac
                 str(payload.get("operating_system", ""))
             )
         except ValueError as exc:
-            return jsonify({"error": str(exc)}), 400
+            return jsonify({"error": public_exception_message(
+                exc,
+                fallback='Terminal authorization could not be opened. Check the local terminal setup and try again.',
+                allowed=AGENT_PUBLIC_ERRORS,
+                operation='agent.open_agent_terminal_authorization',
+            )}), 400
         except RuntimeError as exc:
-            return jsonify({"error": str(exc)}), 409
+            return jsonify({"error": public_exception_message(
+                exc,
+                fallback='Terminal authorization could not be opened. Check the local terminal setup and try again.',
+                allowed=AGENT_PUBLIC_ERRORS,
+                operation='agent.open_agent_terminal_authorization',
+            )}), 409
         return jsonify(result)
 
     @blueprint.post("/api/agent/open-conversation")
@@ -932,7 +1116,12 @@ def register_agent_routes(app: Flask, context: AgentRouteContext) -> AgentSurfac
                 config=context.config_store.config,
             )
         except (RuntimeError, ValueError) as exc:
-            return jsonify({"error": str(exc)}), 409
+            return jsonify({"error": public_exception_message(
+                exc,
+                fallback='The Agent conversation could not be opened. Check the selected browser and try again.',
+                allowed=AGENT_PUBLIC_ERRORS,
+                operation='agent.open_agent_conversation',
+            )}), 409
         return jsonify(result)
 
     @blueprint.post("/api/agent/ask")
@@ -977,7 +1166,12 @@ def register_agent_routes(app: Flask, context: AgentRouteContext) -> AgentSurfac
                 read_only=bool(payload.get("read_only", False)),
             )
         except (RuntimeError, ValueError) as exc:
-            return jsonify({"error": str(exc)}), 409
+            return jsonify({"error": public_exception_message(
+                exc,
+                fallback='The Agent task could not be started. Check local diagnostics and try again.',
+                allowed=AGENT_PUBLIC_ERRORS,
+                operation='agent.ask_agent',
+            )}), 409
         return jsonify(
             {
                 "runtime": context.computer_use_settings.snapshot(),
@@ -1003,7 +1197,12 @@ def register_agent_routes(app: Flask, context: AgentRouteContext) -> AgentSurfac
                 },
             )
         except (RuntimeError, ValueError) as exc:
-            return jsonify({"error": str(exc)}), 409
+            return jsonify({"error": public_exception_message(
+                exc,
+                fallback='The Agent source could not be loaded. Check the selected browser and try again.',
+                allowed=AGENT_PUBLIC_ERRORS,
+                operation='agent.agent_chatgpt_sources',
+            )}), 409
         return jsonify(payload)
 
     @blueprint.get("/api/agent/sources")
@@ -1027,7 +1226,12 @@ def register_agent_routes(app: Flask, context: AgentRouteContext) -> AgentSurfac
                 ),
             )
         except (RuntimeError, ValueError) as exc:
-            return jsonify({"error": str(exc)}), 409
+            return jsonify({"error": public_exception_message(
+                exc,
+                fallback='The Agent source could not be loaded. Check the selected browser and try again.',
+                allowed=AGENT_PUBLIC_ERRORS,
+                operation='agent.agent_sources',
+            )}), 409
         return jsonify(payload)
 
     @blueprint.get("/api/agent/chatgpt-project-sessions")
@@ -1060,7 +1264,12 @@ def register_agent_routes(app: Flask, context: AgentRouteContext) -> AgentSurfac
                 },
             )
         except (RuntimeError, ValueError) as exc:
-            return jsonify({"error": str(exc)}), 409
+            return jsonify({"error": public_exception_message(
+                exc,
+                fallback='The Agent source could not be loaded. Check the selected browser and try again.',
+                allowed=AGENT_PUBLIC_ERRORS,
+                operation='agent.agent_chatgpt_project_sessions',
+            )}), 409
         return jsonify(payload)
 
     @blueprint.get("/api/agent/project-sessions")
@@ -1092,7 +1301,12 @@ def register_agent_routes(app: Flask, context: AgentRouteContext) -> AgentSurfac
                 ),
             )
         except (RuntimeError, ValueError) as exc:
-            return jsonify({"error": str(exc)}), 409
+            return jsonify({"error": public_exception_message(
+                exc,
+                fallback='The Agent source could not be loaded. Check the selected browser and try again.',
+                allowed=AGENT_PUBLIC_ERRORS,
+                operation='agent.agent_project_sessions',
+            )}), 409
         return jsonify(payload)
 
     @blueprint.get("/api/agent/chatgpt-session-history")
@@ -1135,7 +1349,12 @@ def register_agent_routes(app: Flask, context: AgentRouteContext) -> AgentSurfac
                 allow_live_collection=not ask_running,
             )
         except (RuntimeError, ValueError) as exc:
-            return jsonify({"error": str(exc)}), 409
+            return jsonify({"error": public_exception_message(
+                exc,
+                fallback='The Agent source could not be loaded. Check the selected browser and try again.',
+                allowed=AGENT_PUBLIC_ERRORS,
+                operation='agent.agent_chatgpt_session_history',
+            )}), 409
         cache_metadata = payload.get("cache")
         if (
             ask_running
@@ -1207,7 +1426,12 @@ def register_agent_routes(app: Flask, context: AgentRouteContext) -> AgentSurfac
                 allow_live_collection=not ask_running,
             )
         except (RuntimeError, ValueError) as exc:
-            return jsonify({"error": str(exc)}), 409
+            return jsonify({"error": public_exception_message(
+                exc,
+                fallback='The Agent source could not be loaded. Check the selected browser and try again.',
+                allowed=AGENT_PUBLIC_ERRORS,
+                operation='agent.agent_grok_session_history',
+            )}), 409
         cache_metadata = payload.get("cache")
         if (
             ask_running
@@ -1256,7 +1480,12 @@ def register_agent_routes(app: Flask, context: AgentRouteContext) -> AgentSurfac
                 context.agent_session_pool.get(requested_session_id)
             except ValueError as exc:
                 return jsonify(
-                    {"error": str(exc), "code": "unknown_agent_session"}
+                    {"error": public_exception_message(
+                        exc,
+                        fallback='The Agent task could not be stopped. Refresh its status and try again.',
+                        allowed=AGENT_PUBLIC_ERRORS,
+                        operation='agent.stop_agent',
+                    ), "code": "unknown_agent_session"}
                 ), 404
         invalid_session_id = (
             target_session_id != "primary"
@@ -1292,7 +1521,12 @@ def register_agent_routes(app: Flask, context: AgentRouteContext) -> AgentSurfac
                         "code": "stale_agent_stop_target",
                     }
                 ), 409
-            return jsonify({"error": str(exc), "code": "unknown_agent_session"}), 404
+            return jsonify({"error": public_exception_message(
+                exc,
+                fallback='The Agent task could not be stopped. Refresh its status and try again.',
+                allowed=AGENT_PUBLIC_ERRORS,
+                operation='agent.stop_agent',
+            ), "code": "unknown_agent_session"}), 404
         selected_browser, selected_platform, selected_workspace = (
             requested_agent_route(runtime_snapshot)
         )
@@ -1337,9 +1571,19 @@ def register_agent_routes(app: Flask, context: AgentRouteContext) -> AgentSurfac
                 remote_record_absent=payload.get("remote_record_absent") is True,
             )
         except ValueError as exc:
-            return jsonify({"error": str(exc), "code": "unknown_agent_session"}), 404
+            return jsonify({"error": public_exception_message(
+                exc,
+                fallback='The Agent session could not be deleted. Review its current status and try again.',
+                allowed=AGENT_PUBLIC_ERRORS,
+                operation='agent.delete_failed_agent_session',
+            ), "code": "unknown_agent_session"}), 404
         except RuntimeError as exc:
-            return jsonify({"error": str(exc), "code": "agent_session_not_deletable"}), 409
+            return jsonify({"error": public_exception_message(
+                exc,
+                fallback='The Agent session could not be deleted. Review its current status and try again.',
+                allowed=AGENT_PUBLIC_ERRORS,
+                operation='agent.delete_failed_agent_session',
+            ), "code": "agent_session_not_deletable"}), 409
         return jsonify({"deleted": True, **dismissed})
 
     @blueprint.post("/api/agent/resume")
@@ -1375,7 +1619,7 @@ def register_agent_routes(app: Flask, context: AgentRouteContext) -> AgentSurfac
                     browser_name,
                     platform_name,
                 )
-            response = jsonify(payload)
+            response = jsonify(agent_public_diagnostics(payload, "agent.browser_session_status"))
             response.status_code = status_code
             if scope == "agent":
                 response.headers["Cache-Control"] = (
@@ -1456,9 +1700,19 @@ def register_agent_routes(app: Flask, context: AgentRouteContext) -> AgentSurfac
                     ),
                 )
             except ValueError as exc:
-                return browser_session_response({"error": str(exc)}, 400)
+                return browser_session_response({"error": public_exception_message(
+                    exc,
+                    fallback='Unsupported platform or browser selection.',
+                    allowed=AGENT_PUBLIC_ERRORS,
+                    operation='agent.api_browser_session',
+                )}, 400)
             except RuntimeError as exc:
-                return browser_session_response({"error": str(exc)}, 409)
+                return browser_session_response({"error": public_exception_message(
+                    exc,
+                    fallback='The Agent source could not be loaded. Check the selected browser and try again.',
+                    allowed=AGENT_PUBLIC_ERRORS,
+                    operation='agent.api_browser_session',
+                )}, 409)
             cache = payload.pop("cache", {})
             cache_status = str(cache.get("status", "")).strip().lower() if isinstance(cache, dict) else ""
             freshness_kind = {
@@ -1495,9 +1749,19 @@ def register_agent_routes(app: Flask, context: AgentRouteContext) -> AgentSurfac
                 ),
             )
         except ValueError as exc:
-            return browser_session_response({"error": str(exc)}, 400)
+            return browser_session_response({"error": public_exception_message(
+                exc,
+                fallback='Unsupported platform or browser selection.',
+                allowed=AGENT_PUBLIC_ERRORS,
+                operation='agent.api_browser_session',
+            )}, 400)
         except RuntimeError as exc:
-            return browser_session_response({"error": str(exc)}, 409)
+            return browser_session_response({"error": public_exception_message(
+                exc,
+                fallback='The Agent source could not be loaded. Check the selected browser and try again.',
+                allowed=AGENT_PUBLIC_ERRORS,
+                operation='agent.api_browser_session',
+            )}, 409)
         return browser_session_response(payload)
 
     @blueprint.post("/api/browser-session/open-login")
@@ -1547,9 +1811,19 @@ def register_agent_routes(app: Flask, context: AgentRouteContext) -> AgentSurfac
                 )
             )
         except ValueError as exc:
-            return jsonify({"error": str(exc)}), 400
+            return jsonify({"error": public_exception_message(
+                exc,
+                fallback='The browser could not be opened. Check the local browser setup and try again.',
+                allowed=AGENT_PUBLIC_ERRORS,
+                operation='agent.open_browser_session_login',
+            )}), 400
         except RuntimeError as exc:
-            return jsonify({"error": str(exc)}), 409
+            return jsonify({"error": public_exception_message(
+                exc,
+                fallback='The browser could not be opened. Check the local browser setup and try again.',
+                allowed=AGENT_PUBLIC_ERRORS,
+                operation='agent.open_browser_session_login',
+            )}), 409
         return jsonify(result)
 
     app.template_global("agent_entry_url")(agent_entry_url)

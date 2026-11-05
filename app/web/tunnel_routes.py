@@ -6,7 +6,7 @@ the Agent surface. Request handling, credential validation, and status presentat
 live here.
 """
 
-# Code version: v1.11.6-codex.0
+# Code version: v1.12.0-codex.0
 
 from __future__ import annotations
 
@@ -71,7 +71,124 @@ from app.core.agent import (
 )
 
 
+from app.web.public_errors import public_exception_message
+
+
 TUNNEL_BLUEPRINT_NAME = "tunnel"
+TUNNEL_PROJECT_PUBLIC_ERRORS = (
+    'The project registry must be a JSON object.',
+    'The project registry must use schema_version 1.',
+    'The project registry must be a regular file.',
+    'The project registry is too large.',
+    'The chosen folder does not exist.',
+    'Name a registered project by its configured id.',
+    'The Tunnel project lock is not a regular file.',
+    'The project registry cannot be read.',
+    'The project registry is not valid UTF-8 JSON.',
+    'Register a Tunnel project before removing it.',
+    'The Tunnel project lock changed while held.',
+    'An empty current project requires an empty selection.',
+    'The current project changed in another window. Review the selection and choose again.',
+    'The current Tunnel project must also be selected.',
+    'Select at least one Tunnel project.',
+)
+
+GEMINI_PUBLIC_ERRORS = (
+    'Redirect URI must not exceed 2,048 characters.',
+    'Gemini Tunnel configuration has an invalid field set.',
+    'Gemini Tunnel schema_version must be an integer.',
+    'Gemini Tunnel configuration values must be strings.',
+    'Gemini Tunnel public_origin must be canonical.',
+    'Gemini Tunnel client_id is invalid.',
+    'Gemini Tunnel client_secret is invalid.',
+    'Gemini Tunnel signing_key is invalid.',
+    'Gemini Tunnel configuration must be a regular file.',
+    'Gemini Tunnel configuration must be owner-only.',
+    'Gemini Tunnel configuration is too large.',
+    'Gemini Tunnel is not configured.',
+    'Gemini Tunnel configuration is not canonical.',
+    'Unsupported WWW-Authenticate error.',
+    'Invalid base64url value.',
+    'Gemini Tunnel configuration cannot be inspected.',
+    'Gemini Tunnel configuration is not valid UTF-8 JSON.',
+    'invalid_request',
+    'invalid_grant',
+    'invalid_token',
+    'unauthorized_client',
+    'invalid_client',
+    'invalid_target',
+    'invalid_scope',
+    'Public origin must not contain whitespace, control characters, or backslashes.',
+    'Redirect URI must not contain whitespace, control characters, or backslashes.',
+    'Public origin must use a canonical DNS hostname.',
+    'Redirect URI must use a canonical DNS hostname.',
+    'Public origin must not use an IP address.',
+    'Redirect URI must not use an IP address.',
+    'Public origin must not use a local or private hostname.',
+    'Redirect URI must not use a local or private hostname.',
+    'Public origin must use a public DNS hostname.',
+    'Redirect URI must use a public DNS hostname.',
+    'Public origin must be a non-empty HTTPS URL.',
+    'Redirect URI must be a non-empty HTTPS URL.',
+    'Public origin must use HTTPS.',
+    'Redirect URI must use HTTPS.',
+    'Public origin must include a hostname.',
+    'Redirect URI must include a hostname.',
+    'Public origin must not contain user information.',
+    'Redirect URI must not contain user information.',
+    'Public origin has an invalid port.',
+    'Redirect URI has an invalid port.',
+    'Public origin must not contain a fragment.',
+    'Redirect URI must not contain a fragment.',
+    'Public origin must be an origin without a path or query.',
+    'Redirect URI must be an origin without a path or query.',
+    'Public origin must use an absolute path.',
+    'Redirect URI must use an absolute path.',
+    'Public origin has an invalid DNS hostname.',
+    'Redirect URI has an invalid DNS hostname.',
+)
+
+GEMINI_OAUTH_PUBLIC_DESCRIPTIONS = (
+    'code_challenge_method must be S256.',
+    'code_challenge is not a valid S256 value.',
+    'Authorization code is invalid.',
+    'PKCE code_verifier is invalid.',
+    'Refresh token is invalid.',
+    'Access token is malformed.',
+    'Access token signature is invalid.',
+    'Access token header is invalid.',
+    'Access token claims are invalid.',
+    'Access token times are invalid.',
+    'Access token binding is invalid.',
+    'Access token is expired.',
+    'Access token lifetime is invalid.',
+    'OAuth client_id is invalid.',
+    'OAuth client authentication failed.',
+    'OAuth resource is invalid.',
+    'OAuth authority has been revoked.',
+    'OAuth grant binding does not match.',
+    'Authorization code is invalid or expired.',
+    'PKCE verification failed.',
+    'Refresh token is invalid or expired.',
+    'Access token is unknown or expired.',
+    'OAuth client credentials are required.',
+    'OAuth client authentication must use HTTP Basic or form credentials.',
+    'Use exactly one OAuth client authentication method.',
+    'No Gemini OAuth callback is awaiting local review.',
+    'The pending Gemini OAuth review has changed. Review it again.',
+    'OAuth redirect_uri does not match the callback pinned for this process.',
+    'The local Agent operator denied this OAuth callback.',
+    'A different Gemini OAuth callback is awaiting local review.',
+    'Each required authorization parameter must appear exactly once.',
+    'OAuth state is invalid.',
+    'Only the authorization code response type is supported.',
+    'OAuth token requests must use application/x-www-form-urlencoded.',
+    'Authorization action must be approve or deny.',
+    'A different Gemini OAuth request is already approved.',
+    'Only authorization_code and refresh_token are supported.',
+    'OAuth form is too large.',
+)
+
 GEMINI_PUBLIC_PATHS = frozenset(
     {
         "/.well-known/oauth-authorization-server",
@@ -522,7 +639,12 @@ def _local_project_context(
             "registry_configured": registry_configured,
             "revision": revision,
             "selected_at": selected_at,
-            "problem": str(exc),
+            "problem": public_exception_message(
+                exc,
+                fallback='Tunnel project configuration is invalid or missing. Review the project selection and try again.',
+                allowed=TUNNEL_PROJECT_PUBLIC_ERRORS,
+                operation='tunnel._local_project_context',
+            ),
         }
     except OSError:
         return {
@@ -742,7 +864,19 @@ def tunnel_status_payload(
                 "action": None,
             },
         }
-    snapshot = tunnel_runtime.snapshot()
+    snapshot = dict(tunnel_runtime.snapshot())
+    if snapshot.get("state") in {"error", "degraded", "retrying"} and snapshot.get("message"):
+        snapshot["message"] = public_exception_message(
+            RuntimeError(snapshot["message"]),
+            fallback="The Tunnel connection failed. Check local diagnostics and reconnect.",
+            allowed=(
+                "The Tunnel is reconnecting after a temporary failure.",
+                "The Tunnel lost readiness and is trying to recover.",
+                "Tunnel unavailable.",
+                "The project selection was saved, but the local Tunnel could not restart. Use the sidebar Connect button to try again.",
+            ),
+            operation="tunnel.connection_status",
+        )
     if tunnel_mcp_service is not None:
         activity = tunnel_mcp_service.activity_snapshot("chatgpt")
         snapshot.update(activity)
@@ -795,7 +929,20 @@ def _no_store(response: Response) -> Response:
 
 
 def _oauth_error_response(error: GeminiOAuthError) -> Response:
-    response = make_response(jsonify(error.as_dict()), error.status_code)
+    payload = {
+        "error": error.error if error.error in {
+            "invalid_request", "invalid_client", "invalid_grant", "invalid_token",
+            "invalid_target", "invalid_scope", "unauthorized_client", "access_denied",
+            "temporarily_unavailable", "unsupported_grant_type", "unsupported_response_type",
+        } else "invalid_request",
+        "error_description": public_exception_message(
+            error,
+            fallback="Gemini authorization could not be completed. Reconnect and try again.",
+            allowed=GEMINI_OAUTH_PUBLIC_DESCRIPTIONS,
+            operation="tunnel.oauth_response",
+        ),
+    }
+    response = make_response(jsonify(payload), error.status_code)
     if error.error == "invalid_client":
         response.headers["WWW-Authenticate"] = (
             'Basic realm="AgenticContext Gemini OAuth", charset="UTF-8"'
@@ -1205,7 +1352,12 @@ def register_tunnel_routes(app: Flask, context: TunnelRouteContext) -> None:
         except ProjectSelectionConflict as exc:
             return jsonify(
                 {
-                    "error": str(exc),
+                    "error": public_exception_message(
+                        exc,
+                        fallback='Tunnel project configuration is invalid or missing. Review the project selection and try again.',
+                        allowed=TUNNEL_PROJECT_PUBLIC_ERRORS,
+                        operation='tunnel.api_project',
+                    ),
                     "project_context": _local_project_context(
                         context.settings_store,
                         context.tunnel_mcp_service,
@@ -1213,7 +1365,12 @@ def register_tunnel_routes(app: Flask, context: TunnelRouteContext) -> None:
                 }
             ), 409
         except ProjectRegistryError as exc:
-            return jsonify({"error": str(exc)}), 400
+            return jsonify({"error": public_exception_message(
+                exc,
+                fallback='Tunnel project configuration is invalid or missing. Review the project selection and try again.',
+                allowed=TUNNEL_PROJECT_PUBLIC_ERRORS,
+                operation='tunnel.api_project',
+            )}), 400
         except OSError:
             return jsonify(
                 {
@@ -1287,7 +1444,12 @@ def register_tunnel_routes(app: Flask, context: TunnelRouteContext) -> None:
         except ProjectSelectionConflict as exc:
             return jsonify(
                 {
-                    "error": str(exc),
+                    "error": public_exception_message(
+                        exc,
+                        fallback='Tunnel project configuration is invalid or missing. Review the project selection and try again.',
+                        allowed=TUNNEL_PROJECT_PUBLIC_ERRORS,
+                        operation='tunnel.api_project_register',
+                    ),
                     "project_context": _local_project_context(
                         context.settings_store,
                         context.tunnel_mcp_service,
@@ -1295,7 +1457,12 @@ def register_tunnel_routes(app: Flask, context: TunnelRouteContext) -> None:
                 }
             ), 409
         except ProjectRegistryError as exc:
-            return jsonify({"error": str(exc)}), 400
+            return jsonify({"error": public_exception_message(
+                exc,
+                fallback='Tunnel project configuration is invalid or missing. Review the project selection and try again.',
+                allowed=TUNNEL_PROJECT_PUBLIC_ERRORS,
+                operation='tunnel.api_project_register',
+            )}), 400
         except (OSError, ValueError, KeyError, TypeError):
             return jsonify(
                 {
@@ -1369,7 +1536,12 @@ def register_tunnel_routes(app: Flask, context: TunnelRouteContext) -> None:
         except ProjectSelectionConflict as exc:
             return jsonify(
                 {
-                    "error": str(exc),
+                    "error": public_exception_message(
+                        exc,
+                        fallback='Tunnel project configuration is invalid or missing. Review the project selection and try again.',
+                        allowed=TUNNEL_PROJECT_PUBLIC_ERRORS,
+                        operation='tunnel.api_project_unregister',
+                    ),
                     "project_context": _local_project_context(
                         context.settings_store,
                         context.tunnel_mcp_service,
@@ -1377,7 +1549,12 @@ def register_tunnel_routes(app: Flask, context: TunnelRouteContext) -> None:
                 }
             ), 409
         except ProjectRegistryError as exc:
-            return jsonify({"error": str(exc)}), 400
+            return jsonify({"error": public_exception_message(
+                exc,
+                fallback='Tunnel project configuration is invalid or missing. Review the project selection and try again.',
+                allowed=TUNNEL_PROJECT_PUBLIC_ERRORS,
+                operation='tunnel.api_project_unregister',
+            )}), 400
         except (OSError, ValueError, KeyError, TypeError):
             return jsonify(
                 {
@@ -1408,7 +1585,12 @@ def register_tunnel_routes(app: Flask, context: TunnelRouteContext) -> None:
         try:
             gemini_gateway.replace(payload["public_origin"].strip())
         except GeminiTunnelConfigError as exc:
-            return jsonify({"error": str(exc)}), 400
+            return jsonify({"error": public_exception_message(
+                exc,
+                fallback='Gemini Tunnel configuration is invalid. Review the public HTTPS origin.',
+                allowed=GEMINI_PUBLIC_ERRORS,
+                operation='tunnel.api_gemini_config',
+            )}), 400
         return _no_store(make_response(jsonify(status_payload("gemini"))))
 
     @blueprint.post("/api/agent/tunnel/gemini/copy-value")
@@ -1455,7 +1637,12 @@ def register_tunnel_routes(app: Flask, context: TunnelRouteContext) -> None:
         try:
             gemini_gateway.resolve_pending_authorization(action, review_id)
         except GeminiOAuthError as exc:
-            return _no_store(make_response(jsonify({"error": exc.description}), 409))
+            return _no_store(make_response(jsonify({"error": public_exception_message(
+                exc,
+                fallback="Gemini authorization could not be completed. Review the pending request.",
+                allowed=GEMINI_OAUTH_PUBLIC_DESCRIPTIONS,
+                operation="tunnel.authorization_review",
+            )}), 409))
         except GeminiTunnelConfigError:
             return _no_store(
                 make_response(
@@ -1629,7 +1816,12 @@ def register_tunnel_routes(app: Flask, context: TunnelRouteContext) -> None:
             return gemini_mcp_unauthorized(
                 config,
                 error="invalid_token",
-                description=exc.description,
+                description=public_exception_message(
+                    exc,
+                    fallback="A valid Gemini OAuth bearer token is required.",
+                    allowed=GEMINI_OAUTH_PUBLIC_DESCRIPTIONS,
+                    operation="tunnel.authenticate_gemini_mcp",
+                ),
             )
         return config, authority
 
@@ -1679,7 +1871,12 @@ def register_tunnel_routes(app: Flask, context: TunnelRouteContext) -> None:
                 admission=lambda: gemini_gateway.admit_authenticated_authority(authority),
             )
         except McpAdmissionRevoked as exc:
-            return gemini_mcp_unauthorized(config, description=str(exc))
+            return gemini_mcp_unauthorized(config, description=public_exception_message(
+                exc,
+                fallback='Gemini authorization is no longer valid. Reconnect and try again.',
+                allowed=GEMINI_PUBLIC_ERRORS,
+                operation='tunnel.gemini_mcp_endpoint',
+            ))
         if payload is None:
             return _no_store(Response(status=status))
         return _no_store(make_response(jsonify(payload), status))
@@ -1696,7 +1893,12 @@ def register_tunnel_routes(app: Flask, context: TunnelRouteContext) -> None:
             with gemini_gateway.admit_authenticated_authority(authority):
                 return _no_store(Response(status=405, headers={"Allow": "POST"}))
         except McpAdmissionRevoked as exc:
-            return gemini_mcp_unauthorized(config, description=str(exc))
+            return gemini_mcp_unauthorized(config, description=public_exception_message(
+                exc,
+                fallback='Gemini authorization is no longer valid. Reconnect and try again.',
+                allowed=GEMINI_PUBLIC_ERRORS,
+                operation='tunnel.gemini_mcp_stream',
+            ))
 
     @blueprint.post("/api/agent/tunnel/restart")
     def api_restart():

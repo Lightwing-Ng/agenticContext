@@ -1,4 +1,4 @@
-/* Code version: v1.45.0-codex.0 */
+/* Code version: v1.45.1-codex.0 */
 
 (function initializeLocalMediaBrowser() {
     "use strict";
@@ -332,7 +332,7 @@
 
     function loadPreview(element) {
         if (!element || element.dataset.previewLoaded === "1") return;
-        const source = element.dataset.mediaSrc;
+        const source = validMediaUrl(element.dataset.mediaSrc);
         if (!source) {
             setPreviewStatus(element, "Preview unavailable", { failed: true });
             return;
@@ -1083,7 +1083,22 @@
         if (typeof value !== "string" || !value) return "";
         try {
             const parsed = new URL(value, window.location.href);
-            return parsed.protocol === "http:" || parsed.protocol === "https:" ? value : "";
+            return parsed.protocol === "http:" || parsed.protocol === "https:" ? parsed.href : "";
+        } catch (_error) {
+            return "";
+        }
+    }
+
+    function validMediaUrl(value) {
+        if (typeof value !== "string" || !value) return "";
+        try {
+            const parsed = new URL(value, window.location.href);
+            if (!["http:", "https:"].includes(parsed.protocol)
+                || parsed.origin !== window.location.origin
+                || parsed.username || parsed.password || parsed.search || parsed.hash
+                || !(parsed.pathname.startsWith("/browser/media/")
+                    || parsed.pathname.startsWith("/browser/deleted-preview/"))) return "";
+            return parsed.href;
         } catch (_error) {
             return "";
         }
@@ -1189,7 +1204,9 @@
             resizePlayer();
         };
         image.addEventListener("load", finishLoading, { once: true });
-        image.src = item.media_url;
+        const source = validMediaUrl(item.media_url);
+        if (source) image.src = source;
+        else loadingNotice.textContent = "Preview unavailable.";
         if (image.complete && image.naturalWidth > 0) finishLoading();
         resizePlayer();
         window.addEventListener("resize", resizePlayer, { passive: true });
@@ -1230,7 +1247,9 @@
         video.addEventListener("loadeddata", () => {
             loadingNotice.hidden = true;
         }, { once: true });
-        video.src = item.media_url;
+        const source = validMediaUrl(item.media_url);
+        if (source) video.src = source;
+        else loadingNotice.textContent = "Preview unavailable.";
         resizePlayer();
         window.addEventListener("resize", resizePlayer, { passive: true });
         return { player, video, navigation, resizeHandler: resizePlayer };

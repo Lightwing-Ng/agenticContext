@@ -1,6 +1,6 @@
 """Regression tests for the Settings → Style tokens registry.
 
-Code version: v1.11.3-codex.0
+Code version: v1.11.4-codex.0
 """
 
 import re
@@ -290,7 +290,7 @@ def test_style_tokens_route_renders_live_demos_and_settings_navigation(client) -
     assert 'href="#frosted-glass"' in html
     assert 'data-style-token-control' in html
     assert 'href="/settings/style-tokens"' in html
-    assert 'sidebar.js?v=sidebar-v1.26.0-claude.0' in html
+    assert 'sidebar.js?v=sidebar-v1.31.0-codex.0' in html
     assert 'segmented-control.js?v=segmented-control-v1.0.4-codex.1' in html
 
 
