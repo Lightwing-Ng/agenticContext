@@ -1,6 +1,6 @@
 """Present pinned Mac text observations without modifying native message evidence.
 
-Code version: v1.0.0-codex.0
+Code version: v1.0.1-codex.0
 """
 
 from __future__ import annotations
@@ -49,17 +49,23 @@ def _unique(pairs):
 
 
 def _file_identity(path):
-    return _stat_identity(path.stat(follow_symlinks=False))
+    return _stat_identity(path.stat(follow_symlinks=False), path)
 
 
-def _stat_identity(state):
-    return (
+def _stat_identity(state, path, *, descriptor=None):
+    identity = (
         state.st_dev,
         state.st_ino,
         state.st_size,
         state.st_mtime_ns,
-        state.st_ctime_ns,
+        getattr(state, "st_birthtime_ns", state.st_ctime_ns)
+        if os.name == "nt" else state.st_ctime_ns,
     )
+    if os.name == "nt":
+        from .windows_file_metadata import file_change_time
+
+        return (*identity, file_change_time(path, descriptor=descriptor))
+    return identity
 
 
 def _managed_path(base, relative):
@@ -85,12 +91,18 @@ def _read_json(path):
     before = _file_identity(path)
     if not path.is_file() or before[2] > _LIMIT:
         raise ValueError("Text observation files must be bounded regular files.")
-    descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+    descriptor = os.open(
+        path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_BINARY", 0)
+    )
     with os.fdopen(descriptor, "rb") as stream:
-        if _stat_identity(os.fstat(stream.fileno())) != before:
+        if _stat_identity(
+            os.fstat(stream.fileno()), path, descriptor=stream.fileno()
+        ) != before:
             raise ValueError("Text observation file changed before opening.")
         raw = stream.read(_LIMIT + 1)
-        if _stat_identity(os.fstat(stream.fileno())) != before:
+        if _stat_identity(
+            os.fstat(stream.fileno()), path, descriptor=stream.fileno()
+        ) != before:
             raise ValueError("Text observation file changed while reading.")
     if len(raw) > _LIMIT or _file_identity(path) != before:
         raise ValueError("Text observation file changed while reading.")

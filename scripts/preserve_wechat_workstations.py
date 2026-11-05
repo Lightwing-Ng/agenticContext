@@ -1,6 +1,6 @@
 """Relocate sealed, local workstation files without copying or downloading data.
 
-Code version: v1.0.0-codex.0
+Code version: v1.2.0-codex.0
 
 The default invocation only inspects metadata and open handles. DATALESS files
 remain in their original provider domain. This tool never releases local content
@@ -23,8 +23,11 @@ import sys
 import tempfile
 
 
+# Existing preservation receipts retain their compatible format discriminator.
 VERSION = "v1.0.0-codex.0"
 DATALESS = 0x40000000
+_WINDOWS_CLOUD_FLAGS = 0x1000 | 0x40000 | 0x400000
+_WINDOWS_REPARSE_POINT = 0x400
 DIRECTORIES = (
     "storage_backups", "repair_audits", "directory_audits", "imports",
     "recovery", "source_retirements", "contact_checkpoints",
@@ -37,13 +40,23 @@ TEMPORARY = re.compile(r"\.(?:person-)?contact-analysis-[A-Za-z0-9_-]+\.sqlite3(
 
 def identity(path):
     state = path.lstat()
+    blocks = getattr(state, "st_blocks", None)
     return {
         "device": state.st_dev, "inode": state.st_ino, "bytes": state.st_size,
         "mtime_ns": state.st_mtime_ns, "mode": state.st_mode,
         "uid": state.st_uid, "gid": state.st_gid, "links": state.st_nlink,
         "flags": getattr(state, "st_flags", 0),
-        "allocated_bytes": state.st_blocks * 512,
+        "file_attributes": getattr(state, "st_file_attributes", 0),
+        "reparse_tag": getattr(state, "st_reparse_tag", 0),
+        "allocated_bytes": blocks * 512 if blocks is not None else None,
     }
+
+
+def _unavailable(value):
+    return bool(
+        value["flags"] & DATALESS
+        or value.get("file_attributes", 0) & (_WINDOWS_CLOUD_FLAGS | _WINDOWS_REPARSE_POINT)
+    )
 
 
 def stable_identity(value):
@@ -53,9 +66,19 @@ def stable_identity(value):
 
 
 def assert_plain_path(path):
-    for component in (path, *path.parents):
-        if component.is_symlink():
+    # Inspect ancestors first so even metadata lookup cannot cross a junction.
+    for component in reversed((path, *path.parents)):
+        try:
+            state = component.lstat()
+        except FileNotFoundError:
+            continue
+        if stat.S_ISLNK(state.st_mode):
             raise ValueError(f"Symbolic links are not allowed: {component}")
+        if stat.S_ISDIR(state.st_mode) and _unavailable({
+            "flags": getattr(state, "st_flags", 0),
+            "file_attributes": getattr(state, "st_file_attributes", 0),
+        }):
+            raise ValueError(f"An unavailable or reparse directory requires separate review: {component}")
 
 
 def local_json(path):
@@ -63,7 +86,7 @@ def local_json(path):
     before = identity(path)
     if (
         not stat.S_ISREG(before["mode"])
-        or before["flags"] & DATALESS or before["bytes"] > 4 * 1024**2
+        or _unavailable(before) or before["bytes"] > 4 * 1024**2
     ):
         raise ValueError(f"A bounded local JSON file is required: {path}")
     value = json.loads(path.read_bytes())
@@ -105,28 +128,47 @@ def allowed(relative):
     )
 
 
+def _raise_walk_error(error):
+    raise error
+
+
 def candidates(root):
+    assert_plain_path(root)
     pins = runtime_pins(root)
     paths = []
+    deferred = {}
+
+    def usable_directory(directory):
+        try:
+            metadata = identity(directory)
+        except FileNotFoundError:
+            return False
+        if stat.S_ISLNK(metadata["mode"]):
+            raise ValueError(f"A workstation directory is a symbolic link: {directory}")
+        if not stat.S_ISDIR(metadata["mode"]):
+            raise ValueError(f"A workstation directory must be a directory: {directory}")
+        if _unavailable(metadata):
+            deferred[directory.relative_to(root).as_posix()] = {
+                "source_identity": metadata, "defer_reason": "unavailable_directory_requires_review",
+            }
+            return False
+        return True
+
     for name in DIRECTORIES:
         directory = root / name
-        if directory.is_symlink():
-            raise ValueError(f"A workstation directory is a symbolic link: {directory}")
-        if not directory.exists():
+        if not usable_directory(directory):
             continue
-        for parent, directories, filenames in os.walk(directory, followlinks=False):
-            for child in directories:
-                if (Path(parent) / child).is_symlink():
-                    raise ValueError("Workstation directory links require separate review.")
+        for parent, directories, filenames in os.walk(directory, followlinks=False, onerror=_raise_walk_error):
+            assert_plain_path(Path(parent))
+            directories[:] = [child for child in directories if usable_directory(Path(parent) / child)]
             paths.extend(Path(parent) / filename for filename in filenames)
     paths.extend(path for path in root.iterdir() if allowed(path.name))
     activity = root / "contact_activity"
-    if activity.is_symlink():
-        raise ValueError("The runtime contact cache directory cannot be a symbolic link.")
-    if activity.exists():
+    if usable_directory(activity):
         paths.extend(path for path in activity.iterdir() if TEMPORARY.fullmatch(path.name))
-    result = {}
+    result = dict(deferred)
     for path in sorted(set(paths)):
+        assert_plain_path(path.parent)
         relative = path.relative_to(root).as_posix()
         if not allowed(relative):
             raise ValueError(f"Candidate escaped the allowlist: {relative}")
@@ -136,7 +178,9 @@ def candidates(root):
             else "nonregular_file" if not stat.S_ISREG(metadata["mode"])
             else "multiple_hardlinks" if metadata["links"] != 1
             else "cloud_placeholder_requires_separate_preservation"
-            if metadata["flags"] & DATALESS else None
+            if metadata["flags"] & DATALESS or metadata["file_attributes"] & _WINDOWS_CLOUD_FLAGS
+            else "native_reparse_requires_separate_preservation"
+            if metadata["file_attributes"] & _WINDOWS_REPARSE_POINT else None
         )
         result[relative] = {"source_identity": metadata, "defer_reason": reason}
     return result
@@ -183,14 +227,18 @@ def permitted_handles(handles, allow_fileprovider_rename):
 
 
 def hash_local(path, expected):
+    assert_plain_path(path)
     before = identity(path)
-    if before["flags"] & DATALESS or stable_identity(before) != stable_identity(expected):
-        raise ValueError(f"The sealed local file changed or became a placeholder: {path}")
-    descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+    if _unavailable(before) or stable_identity(before) != stable_identity(expected):
+        raise ValueError(f"The sealed local file changed or became unavailable: {path}")
+    descriptor = os.open(
+        path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_BINARY", 0),
+    )
     with os.fdopen(descriptor, "rb") as stream:
         opened = os.fstat(stream.fileno())
         if (
             getattr(opened, "st_flags", 0) & DATALESS
+            or getattr(opened, "st_file_attributes", 0) & (_WINDOWS_CLOUD_FLAGS | _WINDOWS_REPARSE_POINT)
             or (opened.st_dev, opened.st_ino) != (before["device"], before["inode"])
         ):
             raise ValueError("File changed before checksum read.")
@@ -217,6 +265,8 @@ def atomic_json(path, value):
 
 
 def sync_directory(path):
+    if os.name == "nt":
+        return
     descriptor = os.open(path, os.O_RDONLY)
     try:
         os.fsync(descriptor)
@@ -226,6 +276,10 @@ def sync_directory(path):
 
 def rename_exclusive(source, target):
     """Require a same-volume exclusive rename; never overwrite or copy a target."""
+    if sys.platform == "win32":
+        # Windows os.rename fails atomically when the destination already exists.
+        os.rename(source, target)
+        return
     library = ctypes.CDLL(None, use_errno=True)
     if sys.platform == "darwin":
         rename = library.renamex_np
@@ -280,6 +334,11 @@ def preserve(
     report = {"version": VERSION, "source_root": str(root), "destination_root": str(destination),
               "dry_run": not apply, "cloud_upload_verified": False, "local_release_attempted": False,
               "max_file_bytes": max_file_bytes, "entries": items}
+    report["deferred_subtrees"] = sorted(
+        relative for relative, item in items.items()
+        if item["defer_reason"] == "unavailable_directory_requires_review"
+    )
+    report["enumeration_complete"] = not report["deferred_subtrees"]
     if not apply:
         return report
     destination.mkdir(parents=True, mode=0o700, exist_ok=True)
@@ -335,9 +394,12 @@ def preserve(
         entry = {**item, "sha256": checksum, "status": "sealed_before_rename"}
         receipt["entries"][relative] = entry
         save()
+        assert_plain_path(target.parent)
         target.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
         if source.stat().st_dev != target.parent.stat().st_dev:
             raise ValueError("The actual destination changed to a different volume.")
+        assert_plain_path(source)
+        assert_plain_path(target)
         rename_exclusive(source, target)
         sync_directory(source.parent)
         sync_directory(target.parent)

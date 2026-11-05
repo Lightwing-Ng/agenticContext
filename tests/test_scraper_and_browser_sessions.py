@@ -1,6 +1,6 @@
 """Tests for browser-independent X parsing and session helpers.
 
-Code version: v1.14.4-codex.0
+Code version: v1.14.5-codex.0
 """
 
 from __future__ import annotations
@@ -1237,6 +1237,9 @@ def test_cdp_attach_lock_covers_the_complete_caller_context(
         channel="msedge",
     )
     monkeypatch.setattr("app.core.browser_sessions.is_windows_host", lambda: True)
+    monkeypatch.setattr("app.core.browser_sessions.is_macos_host", lambda: False)
+    monkeypatch.setattr("app.core.agent_debug_browser.is_windows_host", lambda: True)
+    monkeypatch.setattr("app.core.agent_debug_browser.is_macos_host", lambda: False)
     monkeypatch.setattr(
         "app.core.agent_debug_browser.debug_browser_profile_initialized",
         lambda browser_id: browser_id == "edge",
@@ -1322,6 +1325,9 @@ def test_cdp_attach_failure_releases_the_debug_browser_lock(
         channel="msedge",
     )
     monkeypatch.setattr("app.core.browser_sessions.is_windows_host", lambda: True)
+    monkeypatch.setattr("app.core.browser_sessions.is_macos_host", lambda: False)
+    monkeypatch.setattr("app.core.agent_debug_browser.is_windows_host", lambda: True)
+    monkeypatch.setattr("app.core.agent_debug_browser.is_macos_host", lambda: False)
     monkeypatch.setattr(
         "app.core.agent_debug_browser.debug_browser_profile_initialized",
         lambda browser_id: browser_id == "edge",
@@ -1668,6 +1674,9 @@ def test_launch_chromium_context_restarts_initialized_debug_browser_before_clone
     playwright = SimpleNamespace(chromium=SimpleNamespace(connect_over_cdp=connect))
 
     monkeypatch.setattr("app.core.browser_sessions.is_windows_host", lambda: True)
+    monkeypatch.setattr("app.core.browser_sessions.is_macos_host", lambda: False)
+    monkeypatch.setattr("app.core.agent_debug_browser.is_windows_host", lambda: True)
+    monkeypatch.setattr("app.core.agent_debug_browser.is_macos_host", lambda: False)
     monkeypatch.setattr(
         "app.core.agent_debug_browser.debug_browser_profile_initialized",
         lambda browser_id: browser_id == "edge",
