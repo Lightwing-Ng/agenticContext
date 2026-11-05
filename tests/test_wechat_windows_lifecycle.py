@@ -1,6 +1,6 @@
 """Exercise native Windows sync and closed-SQLite publication boundaries.
 
-Code version: v1.0.0-codex.0
+Code version: v1.0.1-codex.0
 """
 
 from __future__ import annotations
@@ -155,6 +155,8 @@ def _windows_lifecycle(monkeypatch, module, *, fail_sync=False):
     monkeypatch.setattr(Path, "open", open_file)
     monkeypatch.setattr(module, "os", WindowsOS())
     monkeypatch.setattr(module, "sqlite3", SQLite())
+    if module is reconcile and os.name != "nt":
+        monkeypatch.setattr(module, "file_change_time", lambda path: path.stat().st_ctime_ns)
     return connections, synchronized
 
 

@@ -1,6 +1,6 @@
 """Tunnel MCP adapter and /mcp route tests.
 
-Code version: v2.14.3-codex.0
+Code version: v2.14.4-codex.0
 """
 
 from __future__ import annotations
@@ -2992,8 +2992,9 @@ def test_registry_cache_invalidates_equal_size_replacement_with_preserved_mtime(
 
 
 @pytest.mark.parametrize("query_failure", [False, True])
+@pytest.mark.parametrize("freeze_native_clock", [False, True])
 def test_windows_registry_change_time_invalidates_cached_authority_with_frozen_stat_fields(
-    tmp_path, monkeypatch, query_failure,
+    tmp_path, monkeypatch, query_failure, freeze_native_clock,
 ):
     from types import SimpleNamespace
     from app.core import tunnel_projects
@@ -3020,7 +3021,7 @@ def test_windows_registry_change_time_invalidates_cached_authority_with_frozen_s
         assert path == registry_path
         if query_failure and change[0] == 200:
             raise OSError("Synthetic native registry metadata query failure")
-        return change[0]
+        return 100 if freeze_native_clock else change[0]
 
     windows_os = SimpleNamespace(**{**vars(os), "name": "nt"})
     monkeypatch.setattr(tunnel_projects, "os", windows_os)
@@ -3040,6 +3041,70 @@ def test_windows_registry_change_time_invalidates_cached_authority_with_frozen_s
         assert current.root == second.resolve()
         assert current.identity != previous.identity
     assert registry_path.read_bytes() == replacement
+
+
+def test_registry_cache_reuses_parsing_only_for_the_same_raw_bytes(tmp_path, monkeypatch):
+    from app.core import tunnel_projects
+
+    root = tmp_path / "project"
+    root.mkdir()
+    registry = write_registry(tmp_path / "projects.json", [{"id": "work", "root": str(root)}])
+    parse = tunnel_projects.parse_project_registry
+    parsed = []
+
+    def count_parse(payload):
+        parsed.append(payload)
+        return parse(payload)
+
+    monkeypatch.setattr(tunnel_projects, "parse_project_registry", count_parse)
+    assert registry.resolve("work").root == root.resolve()
+    assert registry.resolve("work").root == root.resolve()
+    assert len(parsed) == 1
+
+
+def test_registry_byte_budget_applies_even_when_cached_stat_reports_a_small_file(tmp_path, monkeypatch):
+    from app.core import tunnel_projects
+
+    root = tmp_path / "project"
+    root.mkdir()
+    path = tmp_path / "projects.json"
+    registry = write_registry(path, [{"id": "work", "root": str(root)}])
+    assert registry.resolve("work").root == root.resolve()
+    frozen = path.stat()
+    original_stat, original_open = Path.stat, Path.open
+    oversized = b" " * (tunnel_projects.MAX_REGISTRY_BYTES + 1)
+    path.write_bytes(oversized)
+    reads = []
+
+    def frozen_stat(candidate, *args, **kwargs):
+        return frozen if candidate == path else original_stat(candidate, *args, **kwargs)
+
+    class BoundedReader:
+        def __init__(self, handle):
+            self.handle = handle
+
+        def __enter__(self):
+            self.handle.__enter__()
+            return self
+
+        def __exit__(self, *args):
+            return self.handle.__exit__(*args)
+
+        def read(self, size=-1):
+            reads.append(size)
+            return self.handle.read(size)
+
+    def track_open(candidate, *args, **kwargs):
+        handle = original_open(candidate, *args, **kwargs)
+        return BoundedReader(handle) if candidate == path else handle
+
+    monkeypatch.setattr(Path, "stat", frozen_stat)
+    monkeypatch.setattr(Path, "open", track_open)
+    with pytest.raises(tunnel_projects.ProjectRegistryError, match="too large"):
+        registry.resolve("work")
+    assert reads == [tunnel_projects.MAX_REGISTRY_BYTES + 1]
+    with original_open(path, "rb") as source:
+        assert source.read() == oversized
 
 
 def test_queued_mutation_rechecks_registry_authority_after_project_lock(

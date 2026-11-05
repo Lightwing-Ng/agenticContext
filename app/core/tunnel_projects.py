@@ -1,6 +1,6 @@
 """Explicit project registry for the Secure MCP Tunnel coding backend.
 
-Code version: v1.8.2-codex.0
+Code version: v1.8.3-codex.0
 
 A Tunnel project is an authority-bearing identity mapped to exactly one canonical
 root. Every model-facing filesystem, Git, mutation, and verification tool names
@@ -317,7 +317,7 @@ class ProjectRegistry:
     def __init__(self, path: Path | None = None) -> None:
         self._path = path
         self._lock = threading.Lock()
-        self._cache_key: tuple[str, int, int, int, int, int, int] | None = None
+        self._cache_key: tuple[str, int, int, int, int, int, int, str] | None = None
         self._cache: tuple[TunnelProject, ...] = ()
         self._register_lock = threading.Lock()
 
@@ -332,16 +332,29 @@ class ProjectRegistry:
     def projects(self, fallback_workspace: str = "") -> tuple[TunnelProject, ...]:
         """Return the registered projects; an invalid registry fails closed."""
         path = self.path
+        if path.is_symlink():
+            raise ProjectRegistryError("The project registry must be a regular file.")
         try:
             metadata = path.stat()
         except FileNotFoundError:
             return _fallback_project(fallback_workspace)
         except OSError as exc:
             raise ProjectRegistryError("The project registry cannot be read.") from exc
+        if not stat.S_ISREG(metadata.st_mode):
+            raise ProjectRegistryError("The project registry must be a regular file.")
+        if metadata.st_size > MAX_REGISTRY_BYTES:
+            raise ProjectRegistryError("The project registry is too large.")
         try:
             change_time = file_change_time(path) if os.name == "nt" else 0
         except OSError as exc:
             raise ProjectRegistryError("The project registry change metadata cannot be verified.") from exc
+        try:
+            with path.open("rb") as source:
+                raw = source.read(MAX_REGISTRY_BYTES + 1)
+        except OSError as exc:
+            raise ProjectRegistryError("The project registry cannot be read.") from exc
+        if len(raw) > MAX_REGISTRY_BYTES:
+            raise ProjectRegistryError("The project registry is too large.")
         cache_key = (
             str(path),
             int(metadata.st_dev),
@@ -350,17 +363,14 @@ class ProjectRegistry:
             int(metadata.st_ctime_ns),
             int(metadata.st_size),
             change_time,
+            hashlib.sha256(raw).hexdigest(),
         )
         with self._lock:
             if self._cache_key == cache_key:
                 return tuple(_refresh_project_filesystem_identity(project) for project in self._cache)
-        if path.is_symlink() or not path.is_file():
-            raise ProjectRegistryError("The project registry must be a regular file.")
-        if metadata.st_size > MAX_REGISTRY_BYTES:
-            raise ProjectRegistryError("The project registry is too large.")
         try:
-            payload = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, UnicodeError, ValueError) as exc:
+            payload = json.loads(raw.decode("utf-8"))
+        except (UnicodeError, ValueError) as exc:
             raise ProjectRegistryError("The project registry is not valid UTF-8 JSON.") from exc
         projects = parse_project_registry(payload)
         with self._lock:

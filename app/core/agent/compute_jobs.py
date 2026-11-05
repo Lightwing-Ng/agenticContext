@@ -1,6 +1,6 @@
 """Durable local compute jobs for approved optimization entrypoints.
 
-Code version: v1.6.4-codex.0
+Code version: v1.6.5-codex.0
 """
 
 from __future__ import annotations
@@ -2162,7 +2162,10 @@ class ComputeJobManager:
         environment = {
             key: value
             for key, value in os.environ.items()
-            if key in {"PATH", "LANG", "LC_ALL", "LC_CTYPE", "TMPDIR", "SYSTEMROOT", "WINDIR"}
+            if key in {
+                "PATH", "LANG", "LC_ALL", "LC_CTYPE", "TMPDIR", "SYSTEMROOT", "WINDIR",
+                "USERPROFILE", "HOMEDRIVE", "HOMEPATH", "APPDATA", "LOCALAPPDATA", "TEMP", "TMP",
+            }
         }
         package_root = Path(__file__).resolve().parents[3]
         environment["PYTHONPATH"] = str(package_root)

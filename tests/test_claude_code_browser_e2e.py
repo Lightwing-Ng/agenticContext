@@ -1,6 +1,6 @@
 """Isolated Claude Code cache and Local resources navigation."""
 
-# Code version: v1.1.1-codex.0
+# Code version: v1.1.2-codex.0
 
 from collections.abc import Iterator
 from threading import Thread
@@ -98,7 +98,8 @@ def test_local_code_source_filter_and_detail_navigation(
         expect(page.locator("[data-browser-session-actions]")).to_be_visible()
         expect(page.locator("[data-browser-session-open-original]")).to_have_count(0)
         expect(page.get_by_text("Review the local parser.", exact=True).first).to_be_visible()
-        page.get_by_role("link", name="Back to all sessions", exact=True).click()
+        with page.expect_navigation(wait_until="domcontentloaded"):
+            page.get_by_role("link", name="Back to all sessions", exact=True).click()
         assert parse_qs(urlsplit(page.url).query)["source"] == ["claude_code"]
         expect(page.locator(".browser-session-table-title")).to_have_text(["Local code session"])
         _set_sidebar(page, opened=True)
