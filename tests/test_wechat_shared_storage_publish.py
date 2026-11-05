@@ -1,10 +1,11 @@
 """Verify reversible publication and source-bound sidecar identity updates.
 
-Code version: v1.1.0-codex.0
+Code version: v1.1.1-codex.0
 """
 
 from __future__ import annotations
 
+from contextlib import closing
 import hashlib
 import json
 from pathlib import Path
@@ -33,17 +34,17 @@ def _digest(path):
 
 
 def _messages(path):
-    with sqlite3.connect(path.as_uri() + "?mode=ro", uri=True) as connection:
+    with closing(sqlite3.connect(path.as_uri() + "?mode=ro", uri=True)) as connection, connection:
         return connection.execute("SELECT * FROM messages ORDER BY id").fetchall()
 
 
 def _sidecar_info(path):
-    with sqlite3.connect(path.as_uri() + "?mode=ro", uri=True) as connection:
+    with closing(sqlite3.connect(path.as_uri() + "?mode=ro", uri=True)) as connection, connection:
         return dict(connection.execute("SELECT key,value FROM archive_info"))
 
 
 def _sidecar(path, history, *, stale=False):
-    with sqlite3.connect(history) as source:
+    with closing(sqlite3.connect(history)) as source, source:
         fingerprint = wechat_history_partition_fingerprint(source)
     identity = _file_identity(history)
     if stale:
@@ -54,7 +55,7 @@ def _sidecar(path, history, *, stale=False):
         "history_partitions_sha256": fingerprint,
         "synthetic_evidence": "Preserve every unrelated sidecar value exactly.",
     }
-    with sqlite3.connect(path) as connection:
+    with closing(sqlite3.connect(path)) as connection, connection:
         connection.executescript(
             "CREATE TABLE archive_info(key TEXT PRIMARY KEY,value TEXT NOT NULL);"
             "CREATE TABLE events(id TEXT PRIMARY KEY,evidence TEXT NOT NULL);"
@@ -71,7 +72,7 @@ def publication(shared_archive, tmp_path, monkeypatch):
     store = tmp_path / "store"
     history = wechat_archive_path(store)
     history.parent.mkdir(parents=True)
-    with sqlite3.connect(history) as output:
+    with closing(sqlite3.connect(history)) as output, output:
         source.backup(output)
     # Tiny synthetic databases exercise publication independently of the APFS backend.
     monkeypatch.setattr(publisher, "_clonefile", shutil.copyfile)
@@ -102,7 +103,7 @@ def test_private_publication_keeps_exact_rollback_and_complementary_source_recor
     store = tmp_path / "private-store"
     history = wechat_archive_path(store)
     history.parent.mkdir(parents=True)
-    with sqlite3.connect(history) as output:
+    with closing(sqlite3.connect(history)) as output, output:
         source.backup(output)
     original_digest = _digest(history)
     original_messages = _messages(history)
@@ -140,7 +141,7 @@ def test_batch_private_publication_clones_once_and_checks_one_integrity_result(
     store = tmp_path / "batch-private-store"
     history = wechat_archive_path(store)
     history.parent.mkdir(parents=True)
-    with sqlite3.connect(history) as output:
+    with closing(sqlite3.connect(history)) as output, output:
         source.backup(output)
     original_digest = _digest(history)
     original_messages = _messages(history)
@@ -211,7 +212,7 @@ def test_partial_batch_compaction_failure_never_publishes_a_partial_private_unio
     store = tmp_path / "failed-batch-store"
     history = wechat_archive_path(store)
     history.parent.mkdir(parents=True)
-    with sqlite3.connect(history) as output:
+    with closing(sqlite3.connect(history)) as output, output:
         source.backup(output)
     original_digest = _digest(history)
     original_messages = _messages(history)
@@ -229,7 +230,7 @@ def test_partial_batch_compaction_failure_never_publishes_a_partial_private_unio
     assert _digest(history) == original_digest
     assert _messages(history) == original_messages
     assert _digest(backup / history.name) == original_digest
-    with sqlite3.connect(history) as connection:
+    with closing(sqlite3.connect(history)) as connection, connection:
         assert connection.execute("SELECT type FROM sqlite_master WHERE name='messages'").fetchone()[0] == "table"
     assert not list(history.parent.glob(".wechat-share-*"))
 
@@ -305,7 +306,7 @@ def test_only_fresh_local_sidecar_pins_are_rebound(publication, fresh_name):
     assert not (publication.backup / stale_name).exists()
     assert "rebound" in result["sidecars"][fresh_name]
     assert "already stale" in result["sidecars"][stale_name]
-    with sqlite3.connect(fresh) as connection:
+    with closing(sqlite3.connect(fresh)) as connection, connection:
         assert connection.execute("SELECT * FROM events").fetchall() == [
             ("original-event", "Exact original sidecar evidence")
         ]
@@ -337,7 +338,7 @@ def test_stage_scope_corruption_aborts_before_live_publication(publication, monk
     def damaged_stage(path):
         staged = original_stage(path)
         if path == publication.history:
-            with sqlite3.connect(staged) as connection:
+            with closing(sqlite3.connect(staged)) as connection, connection:
                 connection.execute("UPDATE messages SET text=text || ' changed stage evidence'")
         return staged
 
@@ -356,7 +357,7 @@ def test_live_source_drift_is_preserved_and_not_overwritten(publication, monkeyp
     def source_drift(path):
         original_sync(path)
         if not drifted:
-            with sqlite3.connect(publication.history) as connection:
+            with closing(sqlite3.connect(publication.history)) as connection, connection:
                 connection.execute("INSERT INTO archive_info VALUES('concurrent-writer','Retain this new evidence')")
             drifted["digest"] = _digest(publication.history)
 
@@ -366,7 +367,7 @@ def test_live_source_drift_is_preserved_and_not_overwritten(publication, monkeyp
     assert _digest(publication.history) == drifted["digest"]
     assert _messages(publication.history) == publication.original_messages
     assert _digest(publication.backup / publication.history.name) == publication.original_digest
-    with sqlite3.connect(publication.history) as connection:
+    with closing(sqlite3.connect(publication.history)) as connection, connection:
         assert connection.execute(
             "SELECT value FROM archive_info WHERE key='concurrent-writer'"
         ).fetchone()[0] == "Retain this new evidence"
@@ -399,7 +400,7 @@ def test_partial_publication_failure_restores_history_and_all_fresh_sidecar_pins
     assert failed
     assert _messages(publication.history) == publication.original_messages
     assert _digest(publication.backup / publication.history.name) == publication.original_digest
-    with sqlite3.connect(publication.history) as connection:
+    with closing(sqlite3.connect(publication.history)) as connection, connection:
         assert connection.execute("SELECT type FROM sqlite_master WHERE name='messages'").fetchone()[0] == "table"
     for name, (digest, original_info) in originals.items():
         assert _digest(publication.backup / name) == digest
