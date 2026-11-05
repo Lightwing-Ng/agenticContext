@@ -1,6 +1,6 @@
-"""Persistent local X cache catalog backed by typed Parquet rows."""
+"""Persistent typed local X catalogs with a SQLite catalog for the LLM root."""
 
-# Code version: v1.6.0-codex.0
+# Code version: v1.7.0-codex.0
 
 from __future__ import annotations
 
@@ -166,7 +166,8 @@ class LocalTweetCacheIndex:
     @classmethod
     def build(cls, output_dir: Path) -> "LocalTweetCacheIndex":
         """Load Parquet state and retire imported yt-dlp JSON sidecars."""
-        index = cls(output_dir=output_dir, catalog_path=output_dir / CATALOG_FILENAME)
+        filename = ".cache_catalog.sqlite3" if output_dir.name == "llm" else CATALOG_FILENAME
+        index = cls(output_dir=output_dir, catalog_path=output_dir / filename)
         if not output_dir.exists():
             return index
 

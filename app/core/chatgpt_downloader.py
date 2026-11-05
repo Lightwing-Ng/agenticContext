@@ -1,6 +1,6 @@
 """ChatGPT project image cache helpers."""
 
-# Code version: v1.52.6-codex.0
+# Code version: v1.53.0-codex.0
 
 from __future__ import annotations
 
@@ -56,9 +56,9 @@ from .resource_persistence import (
     CHATGPT_HISTORY_SCHEMA,
     CHATGPT_HISTORY_SCHEMA_VERSION,
     LEGACY_CHATGPT_CATALOG_FILENAME,
-    read_parquet_rows,
+    read_resource_rows,
     retire_legacy_file,
-    write_parquet_rows_atomic,
+    write_resource_rows_atomic,
 )
 from .safari_automation import SafariContext, inherit_safari_cache_context
 from .state import TaskSnapshot, TaskState, utc_now
@@ -269,7 +269,7 @@ class ChatGPTSyncResult:
 
 
 def chatgpt_history_path(local_store_root: Path | str = LOCAL_STORE_ROOT) -> Path:
-    """Return the typed Parquet file used for ChatGPT text history."""
+    """Return the typed history store used for ChatGPT text history."""
     return Path(local_store_root) / CHATGPT_HISTORY_RELATIVE_DIR / CHATGPT_HISTORY_FILENAME
 
 
@@ -287,7 +287,7 @@ def chatgpt_history_path_for_target(target_dir: Path) -> Path:
 
 def chatgpt_history_counts(local_store_root: Path | str = LOCAL_STORE_ROOT) -> dict[str, int]:
     """Read durable text counters without replacing the active media/task snapshot."""
-    rows = read_parquet_rows(chatgpt_history_path(local_store_root))
+    rows = read_resource_rows(chatgpt_history_path(local_store_root))
     if rows is None:
         rows = []
     return {
@@ -479,13 +479,13 @@ def _chatgpt_history_preservation_enabled(path: Path) -> bool:
 
 
 class ChatGPTHistoryStore:
-    """Merge complete ChatGPT sessions into one atomic Parquet file."""
+    """Merge complete ChatGPT sessions into one transactional history store."""
 
     def __init__(self, path: Path) -> None:
         self.path = path
-        rows = read_parquet_rows(path)
-        if path.exists() and rows is None:
-            raise RuntimeError(f"ChatGPT history Parquet is unreadable: {path}")
+        rows = read_resource_rows(path)
+        if (path.exists() or path.with_suffix(".parquet").exists()) and rows is None:
+            raise RuntimeError(f"ChatGPT history store is unreadable: {path}")
         if _chatgpt_history_preservation_enabled(path):
             keys = [str(row.get("message_key") or "") for row in rows or []]
             if any(not key for key in keys) or len(keys) != len(set(keys)):
@@ -582,7 +582,7 @@ class ChatGPTHistoryStore:
     def save(self) -> None:
         """Persist all cached ChatGPT messages with schema verification."""
         _chatgpt_history_preservation_enabled(self.path)
-        write_parquet_rows_atomic(
+        write_resource_rows_atomic(
             self.path,
             sort_history_rows(self._rows_by_key.values()),
             CHATGPT_HISTORY_SCHEMA,
@@ -885,7 +885,7 @@ class ChatGPTImageCatalog:
         catalog_path = target_dir / CHATGPT_CATALOG_FILENAME
         legacy_catalog_path = target_dir / LEGACY_CHATGPT_CATALOG_FILENAME
         entries: dict[str, ChatGPTCatalogEntry] = {}
-        rows = read_parquet_rows(catalog_path)
+        rows = read_resource_rows(catalog_path)
         migrated_legacy = False
         if rows is None and legacy_catalog_path.exists():
             try:
@@ -974,7 +974,7 @@ class ChatGPTImageCatalog:
     def save(self) -> None:
         """Write the current catalog to a typed, atomically replaced Parquet file."""
         with self._lock:
-            write_parquet_rows_atomic(
+            write_resource_rows_atomic(
                 self.catalog_path,
                 (
                     {

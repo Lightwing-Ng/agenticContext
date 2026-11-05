@@ -1,6 +1,6 @@
 """Verified native HTTP catalogs remain durable, lossless, and incomplete evidence."""
 
-# Code version: v1.0.0-codex.0
+# Code version: v1.1.0-codex.0
 
 import copy
 import gzip
@@ -9,7 +9,6 @@ import json
 from pathlib import Path
 
 import pyarrow as pa
-import pyarrow.parquet as pq
 import pytest
 
 from app.core.copilot_legacy_catalog import (
@@ -21,7 +20,7 @@ from app.core.copilot_legacy_catalog import (
     read_copilot_legacy_catalog,
     write_copilot_legacy_catalog,
 )
-from app.core.resource_persistence import write_parquet_rows_atomic
+from app.core.resource_persistence import write_resource_rows_atomic
 
 
 def _record(identity: str = "A" * 21, title: str = "Synthetic title", updated: str = "2026-10-21T01:00:00Z") -> dict:
@@ -105,7 +104,7 @@ def test_same_timestamp_title_conflict_and_unknown_time_are_explicit(tmp_path: P
     assert "message timestamp" in second["metadata_time_kind"]
 
 
-def test_reader_is_read_only_and_parquet_retains_truncation_detection_counts(tmp_path: Path) -> None:
+def test_reader_is_read_only_and_sqlite_retains_truncation_detection_counts(tmp_path: Path) -> None:
     root = tmp_path / "runtime"
     state = read_copilot_legacy_catalog(root)
     assert state["status"] == "missing" and state["sessions"] is None and not root.exists()
@@ -119,8 +118,23 @@ def test_reader_is_read_only_and_parquet_retains_truncation_detection_counts(tmp
     assert state["sessions"] == 3 and state["physical_records"] == 4
     assert state["catalog_complete"] is False
     assert (path.read_bytes(), path.stat().st_mtime_ns) == before
-    write_parquet_rows_atomic(path, catalog["conversations"][:-1], COPILOT_LEGACY_CATALOG_SCHEMA)
+    write_resource_rows_atomic(path, catalog["conversations"][:-1], COPILOT_LEGACY_CATALOG_SCHEMA)
     assert read_copilot_legacy_catalog(root)["status"] == "invalid"
+
+
+def test_legacy_parquet_catalog_remains_readable_without_creating_sqlite(tmp_path: Path) -> None:
+    root = tmp_path / "runtime"
+    catalog = _build(tmp_path / "evidence")
+    path = copilot_legacy_catalog_path(root)
+    legacy = path.with_suffix(".parquet")
+    write_resource_rows_atomic(legacy, catalog["conversations"], COPILOT_LEGACY_CATALOG_SCHEMA)
+    original = legacy.read_bytes()
+
+    state = read_copilot_legacy_catalog(root)
+
+    assert state["status"] == "valid" and state["sessions"] == 3
+    assert not path.exists()
+    assert legacy.read_bytes() == original
 
 
 @pytest.mark.parametrize("kind", ["empty", "wrong-schema", "bad-bytes", "broken-symlink", "duplicate-id", "bad-observations", "deep-observations", "claims-complete", "wrong-source-id"])
@@ -131,11 +145,11 @@ def test_present_invalid_catalog_never_becomes_an_empty_valid_directory(tmp_path
     path = copilot_legacy_catalog_path(root)
     path.parent.mkdir(parents=True)
     if kind == "broken-symlink":
-        path.symlink_to(path.parent / "missing.parquet")
+        path.symlink_to(path.parent / "missing.sqlite3")
     elif kind == "bad-bytes":
-        path.write_bytes(b"Synthetic damaged parquet.")
+        path.write_bytes(b"Synthetic damaged database.")
     elif kind == "wrong-schema":
-        pq.write_table(pa.table({"id": ["synthetic"]}), path)
+        write_resource_rows_atomic(path, [{"id": "synthetic"}], pa.schema([pa.field("id", pa.string())]))
     else:
         if kind == "empty":
             rows = []
@@ -151,7 +165,7 @@ def test_present_invalid_catalog_never_becomes_an_empty_valid_directory(tmp_path
             observations = json.loads(rows[0]["observations_json"])
             observations[0]["record"]["id"] = "Different"
             rows[0]["observations_json"] = json.dumps(observations)
-        write_parquet_rows_atomic(path, rows, COPILOT_LEGACY_CATALOG_SCHEMA)
+        write_resource_rows_atomic(path, rows, COPILOT_LEGACY_CATALOG_SCHEMA)
     before = path.read_bytes() if kind != "broken-symlink" else None
     state = read_copilot_legacy_catalog(root)
     assert state["status"] == "invalid" and state["present"] is True

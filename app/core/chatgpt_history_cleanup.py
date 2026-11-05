@@ -4,7 +4,7 @@ Repairs also render stored interactive-message tokens as Markdown, using the sam
 as the synchronization path, so existing rows match newly cached rows.
 """
 
-# Code version: v1.3.0-claude.0
+# Code version: v1.4.0-codex.0
 
 from __future__ import annotations
 
@@ -20,7 +20,12 @@ from pathlib import Path
 from .chatgpt_markdown import normalize_chatgpt_markdown
 from .config import LOCAL_STORE_ROOT
 from .job_lock import CACHE_TASK_LOCK_NAME, CacheMaintenanceLock, CacheTaskLock
-from .resource_persistence import CHATGPT_HISTORY_SCHEMA, read_parquet_rows, write_parquet_rows_atomic
+from .resource_persistence import (
+    CHATGPT_HISTORY_FILENAME,
+    CHATGPT_HISTORY_SCHEMA,
+    read_resource_rows,
+    write_resource_rows_atomic,
+)
 
 
 def _is_web_tool_trace(text: str) -> bool:
@@ -117,22 +122,23 @@ def clean_history(root: Path, reviewed_ids: set[str], apply: bool = False) -> di
     if not lock.acquire("chatgpt-history-cleanup"):
         raise RuntimeError("A cache task is running; history was not modified.")
     try:
-        path = root / "llm" / "chatgpt" / "history.parquet"
-        original = path.read_bytes()
-        rows = read_parquet_rows(path)
+        path = root / "llm" / "chatgpt" / CHATGPT_HISTORY_FILENAME
+        source_path = path if path.exists() else path.with_suffix(".parquet")
+        original = source_path.read_bytes()
+        rows = read_resource_rows(path)
         if rows is None:
             raise RuntimeError("ChatGPT history is unreadable; history was not modified.")
         kept, removed = plan_history_cleanup(rows, reviewed_ids)
         result = {"before": len(rows), "after": len(kept), "removed": len(removed), "applied": False}
         if apply and removed:
-            if path.read_bytes() != original:
+            if (path if path.exists() else path.with_suffix(".parquet")).read_bytes() != original:
                 raise RuntimeError("History changed during review; history was not modified.")
             backup_dir = root / "recovery" / ("chatgpt-history-" + datetime.now(UTC).strftime("%Y%m%dT%H%M%S%fZ"))
             backup_dir.mkdir(parents=True, exist_ok=False)
-            backup = backup_dir / "history.parquet"
+            backup = backup_dir / source_path.name
             backup.write_bytes(original)
             (backup_dir / "cleanup.json").write_text(json.dumps({**result, "rows": removed}, indent=2))
-            write_parquet_rows_atomic(path, kept, CHATGPT_HISTORY_SCHEMA)
+            write_resource_rows_atomic(path, kept, CHATGPT_HISTORY_SCHEMA)
             result.update(applied=True, backup=str(backup))
         return result
     finally:
@@ -171,21 +177,22 @@ def normalize_history_markdown(root: Path, apply: bool = False) -> dict:
     if not lock.acquire("chatgpt-history-markdown"):
         raise RuntimeError("A cache task is running; history was not modified.")
     try:
-        path = root / "llm" / "chatgpt" / "history.parquet"
-        original = path.read_bytes()
-        rows = read_parquet_rows(path)
+        path = root / "llm" / "chatgpt" / CHATGPT_HISTORY_FILENAME
+        source_path = path if path.exists() else path.with_suffix(".parquet")
+        original = source_path.read_bytes()
+        rows = read_resource_rows(path)
         if rows is None:
             raise RuntimeError("ChatGPT history is unreadable; history was not modified.")
         normalized, changed = plan_markdown_normalization(rows)
         result = {"before": len(rows), "after": len(normalized), "changed": len(changed), "applied": False}
         if apply and changed:
-            if path.read_bytes() != original:
+            if (path if path.exists() else path.with_suffix(".parquet")).read_bytes() != original:
                 raise RuntimeError("History changed during review; history was not modified.")
             backup_dir = root / "recovery" / ("chatgpt-markdown-" + datetime.now(UTC).strftime("%Y%m%dT%H%M%S%fZ"))
             backup_dir.mkdir(parents=True, exist_ok=False)
-            backup = backup_dir / "history.parquet"
+            backup = backup_dir / source_path.name
             backup.write_bytes(original)
-            write_parquet_rows_atomic(path, normalized, CHATGPT_HISTORY_SCHEMA)
+            write_resource_rows_atomic(path, normalized, CHATGPT_HISTORY_SCHEMA)
             # The manifest is written after the replacement so it records the outcome that happened.
             result.update(applied=True, backup=str(backup))
             (backup_dir / "normalization.json").write_text(json.dumps({**result, "rows": changed}, indent=2))

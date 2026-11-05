@@ -1,6 +1,6 @@
 """Regression coverage for independent Grok Chat and local Grok Build resources."""
 
-# Code version: v1.0.0-codex.0
+# Code version: v1.1.0-codex.0
 
 from pathlib import Path
 from unittest.mock import patch
@@ -50,12 +50,12 @@ def _row(source: str, session: str, text: str, *, index: int = 0, role: str = "u
 def history_root(tmp_path: Path) -> Path:
     """Persist fixture messages exclusively under pytest's disposable directory."""
     write_parquet_rows_atomic(
-        tmp_path / "llm/grok/history.parquet",
+        tmp_path / "llm/grok/history.sqlite3",
         [_row("grok", "shared-id", "A separate web-only prompt.")],
         GROK_HISTORY_SCHEMA,
     )
     write_parquet_rows_atomic(
-        tmp_path / "llm/grok_build/history.parquet",
+        tmp_path / "llm/grok_build/history.sqlite3",
         [
             _row("grok_build", "shared-id", "Explain the local parser."),
             _row("grok_build", "shared-id", "The parser reads local text.", index=1, role="assistant"),
@@ -111,7 +111,7 @@ def test_web_and_local_sessions_remain_separate_with_matching_ids(history_root: 
     assert all(item.source == "grok_build" for item in local.sessions)
     assert all(item.conversation_url == "" for item in local.sessions)
     assert web.sessions[0].conversation_url == "https://grok.com/c/shared-id"
-    assert chat_history_path(history_root, "grok_build") == history_root / "llm/grok_build/history.parquet"
+    assert chat_history_path(history_root, "grok_build") == history_root / "llm/grok_build/history.sqlite3"
 
 
 def test_grok_build_detail_keeps_source_times_search_and_navigation(history_root: Path) -> None:

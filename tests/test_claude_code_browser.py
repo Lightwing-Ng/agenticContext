@@ -1,6 +1,6 @@
 """Regression tests for separate local Claude Code and Claude Chat resources."""
 
-# Code version: v1.0.0-codex.0
+# Code version: v1.1.0-codex.0
 
 from pathlib import Path
 
@@ -46,12 +46,12 @@ def _row(source: str, session: str, text: str, *, index: int = 0, role: str = "u
 @pytest.fixture
 def history_root(tmp_path: Path) -> Path:
     write_parquet_rows_atomic(
-        tmp_path / "llm/claude/history.parquet",
+        tmp_path / "llm/claude/history.sqlite3",
         [_row("claude", "shared-id", "A separate web-only prompt.")],
         CLAUDE_HISTORY_SCHEMA,
     )
     write_parquet_rows_atomic(
-        tmp_path / "llm/claude_code/history.parquet",
+        tmp_path / "llm/claude_code/history.sqlite3",
         [
             _row("claude_code", "shared-id", "Explain the local parser."),
             _row("claude_code", "shared-id", "The parser reads local text.", index=1, role="assistant"),
@@ -91,7 +91,7 @@ def test_code_and_web_sessions_remain_separate_with_shared_ids(history_root: Pat
     assert all(item.source == "claude_code" for item in code.sessions)
     assert all(item.conversation_url == "" for item in code.sessions)
     assert web.sessions[0].conversation_url == "https://claude.ai/chat/shared-id"
-    assert chat_history_path(history_root, "claude_code") == history_root / "llm/claude_code/history.parquet"
+    assert chat_history_path(history_root, "claude_code") == history_root / "llm/claude_code/history.sqlite3"
 
 
 def test_code_history_keeps_source_times_and_session_navigation(history_root: Path) -> None:

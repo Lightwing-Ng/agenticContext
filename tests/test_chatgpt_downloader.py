@@ -1,6 +1,6 @@
 """Focused tests for ChatGPT project image caching."""
 
-# Code version: v1.44.3-codex.0
+# Code version: v1.45.0-codex.0
 
 from __future__ import annotations
 
@@ -175,7 +175,7 @@ def test_chatgpt_history_refilters_legacy_rows_even_with_matching_revision(
         }}
         for key, role in (("user", "user"), ("progress", "assistant"), ("final", "assistant"))
     }}
-    store = ChatGPTHistoryStore(tmp_path / "history.parquet")
+    store = ChatGPTHistoryStore(tmp_path / "history.sqlite3")
     store.replace_conversation(url, payload, "2026-09-07T00:00:00Z", provider_revision="unchanged")
     store.save()
     legacy_rows = read_parquet_rows(store.path)
@@ -248,7 +248,7 @@ def test_chatgpt_history_cache_persists_visible_user_and_assistant_messages(tmp_
         "2026-02-14T09:05:00Z",
     ]
 
-    history_store = ChatGPTHistoryStore(tmp_path / "llm" / "chatgpt" / "history.parquet")
+    history_store = ChatGPTHistoryStore(tmp_path / "llm" / "chatgpt" / "history.sqlite3")
     with patch(
         "app.core.chatgpt_downloader._get_chatgpt_api_json_via_page",
         return_value=payload,
@@ -279,7 +279,7 @@ def test_chatgpt_history_cache_persists_visible_user_and_assistant_messages(tmp_
 
 def test_chatgpt_history_cache_skips_only_matching_revisions(tmp_path: Path) -> None:
     conversation_url = "https://chatgpt.com/c/session-already-cached"
-    history_store = ChatGPTHistoryStore(tmp_path / "llm" / "chatgpt" / "history.parquet")
+    history_store = ChatGPTHistoryStore(tmp_path / "llm" / "chatgpt" / "history.sqlite3")
     history_store.replace_conversation(
         conversation_url,
         {
@@ -341,7 +341,7 @@ def test_chatgpt_history_cache_refreshes_legacy_capture_times(tmp_path: Path) ->
             }
         }
     }
-    history_store = ChatGPTHistoryStore(tmp_path / "llm" / "chatgpt" / "history.parquet")
+    history_store = ChatGPTHistoryStore(tmp_path / "llm" / "chatgpt" / "history.sqlite3")
     history_store.replace_conversation(conversation_url, legacy_payload, captured_at)
     history_store.save()
 
@@ -368,7 +368,7 @@ def test_chatgpt_history_cache_refreshes_legacy_capture_times(tmp_path: Path) ->
 
 def test_chatgpt_history_cache_refreshes_rows_without_source_timestamps(tmp_path: Path) -> None:
     conversation_url = "https://chatgpt.com/c/session-missing-time"
-    history_path = tmp_path / "llm" / "chatgpt" / "history.parquet"
+    history_path = tmp_path / "llm" / "chatgpt" / "history.sqlite3"
     write_parquet_rows_atomic(
         history_path,
         [
@@ -4263,7 +4263,7 @@ def test_chatgpt_default_runtime_history_root_and_reset(tmp_path: Path) -> None:
     from app.core.chatgpt_downloader import chatgpt_history_counts
 
     target = tmp_path / "local_store" / "media" / "chatgpt" / "demo"
-    history = tmp_path / "local_store" / "llm" / "chatgpt" / "history.parquet"
+    history = tmp_path / "local_store" / "llm" / "chatgpt" / "history.sqlite3"
     store = ChatGPTHistoryStore(history)
     store.replace_conversation("https://chatgpt.com/c/demo", {
         "mapping": {"user": {"message": {
@@ -4289,7 +4289,7 @@ def test_chatgpt_history_refreshes_changed_or_unknown_revision(tmp_path: Path, r
         "author": {"role": "user"}, "create_time": 1771059600,
         "content": {"parts": ["Original"]},
     }}}}
-    store = ChatGPTHistoryStore(tmp_path / "history.parquet")
+    store = ChatGPTHistoryStore(tmp_path / "history.sqlite3")
     store.replace_conversation(url, payload, "2026-09-05T00:00:00Z", provider_revision="old-revision")
     store.save()
     payload["mapping"]["assistant"] = {"message": {
@@ -4340,7 +4340,7 @@ def test_chatgpt_discovery_records_provider_update_time() -> None:
 @pytest.mark.parametrize("attempted_failures", [0, 1])
 def test_stopped_text_sync_counts_only_attempted_failures(tmp_path: Path, attempted_failures: int) -> None:
     state = TaskState("test")
-    store = ChatGPTHistoryStore(tmp_path / "history.parquet")
+    store = ChatGPTHistoryStore(tmp_path / "history.sqlite3")
     stops = iter([False] * attempted_failures + [True])
     with patch(
         "app.core.chatgpt_downloader._get_chatgpt_api_json_via_page",
@@ -4377,7 +4377,7 @@ def test_chatgpt_text_history_cools_down_through_browser_rate_limit_then_paces(
             return self.results.pop(0)
 
     state = TaskState("test")
-    store = ChatGPTHistoryStore(tmp_path / "history.parquet")
+    store = ChatGPTHistoryStore(tmp_path / "history.sqlite3")
     with patch("app.core.chatgpt_downloader.wait_for_cache_scan", return_value=False) as wait:
         result = cache_chatgpt_conversation_history(
             store, ["https://chatgpt.com/c/first", "https://chatgpt.com/c/second"],
@@ -4397,7 +4397,7 @@ def test_chatgpt_text_history_defers_only_after_every_cooldown(
     tmp_path: Path, stop_during_cooldown: bool,
 ) -> None:
     state = TaskState("test")
-    store = ChatGPTHistoryStore(tmp_path / "history.parquet")
+    store = ChatGPTHistoryStore(tmp_path / "history.sqlite3")
     with (
         patch(
             "app.core.chatgpt_downloader._get_chatgpt_api_json_via_page",

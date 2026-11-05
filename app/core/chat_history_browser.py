@@ -1,6 +1,6 @@
 """Read cached text sessions for the local browser."""
 
-# Code version: v1.29.0-codex.0
+# Code version: v1.31.1-codex.0
 
 from __future__ import annotations
 
@@ -30,7 +30,7 @@ from .resource_persistence import (
     GROK_HISTORY_FILENAME,
     X_HISTORY_FILENAME,
     ZHIHU_HISTORY_FILENAME,
-    read_parquet_rows,
+    read_resource_rows,
 )
 from .zhihu_answers import normalize_zhihu_rich_text
 
@@ -320,13 +320,12 @@ def _message_from_row(row: dict[str, Any], source: str) -> ChatHistoryMessage | 
     )
 
 
-def load_chat_history_messages(
-    local_store_root: Path | str,
-    source: str = "all",
-) -> tuple[ChatHistoryMessage, ...]:
-    """Load all valid cached messages for one source without paging them."""
+def _chat_history_source_paths(
+    local_store_root: Path | str, source: str,
+) -> tuple[tuple[str, Path], ...]:
+    """Keep legacy scans and indexed overview source ordering identical."""
     normalized_source = normalize_chat_history_source(source)
-    source_paths = (
+    return (
         ((normalized_source, chat_history_path(local_store_root, normalized_source)),)
         if normalized_source != "all"
         else (
@@ -343,10 +342,17 @@ def load_chat_history_messages(
             *((source, chat_history_path(local_store_root, source)) for source in OPENCLAW_SOURCE_LABELS),
         )
     )
+
+
+def load_chat_history_messages(
+    local_store_root: Path | str,
+    source: str = "all",
+) -> tuple[ChatHistoryMessage, ...]:
+    """Load all valid cached messages for one source without paging them."""
     messages = tuple(
         item
-        for row_source, path in source_paths
-        for row in (read_parquet_rows(path) or [])
+        for row_source, path in _chat_history_source_paths(local_store_root, source)
+        for row in (read_resource_rows(path) or [])
         if (item := _message_from_row(row, row_source)) is not None
     )
     return _refresh_session_metadata(local_store_root, messages)
@@ -357,11 +363,13 @@ def _refresh_session_metadata(
 ) -> tuple[ChatHistoryMessage, ...]:
     """Overlay newer discovery metadata without fetching or duplicating message bodies."""
     history_path = chat_history_path(local_store_root, "chatgpt")
+    if not history_path.is_file() and history_path.suffix == ".sqlite3":
+        history_path = history_path.with_suffix(".parquet")
     if not history_path.is_file() or not any(item.source == "chatgpt" for item in messages):
         return messages
     history_updated = history_path.stat().st_mtime
     metadata: dict[str, tuple[float, str, str]] = {}
-    for row in read_parquet_rows(agent_source_cache_path(local_store_root)) or []:
+    for row in read_resource_rows(agent_source_cache_path(local_store_root)) or []:
         observed = _timestamp_value(str(row.get("cached_at") or ""))
         if row.get("platform") != "chatgpt" or observed < history_updated:
             continue
@@ -414,10 +422,24 @@ def find_chat_history_message(
         or not normalized_message_key
     ):
         return None
+    history_path = chat_history_path(local_store_root, normalized_source)
+    if history_path.suffix == ".sqlite3" and history_path.is_file():
+        from .llm_sqlite import read_sqlite_rows
+
+        rows = read_sqlite_rows(history_path, conversation_id=normalized_conversation_id)
+        messages = _refresh_session_metadata(
+            local_store_root,
+            tuple(
+                message for row in rows
+                if (message := _message_from_row(row, normalized_source)) is not None
+            ),
+        )
+    else:
+        messages = load_chat_history_messages(local_store_root, normalized_source)
     return next(
         (
             message
-            for message in load_chat_history_messages(local_store_root, normalized_source)
+            for message in messages
             if message.conversation_id == normalized_conversation_id
             and message.message_key == normalized_message_key
         ),
@@ -623,7 +645,7 @@ def count_cached_projects(local_store_root: Path | str, source: str = "all") -> 
     """
     selected_source = normalize_chat_history_source(source)
     latest: dict[str, tuple[float, list[Any]]] = {}
-    for row in read_parquet_rows(agent_source_cache_path(local_store_root)) or []:
+    for row in read_resource_rows(agent_source_cache_path(local_store_root)) or []:
         platform = str(row.get("platform") or "").lower()
         if platform not in CHAT_HISTORY_SOURCE_VALUES or platform == "all":
             continue
@@ -734,7 +756,7 @@ def _cached_chatgpt_project_filter(
                 _timestamp_value(message.last_seen_at),
             )
             record_membership(conversation_id, project_key, observed)
-    for row in read_parquet_rows(agent_source_cache_path(local_store_root)) or []:
+    for row in read_resource_rows(agent_source_cache_path(local_store_root)) or []:
         if str(row.get("platform") or "").lower() != "chatgpt":
             continue
         try:
@@ -812,6 +834,261 @@ def _cached_chatgpt_project_filter(
     }
 
 
+def _indexed_session_message(session: ChatHistorySession) -> ChatHistoryMessage:
+    """Represent summary metadata without loading its conversation body."""
+    return ChatHistoryMessage(
+        stable_id=session.stable_id,
+        source=session.source,
+        conversation_id=session.conversation_id,
+        conversation_url=session.conversation_url,
+        conversation_title=session.conversation_title,
+        message_key="",
+        message_index=0,
+        role=session.latest_role,
+        author_label=session.latest_author_label,
+        content_text="",
+        content_html="",
+        source_links=session.source_links,
+        model_label=session.model_label,
+        first_seen_at=session.first_seen_at,
+        last_seen_at=session.last_seen_at,
+    )
+
+
+def _query_indexed_history(
+    local_store_root: Path | str,
+    *,
+    source: str,
+    sort: str,
+    page: object,
+    page_size: int,
+    session_view: bool,
+    session: str,
+    project: str,
+    project_count: int,
+) -> ChatHistoryPage | None:
+    """Page summaries and decode only displayed SQLite conversations.
+
+    Search and Zhihu's author hierarchy keep their established full projection.
+    Returning None selects that implementation for an older or missing index.
+    """
+    from .llm_sqlite import read_sqlite_conversations, read_sqlite_summaries
+
+    summaries = []
+    paths = dict(_chat_history_source_paths(local_store_root, source))
+
+    def file_identity(path: Path) -> tuple[int, int, int, int] | None:
+        try:
+            status = path.stat()
+        except FileNotFoundError:
+            return None
+        return status.st_ino, status.st_size, status.st_mtime_ns, status.st_ctime_ns
+
+    initial_identities = {path: file_identity(path) for path in paths.values()}
+
+    def unchanged_snapshot() -> bool:
+        return all(
+            file_identity(path) == identity
+            for path, identity in initial_identities.items()
+        )
+
+    for path in paths.values():
+        if path.suffix != ".sqlite3":
+            return None
+        if not path.is_file():
+            if path.with_suffix(".parquet").is_file():
+                return None
+            continue
+        stored_summaries = read_sqlite_summaries(path)
+        if stored_summaries is None:
+            return None
+        summaries.extend(stored_summaries)
+    all_sessions: list[ChatHistorySession] = []
+    project_messages: list[ChatHistoryMessage] = []
+    for summary in summaries:
+        if summary is None:
+            continue
+        data = summary["session"]
+        indexed_session = ChatHistorySession(
+            **{**data, "source_links": tuple(data["source_links"]), "media_refs": ()},
+        )
+        all_sessions.append(indexed_session)
+        representative = _indexed_session_message(indexed_session)
+        for observation in summary.get("project_observations", ()):
+            project_messages.append(replace(
+                representative,
+                conversation_url=observation["url"],
+                first_seen_at=observation["first_seen_at"],
+                last_seen_at=observation["last_seen_at"],
+            ))
+    refreshed = _refresh_session_metadata(
+        local_store_root, tuple(_indexed_session_message(item) for item in all_sessions),
+    )
+    all_sessions = [
+        replace(
+            item, conversation_title=metadata.conversation_title,
+            conversation_url=metadata.conversation_url,
+        )
+        for item, metadata in zip(all_sessions, refreshed, strict=True)
+    ]
+    project_options: tuple[ChatHistoryProjectOption, ...] = ()
+    selected_project = ""
+    if source == "chatgpt":
+        project_options, membership = _cached_chatgpt_project_filter(
+            local_store_root,
+            _refresh_session_metadata(local_store_root, tuple(project_messages)),
+        )
+        requested_project = str(project or "").replace("\x00", "").strip()[:240]
+        selected_project = _chatgpt_project_key(requested_project) or requested_project
+        if selected_project:
+            known_project = selected_project == CHATGPT_NO_PROJECT_FILTER or any(
+                item.key == selected_project for item in project_options
+            )
+            if not known_project:
+                project_options += (
+                    ChatHistoryProjectOption(selected_project, "Unavailable project"),
+                )
+            all_sessions = [
+                item for item in all_sessions
+                if known_project and membership.get(item.conversation_id) == selected_project
+            ]
+    ordered_sessions = _sort_chat_history_sessions(all_sessions, sort)
+    requested_session = str(session or "").strip()[:160]
+    selected_index = next(
+        (
+            index for index, item in enumerate(ordered_sessions)
+            if requested_session and (
+                item.stable_id == requested_session
+                or f"{item.source}:{item.conversation_id}" == requested_session
+            )
+        ),
+        -1,
+    )
+    if selected_index < 0 and not session_view:
+        return None
+    if selected_index >= 0 and ordered_sessions[selected_index].source == "zhihu":
+        return None
+
+    safe_page_size = max(1, int(page_size))
+    try:
+        requested_page = max(1, int(page))
+    except (TypeError, ValueError):
+        requested_page = 1
+
+    def load_conversations(sessions: tuple[ChatHistorySession, ...]) -> tuple[ChatHistoryMessage, ...]:
+        conversations: dict[str, list[str]] = {}
+        for item in sessions:
+            conversations.setdefault(item.source, []).append(item.conversation_id)
+        messages = tuple(
+            message
+            for row_source, identities in conversations.items()
+            for row in read_sqlite_conversations(paths[row_source], identities)
+            if (message := _message_from_row(row, row_source)) is not None
+        )
+        return _refresh_session_metadata(local_store_root, messages)
+
+    def hydrate_sessions(
+        sessions: tuple[ChatHistorySession, ...],
+        messages: tuple[ChatHistoryMessage, ...],
+    ) -> tuple[ChatHistorySession, ...] | None:
+        hydrated = {
+            (item.source, item.conversation_id): item
+            for item in _build_chat_history_sessions(messages)
+        }
+        if any((item.source, item.conversation_id) not in hydrated for item in sessions):
+            return None
+        return tuple(hydrated[item.source, item.conversation_id] for item in sessions)
+
+    if selected_index >= 0:
+        selected = ordered_sessions[selected_index]
+        neighbors = ordered_sessions[
+            max(0, selected_index - 1) : selected_index + 2
+        ]
+        loaded_messages = load_conversations(neighbors)
+        hydrated_neighbors = hydrate_sessions(neighbors, loaded_messages)
+        if hydrated_neighbors is None:
+            return None
+        hydrated = {item.stable_id: item for item in hydrated_neighbors}
+        selected = hydrated[selected.stable_id]
+        messages = tuple(sorted(
+            (
+                item for item in loaded_messages
+                if _message_belongs_to_session(item, selected)
+            ),
+            key=lambda item: (
+                item.message_index, _timestamp_value(item.last_seen_at), item.stable_id,
+            ),
+        ))
+        total_pages = max(1, (len(messages) + safe_page_size - 1) // safe_page_size)
+        current_page = min(total_pages, requested_page)
+        start = (current_page - 1) * safe_page_size
+        if not unchanged_snapshot():
+            return None
+        return ChatHistoryPage(
+            items=messages[start : start + safe_page_size],
+            total_count=len(messages),
+            conversation_count=1,
+            current_page=current_page,
+            total_pages=total_pages,
+            page_size=safe_page_size,
+            session_view=True,
+            sessions=(selected,),
+            session_id=selected.stable_id,
+            current_session=selected,
+            previous_session=(
+                hydrated[ordered_sessions[selected_index - 1].stable_id]
+                if selected_index > 0 else None
+            ),
+            next_session=(
+                hydrated[ordered_sessions[selected_index + 1].stable_id]
+                if selected_index + 1 < len(ordered_sessions) else None
+            ),
+            project_count=project_count,
+            project_options=project_options,
+            selected_project=selected_project,
+        )
+    total_pages = max(1, (len(ordered_sessions) + safe_page_size - 1) // safe_page_size)
+    current_page = min(total_pages, requested_page)
+    start = (current_page - 1) * safe_page_size
+    page_sessions = ordered_sessions[start : start + safe_page_size]
+    loaded_messages = load_conversations(page_sessions)
+    hydrated_page = hydrate_sessions(page_sessions, loaded_messages)
+    if hydrated_page is None:
+        return None
+    page_sessions = hydrated_page
+    selected_answerers = {
+        (item.latest_author_label, item.conversation_url)
+        for item in page_sessions if item.source == "zhihu"
+    }
+    messages = tuple(sorted(
+        (
+            item for item in loaded_messages
+            if item.source != "zhihu" or (
+                item.author_label, _zhihu_profile_url((item,)),
+            ) in selected_answerers
+        ),
+        key=lambda item: (
+            item.source, item.conversation_id, item.message_index,
+            _timestamp_value(item.last_seen_at), item.stable_id,
+        ),
+    ))
+    if not unchanged_snapshot():
+        return None
+    return ChatHistoryPage(
+        items=messages,
+        total_count=sum(item.message_count for item in ordered_sessions),
+        conversation_count=len(ordered_sessions),
+        current_page=current_page,
+        total_pages=total_pages,
+        page_size=safe_page_size,
+        session_view=True,
+        sessions=page_sessions,
+        project_count=project_count,
+        project_options=project_options,
+        selected_project=selected_project,
+    )
+
+
 def query_chat_history(
     local_store_root: Path | str,
     *,
@@ -841,6 +1118,24 @@ def query_chat_history(
     project_count = 0 if normalized_source == "zhihu" else count_cached_projects(
         local_store_root, normalized_source,
     )
+    if (
+        normalized_source != "zhihu"
+        and not query_terms
+        and (session_view or str(session or "").strip())
+    ):
+        indexed = _query_indexed_history(
+            local_store_root,
+            source=normalized_source,
+            sort=sort,
+            page=page,
+            page_size=page_size,
+            session_view=session_view,
+            session=session,
+            project=project,
+            project_count=project_count,
+        )
+        if indexed is not None:
+            return indexed
     all_messages = load_chat_history_messages(local_store_root, normalized_source)
     project_options: tuple[ChatHistoryProjectOption, ...] = ()
     selected_project = ""

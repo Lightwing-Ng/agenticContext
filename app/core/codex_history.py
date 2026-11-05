@@ -1,6 +1,6 @@
 """Cache visible local Codex conversations without changing their source files.
 
-Code version: v1.0.1-codex.0
+Code version: v1.1.0-codex.0
 """
 
 from __future__ import annotations
@@ -20,12 +20,12 @@ import pyarrow as pa
 from .history_rows import history_rows_match, sort_history_rows
 from .resource_persistence import (
     CLAUDE_HISTORY_SCHEMA,
-    read_parquet_rows,
-    write_parquet_rows_atomic,
+    read_resource_rows,
+    write_resource_rows_atomic,
 )
 
 
-CODEX_HISTORY_FILENAME = "history.parquet"
+CODEX_HISTORY_FILENAME = "history.sqlite3"
 CODEX_HISTORY_SCHEMA_VERSION = 1
 CODEX_HISTORY_SCHEMA = pa.schema([
     *CLAUDE_HISTORY_SCHEMA,
@@ -347,9 +347,9 @@ def import_codex_history(
     source = Path(source_directory).expanduser().absolute()
     files, directories, home = _source_files(source)
     cache_path = codex_history_path(local_store_root)
-    previous_rows = read_parquet_rows(cache_path)
-    if cache_path.exists() and previous_rows is None:
-        raise RuntimeError(f"Codex history Parquet is unreadable: {cache_path}")
+    previous_rows = read_resource_rows(cache_path)
+    if (cache_path.exists() or cache_path.with_suffix(".parquet").exists()) and previous_rows is None:
+        raise RuntimeError(f"Codex history store is unreadable: {cache_path}")
     previous = {row["message_key"]: row for row in previous_rows or [] if row.get("message_key")}
     for row in previous.values():
         row.setdefault("source_file", "")
@@ -443,6 +443,6 @@ def import_codex_history(
             break
     update_totals()
     if apply and result["added_or_changed"]:
-        write_parquet_rows_atomic(cache_path, sort_history_rows(rows.values()), CODEX_HISTORY_SCHEMA)
+        write_resource_rows_atomic(cache_path, sort_history_rows(rows.values()), CODEX_HISTORY_SCHEMA)
         result["applied"] = True
     return result

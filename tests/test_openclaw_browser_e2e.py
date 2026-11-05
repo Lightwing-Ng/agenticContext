@@ -1,6 +1,6 @@
 """Disposable Chromium navigation for provider-separated OpenClaw archives.
 
-Code version: v1.0.1-codex.0
+Code version: v1.1.0-codex.0
 """
 
 from collections.abc import Iterator
@@ -36,7 +36,7 @@ def openclaw_browser_server(tmp_path_factory: pytest.TempPathFactory) -> Iterato
         ("doubao_openclaw", "Doubao"),
     ):
         write_parquet_rows_atomic(
-            root / "llm" / source / "history.parquet",
+            root / "llm" / source / "history.sqlite3",
             [{
                 "schema_version": 1, "platform": source,
                 "conversation_id": "synthetic-session", "conversation_url": "",

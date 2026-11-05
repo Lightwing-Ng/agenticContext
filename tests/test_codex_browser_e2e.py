@@ -1,4 +1,6 @@
-"""Isolated Codex cache and Local resources navigation. Code version: v1.0.0-codex.0."""
+"""Isolated Codex cache and Local resources navigation."""
+
+# Code version: v1.1.1-codex.0
 
 from collections.abc import Iterator
 from threading import Thread
@@ -30,7 +32,7 @@ def codex_browser_server(tmp_path_factory: pytest.TempPathFactory) -> Iterator[d
     (source_folder / "sessions").mkdir(parents=True)
     for source, text in (("chatgpt", "The web chat prompt."), ("codex", "Review the local parser.")):
         write_parquet_rows_atomic(
-            root / "llm" / source / "history.parquet",
+            root / "llm" / source / "history.sqlite3",
             [_row(source, "shared-id", text)],
             CHATGPT_HISTORY_SCHEMA,
         )

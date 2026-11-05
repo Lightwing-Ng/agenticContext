@@ -1,6 +1,6 @@
 """Focused tests for browser-rendered Claude history caching.
 
-Code version: v1.3.1-codex.0
+Code version: v1.4.0-codex.0
 """
 
 from pathlib import Path
@@ -84,7 +84,7 @@ def test_claude_store_round_trip_preserves_first_seen_metadata(tmp_path: Path) -
         "Rendered Claude chat",
     )
     messages = extract_claude_conversation_messages(_RenderedClaudePage(), conversation)
-    store = ClaudeHistoryStore(tmp_path / "llm" / "claude" / "history.parquet")
+    store = ClaudeHistoryStore(tmp_path / "llm" / "claude" / "history.sqlite3")
 
     first = store.replace_conversation(conversation, messages, "2026-09-03T01:01:00Z")
     store.save()
@@ -114,7 +114,7 @@ def test_claude_urls_use_the_shared_conversation_contract() -> None:
 
 
 def test_claude_store_rejects_sessions_without_rendered_messages(tmp_path: Path) -> None:
-    store = ClaudeHistoryStore(tmp_path / "history.parquet")
+    store = ClaudeHistoryStore(tmp_path / "history.sqlite3")
     conversation = ClaudeConversationLink("chat-1", "https://claude.ai/chat/chat-1", "Empty")
 
     with pytest.raises(ClaudeNoCacheableMessagesError):
@@ -190,7 +190,7 @@ def test_claude_safari_sync_caches_rendered_text_in_owned_context(
     assert result["sessions"] == 1
     assert result["messages"] == 2
     assert result["failed"] == 0
-    assert ClaudeHistoryStore(tmp_path / "llm" / "claude" / "history.parquet").cached_messages == 2
+    assert ClaudeHistoryStore(tmp_path / "llm" / "claude" / "history.sqlite3").cached_messages == 2
 
 
 def test_claude_history_service_reports_partial_sync_as_incomplete(tmp_path: Path) -> None:
@@ -221,7 +221,7 @@ def test_claude_history_service_reports_partial_sync_as_incomplete(tmp_path: Pat
 
 
 def test_claude_text_sync_stop_during_discovery_preserves_cached_history(tmp_path: Path) -> None:
-    history_path = tmp_path / "llm/claude/history.parquet"
+    history_path = tmp_path / "llm/claude/history.sqlite3"
     store = ClaudeHistoryStore(history_path)
     conversation = ClaudeConversationLink("chat-1", "https://claude.ai/chat/chat-1", "Cached")
     store.replace_conversation(
@@ -443,7 +443,7 @@ def test_claude_chromium_sync_caches_the_complete_recorded_conversation(tmp_path
         context.return_value.__enter__.return_value = page
         result = sync_claude_history(state, CrawlConfig(), lambda: False, tmp_path)
 
-    store = ClaudeHistoryStore(tmp_path / "llm" / "claude" / "history.parquet")
+    store = ClaudeHistoryStore(tmp_path / "llm" / "claude" / "history.sqlite3")
     assert result["messages"] == 4
     assert result["failed"] == 0
     assert store.cached_messages == 4

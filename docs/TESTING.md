@@ -1,6 +1,45 @@
 # Testing guide
 
-Documentation version: `v1.41.0-codex.0`
+Documentation version: `v1.42.2-codex.0`
+
+## LLM SQLite persistence checks
+
+`tests/test_llm_sqlite.py` exercises exact schemas, duplicate and interleaved row
+order, scoped conversation reads, changed-bucket updates, failed transactions,
+initial-write failure, and read-only legacy fallback. `tests/test_migrate_llm_sqlite.py`
+covers canonical scope, numbered-file exclusion, exact gzip rollback verification,
+retirement, source drift, open handles, modification-time preservation, resumable
+matching targets, and conflicting-target refusal. Migration tests use isolated
+synthetic stores and never production history or cloud providers.
+
+Storage fixtures must cover new version 3 Zstandard-compressed Arrow IPC writes in
+32 stable SHA-256 conversation buckets, explicit original row ordinals, exact Arrow
+schema preservation, and compatible version 2 JSON reads through the same public
+APIs. Summary version 2 fixtures must keep compressed JSON metadata separate from
+message bodies and omit body previews. Format coverage must preserve scoped reads,
+full exports, duplicate rows, and ordering across both readable payload versions.
+
+Run the storage and migration checks with the browser's relevant query coverage:
+
+```bash
+TZ=UTC ./scripts/test.sh tests/test_llm_sqlite.py tests/test_migrate_llm_sqlite.py \
+  tests/test_chat_history_browser.py tests/test_chat_history_project_filter.py
+```
+
+Provider suites must keep testing persistence, conservative completeness, recovery
+backups with the correct source extension, and failed-write preservation. Copilot
+catalog and coverage fixtures additionally verify that a legacy Parquet read creates
+no SQLite file. Browser equivalence checks cover overview, detail, direct message
+lookup, source selection, discovery overlays, project membership, and pagination;
+search and Zhihu remain covered through their full-history paths.
+
+For private real-data benchmarks, use the migration report's warmup, repeated samples,
+median, P95, operation scope, and query plan. Compare identical source rows and
+schemas; measure full reads separately from indexed session reads and one-message
+snapshot updates. Include initial placeholder allocation, hydrated allocation,
+SQLite size, rollback size, and retained numbered histories when reporting storage.
+Do not add account data or real-data benchmark outcomes to tracked test fixtures or
+documentation. Focused checks do not replace the repository's complete quality gate.
 
 ## Supported commands
 
@@ -64,7 +103,7 @@ display-only adapter for observed ChatGPT component markup and empty citation
 pointers. Known component rows become Markdown tables, diagram text remains
 readable, and unsupported structures keep inert fenced source. Inline, fenced,
 and indented code stay literal. Route checks preserve user messages, other
-providers, stored Parquet bytes, and original Markdown exports.
+providers, stored history bytes, and original Markdown exports.
 
 The default marker expression is `not live`. Run an intentionally manual live check only with an
 explicit override, for example `AGENTIC_CONTEXT_TEST_MARK_EXPRESSION=live ./scripts/test.sh`.
@@ -97,7 +136,7 @@ display-only adapter for observed ChatGPT component markup and empty citation
 pointers. Known component rows become Markdown tables, diagram text remains
 readable, and unsupported structures keep inert fenced source. Inline, fenced,
 and indented code stay literal. Route checks preserve user messages, other
-providers, stored Parquet bytes, and original Markdown exports.
+providers, stored history bytes, and original Markdown exports.
 
 Microsoft Copilot's focused offline checks are `tests/test_copilot_history.py`,
 `tests/test_copilot_catalog.py`, `tests/test_copilot_catalog_transport.py`,
@@ -133,7 +172,7 @@ message-body coverage for hundreds of sessions. The actual legacy source is the
 existing macOS Edge sidebar. Its 357 visible titles and 19 verified HTTP catalog
 responses are preserved in recovery; the latter contain 377 physical records and
 357 distinct native IDs. Tests verify exact response hashes, gzip decoding, strict
-catalog fields, duplicate identity preservation, typed Parquet readback, and invalid
+catalog fields, duplicate identity preservation, typed SQLite and legacy Parquet readback, and invalid
 catalog handling. A complete current-web sync must remain partial across repeat
 runs and reload whenever this legacy evidence remains unverified. Existing legacy
 message rows must not prevent collection of available current-web sessions.
@@ -766,7 +805,7 @@ Windows CI run without the authenticated manual checks is not live Windows provi
   contacting Zhihu or opening a host profile. Workflow tests inject current-account, vote-up
   activity, and author-answer pages into a
   temporary `local_store` root. They verify exact activity filtering, cursor rejection,
-  cumulative Parquet writes, unavailable-body retention, source-link extraction, empty provider
+  cumulative SQLite writes, unavailable-body retention, source-link extraction, empty provider
   HTML, complete Local resources answer rendering, source-specific Answerer filtering, query-state
   preservation, removed answer IDs/Projects/Clear filters, literal detail headings, default Edge
   controls, login-probe routing, and the single-character vector logo.
@@ -787,7 +826,7 @@ Windows CI run without the authenticated manual checks is not live Windows provi
   reading to the terminal page when nothing is cached, ignoring provider totals and duplicates,
   fail-closed cursor and repeated-page handling, and cooperative stop. Sync tests cover its merge
   metrics and the answerer-URL requirement. `test_zhihu_answerer_refresh_e2e.py` drives the real
-  Zhihu service, collector, and Parquet merge in a disposable browser against injected provider
+  Zhihu service, collector, and SQLite merge in a disposable browser against injected provider
   pages: added, unchanged, and provider-failure results, wait-modal release, and the four-action
   drawer inside 1,138, 1,024, and 390 px viewports. No test contacts Zhihu or opens a host browser
   profile.

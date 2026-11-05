@@ -1,6 +1,6 @@
 """Import visible native Grok Build session updates without changing source files.
 
-Code version: v1.0.1-grok-build.0
+Code version: v1.1.0-codex.0
 """
 
 from __future__ import annotations
@@ -19,12 +19,12 @@ import pyarrow as pa
 from .history_rows import history_rows_match, sort_history_rows
 from .resource_persistence import (
     GROK_HISTORY_SCHEMA,
-    read_parquet_rows,
-    write_parquet_rows_atomic,
+    read_resource_rows,
+    write_resource_rows_atomic,
 )
 
 
-GROK_BUILD_HISTORY_FILENAME = "history.parquet"
+GROK_BUILD_HISTORY_FILENAME = "history.sqlite3"
 GROK_BUILD_HISTORY_SCHEMA_VERSION = 1
 GROK_BUILD_HISTORY_SCHEMA = pa.schema(
     [
@@ -327,9 +327,9 @@ def import_grok_build_history(
     transcript_root, directories = _session_directories(source)
     excluded = _subagent_ids(directories)
     path = grok_build_history_path(local_store_root)
-    previous = read_parquet_rows(path)
-    if path.exists() and previous is None:
-        raise RuntimeError(f"Grok Build history Parquet is unreadable: {path}")
+    previous = read_resource_rows(path)
+    if (path.exists() or path.with_suffix(".parquet").exists()) and previous is None:
+        raise RuntimeError(f"Grok Build history store is unreadable: {path}")
     rows = {row["message_key"]: row for row in previous or [] if row.get("message_key")}
     stop = should_stop or (lambda: False)
     result: dict[str, Any] = {
@@ -421,7 +421,7 @@ def import_grok_build_history(
         if result["stopped"]:
             break
     if apply and result["added_or_changed"]:
-        write_parquet_rows_atomic(
+        write_resource_rows_atomic(
             path, sort_history_rows(rows.values()), GROK_BUILD_HISTORY_SCHEMA
         )
         result["applied"] = True

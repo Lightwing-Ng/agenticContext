@@ -1,6 +1,6 @@
 """Grok text history collection and local persistence.
 
-Code version: v1.5.3-codex.0
+Code version: v1.6.0-codex.0
 """
 
 from __future__ import annotations
@@ -33,8 +33,8 @@ from .resource_persistence import (
     GROK_HISTORY_FILENAME,
     GROK_HISTORY_SCHEMA,
     GROK_HISTORY_SCHEMA_VERSION,
-    read_parquet_rows,
-    write_parquet_rows_atomic,
+    read_resource_rows,
+    write_resource_rows_atomic,
 )
 from .safari_automation import SafariContext, SafariPage
 from .state import TaskSnapshot, TaskState
@@ -584,9 +584,9 @@ class GrokHistoryStore:
 
     def __init__(self, path: Path | str) -> None:
         self.path = path
-        rows = read_parquet_rows(path)
-        if Path(path).exists() and rows is None:
-            raise RuntimeError(f"Grok history Parquet is unreadable: {path}")
+        rows = read_resource_rows(path)
+        if (Path(path).exists() or Path(path).with_suffix(".parquet").exists()) and rows is None:
+            raise RuntimeError(f"Grok history store is unreadable: {path}")
         self._rows: dict[str, dict[str, Any]] = {
             str(row.get("message_key")): row
             for row in rows or []
@@ -643,7 +643,7 @@ class GrokHistoryStore:
                 added_or_changed += 1
             next_rows[message.message_key] = row
         self._rows = next_rows
-        write_parquet_rows_atomic(
+        write_resource_rows_atomic(
             self.path,
             sort_history_rows(self._rows.values()),
             GROK_HISTORY_SCHEMA,
