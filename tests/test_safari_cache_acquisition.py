@@ -1,4 +1,4 @@
-"""Isolated Cache lease acquisition and cancellation. Code version: v1.0.0-codex.0."""
+"""Isolated Cache lease acquisition and cancellation. Code version: v1.0.1-codex.0."""
 
 from importlib import import_module
 from pathlib import Path
@@ -22,12 +22,29 @@ def isolated_safari(monkeypatch, tmp_path):
     monkeypatch.setattr(safari.SafariContext, "_reconcile_context_lease_state", lambda self: None)
 
 
+def lock_after_contention(*outcomes):
+    """Inject contention, then acquire the real host lock before native release."""
+    acquire = safari.lock_file
+    attempts = iter(outcomes)
+
+    def lock(handle, **kwargs):
+        outcome = next(attempts)
+        if outcome is not None:
+            raise outcome
+        return acquire(handle, **kwargs)
+
+    return lock
+
+
 def test_cache_waits_at_acquisition_without_replaying_sync_body(isolated_safari):
     waits = []
     messages = []
     body_calls = []
     context = safari.SafariContext("https://example.test/", lock_blocking=False)
-    with patch.object(safari, "lock_file", side_effect=[BlockingIOError(), BlockingIOError(), None]):
+    with patch.object(
+        safari, "lock_file",
+        side_effect=lock_after_contention(BlockingIOError(), BlockingIOError(), None),
+    ):
         with safari.safari_cache_acquisition_scope(lambda: False, waits.append, messages.append):
             body_calls.append("persisted checkpoint")
             context._acquire_context_lock()
@@ -41,6 +58,7 @@ def test_one_deadline_is_shared_by_sequential_contexts(monkeypatch, isolated_saf
     elapsed = 0.0
     calls = 0
     waits = []
+    acquire = safari.lock_file
 
     def clock():
         return elapsed
@@ -55,6 +73,7 @@ def test_one_deadline_is_shared_by_sequential_contexts(monkeypatch, isolated_saf
         calls += 1
         if calls != 4:
             raise BlockingIOError()
+        return acquire(_handle, **_kwargs)
 
     monkeypatch.setattr(safari.time, "monotonic", clock)
     first = safari.SafariContext("https://example.test/", lock_blocking=False)
@@ -136,7 +155,7 @@ def test_probe_stays_fail_fast_and_real_errors_never_retry(isolated_safari):
             context._acquire_context_lock()
     assert lock.call_count == 1
     waits = []
-    with patch.object(safari, "lock_file"), patch.object(
+    with patch.object(safari, "lock_file", wraps=safari.lock_file), patch.object(
         context, "_reconcile_context_lease_state", side_effect=RuntimeError("Ownership is unverified")
     ):
         with safari.safari_cache_acquisition_scope(lambda: False, waits.append, lambda _message: None):
@@ -155,7 +174,9 @@ def test_child_workers_inherit_scope_and_cannot_acquire_after_job_ends(isolated_
         context._acquire_context_lock()
         context._release_context_lock()
 
-    with patch.object(safari, "lock_file", side_effect=[BlockingIOError(), None]) as lock:
+    with patch.object(
+        safari, "lock_file", side_effect=lock_after_contention(BlockingIOError(), None),
+    ) as lock:
         with safari.safari_cache_acquisition_scope(lambda: False, lambda _seconds: None, lambda _message: None):
             active = Thread(target=safari.inherit_safari_cache_context(child))
             active.start()

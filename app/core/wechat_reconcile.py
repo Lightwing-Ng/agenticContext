@@ -1,6 +1,6 @@
 """Add native text observations without replacing earlier WeChat evidence."""
 
-# Code version: v1.6.3-codex.0
+# Code version: v1.6.4-codex.0
 
 from __future__ import annotations
 
@@ -441,12 +441,19 @@ def _file_identity(path: Path):
     metadata = path.stat()
     if not path.is_file():
         raise ValueError("Reconciliation files must be regular files.")
+    if os.name == "nt":
+        from .windows_file_metadata import file_change_time
+
+        # Windows stat().ctime is creation time, not a content-mutation token.
+        changed_at = file_change_time(path)
+    else:
+        changed_at = metadata.st_ctime_ns
     return (
         metadata.st_dev,
         metadata.st_ino,
         metadata.st_size,
         metadata.st_mtime_ns,
-        metadata.st_ctime_ns,
+        changed_at,
     )
 
 

@@ -1,6 +1,6 @@
 """tunnel-client supervision tests with a local fake client.
 
-Code version: v1.5.2-codex.0
+Code version: v1.5.3-codex.0
 """
 
 from __future__ import annotations
@@ -1215,9 +1215,13 @@ class FakePosixProcesses:
 
 
 def test_posix_recovery_stops_only_owned_clients_and_escalates_when_needed(
-    tmp_path: Path,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import signal
+    from types import SimpleNamespace
+
+    # The injected POSIX process backend must not depend on Windows signals.
+    signal = SimpleNamespace(SIGTERM=15, SIGKILL=9)
+    monkeypatch.setattr(tunnel_runtime, "signal", signal)
 
     state_root = tmp_path / "state"
     owned_exits = tunnel_runtime.ClientProcess(101, "Thu Sep 24 10:00:00 2026", _owned_command(state_root))

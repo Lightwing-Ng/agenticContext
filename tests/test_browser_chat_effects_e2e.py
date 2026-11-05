@@ -1,4 +1,4 @@
-"""Compact chat padding and contained external shadows. Code version: v1.1.0-codex.0."""
+"""Compact chat padding and contained external shadows. Code version: v1.1.1-codex.0."""
 
 from io import BytesIO
 import math
@@ -160,6 +160,20 @@ def _assert_metrics_unaffected_by_chat_effects(page: Page, geometry: dict) -> No
     metrics = geometry["metrics"]
     clip = {"x": metrics["left"], "y": metrics["top"],
             "width": metrics["width"], "height": metrics["height"]}
+    visible_metrics = page.locator(".browser-text-metric-grid > .metric-card").evaluate_all("""cards =>
+        cards.map(card => {
+            const box = card.getBoundingClientRect();
+            const hit = document.elementFromPoint(box.left + box.width / 2, box.top + box.height / 2);
+            return hit === card || card.contains(hit);
+        })
+    """)
+    assert visible_metrics and all(visible_metrics), {"visibleMetrics": visible_metrics, "geometry": geometry}
+    # Inherited theme colors can still be transitioning after effect geometry has settled.
+    # Keep the compositor scroll timelines running while finite document motion finishes.
+    page.wait_for_function("""() => document.getAnimations().every(motion =>
+        !(motion.timeline instanceof DocumentTimeline) || motion.playState !== 'running'
+    )""")
+    _set_effect_layer_visibility(page, "")
     painted = Image.open(BytesIO(page.screenshot(clip=clip))).convert("RGB")
     _set_effect_layer_visibility(page, "hidden")
     try:
@@ -211,6 +225,12 @@ def test_chat_effects_keep_eight_pixel_padding_and_paint_outside_scrollport(
             _assert_shadow_pixels_outside_scrollport(page, geometry)
             _assert_metrics_unaffected_by_chat_effects(page, geometry)
         page.set_viewport_size({"width": 430 if touch else 720, "height": 700 if touch else 560})
+        # Desktop sidebar state persists when resizing into an overlay; expose the measured metrics.
+        sidebar_toggle = page.locator("#sidebar_toggle")
+        if sidebar_toggle.get_attribute("aria-expanded") == "true":
+            sidebar_toggle.click()
+            expect(sidebar_toggle).to_have_attribute("aria-expanded", "false")
+            expect(page.locator("#sidebar_backdrop")).to_be_hidden()
         _wait_for_effect_sync(page)
         resized = _chat_geometry(page)
         _assert_compact_geometry(resized, has_ruler=True)

@@ -1,13 +1,13 @@
 """Disposable Chromium navigation for provider-separated OpenClaw archives.
 
-Code version: v1.1.0-codex.0
+Code version: v1.1.1-codex.0
 """
 
 from collections.abc import Iterator
 from pathlib import Path
 from threading import Thread
 from unittest.mock import patch
-from urllib.parse import parse_qs, urlsplit
+from urllib.parse import parse_qs, urljoin, urlsplit
 
 import pytest
 from playwright.sync_api import Browser, Page, expect
@@ -126,7 +126,11 @@ def test_archive_selector_browse_and_reader_remain_separate(
         expect(page.locator("[data-browser-session-download-url]")).to_have_count(1)
         _assert_no_horizontal_overflow(page)
         page.screenshot(path=str(SCREENSHOT_ROOT / f"openclaw-synthetic-reader-{width}.png"), full_page=True)
-        page.get_by_role("link", name="Back to all sessions", exact=True).click()
+        session_index = page.get_by_role("link", name="Back to all sessions", exact=True)
+        session_index_url = urljoin(page.url, session_index.get_attribute("href"))
+        session_index.click()
+        # The Source menu binds at DOMContentLoaded, after the new document becomes visible.
+        page.wait_for_url(session_index_url, wait_until="domcontentloaded")
         assert parse_qs(urlsplit(page.url).query)["source"] == ["gemini_openclaw"]
         _set_sidebar(page, opened=True)
         form = page.locator("#browser_filter_form")

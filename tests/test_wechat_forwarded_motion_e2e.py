@@ -1,6 +1,6 @@
 """Forwarded disclosures reuse measured springs without losing native interaction.
 
-Code version: v1.0.0-codex.0
+Code version: v1.0.1-codex.0
 """
 
 from __future__ import annotations
@@ -95,6 +95,10 @@ def _finish(card):
     }""")
     card.page.wait_for_function("""() => window.forwardedMotions.every(animation =>
         animation.playState === 'idle' || animation.playState === 'finished')""")
+    # Motion cleanup schedules effect repaint through a MutationObserver.
+    card.evaluate("""async () => {
+        await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    }""")
 
 
 def _assert_clean(disclosure):

@@ -1,16 +1,18 @@
 """Export publication preserves old evidence without reading existing message bodies.
 
-Code version: v1.0.1-codex.0
+Code version: v1.0.2-codex.0
 """
 
 import hashlib
 import json
+import os
 from pathlib import Path
 import sqlite3
 import sys
 
 import pytest
 
+from app.core.owner_only_files import owner_only_problem
 from app.core.wechat_archive import _SCHEMA, _identifier, wechat_archive_path
 from app.core import wechat_export_merge as exports
 
@@ -150,7 +152,9 @@ def test_first_export_preserves_exact_text_labels_identifiers_and_unknown_clock(
     partition = rows(tmp_path, "partitions")[0]
     assert partition[1] == "source:html-fixture" and partition[2] is None
     assert partition[5] == "HTML export"
-    assert wechat_archive_path(tmp_path).stat().st_mode & 0o777 == 0o600
+    assert owner_only_problem(wechat_archive_path(tmp_path)) == ""
+    if os.name == "posix":
+        assert wechat_archive_path(tmp_path).stat().st_mode & 0o777 == 0o600
 
 
 @pytest.mark.skipif(
@@ -204,7 +208,9 @@ def test_additive_export_does_not_read_or_replace_old_evidence(tmp_path, monkeyp
         json.loads(evidence[0][5])["cross_reference"]["candidate_message_id"]
         == "old-message"
     )
-    assert path.stat().st_mode & 0o777 == 0o600
+    assert owner_only_problem(path) == ""
+    if os.name == "posix":
+        assert path.stat().st_mode & 0o777 == 0o600
 
 
 def test_exact_replay_does_not_consume_input_or_republish_database(tmp_path):
@@ -451,3 +457,30 @@ def test_initial_archive_publication_syncs_a_writable_candidate(tmp_path, monkey
     assert result["changed"]
     assert result["inserted_messages"] == 1
     assert any(mode == "r+b" for mode in modes.values())
+
+
+@pytest.mark.parametrize("existing", [False, True])
+def test_private_boundary_failure_prevents_any_export_publication(
+    tmp_path, monkeypatch, existing,
+):
+    from shutil import copyfile
+
+    from app.core.owner_only_files import OwnerOnlyFileError
+
+    # This synthetic copy isolates private publication from the separately tested
+    # APFS-only production staging contract.
+    monkeypatch.setattr(exports, "_clonefile", copyfile)
+    path = old_archive(tmp_path) if existing else wechat_archive_path(tmp_path)
+    original = path.read_bytes() if existing else None
+
+    def denied(_path):
+        raise OwnerOnlyFileError("Synthetic private boundary failure")
+
+    monkeypatch.setattr(exports, "ensure_owner_only", denied)
+    with pytest.raises(OwnerOnlyFileError, match="Synthetic private boundary failure"):
+        merge(tmp_path)
+    if existing:
+        assert path.read_bytes() == original
+    else:
+        assert not path.exists()
+    assert not list(path.parent.glob(".wechat-export-*"))

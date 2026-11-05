@@ -1,6 +1,6 @@
 """Native subset restoration preserves old rows without a full database copy.
 
-Code version: v1.3.0-codex.0
+Code version: v1.3.1-codex.0
 """
 
 from contextlib import closing
@@ -530,6 +530,7 @@ def test_stage_sync_uses_a_windows_writable_handle_and_preserves_posix_read_only
     before = retained(tmp_path)
     open_file = Path.open
     handles = []
+    synchronized = []
 
     def track_stage(path, *args, **kwargs):
         handle = open_file(path, *args, **kwargs)
@@ -548,12 +549,17 @@ def test_stage_sync_uses_a_windows_writable_handle_and_preserves_posix_read_only
             if self.name == "nt" and not handle.writable():
                 raise OSError(errno.EBADF, "Windows cannot fsync a read-only stage descriptor")
             assert handle.writable() == (self.name == "nt")
-            return os.fsync(descriptor)
+            synchronized.append(handle.writable())
+            # A foreign-platform fake validates its descriptor contract without
+            # forwarding a POSIX read-only descriptor to the Windows CRT.
+            if self.name == os.name:
+                return os.fsync(descriptor)
 
     monkeypatch.setattr(Path, "open", track_stage)
     monkeypatch.setattr(restore, "os", PlatformOs())
     result = run(tmp_path, [metadata], [record(metadata, "sync-portable", server_id="7799")])
     assert result["published"] and result["inserted_messages"] == 1
+    assert synchronized == [platform_name == "nt"]
     assert all(item in rows(tmp_path) for item in before["messages"])
     assert handles and all(handle.closed for handle in handles)
     assert not list(wechat_archive_path(tmp_path).parent.glob(".wechat-native-restore-*"))
@@ -632,7 +638,8 @@ def test_each_incoming_conversation_checks_actual_retained_index_counts(tmp_path
 def change_ctime_only(path):
     before = restore._file_identity(path)
     permissions = path.stat().st_mode & 0o777
-    path.chmod(permissions ^ 0o100)
+    # The writable bit also changes the native Windows read-only attribute.
+    path.chmod(permissions ^ 0o200)
     path.chmod(permissions)
     after = restore._file_identity(path)
     assert before[:4] == after[:4] and before[4] != after[4]
@@ -775,3 +782,49 @@ def test_baseline_hash_must_finish_under_unchanged_identity(tmp_path, monkeypatc
     with pytest.raises(ValueError, match="while hashing original bytes"):
         run(tmp_path, [metadata], [record(metadata, "new", server_id="456")])
     assert path.read_bytes() == before
+
+
+def test_windows_archive_identity_uses_native_mutation_time(tmp_path, monkeypatch):
+    from app.core import wechat_reconcile, windows_file_metadata
+
+    path = tmp_path / "archive.sqlite3"
+    path.write_bytes(b"synthetic source")
+    changes = iter((100, 101))
+
+    class WindowsOS:
+        name = "nt"
+
+        def __getattr__(self, name):
+            return getattr(os, name)
+
+    monkeypatch.setattr(wechat_reconcile, "os", WindowsOS())
+    monkeypatch.setattr(
+        windows_file_metadata, "file_change_time", lambda _path: next(changes),
+    )
+    before = wechat_reconcile._file_identity(path)
+    after = wechat_reconcile._file_identity(path)
+    assert before[:4] == after[:4]
+    assert before[4] == 100 and after[4] == 101
+
+
+def test_windows_archive_identity_fails_closed_when_native_metadata_is_unavailable(
+    tmp_path, monkeypatch,
+):
+    from app.core import wechat_reconcile, windows_file_metadata
+
+    path = tmp_path / "archive.sqlite3"
+    path.write_bytes(b"synthetic source")
+
+    class WindowsOS:
+        name = "nt"
+
+        def __getattr__(self, name):
+            return getattr(os, name)
+
+    def unavailable(_path):
+        raise OSError("Synthetic native metadata refusal")
+
+    monkeypatch.setattr(wechat_reconcile, "os", WindowsOS())
+    monkeypatch.setattr(windows_file_metadata, "file_change_time", unavailable)
+    with pytest.raises(OSError, match="Synthetic native metadata refusal"):
+        wechat_reconcile._file_identity(path)

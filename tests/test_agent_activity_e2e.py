@@ -1,4 +1,4 @@
-"""Activity disclosure and status glyph regressions. Code version: v1.1.1-codex.0."""
+"""Activity disclosure and status glyph regressions. Code version: v1.1.3-codex.0."""
 
 import pytest
 from playwright.sync_api import expect
@@ -271,10 +271,20 @@ def test_running_status_markers_share_breathing_contract(
         activity = page.locator('#agent_activity_list [data-status="running"] .cache-phase-live-marker')
         expect(status).to_be_visible()
         expect(activity).to_be_visible()
+        # Bootstrap and reconnection use a different, intentionally larger spinner.
+        expect(page.locator("#agent_response_status")).to_have_attribute("data-status", "running")
+        expect(status).to_have_class("agent-response-status-spinner cache-phase-live-marker")
         contracts = [status, activity]
         for marker in contracts:
             contract = marker.evaluate(
-                """e => {
+                """async e => {
+                    // Class readiness can precede the first presented size-transition frame.
+                    const finite = e.getAnimations().filter(animation =>
+                        animation.timeline === document.timeline
+                        && Number.isFinite(animation.effect.getTiming().iterations));
+                    await Promise.allSettled(finite.map(animation => animation.finished));
+                    await new Promise(resolve =>
+                        requestAnimationFrame(() => requestAnimationFrame(resolve)));
                     const root = getComputedStyle(document.documentElement);
                     const core = getComputedStyle(e);
                     const outer = getComputedStyle(e, '::before');

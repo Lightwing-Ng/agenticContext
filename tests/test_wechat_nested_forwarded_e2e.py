@@ -1,6 +1,6 @@
 """Nested transcript cards preserve one outer clock rail and literal source text.
 
-Code version: v1.1.0-codex.0
+Code version: v1.2.0-codex.0
 """
 
 from __future__ import annotations
@@ -414,6 +414,25 @@ def _assert_clock_rail(page, fixture):
         .filter(row => !row.closest('details:not([open])'))
         .every(row => !row.querySelector(':scope > time')
             || row.style.getPropertyValue('--wechat-time-top'))""")
+    # ResizeObserver alignment can follow the viewport's first layout. Require
+    # stable presented geometry, independently of whether that geometry is correct.
+    page.wait_for_function("""id => {
+        const card = document.getElementById(id);
+        const root = card.parentElement;
+        const rows = [root, ...card.querySelectorAll('.wechat-message-row')]
+            .filter(row => !row.closest('details:not([open])'));
+        const clocks = rows.flatMap(row => [...row.querySelectorAll(':scope > time')]);
+        const sample = JSON.stringify([innerWidth, ...[root, card, ...clocks].map(element => {
+            const box = element.getBoundingClientRect();
+            return [box.left, box.top, box.width, box.height];
+        }), rows.map(row => row.style.getPropertyValue('--wechat-time-inset'))]);
+        const previous = card.__testClockRailLayout;
+        const frames = previous?.sample === sample ? previous.frames + 1 : 0;
+        card.__testClockRailLayout = {sample, frames};
+        if (frames < 3) return false;
+        delete card.__testClockRailLayout;
+        return true;
+    }""", arg="wechat_message_" + fixture.parent)
     measurements = page.locator("#wechat_message_" + fixture.parent).evaluate("""async card => {
         await new Promise(requestAnimationFrame);
         await new Promise(requestAnimationFrame);
@@ -444,7 +463,7 @@ def _assert_clock_rail(page, fixture):
     assert all(
         abs(item["right"] - measurements["reference"]) <= 1
         for item in measurements["clocks"]
-    ), measurements
+    ), f"Clock rail mismatch: {measurements}"
     assert max(item["topError"] for item in measurements["clocks"]) <= 1, measurements
     assert all(
         item["speakerSize"] == "17px" and item["ownTimes"] == 1
@@ -503,6 +522,14 @@ def test_three_forwarded_levels_reuse_standard_cards_and_outer_clock_rail(
         page.set_viewport_size(
             {"width": 390 if width == 1280 else 1280, "height": 1100}
         )
+        _assert_clock_rail(page, fixture)
+        clock = current.locator("xpath=..").locator(":scope > time")
+        clock.evaluate("element => { element.style.translate = '4px 0'; }")
+        try:
+            with pytest.raises(AssertionError, match="Clock rail mismatch"):
+                _assert_clock_rail(page, fixture)
+        finally:
+            clock.evaluate("element => element.style.removeProperty('translate')")
         _assert_clock_rail(page, fixture)
         assert fixture.history.read_bytes() == fixture.preserved
     finally:
