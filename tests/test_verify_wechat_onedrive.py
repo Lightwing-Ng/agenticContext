@@ -1,6 +1,6 @@
 """Verify metadata-only OneDrive inspection, exact size binding, and exclusions.
 
-Code version: v1.3.0-codex.0
+Code version: v1.3.1-codex.0
 """
 
 from __future__ import annotations
@@ -145,7 +145,11 @@ def test_file_change_during_provider_query_and_new_file_prevent_root_completion(
 
     def mutate(path):
         state = _uploaded(path)
+        before = path.stat()
         path.write_bytes(b"New fixture")
+        # Native writes can share a clock tick; make this metadata drift explicit.
+        os.utime(path, ns=(before.st_atime_ns, before.st_mtime_ns + 1_000_000_000))
+        assert path.stat().st_mtime_ns != before.st_mtime_ns
         (root / "new-control.json").write_text("{}")
         return state
 
