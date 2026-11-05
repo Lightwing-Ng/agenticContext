@@ -1,10 +1,11 @@
 """Export publication preserves old evidence without reading existing message bodies.
 
-Code version: v1.0.0-codex.0
+Code version: v1.0.1-codex.0
 """
 
 import hashlib
 import json
+from pathlib import Path
 import sqlite3
 import sys
 
@@ -426,3 +427,27 @@ def test_fingerprint_verification_detects_new_message_tampering(tmp_path, monkey
     with pytest.raises(ValueError, match="content fingerprints differ"):
         merge(tmp_path)
     assert not wechat_archive_path(tmp_path).exists()
+
+
+def test_initial_archive_publication_syncs_a_writable_candidate(tmp_path, monkeypatch):
+    modes = {}
+    native_open, native_fsync = Path.open, exports.os.fsync
+
+    def opened(path, mode="r", *args, **kwargs):
+        handle = native_open(path, mode, *args, **kwargs)
+        modes[handle.fileno()] = mode
+        return handle
+
+    def windows_fsync(descriptor):
+        if modes.get(descriptor) == "rb":
+            raise OSError(9, "A read-only descriptor cannot be committed on Windows.")
+        return native_fsync(descriptor)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(Path, "open", opened)
+        patch.setattr(exports.os, "fsync", windows_fsync)
+        result = merge(tmp_path)
+
+    assert result["changed"]
+    assert result["inserted_messages"] == 1
+    assert any(mode == "r+b" for mode in modes.values())

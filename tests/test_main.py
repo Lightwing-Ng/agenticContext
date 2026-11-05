@@ -1,6 +1,6 @@
 """Focused regression tests for the application entrypoint.
 
-Code version: v1.5.2-codex.0
+Code version: v1.5.3-codex.0
 """
 
 from __future__ import annotations
@@ -54,9 +54,9 @@ class MainEntrypointTests(unittest.TestCase):
         cancel.assert_called_once_with()
         runtime_shutdown.assert_called_once_with()
 
-    def test_serving_child_starts_flask_in_debug_mode(self) -> None:
+    def test_serving_child_keeps_reload_without_exposing_a_debugger(self) -> None:
         """The reloader's serving child builds the app once and enables hot reload."""
-        for host, interactive_debugger in (("0.0.0.0", False), ("127.0.0.1", True)):
+        for host in ("0.0.0.0", "127.0.0.1"):
             with self.subTest(host=host):
                 configure_logging = Mock()
                 create_app = Mock()
@@ -85,10 +85,11 @@ class MainEntrypointTests(unittest.TestCase):
                 options = app.run.call_args.kwargs
                 self.assertEqual(
                     (options["host"], options["port"], options["debug"], options["threaded"]),
-                    (host, 8666, True, True),
+                    (host, 8666, False, True),
                 )
-                # The LAN session gate must stay in front of the interactive debugger.
-                self.assertIs(options["use_debugger"], interactive_debugger)
+                self.assertIs(options["use_debugger"], False)
+                self.assertIs(options["use_reloader"], True)
+                self.assertIs(app.jinja_env.auto_reload, True)
                 project_root = Path(main.__file__).resolve().parent
                 for directory in ("tests", "local_store"):
                     self.assertIn(str(project_root / directory / "*"), options["exclude_patterns"])

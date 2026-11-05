@@ -1,6 +1,6 @@
 """Application entrypoint for agenticContext."""
 
-# Code version: v1.7.0-codex.0
+# Code version: v1.7.1-codex.0
 
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ from typing import Any
 
 
 LOGGER = logging.getLogger(__name__)
-# Flask debug mode: templates reload in place and Python source changes restart the server.
+# Development file watching reloads templates and Python without an HTTP debugger.
 DEBUG = True
 # Werkzeug's serving child requests a restart with this exit status.
 RELOAD_EXIT_STATUS = 3
@@ -240,6 +240,7 @@ def _start_web_console() -> None:
 
     configure_logging(APP_VERSION)
     app = create_app()
+    app.jinja_env.auto_reload = DEBUG
     _install_shutdown_signal_handlers(app)
     _enable_chatgpt_tunnel(app, DEFAULT_PORT)
     project_root = Path(__file__).resolve().parent
@@ -247,9 +248,9 @@ def _start_web_console() -> None:
         app.run(
             host=DEFAULT_HOST,
             port=DEFAULT_PORT,
-            debug=DEBUG,
-            # The interactive debugger must not sit in front of the LAN session gate.
-            use_debugger=DEBUG and DEFAULT_HOST == "127.0.0.1",
+            debug=False,
+            use_reloader=DEBUG,
+            use_debugger=False,
             threaded=True,
             exclude_patterns=[
                 str(project_root / directory / "*") for directory in RELOAD_EXCLUDED_DIRECTORIES

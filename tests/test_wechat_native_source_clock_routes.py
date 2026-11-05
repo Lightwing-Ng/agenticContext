@@ -1,6 +1,6 @@
 """A native child's source clock reaches chat, contact ordering, and CSV output.
 
-Code version: v1.0.0-codex.0
+Code version: v1.0.1-codex.0
 """
 
 from __future__ import annotations
@@ -65,7 +65,7 @@ def test_child_source_clock_is_consistent_across_chat_contact_and_csv(
     proof["text_components"][0]["source_timestamp"] = raw
     native._publish_native_forwarded_proof(fixture, proof)
     before = fixture.history.read_bytes(), fixture.registry.read_bytes()
-    analysis = query_contact_analysis(fixture.store, fixture.target_id)
+    analysis = query_contact_analysis(fixture.store, fixture.target_id, sort="newest")
     parent = fixture.parents["native-forward"]
     child = parent + "_forwarded_1"
     item = next(item for item in analysis["items"] if item["id"] == child)

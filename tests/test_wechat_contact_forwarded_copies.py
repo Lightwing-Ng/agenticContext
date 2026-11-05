@@ -1,6 +1,6 @@
 """Compact repeated forwarded assertions while retaining independent source events.
 
-Code version: v1.0.0-codex.0
+Code version: v1.1.0-codex.0
 """
 
 from copy import deepcopy
@@ -755,3 +755,53 @@ def test_real_archive_schema_folds_without_changing_any_raw_record(
         assert result["statements_joined"] == 6
         assert output.execute("SELECT * FROM refs ORDER BY id").fetchall() == refs
     assert f.history.read_bytes() == raw
+
+
+def test_normal_cache_replay_restores_explicit_display_groups_without_author_rescan(
+    projection_archive_store, monkeypatch
+):
+    f = projection_archive_store
+    before = f.history.read_bytes(), f.registry.read_bytes()
+    page = analysis.query_contact_analysis(f.store, CONTACT)
+    assert page["status"] == "ready"
+    assert not page["forwarded_statement_copies_collapsed"]
+    with sqlite3.connect(f.cache) as output:
+        baseline = _snapshot(output)
+    with sqlite3.connect(f.history) as source, sqlite3.connect(f.cache) as output:
+        source.row_factory = sqlite3.Row
+        applied = projection.fold_contact_forwarded_copies(
+            source,
+            output,
+            CONTACT,
+            AUTHOR,
+            row_select=analysis._ROW_SELECT,
+            prepare_rows=analysis._requests,
+            native_thread_key=analysis._native_conversation_key,
+        )
+        assert applied["status"] == "applied"
+        assert _snapshot(output)["refs"] == baseline["refs"]
+        output.execute(
+            "UPDATE info SET value='before-canonical-proof-replay' WHERE key='fingerprint'"
+        )
+
+    def no_author_rescan(*_args, **_kwargs):
+        pytest.fail("A display-group replay must retain all accepted source references.")
+
+    for name in (
+        "_candidate_batches",
+        "_candidate_forwarded_batches",
+        "_candidate_native_batches",
+        "_group_statements",
+    ):
+        monkeypatch.setattr(analysis, name, no_author_rescan)
+    restored = analysis.query_contact_analysis(f.store, CONTACT)
+    assert restored["total_count"] == page["total_count"]
+    assert restored["observation_count"] == page["observation_count"]
+    assert not restored["forwarded_statement_copies_collapsed"]
+    with sqlite3.connect(f.cache) as output:
+        assert _snapshot(output) == baseline
+        info = dict(output.execute("SELECT key,value FROM info"))
+        assert json.loads(info["forwarded_copy_projection"]) == {
+            "status": "explicit_projection_required"
+        }
+    assert (f.history.read_bytes(), f.registry.read_bytes()) == before

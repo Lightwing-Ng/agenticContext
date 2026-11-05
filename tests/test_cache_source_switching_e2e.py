@@ -1,6 +1,6 @@
 """Browser coverage for Cache selection and manual browser-session recovery.
 
-Code version: v1.1.0-codex.0
+Code version: v1.1.1-codex.0
 """
 
 from __future__ import annotations
@@ -123,5 +123,41 @@ def test_cached_human_verification_requires_manual_recheck_without_login(
         expect(page.locator("#start_button")).to_be_enabled()
         assert len(requests) == 2
         assert "refresh=1" in requests[-1]
+    finally:
+        context.close()
+
+
+@pytest.mark.parametrize("corrupt_source", [True, False])
+def test_browser_picker_does_not_build_routes_from_untrusted_dom_tokens(
+    disposable_browser, sidebar_server_url, macos_host, corrupt_source,
+):
+    context = disposable_browser.new_context(reduced_motion="reduce")
+    context.route("**/api/browser-session**", lambda route: route.fulfill(json={
+        "browser": "safari", "logged_in": True, "can_download": True,
+        "account_name": "Synthetic", "message": "Ready.",
+    }))
+    try:
+        page = context.new_page()
+        original_url = f"{sidebar_server_url}/cache/chatgpt/text/safari"
+        page.goto(original_url, wait_until="domcontentloaded")
+        page.locator('[data-role="browser-picker-selected-label"]').wait_for()
+        links = page.locator("[data-cache-content-mode-option]")
+        original_links = links.evaluate_all("nodes => nodes.map(node => node.getAttribute('href'))")
+        panel = page.locator('[data-browser-session-panel][data-platform="chatgpt"]')
+        panel.locator('[data-browser-option="chrome"]').evaluate(
+            "node => node.setAttribute('data-untrusted-picker-option', 'true')"
+        )
+        option = panel.locator("[data-untrusted-picker-option]")
+        if corrupt_source:
+            page.locator("[data-cache-page]").evaluate(
+                "node => node.dataset.cacheSource = 'chatgpt/../../../settings'"
+            )
+        else:
+            option.evaluate("node => node.dataset.browserOption = 'javascript:window.__pickerExecuted=1'")
+        panel.locator('[data-role="browser-picker-trigger"]').click()
+        option.click()
+        expect(page).to_have_url(original_url)
+        assert links.evaluate_all("nodes => nodes.map(node => node.getAttribute('href'))") == original_links
+        assert page.evaluate("window.__pickerExecuted || 0") == 0
     finally:
         context.close()

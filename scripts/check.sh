@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-# Code version: v1.7.0-codex.0
+# Code version: v1.8.0-codex.0
 
 set -euo pipefail
 
@@ -57,6 +57,10 @@ echo "[5/6] JavaScript unit tests"
 node --test tests/test_agent_optimization.mjs tests/test_beta_engines.mjs tests/test_numeric_display.mjs tests/test_select_controller.mjs
 
 echo "[6/6] Python tests with branch coverage"
+SHARD_COVERAGE_MINIMUM="$COVERAGE_MINIMUM"
+if [[ ${AGENTIC_CONTEXT_TEST_SHARD+x} || ${AGENTIC_CONTEXT_TEST_SHARD_COUNT+x} ]]; then
+	SHARD_COVERAGE_MINIMUM="$("$PYTHON_BIN" scripts/quality_shards.py minimum "$COVERAGE_MINIMUM")"
+fi
 COVERAGE_STARTED_AT="$(mktemp "$ROOT_DIR/test-results/coverage-start.XXXXXX")"
 trap 'rm -f "$COVERAGE_STARTED_AT"' EXIT
 "$ROOT_DIR/scripts/test.sh" \
@@ -64,11 +68,15 @@ trap 'rm -f "$COVERAGE_STARTED_AT"' EXIT
 	--cov-branch \
 	--cov-report=term-missing \
 	--cov-report=json:test-results/coverage.json \
-	--cov-fail-under="$COVERAGE_MINIMUM"
+	--cov-fail-under="$SHARD_COVERAGE_MINIMUM"
 
 if [[ ! -f test-results/coverage.json || ! test-results/coverage.json -nt "$COVERAGE_STARTED_AT" ]]; then
 	echo "Pytest did not produce a fresh coverage report." >&2
 	exit 1
 fi
 
-echo "Quality gate passed."
+if [[ ${AGENTIC_CONTEXT_TEST_SHARD+x} || ${AGENTIC_CONTEXT_TEST_SHARD_COUNT+x} ]]; then
+	echo "Quality shard passed. Complete platform coverage aggregation is still required."
+else
+	echo "Quality gate passed."
+fi

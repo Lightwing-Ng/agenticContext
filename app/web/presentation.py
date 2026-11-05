@@ -7,7 +7,7 @@ touches a Flask request, a service, or an application instance, so route modules
 import it directly instead of receiving it through the application factory.
 """
 
-# Code version: v1.5.0-codex.0
+# Code version: v1.5.1-codex.0
 
 from __future__ import annotations
 
@@ -32,6 +32,7 @@ from app.core.agent import (
 )
 from app.core.providers import format_chatgpt_display_markdown, normalize_zhihu_rich_text
 from app.core.storage import DISPLAY_TIMEZONE
+from app.web.public_errors import public_exception_message
 from app.web.cache_sources import (
     LLM_SWITCHER_SOURCE_VIEWS,
     MEDIA_CACHE_SOURCE_VIEWS,
@@ -732,7 +733,11 @@ def validate_local_directory_path(raw_path: str) -> tuple[bool, str, str]:
     try:
         resolved = candidate.resolve(strict=False)
     except OSError as exc:
-        return False, str(exc)[:200], ""
+        return False, public_exception_message(
+            exc,
+            fallback="The directory could not be inspected. Check its availability and permissions.",
+            operation="validate a local directory",
+        ), ""
     if is_excluded_system_directory(resolved):
         return False, "System directories cannot be selected.", ""
     if not resolved.exists():
@@ -746,7 +751,11 @@ def validate_local_directory_path(raw_path: str) -> tuple[bool, str, str]:
     except PermissionError:
         return False, "Permission denied.", ""
     except OSError as exc:
-        return False, str(exc)[:200], ""
+        return False, public_exception_message(
+            exc,
+            fallback="The directory could not be inspected. Check its availability and permissions.",
+            operation="validate a local directory",
+        ), ""
     return True, "", str(resolved)
 
 

@@ -1,6 +1,6 @@
 """Durable compute-job lifecycle and safety contract tests.
 
-Code version: v1.6.2-codex.1
+Code version: v1.6.3-codex.0
 """
 
 from __future__ import annotations
@@ -1383,3 +1383,36 @@ def test_compute_job_stop_route_uses_the_dedicated_job_boundary(tmp_path: Path) 
     assert response.status_code == 200
     assert response.get_json() == {"compute_job": expected}
     stop.assert_called_once_with(str(workspace), "c" * 32)
+
+
+def test_approved_file_read_preserves_crlf_bytes_in_windows_binary_mode(tmp_path, monkeypatch):
+    payload = b"print('approved')\r\n# Exact signed bytes\r\n"
+    path = tmp_path / "approved.py"
+    path.write_bytes(payload)
+    native_binary = getattr(os, "O_BINARY", 0)
+    binary = native_binary or 1 << 28
+    opened = {}
+    native_open, native_read = os.open, os.read
+
+    def windows_open(candidate, flags, *args, **kwargs):
+        native_flags = flags if native_binary else flags & ~binary
+        descriptor = native_open(candidate, native_flags, *args, **kwargs)
+        opened[descriptor] = bool(flags & binary)
+        return descriptor
+
+    def windows_read(descriptor, size):
+        content = native_read(descriptor, size)
+        return content if opened.get(descriptor) else content.replace(b"\r\n", b"\n")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(os, "O_BINARY", binary, raising=False)
+        patch.setattr(os, "open", windows_open)
+        patch.setattr(os, "read", windows_read)
+        result, digest = compute_jobs._stable_regular_file_bytes(
+            path, maximum_bytes=4096, label="Approved entrypoint",
+        )
+
+    assert result == payload
+    assert digest == hashlib.sha256(payload).hexdigest()
+    assert path.read_bytes() == payload
+    assert opened and all(opened.values())

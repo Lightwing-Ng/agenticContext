@@ -1,6 +1,6 @@
 """Jury HTTP validation, isolation, and control-plane security regressions.
 
-Code version: v1.5.0-codex.0
+Code version: v1.5.1-codex.0
 """
 
 from __future__ import annotations
@@ -52,7 +52,7 @@ def jury_app(tmp_path):
         ],
         "ready": True,
     }
-    service.sessions.return_value = [service.status.return_value]
+    service.sessions.return_value = {"sessions": [service.status.return_value]}
     service.stop.return_value = {
         **service.status.return_value,
         "running": False,

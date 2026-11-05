@@ -1,10 +1,11 @@
 """Preserve local OpenClaw state without depending on its running gateway.
 
-Code version: v1.0.1-codex.0
+Code version: v1.1.0-codex.0
 """
 
 from __future__ import annotations
 
+from contextlib import closing
 import hashlib
 import json
 import os
@@ -15,6 +16,8 @@ import stat
 import tempfile
 from datetime import UTC, datetime
 from uuid import uuid4
+
+from .owner_only_files import ensure_owner_only, ensure_owner_only_directory
 
 
 OPENCLAW_ARCHIVE_SCHEMA_VERSION = 1
@@ -44,7 +47,7 @@ def _private_directory(path: Path) -> None:
     if any(parent.is_symlink() for parent in (path, *path.parents)):
         raise ValueError("Archive and source paths must not contain symbolic links.")
     path.mkdir(parents=True, exist_ok=True, mode=0o700)
-    path.chmod(0o700)
+    ensure_owner_only_directory(path)
 
 
 def _digest(path: Path) -> str:
@@ -57,6 +60,7 @@ def _write_json(path: Path, payload: dict) -> None:
     descriptor, temporary = tempfile.mkstemp(prefix=f".{path.name}-", dir=path.parent)
     try:
         with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+            ensure_owner_only(Path(temporary))
             json.dump(payload, stream, ensure_ascii=False, indent=2)
             stream.write("\n")
             stream.flush()
@@ -74,13 +78,15 @@ def _is_sqlite(path: Path) -> bool:
 
 def _copy_file(source: Path, destination: Path) -> dict:
     """Copy through a no-follow descriptor and verify the resulting bytes."""
-    descriptor = os.open(source, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+    descriptor = os.open(
+        source, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_BINARY", 0),
+    )
     with os.fdopen(descriptor, "rb") as original:
         before = os.fstat(original.fileno())
         if not stat.S_ISREG(before.st_mode):
             raise ValueError("Archive inputs must be regular files.")
         with destination.open("xb") as target:
-            destination.chmod(0o600)
+            ensure_owner_only(destination)
             shutil.copyfileobj(original, target, 1024 * 1024)
             target.flush()
             os.fsync(target.fileno())
@@ -106,28 +112,25 @@ def _backup_sqlite(source: Path, destination: Path) -> dict:
     before = source.stat()
     descriptor = os.open(destination, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     os.close(descriptor)
-    connection = sqlite3.connect(f"{source.as_uri()}?mode=ro", uri=True, timeout=10)
-    target = sqlite3.connect(destination)
+    ensure_owner_only(destination)
     validation = "ok"
-    try:
-        connection.execute("PRAGMA query_only=ON")
-        connection.backup(target, pages=1024, sleep=0.05)
-        target.execute("PRAGMA journal_mode=DELETE").fetchone()
-        try:
-            results = [row[0] for row in target.execute("PRAGMA quick_check")]
-        except sqlite3.DatabaseError as error:
-            # OpenClaw can install vec0 or custom tokenizer modules unavailable here.
-            if "no such module" not in str(error) and "no such tokenizer" not in str(error):
-                raise
-            validation = "unavailable: optional SQLite extension is not installed"
-        else:
-            if results != ["ok"]:
-                raise RuntimeError("An OpenClaw database snapshot failed SQLite quick_check.")
-        target.execute("SELECT count(*) FROM sqlite_master").fetchone()
-    finally:
-        target.close()
-        connection.close()
-    destination.chmod(0o600)
+    with closing(sqlite3.connect(f"{source.as_uri()}?mode=ro", uri=True, timeout=10)) as connection:
+        with closing(sqlite3.connect(destination)) as target:
+            connection.execute("PRAGMA query_only=ON")
+            connection.backup(target, pages=1024, sleep=0.05)
+            target.execute("PRAGMA journal_mode=DELETE").fetchone()
+            try:
+                results = [row[0] for row in target.execute("PRAGMA quick_check")]
+            except sqlite3.DatabaseError as error:
+                # OpenClaw can install vec0 or custom tokenizer modules unavailable here.
+                if "no such module" not in str(error) and "no such tokenizer" not in str(error):
+                    raise
+                validation = "unavailable: optional SQLite extension is not installed"
+            else:
+                if results != ["ok"]:
+                    raise RuntimeError("An OpenClaw database snapshot failed SQLite quick_check.")
+            target.execute("SELECT count(*) FROM sqlite_master").fetchone()
+    ensure_owner_only(destination)
     return {
         "strategy": "sqlite-backup", "sha256": _digest(destination),
         "size": destination.stat().st_size, "quick_check": validation,
@@ -155,9 +158,9 @@ def create_openclaw_archive(
     _private_directory(archive_root)
     created_at = datetime.now(UTC)
     archive = archive_root / f"{created_at:%Y%m%dT%H%M%S.%fZ}-{uuid4().hex[:8]}"
-    archive.mkdir(mode=0o700)
+    _private_directory(archive)
     state = archive / "state"
-    state.mkdir(mode=0o700)
+    _private_directory(state)
     manifest = {
         "schema_version": OPENCLAW_ARCHIVE_SCHEMA_VERSION,
         "created_at": created_at.isoformat().replace("+00:00", "Z"),
@@ -181,7 +184,7 @@ def create_openclaw_archive(
                 path = current / name
                 relative = path.relative_to(source)
                 if path.is_symlink():
-                    manifest["symlinks"].append({"path": str(relative), "target": os.readlink(path)})
+                    manifest["symlinks"].append({"path": relative.as_posix(), "target": os.readlink(path)})
                     if name in names:
                         names.remove(name)
                     continue
@@ -189,14 +192,14 @@ def create_openclaw_archive(
                 if name == "node_modules":
                     reason = "Regenerable dependency tree."
                 if reason:
-                    manifest["exclusions"].append({"path": str(relative), "reason": reason})
+                    manifest["exclusions"].append({"path": relative.as_posix(), "reason": reason})
                     if name in names:
                         names.remove(name)
                     continue
                 if path.is_dir():
                     continue
                 if not path.is_file():
-                    manifest["warnings"].append({"path": str(relative), "reason": "Non-regular runtime entry was not copied."})
+                    manifest["warnings"].append({"path": relative.as_posix(), "reason": "Non-regular runtime entry was not copied."})
                     continue
                 inputs.append(path)
                 if _is_sqlite(path):
@@ -211,16 +214,16 @@ def create_openclaw_archive(
             ), None)
             if sidecar is not None:
                 manifest["exclusions"].append({
-                    "path": str(relative),
+                    "path": relative.as_posix(),
                     "reason": "SQLite sidecar incorporated through online database backup.",
                 })
                 continue
             target = state / relative
             entry = _backup_sqlite(path, target) if path in sqlite_inputs else _copy_file(path, target)
-            entry.update({"path": str(relative), "source_path": str(path)})
+            entry.update({"path": relative.as_posix(), "source_path": str(path)})
             manifest["files"].append(entry)
             if entry.get("quick_check", "ok") != "ok":
-                manifest["warnings"].append({"path": str(relative), "reason": entry["quick_check"]})
+                manifest["warnings"].append({"path": relative.as_posix(), "reason": entry["quick_check"]})
         manifest["file_count"] = len(manifest["files"])
         manifest["total_bytes"] = sum(entry["size"] for entry in manifest["files"])
         manifest["sqlite_count"] = len(sqlite_inputs)

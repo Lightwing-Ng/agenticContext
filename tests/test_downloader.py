@@ -1,6 +1,6 @@
 """Tests for yt-dlp output classification and retry boundaries.
 
-Code version: v1.4.1-codex.0
+Code version: v1.4.2-codex.0
 """
 
 from __future__ import annotations
@@ -40,19 +40,18 @@ from app.core.downloader import (
 from app.core.state import TaskState
 
 
-def test_output_parsing_counts_media_and_classifies_skips() -> None:
+def test_output_parsing_counts_media_and_classifies_skips(tmp_path) -> None:
+    expected = [tmp_path / name for name in ("photo.JPG", "video.mp4", "unknown.txt")]
     output = "\n".join(
         [
             "ordinary output",
-            f"{MEDIA_MARKER_PREFIX}/tmp/photo.JPG",
-            f"{MEDIA_MARKER_PREFIX}/tmp/video.mp4",
-            f"{MEDIA_MARKER_PREFIX}/tmp/unknown.txt",
+            *(f"{MEDIA_MARKER_PREFIX}{path}" for path in expected),
         ]
     )
 
     paths = parse_downloaded_paths(output)
 
-    assert [str(path) for path in paths] == ["/tmp/photo.JPG", "/tmp/video.mp4", "/tmp/unknown.txt"]
+    assert paths == expected
     assert count_downloaded_media_types(paths) == (1, 1)
     assert is_successful_skip_output("[download] file already exists")
     assert is_missing_media_skip_output("No video could be found in this tweet")

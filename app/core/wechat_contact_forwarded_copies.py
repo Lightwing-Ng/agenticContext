@@ -1,6 +1,6 @@
 """Fold contact-level forwarded statement copies without inventing event identity.
 
-Code version: v1.0.0-codex.0
+Code version: v1.0.1-codex.0
 """
 
 from __future__ import annotations
@@ -23,7 +23,7 @@ from .wechat_statement_reviews import (
 )
 
 
-VERSION = "v1.0.0-codex.0"
+VERSION = "v1.0.1-codex.0"
 BASIS = "contact_forwarded_statement_projection"
 MAX_REFERENCES = 200_000
 MAX_PACKET_BYTES = 16 * 1024**2
@@ -606,10 +606,11 @@ def fold_contact_forwarded_copies(
     native_thread_key,
     check_cancelled=lambda: None,
 ):
-    """Fold matching forwarded assertions across verified receiving contexts.
+    """Explicitly fold forwarded assertions across verified receiving contexts.
 
     This is a reversible contact display projection. It neither discovers an
     absent original event nor changes a raw message, source clock, or account.
+    Canonical contact-index builds never apply this text-copy grouping implicitly.
     """
     summary = {
         "status": "no_matches",

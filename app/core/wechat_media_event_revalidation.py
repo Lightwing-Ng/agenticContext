@@ -1,6 +1,6 @@
 """Stage source-verified metadata timeline pins without reading media payloads.
 
-Code version: v1.0.0-codex.0
+Code version: v1.0.1-codex.0
 """
 
 from __future__ import annotations
@@ -18,7 +18,7 @@ from .wechat_export_merge import _clonefile
 from .wechat_media_event_index import _local_index, _validated_conversations
 
 
-VERSION = "v1.0.0-codex.0"
+VERSION = "v1.0.1-codex.0"
 _RESERVE_BYTES = 16 * 1024**2
 
 
@@ -122,7 +122,7 @@ def stage_media_event_revalidation(local_store_root, candidate_path):
                 raise ValueError("The metadata candidate changed another receipt.")
         if _file_identity(history) != history_identity or _file_identity(original) != original_identity:
             raise ValueError("A source changed before metadata candidate completion.")
-        with candidate.open("rb") as stream:
+        with candidate.open("r+b") as stream:
             os.fsync(stream.fileno())
         return {
             "version": VERSION,
