@@ -1,10 +1,11 @@
 """Verify reversible publication, external preservation gates, and source pins.
 
-Code version: v1.1.0-codex.0
+Code version: v1.1.1-codex.0
 """
 
 from __future__ import annotations
 
+from contextlib import closing
 import hashlib
 import importlib.util
 import json
@@ -55,7 +56,7 @@ def publication(tmp_path, monkeypatch):
     for path in (runtime, stage, external):
         path.mkdir()
     history = runtime / "history.sqlite3"
-    with sqlite3.connect(history) as connection:
+    with closing(sqlite3.connect(history)) as connection, connection:
         connection.executescript(
             "CREATE TABLE partitions(id TEXT PRIMARY KEY,account_key TEXT,account_id TEXT);"
             "INSERT INTO partitions VALUES('source','account','owner');"
@@ -64,7 +65,7 @@ def publication(tmp_path, monkeypatch):
             "CREATE VIEW messages AS SELECT id,text FROM message_storage;"
         )
     sidecar = runtime / "resource_references.sqlite3"
-    with sqlite3.connect(sidecar) as connection:
+    with closing(sqlite3.connect(sidecar)) as connection, connection:
         connection.executescript(
             "CREATE TABLE archive_info(key TEXT PRIMARY KEY,value TEXT NOT NULL);"
             "CREATE TABLE messages(id TEXT PRIMARY KEY,text TEXT);"
@@ -94,6 +95,26 @@ def publication(tmp_path, monkeypatch):
 
 def _publish(fixture):
     return publisher.publish(list(reversed(fixture["receipts"])), fixture["backups"], fixture["operation"])
+
+
+@pytest.mark.parametrize("helper", [publisher._view_content, publisher._info])
+def test_publication_readers_release_the_database_before_inode_exchange(
+    publication, monkeypatch, helper,
+):
+    retained = []
+    readonly = compactor.readonly
+
+    def tracked(path):
+        connection = readonly(path)
+        retained.append(connection)
+        return connection
+
+    monkeypatch.setattr(compactor, "readonly", tracked)
+    helper(publication["sidecar"])
+    assert retained
+    for connection in retained:
+        with pytest.raises(sqlite3.ProgrammingError, match="closed"):
+            connection.execute("SELECT 1")
 
 
 def test_publication_preserves_original_inodes_and_exact_view_output(publication):
@@ -206,7 +227,7 @@ def test_verified_device_refresh_preserves_historical_current_pin_gate(publicati
     result = compactor.refresh_mount(publication["receipts"], output)
     publication["receipts"] = [Path(item["receipt"]) for item in result["receipts"]]
     stale = publication["history"].with_name("media_events.sqlite3")
-    with sqlite3.connect(stale) as connection:
+    with closing(sqlite3.connect(stale)) as connection, connection:
         connection.execute("CREATE TABLE archive_info(key TEXT PRIMARY KEY,value TEXT)")
         connection.execute("INSERT INTO archive_info VALUES('history_file_identity',?)", (json.dumps({**old_identity, "inode": old_identity["inode"] + 100}),))
     stale_sha = compactor.sha256(stale)

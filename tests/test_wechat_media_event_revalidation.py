@@ -1,10 +1,11 @@
 """Revalidate metadata-only timeline candidates without weakening normal reads.
 
-Code version: v1.0.0-codex.0
+Code version: v1.0.1-codex.0
 """
 
 from __future__ import annotations
 
+from contextlib import closing
 import json
 from pathlib import Path
 import shutil
@@ -25,7 +26,7 @@ placeholder_store = fixtures.placeholder_store
 @pytest.fixture
 def stale_media(global_media_store, monkeypatch):
     fixture = global_media_store
-    with sqlite3.connect(fixture.history) as history:
+    with closing(sqlite3.connect(fixture.history)) as history, history:
         history.execute("INSERT INTO archive_info VALUES('unrelated_revision','new')")
     monkeypatch.setattr(revalidation, "_clonefile", shutil.copyfile)
     return fixture
@@ -48,7 +49,12 @@ def test_staged_revalidation_restores_exact_events_without_publishing_or_source_
     assert report["published"] is False
     assert report["media_payload_files_read"] == report["cloud_inputs_hydrated"] == 0
     assert (fixture.history.read_bytes(), fixture.index.read_bytes()) == before
-    with sqlite3.connect(candidate) as output, sqlite3.connect(fixture.index) as source:
+    with (
+        closing(sqlite3.connect(candidate)) as output,
+        output,
+        closing(sqlite3.connect(fixture.index)) as source,
+        source,
+    ):
         assert output.execute("SELECT * FROM messages ORDER BY id").fetchall() == source.execute(
             "SELECT * FROM messages ORDER BY id"
         ).fetchall()
@@ -67,7 +73,7 @@ def test_staged_revalidation_restores_exact_events_without_publishing_or_source_
 @pytest.mark.parametrize("defect", ["member", "snapshot", "account", "count", "orphan", "collision"])
 def test_revalidation_refuses_broken_or_overlapping_source_evidence(stale_media, defect):
     fixture = stale_media
-    with sqlite3.connect(fixture.index) as index:
+    with closing(sqlite3.connect(fixture.index)) as index, index:
         if defect == "member":
             index.execute("UPDATE conversation_proofs SET member_sha256=?", ("f" * 64,))
         elif defect == "snapshot":
@@ -79,7 +85,7 @@ def test_revalidation_refuses_broken_or_overlapping_source_evidence(stale_media,
         elif defect == "orphan":
             index.execute("UPDATE messages SET conversation_id='unverified' WHERE id=?", (fixture.specs[0].rows[0][0],))
     if defect == "collision":
-        with sqlite3.connect(fixture.history) as history:
+        with closing(sqlite3.connect(fixture.history)) as history, history:
             history.execute("INSERT INTO messages VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)", fixture.specs[0].rows[0])
     before = fixture.history.read_bytes(), fixture.index.read_bytes()
     candidate = fixture.index.with_name("refused-candidate.sqlite3")
