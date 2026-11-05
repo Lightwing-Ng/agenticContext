@@ -1,6 +1,6 @@
 """Mac text overlays bind exact sources while leaving primary messages unchanged.
 
-Code version: v1.0.0-codex.0
+Code version: v1.0.1-codex.0
 """
 
 from copy import deepcopy
@@ -30,7 +30,7 @@ def sha(text):
 
 
 def write_json(path, value):
-    path.write_text(json.dumps(value, ensure_ascii=False, indent=2) + "\n")
+    path.write_text(json.dumps(value, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
 
 def make_observation_fixture(store: Path) -> dict:
@@ -294,7 +294,7 @@ def test_observation_projects_existing_sources_without_changing_primary_or_readi
         fixture["history_path"].read_bytes(),
         fixture["resource_path"].read_bytes(),
     )
-    registry = fixture["registry_path"].read_text()
+    registry = fixture["registry_path"].read_text(encoding="utf-8")
     assert (
         fixture["new_reply"] not in registry
         and fixture["excerpt_text"] not in registry
@@ -446,7 +446,7 @@ def test_changed_native_quote_is_not_overlaid_even_if_registry_hashes_are_refres
 
 def test_codepoint_slices_keep_non_bmp_characters_and_whitespace(tmp_path):
     fixture = make_observation_fixture(tmp_path)
-    artifact = json.loads(fixture["artifact_path"].read_text())
+    artifact = json.loads(fixture["artifact_path"].read_text(encoding="utf-8"))
     extra = "😀  exact e\u0301\n"
     artifact["user_input_representation"][0]["text"] += extra
     old_part = artifact["user_input_representation"][0]["text"]
@@ -471,7 +471,7 @@ def test_codepoint_slices_keep_non_bmp_characters_and_whitespace(tmp_path):
 def test_database_and_registry_changes_during_projection_invalidate_result(tmp_path):
     fixture = make_observation_fixture(tmp_path)
     viewer = WechatTextObservations(fixture["store"])
-    fixture["registry_path"].write_text(fixture["registry_path"].read_text() + "\n")
+    fixture["registry_path"].write_text(fixture["registry_path"].read_text(encoding="utf-8") + "\n", encoding="utf-8")
     assert (
         viewer.project(
             fixture["message_id"],
@@ -486,7 +486,7 @@ def test_database_and_registry_changes_during_projection_invalidate_result(tmp_p
 
 def test_artifact_parent_binding_is_enforced_even_when_its_hash_is_current(tmp_path):
     fixture = make_observation_fixture(tmp_path)
-    artifact = json.loads(fixture["artifact_path"].read_text())
+    artifact = json.loads(fixture["artifact_path"].read_text(encoding="utf-8"))
     artifact["corroborated_reply_candidate_id"] = "f" * 64
     write_json(fixture["artifact_path"], artifact)
     fixture["observation"]["source"]["sha256"] = hashlib.sha256(
@@ -526,7 +526,7 @@ def test_same_named_text_in_another_account_cannot_supply_a_canonical_body(tmp_p
                 "SELECT provenance FROM messages WHERE id=?", (target_id,)
             ).fetchone()[0]
         )
-    artifact = json.loads(fixture["artifact_path"].read_text())
+    artifact = json.loads(fixture["artifact_path"].read_text(encoding="utf-8"))
     artifact["user_input_representation"][1]["message_id"] = target_id
     write_json(fixture["artifact_path"], artifact)
     observation = fixture["observation"]

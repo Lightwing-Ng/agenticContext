@@ -1,6 +1,6 @@
 """Native resource catalogs preserve accounts, source bytes, and undecoded records.
 
-Code version: v1.0.1-codex.0
+Code version: v1.0.2-codex.0
 """
 
 from __future__ import annotations
@@ -141,7 +141,7 @@ def resources(tmp_path):
 
 
 def _rows(fixture):
-    with sqlite3.connect(resource_index_path(fixture.store)) as connection:
+    with closing(sqlite3.connect(resource_index_path(fixture.store))) as connection, connection:
         connection.row_factory = sqlite3.Row
         return [
             dict(row)
@@ -229,8 +229,8 @@ def test_schema_identity_and_attachment_only_conversations_follow_existing_contr
     fixture = resources
     build_resource_index(fixture.store, fixture.snapshot)
     with (
-        sqlite3.connect(resource_index_path(fixture.store)) as sidecar,
-        sqlite3.connect(fixture.history) as main,
+        closing(sqlite3.connect(resource_index_path(fixture.store))) as sidecar, sidecar,
+        closing(sqlite3.connect(fixture.history)) as main, main,
     ):
         for table in ("messages", "conversations"):
             assert (

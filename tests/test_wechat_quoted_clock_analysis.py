@@ -1,7 +1,9 @@
 """Contact cache upgrades recover original clocks without borrowing reply authors.
 
-Code version: v1.1.2-codex.0
+Code version: v1.1.3-codex.0
 """
+
+from contextlib import closing
 
 from datetime import datetime
 import hashlib
@@ -188,7 +190,7 @@ def _cache(fixture):
 
 
 def _reference_state(path):
-    with sqlite3.connect(path) as connection:
+    with closing(sqlite3.connect(path)) as connection, connection:
         return {
             "references": connection.execute(
                 "SELECT id,parent_message_id,component_path,anchor_id,conversation_id,"
@@ -204,7 +206,7 @@ def _reference_state(path):
 
 
 def _ref(path, identifier):
-    with sqlite3.connect(path) as connection:
+    with closing(sqlite3.connect(path)) as connection, connection:
         connection.row_factory = sqlite3.Row
         found = connection.execute(
             "SELECT * FROM refs WHERE id=?", (identifier,)

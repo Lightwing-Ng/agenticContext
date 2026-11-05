@@ -1,6 +1,6 @@
 """Regression tests for cross-window cache task exclusion.
 
-Code version: v1.1.0-claude.0
+Code version: v1.1.1-codex.0
 """
 
 from __future__ import annotations
@@ -84,12 +84,17 @@ def test_held_resource_locks_are_found_without_claiming_them(tmp_path: Path) -> 
     browser = CacheTaskLock(cache_task_resource_lock_path(tmp_path, "browser:safari"))
     gate = CacheTaskLock(tmp_path / ".cache_task.lock")
     assert task.acquire("x:media") and browser.acquire("x:media") and gate.acquire("gate")
-    owner_record = task.path.read_text(encoding="utf-8")
+    # Windows byte-range locks exclude a second descriptor, including our own.
+    # Inspect through the descriptor that owns the lock without releasing it.
+    assert task._handle is not None
+    task._handle.seek(0)
+    owner_record = task._handle.read()
 
     # The gate is not a task resource, and a probe leaves the owner record untouched.
     assert held_cache_task_resource_locks(tmp_path) == (browser.path, task.path)
     assert held_cache_task_resource_locks(tmp_path, ignore=frozenset({browser.path})) == (task.path,)
-    assert task.path.read_text(encoding="utf-8") == owner_record
+    task._handle.seek(0)
+    assert task._handle.read() == owner_record
 
     browser.release()
     task.release()

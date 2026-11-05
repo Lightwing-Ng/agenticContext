@@ -1,6 +1,6 @@
 """Focused tests for the Web Computer Use controller.
 
-Code version: v3.85.0-claude.0
+Code version: v3.85.1-codex.0
 """
 
 from __future__ import annotations
@@ -12,7 +12,7 @@ from io import BytesIO, StringIO, TextIOWrapper
 import inspect
 import json
 import os
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import re
 import signal
 import shutil
@@ -139,6 +139,7 @@ from app.core.workspace import (
 )
 from app.core.agent import context_package, platform_catalog as agent_platform_catalog
 from app.core.agent.event_chain import AgentEventChain, new_run_id
+from app.core.owner_only_files import owner_only_problem, owner_only_directory_problem
 from app.core.config import CrawlConfig
 from app.core.safari_automation import SafariNativeActivationError
 
@@ -153,6 +154,13 @@ WORKSPACE_MODULES = (
     workspace_process_io,
     workspace_search,
 )
+
+
+def _assert_private_path(path: Path, *, directory: bool = False) -> None:
+    problem = owner_only_directory_problem(path) if directory else owner_only_problem(path)
+    assert problem == ""
+    if os.name == "posix":
+        assert path.stat().st_mode & 0o777 == (0o700 if directory else 0o600)
 
 
 def test_computer_use_agent_keeps_moved_symbol_compatibility() -> None:
@@ -468,6 +476,7 @@ def test_settings_validate_all_web_agent_platforms_and_model_contracts() -> None
                 {
                     "workspace_path": raw_root,
                     "platform": safari_platform,
+                    "operating_system": "macos",
                     "browser": "safari",
                     "model": safari_model,
                     "target_url": safari_target,
@@ -490,6 +499,7 @@ def test_settings_validate_all_web_agent_platforms_and_model_contracts() -> None
 
 def test_safari_source_only_selection_cannot_start_full_agent_execution(
     tmp_path: Path,
+    macos_host,
 ) -> None:
     workspace = tmp_path / "project"
     workspace.mkdir()
@@ -508,6 +518,7 @@ def test_safari_source_only_selection_cannot_start_full_agent_execution(
             "Do not send this prompt",
             str(workspace),
             CrawlConfig(),
+            operating_system="macos",
             platform="gemini",
             browser="safari",
             model="gemini-3.1-pro",
@@ -4803,16 +4814,15 @@ def test_open_browser_for_login_macos_allows_safari_source_providers(
 
 
 def test_host_operating_system_detection_uses_supported_host_keys(monkeypatch: pytest.MonkeyPatch) -> None:
-    import app.core.computer_use_agent as computer_use_agent
-
-    monkeypatch.setattr(computer_use_agent.sys, "platform", "darwin")
-    assert detect_host_operating_system() == "macos"
-
-    monkeypatch.setattr(computer_use_agent.sys, "platform", "win32")
-    assert detect_host_operating_system() == "windows"
-
-    monkeypatch.setattr(computer_use_agent.sys, "platform", "linux")
-    assert detect_host_operating_system() == "macos"
+    for platform, os_name, expected in (
+        ("darwin", "posix", "macos"),
+        ("win32", "nt", "windows"),
+        ("linux", "posix", "macos"),
+        ("linux", "nt", "windows"),
+    ):
+        monkeypatch.setattr(agent_platform_catalog, "sys", SimpleNamespace(platform=platform))
+        monkeypatch.setattr(agent_platform_catalog, "os", SimpleNamespace(name=os_name))
+        assert detect_host_operating_system() == expected
 
 
 def test_terminal_execution_permission_reports_selected_project_access(
@@ -5238,7 +5248,7 @@ def test_saved_settings_are_owner_readable_only() -> None:
         settings_path = Path(raw_root) / "computer-use-agent.json"
         save_computer_use_settings(ComputerUseSettings(), settings_path)
 
-        assert settings_path.stat().st_mode & 0o777 == 0o600
+        _assert_private_path(settings_path)
         assert "owner_token" not in settings_path.read_text(encoding="utf-8")
 
 
@@ -7470,9 +7480,9 @@ def test_service_startup_removes_only_unreferenced_context_bundles(
     assert not orphaned_directory.exists()
     assert preserved_context.read_text(encoding="utf-8") == "recorded private context"
     assert ignored_context.exists()
-    assert runtime_root.stat().st_mode & 0o777 == 0o700
-    assert preserved_directory.stat().st_mode & 0o777 == 0o700
-    assert preserved_context.stat().st_mode & 0o777 == 0o600
+    _assert_private_path(runtime_root, directory=True)
+    _assert_private_path(preserved_directory, directory=True)
+    _assert_private_path(preserved_context)
 
 
 def test_orphaned_context_cleanup_failure_blocks_the_next_task(
@@ -7727,7 +7737,7 @@ def test_snapshot_persistence_ignores_a_precreated_fixed_temporary_link(
     snapshot_path = runtime_root / "last-run.json"
     assert snapshot_path.is_file()
     assert not snapshot_path.is_symlink()
-    assert snapshot_path.stat().st_mode & 0o777 == 0o600
+    _assert_private_path(snapshot_path)
     assert fixed_temporary_link.is_symlink()
     assert outside_file.read_text(encoding="utf-8") == "outside metadata"
     assert outside_file.stat().st_mode & 0o777 == original_mode
@@ -7828,8 +7838,8 @@ def test_context_markdown_contains_instructions_request_and_bounded_index(
         assert '?? "safe.py"' in content
         assert ".env" not in content
         assert "credentials/token.txt" not in content
-        assert path.stat().st_mode & 0o777 == 0o600
-        assert path.parent.stat().st_mode & 0o777 == 0o700
+        _assert_private_path(path)
+        _assert_private_path(path.parent, directory=True)
 
 
 @pytest.mark.parametrize(
@@ -7992,7 +8002,7 @@ def test_git_status_stream_has_a_global_raw_limit_and_stops_the_process(
     assert len(output) == 64
     assert stopped == [process]
     assert Path(observed_command[0]).is_absolute()
-    assert Path(observed_command[0]).name == "git"
+    assert Path(observed_command[0]).name == ("git.exe" if os.name == "nt" else "git")
     assert "--porcelain=v1" in observed_command
     assert "-z" in observed_command
     assert "--untracked-files=all" in observed_command
@@ -8476,7 +8486,7 @@ def test_action_loop_records_workspace_and_delete_receipt_provenance(
     workspace.mkdir()
     secret = "PRIVATE_AUDIT_CONTENT\n"
     audit_file = workspace / "audit.txt"
-    audit_file.write_text(secret, encoding="utf-8")
+    audit_file.write_bytes(secret.encode("utf-8"))
     digest = hashlib.sha256(secret.encode("utf-8")).hexdigest()
     stop_requested = Event()
     controller = WorkspaceController(
@@ -11498,7 +11508,7 @@ def test_workspace_controller_delete_requires_a_current_read_sha256() -> None:
         workspace = Path(raw_root) / "project"
         workspace.mkdir()
         obsolete = workspace / "obsolete.txt"
-        obsolete.write_text("retired fixture\n", encoding="utf-8")
+        obsolete.write_bytes(b"retired fixture\n")
         controller = WorkspaceController(
             workspace,
             ComputerUseSettings(workspace_path=str(workspace)),
@@ -11532,7 +11542,7 @@ def test_workspace_controller_delete_requires_a_current_read_sha256() -> None:
         assert not wrong_digest["ok"]
         assert obsolete.exists()
 
-        obsolete.write_text("changed after read\n", encoding="utf-8")
+        obsolete.write_bytes(b"changed after read\n")
         stale_digest = controller.execute(
             {
                 "action": "delete",
@@ -11690,7 +11700,7 @@ def _windows_delete_controller(
     nested = workspace / "nested"
     nested.mkdir(parents=True)
     target = nested / "target.txt"
-    target.write_text(content, encoding="utf-8")
+    target.write_bytes(content.encode("utf-8"))
     controller = WorkspaceController(
         workspace,
         ComputerUseSettings(workspace_path=str(workspace)),
@@ -12341,6 +12351,31 @@ def test_path_guarded_replace_preserves_an_edit_at_the_rename_boundary(
     assert list(workspace.glob(".target.txt.agent-backup-*.tmp")) == []
 
 
+def _shared_write_descriptor(path: Path) -> int:
+    """Allow the test's old writer to survive a rename on native Windows too."""
+    if os.name != "nt":
+        return os.open(path, os.O_WRONLY)
+    import ctypes
+    from ctypes import wintypes
+    import msvcrt
+
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    create = kernel.CreateFileW
+    create.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD, ctypes.c_void_p,
+                       wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE]
+    create.restype = wintypes.HANDLE
+    handle = create(str(path), 0x40000000, 0x1 | 0x2 | 0x4, None, 3, 0x80, None)
+    if handle == ctypes.c_void_p(-1).value:
+        raise ctypes.WinError(ctypes.get_last_error())
+    try:
+        return msvcrt.open_osfhandle(handle, os.O_WRONLY | os.O_BINARY)
+    except BaseException:
+        close = kernel.CloseHandle
+        close.argtypes = [wintypes.HANDLE]
+        close(handle)
+        raise
+
+
 def test_path_guarded_replace_preserves_a_late_edit_through_the_old_descriptor(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -12348,13 +12383,13 @@ def test_path_guarded_replace_preserves_a_late_edit_through_the_old_descriptor(
     workspace = tmp_path / "project"
     workspace.mkdir()
     target = workspace / "target.txt"
-    target.write_text("controller source\n", encoding="utf-8")
+    target.write_bytes(b"controller source\n")
     controller = WorkspaceController(
         workspace,
         ComputerUseSettings(workspace_path=str(workspace)),
         lambda: False,
     )
-    old_descriptor = os.open(target, os.O_WRONLY)
+    old_descriptor = _shared_write_descriptor(target)
     original_snapshot = controller._current_file_sha256
     replacement = b"controller replacement\n"
     late_edit = b"late user edit through old descriptor\n"
@@ -12406,13 +12441,13 @@ def test_path_guarded_replace_retains_recovery_after_the_final_backup_check(
     workspace = tmp_path / "project"
     workspace.mkdir()
     target = workspace / "target.txt"
-    target.write_text("controller source\n", encoding="utf-8")
+    target.write_bytes(b"controller source\n")
     controller = WorkspaceController(
         workspace,
         ComputerUseSettings(workspace_path=str(workspace)),
         lambda: False,
     )
-    old_descriptor = os.open(target, os.O_WRONLY)
+    old_descriptor = _shared_write_descriptor(target)
     original_snapshot = controller._current_file_sha256
     late_edit = b"late user edit after final backup check\n"
     backup_checks = 0
@@ -12998,6 +13033,10 @@ def _mock_rg_popen(
         return _SearchProcess()
 
     monkeypatch.setattr(computer_use_agent.subprocess, "Popen", launch)
+    _patch_workspace_global(
+        monkeypatch, "_stop_process",
+        lambda process, **kwargs: setattr(process, "returncode", -15),
+    )
 
 
 def test_rg_json_parser_preserves_posix_colons_and_backslashes(
@@ -13005,11 +13044,12 @@ def test_rg_json_parser_preserves_posix_colons_and_backslashes(
 ) -> None:
 
     _patch_workspace_global(monkeypatch, "is_windows_host", lambda: False)
+    monkeypatch.setattr(workspace_search, "Path", PurePosixPath)
 
     assert workspace_search._parse_rg_search_match(
         _rg_json_match("outer:part/docs/name\\literal.md", 7, "marker")
     ) == (
-        Path("outer:part/docs/name\\literal.md"),
+        PurePosixPath("outer:part/docs/name\\literal.md"),
         "outer:part/docs/name\\literal.md:7:marker",
     )
 
@@ -13091,7 +13131,7 @@ def test_workspace_search_rg_explicit_file_keeps_the_filename_and_glob_semantics
     assert "!**/node_modules/**" in observed_command
     assert "!.computer-use-agent/**" in observed_command
     assert "!**/credentials/**" in observed_command
-    assert "--glob" in observed_command
+    assert ("--iglob" if os.name == "nt" else "--glob") in observed_command
     assert glob in observed_command
     assert observed_command[-3:] == ["--", "Definition of Done", "AGENTS.md"]
 
@@ -13196,7 +13236,7 @@ def test_workspace_search_rg_matches_workspace_relative_globs(
     assert result["ok"]
     assert result["engine"] == "rg"
     assert result["matches"] == expected_matches
-    assert observed_command[-3:] == ["--", "Definition of Done", "docs/AGENTS.md"]
+    assert observed_command[-3:] == ["--", "Definition of Done", str(Path("docs") / "AGENTS.md")]
 
 
 def test_workspace_search_rg_applies_root_relative_glob_before_exclusions(
@@ -13239,7 +13279,8 @@ def test_workspace_search_rg_applies_root_relative_glob_before_exclusions(
     ]
     assert "core/*.py" in observed_command
     assert "app/core/*.py" in observed_command
-    assert observed_command.index("--glob") < observed_command.index("--iglob")
+    include = "--iglob" if os.name == "nt" else "--glob"
+    assert observed_command.index(include) < observed_command.index("--iglob", observed_command.index("app/core/*.py") + 1)
 
 
 def test_windows_search_glob_normalizes_separators_case_and_engine_parity(
@@ -13698,6 +13739,8 @@ def test_workspace_search_rg_timeout_returns_a_bounded_observation(
         "Popen",
         lambda *_args, **_kwargs: _SearchProcess(),
     )
+    stopped = []
+    _patch_workspace_global(monkeypatch, "_stop_process", lambda process, **kwargs: stopped.append(process))
     controller = WorkspaceController(
         workspace,
         ComputerUseSettings(workspace_path=str(workspace)),
@@ -13708,6 +13751,8 @@ def test_workspace_search_rg_timeout_returns_a_bounded_observation(
         {"action": "search", "query": "marker", "path": "."}
     )
 
+    assert len(stopped) == 1
+    assert isinstance(stopped[0], _SearchProcess)
     assert result == {
         "ok": False,
         "action": "search",
@@ -15384,15 +15429,17 @@ def test_bodycheck_checks_staged_whitespace_without_touching_the_index(
 ) -> None:
     workspace = tmp_path / "project"
     workspace.mkdir()
+    git = shutil.which("git")
+    assert git is not None
     subprocess.run(
-        ["/usr/bin/git", "init", "--quiet"],
+        [git, "init", "--quiet"],
         cwd=workspace,
         check=True,
     )
     staged = workspace / "staged.txt"
     staged.write_text("staged trailing space  \n", encoding="utf-8")
     subprocess.run(
-        ["/usr/bin/git", "add", "--", staged.name],
+        [git, "add", "--", staged.name],
         cwd=workspace,
         check=True,
     )
@@ -15420,8 +15467,10 @@ def test_bodycheck_checks_untracked_file_whitespace_without_staging_it(
 ) -> None:
     workspace = tmp_path / "project"
     workspace.mkdir()
+    git = shutil.which("git")
+    assert git is not None
     subprocess.run(
-        ["/usr/bin/git", "init", "--quiet"],
+        [git, "init", "--quiet"],
         cwd=workspace,
         check=True,
     )
@@ -16119,7 +16168,7 @@ def test_last_run_persists_only_bounded_metadata_and_recovers_running_as_interru
     assert payload["run_revision"] == 1
     assert Path(payload["context_file"]).name == "context.md"
     assert payload["context_bytes"] > 0
-    assert snapshot_path.stat().st_mode & 0o777 == 0o600
+    _assert_private_path(snapshot_path)
     serialized = snapshot_path.read_text(encoding="utf-8")
     assert "prompt" not in payload
     assert "response" not in payload
@@ -16146,7 +16195,7 @@ def test_last_run_persists_only_bounded_metadata_and_recovers_running_as_interru
     assert recovered_payload["running"] is False
     assert recovered_payload["phase"] == "interrupted"
     assert recovered_payload["context_attached"] is context_attached
-    assert snapshot_path.stat().st_mode & 0o777 == 0o600
+    _assert_private_path(snapshot_path)
 
     release.set()
     deadline = time.monotonic() + 2
@@ -16237,7 +16286,8 @@ def test_macos_idle_sleep_assertion_cleanup_is_non_throwing_after_double_timeout
     assert process.wait_calls == 2
 
 
-def test_agent_service_rejects_windows_execution_on_macos_host() -> None:
+def test_agent_service_rejects_windows_execution_on_macos_host(monkeypatch, macos_host) -> None:
+    monkeypatch.setattr("app.core.computer_use_agent.detect_host_operating_system", lambda: "macos")
     with TemporaryDirectory() as raw_root:
         workspace = Path(raw_root) / "project"
         workspace.mkdir()
@@ -25976,3 +26026,82 @@ def test_provider_read_stop_wins_over_simultaneous_connection_recovery(
     assert reconnecting == []
     assert budget.connection_retries_remaining == 1
     assert budget.navigation_retries_remaining == 1
+
+
+
+def test_atomic_settings_acl_failure_preserves_previous_file_before_private_bytes(tmp_path, monkeypatch):
+    import app.core.computer_use_agent as agent
+
+    target = tmp_path / "settings.json"
+    previous = b'{"preserved":"original settings"}\n'
+    target.write_bytes(previous)
+
+    def denied(path):
+        assert path.read_bytes() == b""
+        raise OSError("Injected native ACL failure")
+
+    monkeypatch.setattr(agent, "ensure_owner_only", denied)
+    with pytest.raises(OSError, match="native ACL failure"):
+        save_computer_use_settings(ComputerUseSettings(), target)
+    assert target.read_bytes() == previous
+    assert list(tmp_path.glob(".settings.json.*.tmp")) == []
+
+
+def test_context_acl_failure_occurs_before_private_bytes(tmp_path, monkeypatch):
+    workspace = tmp_path / "project"
+    workspace.mkdir()
+    source = workspace / "source.txt"
+    original = b"PRIVATE_CONTEXT_SOURCE\n"
+    source.write_bytes(original)
+    destination = tmp_path / "runtime" / "context.md"
+    _patch_workspace_global(monkeypatch, "_bounded_git_status_output", lambda *args, **kwargs: ("", False))
+
+    def denied(path):
+        assert path.read_bytes() == b""
+        raise OSError("Injected native ACL failure")
+
+    monkeypatch.setattr(context_package, "ensure_owner_only", denied)
+    with pytest.raises(OSError, match="native ACL failure"):
+        build_context_markdown(workspace, "PRIVATE_REQUEST", ComputerUseSettings(), destination)
+    assert not destination.exists()
+    assert source.read_bytes() == original
+
+
+
+def test_fingerprint_rechecks_directory_with_real_windows_file_ids(tmp_path, monkeypatch):
+    workspace = tmp_path / "project"
+    workspace.mkdir()
+    (workspace / "sample.py").write_bytes(b"value = 1\n")
+    ignored = workspace / ".DS_Store"
+    ignored.write_bytes(b"old")
+    replacement = tmp_path / "replacement"
+    replacement.write_bytes(b"changed ignored metadata")
+    real_stat, real_scandir = os.stat, os.scandir
+    root_reads = 0
+
+    def stat_with_ignored_replacement(path, **kwargs):
+        nonlocal root_reads
+        if Path(path) == workspace:
+            root_reads += 1
+            if root_reads == 2:
+                os.replace(replacement, ignored)
+        return real_stat(path, **kwargs)
+
+    class CachedWindowsEntry:
+        def __init__(self, entry):
+            self.path, self.name = entry.path, entry.name
+
+        def stat(self, **kwargs):
+            metadata = real_stat(self.path, **kwargs)
+            return SimpleNamespace(st_dev=0, st_ino=0, st_nlink=0, st_mode=metadata.st_mode)
+
+    def cached_scandir(path):
+        with real_scandir(path) as entries:
+            return [CachedWindowsEntry(entry) for entry in entries]
+
+    monkeypatch.setattr(workspace_evidence, "os", SimpleNamespace(
+        stat=stat_with_ignored_replacement, scandir=cached_scandir,
+    ))
+    _digest, complete = workspace_evidence._workspace_mutation_fingerprint(workspace)
+    assert root_reads >= 2
+    assert complete is True

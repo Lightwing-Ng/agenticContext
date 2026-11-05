@@ -1,10 +1,11 @@
 """A stale contact clock index must recover from retained child evidence.
 
-Code version: v1.2.0-codex.0
+Code version: v1.2.1-codex.0
 """
 
 from __future__ import annotations
 
+from contextlib import closing
 import sqlite3
 from unittest.mock import patch
 
@@ -103,7 +104,7 @@ def _prepare_old_native_clock_cache(
 
 
 def _retained_reference_identity(cache):
-    with sqlite3.connect(cache) as connection:
+    with closing(sqlite3.connect(cache)) as connection:
         return {
             "references": connection.execute(
                 "SELECT id,parent_message_id,component_path,anchor_id,conversation_id,"

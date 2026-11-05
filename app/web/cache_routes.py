@@ -11,7 +11,7 @@ The Safari mutual-exclusion check belongs to the Agent surface, so it arrives as
 capability instead of being reimplemented here.
 """
 
-# Code version: v1.8.2-codex.0
+# Code version: v1.8.3-codex.0
 
 from __future__ import annotations
 
@@ -136,6 +136,16 @@ _ZHIHU_PROFILE_PUBLIC_ERRORS = (
     "The Zhihu profile name is not valid.",
 )
 
+# These exact server-owned status messages tell the user how to resume a cache.
+_CACHE_STATUS_PUBLIC_ERRORS = _CACHE_START_PUBLIC_ERRORS + (
+    "Zhihu requires human verification. Open Zhihu in the selected browser, "
+    "complete verification manually, then retry.",
+    "Zhihu requires sign-in or human verification. Open the profile in the selected "
+    "browser, complete verification manually, then retry.",
+    "Zhihu requires sign-in or human verification before its activity history can be read.",
+    "Zhihu did not expose an authenticated account in the selected browser.",
+)
+
 
 
 @dataclass(frozen=True, slots=True)
@@ -179,7 +189,7 @@ def _public_cache_snapshot(
             "Run the cache again to verify the archive."
         )
     public = public_diagnostic_payload(
-        snapshot, fallback=fallback, allowed=_CACHE_START_PUBLIC_ERRORS,
+        snapshot, fallback=fallback, allowed=_CACHE_STATUS_PUBLIC_ERRORS,
         operation="read cache status",
     )
     if snapshot.get("last_error") or snapshot.get("phase") == "failed":

@@ -5,7 +5,7 @@ root. Path admission stays in ``app.core.workspace``; this module only decides w
 worth including and how to stay inside the configured byte budget.
 """
 
-# Code version: v1.0.0-claude.0
+# Code version: v1.0.1-codex.0
 
 from __future__ import annotations
 
@@ -14,6 +14,7 @@ import os
 from pathlib import Path
 from typing import Protocol, runtime_checkable
 
+from ..owner_only_files import ensure_owner_only, ensure_owner_only_directory
 from ..workspace import (
     MAX_FILE_READ_CHARS,
     collect_instruction_files,
@@ -196,9 +197,14 @@ def build_context_markdown(
 
     destination.parent.mkdir(parents=True, exist_ok=True)
     try:
-        destination.parent.chmod(0o700)
-        destination.write_bytes(b"".join(encoded_parts))
+        ensure_owner_only_directory(destination.parent)
+        if destination.exists() or destination.is_symlink():
+            ensure_owner_only(destination)
+        with destination.open("wb") as output:
+            ensure_owner_only(destination)
+            output.write(b"".join(encoded_parts))
         destination.chmod(0o600)
+        ensure_owner_only(destination)
         byte_count = destination.stat().st_size
     except Exception:
         try:

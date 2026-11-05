@@ -1,7 +1,9 @@
 """Room-valued native quotes require original evidence before contact attribution.
 
-Code version: v1.0.2-codex.0
+Code version: v1.0.3-codex.0
 """
+
+from contextlib import closing
 
 from copy import deepcopy
 from datetime import datetime
@@ -104,7 +106,7 @@ def _legacy_cache(fixture, *, embedded_version=None):
 
 
 def _quote_proof(fixture):
-    with sqlite3.connect(fixtures._cache(fixture)) as connection:
+    with closing(sqlite3.connect(fixtures._cache(fixture))) as connection, connection:
         connection.row_factory = sqlite3.Row
         proof = connection.execute(
             "SELECT * FROM quoted_clock_evidence WHERE reference_id=?", (fixture.quote,)
@@ -259,7 +261,7 @@ def test_compatible_old_projection_cache_is_repaired_without_rebuilding_accepted
     result = analysis.query_contact_analysis(fixture.store, fixture.target)
 
     _assert_reply_retained_without_quote(fixture, result)
-    with sqlite3.connect(fixtures._cache(fixture)) as connection:
+    with closing(sqlite3.connect(fixtures._cache(fixture))) as connection, connection:
         assert connection.execute(
             "SELECT value FROM info WHERE key='native_embedded_version'"
         ).fetchone()[0] == analysis.NATIVE_EMBEDDED_VERSION

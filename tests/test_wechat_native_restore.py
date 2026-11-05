@@ -1,9 +1,11 @@
 """Native subset restoration preserves old rows without a full database copy.
 
-Code version: v1.1.0-codex.0
+Code version: v1.3.0-codex.0
 """
 
+from contextlib import closing
 import json
+import errno
 from datetime import datetime
 import hashlib
 import os
@@ -14,6 +16,7 @@ import sys
 import pytest
 
 from app.core import wechat_native_restore as restore
+from app.core.owner_only_files import OwnerOnlyFileError, owner_only_problem
 from app.core.wechat_archive import _identifier, wechat_archive_path
 from app.core.wechat_reconcile import reconcile_wechat_records
 
@@ -72,7 +75,7 @@ def merge(store, metadata, observations, snapshot="snapshot-one"):
 
 def rows(store, table="messages"):
     path = wechat_archive_path(store)
-    with sqlite3.connect(path.as_uri() + "?mode=ro", uri=True) as connection:
+    with closing(sqlite3.connect(path.as_uri() + "?mode=ro", uri=True)) as connection, connection:
         return connection.execute(f"SELECT * FROM {table} ORDER BY 1").fetchall()
 
 
@@ -126,18 +129,49 @@ def test_preview_validates_a_complete_stage_without_publishing(tmp_path):
     assert not list(path.parent.glob(".wechat-native-restore-*"))
 
 
-def test_first_store_can_be_previewed_then_published_exactly(tmp_path):
+def test_first_store_can_be_previewed_then_published_exactly(tmp_path, monkeypatch):
+    connect = sqlite3.connect
+    opened = []
+
+    def private_stage(path, *args, **kwargs):
+        assert path.read_bytes() == b""
+        assert owner_only_problem(path) == ""
+        opened.append(path)
+        return connect(path, *args, **kwargs)
+
     metadata = source()
     observation = record(metadata)
+    monkeypatch.setattr(restore.sqlite3, "connect", private_stage)
     preview = run(tmp_path, [metadata], [observation], apply=False)
     assert (
         preview["integrity_check"] == "ok"
         and not wechat_archive_path(tmp_path).exists()
     )
     published = run(tmp_path, [metadata], [observation])
+    monkeypatch.setattr(restore.sqlite3, "connect", connect)
     assert published["published"] and published["messages_after"] == 1
     assert rows(tmp_path)[0][6] == observation["text"]
-    assert wechat_archive_path(tmp_path).stat().st_mode & 0o777 == 0o600
+    assert len(opened) == 2
+    assert owner_only_problem(wechat_archive_path(tmp_path)) == ""
+    if os.name == "posix":
+        assert wechat_archive_path(tmp_path).stat().st_mode & 0o777 == 0o600
+
+
+def test_unverified_native_stage_is_removed_before_any_private_sqlite_bytes(tmp_path, monkeypatch):
+    connected = []
+
+    def refuse(path):
+        assert path.read_bytes() == b""
+        raise OwnerOnlyFileError("Synthetic native restore boundary failure")
+
+    monkeypatch.setattr(restore, "ensure_owner_only", refuse)
+    monkeypatch.setattr(restore.sqlite3, "connect", lambda *args, **kwargs: connected.append(args))
+    metadata = source()
+    with pytest.raises(OwnerOnlyFileError, match="Synthetic native restore boundary failure"):
+        run(tmp_path, [metadata], [record(metadata)])
+    assert connected == []
+    assert not wechat_archive_path(tmp_path).exists()
+    assert not list(wechat_archive_path(tmp_path).parent.glob(".wechat-native-restore-*"))
 
 
 def test_pushmail_notice_preserves_its_native_type_and_bounded_text(tmp_path):
@@ -306,7 +340,7 @@ def test_unrelated_conversation_bodies_are_not_read_or_parsed(tmp_path, monkeypa
     )
     path = wechat_archive_path(tmp_path)
     unrelated_id = _identifier(metadata["source_id"], "unrelated")
-    with sqlite3.connect(path) as connection:
+    with closing(sqlite3.connect(path)) as connection, connection:
         connection.execute(
             "UPDATE messages SET provenance='opaque unrelated evidence' WHERE id=?",
             (unrelated_id,),
@@ -391,7 +425,7 @@ def test_concurrent_archive_or_policy_change_prevents_publication(
                 '{"schema_version":1,"excluded_source_ids":[]}'
             )
         else:
-            with sqlite3.connect(path) as connection:
+            with closing(sqlite3.connect(path)) as connection, connection:
                 connection.execute(
                     "INSERT INTO archive_info VALUES('concurrent','preserve')"
                 )
@@ -406,7 +440,7 @@ def test_concurrent_archive_or_policy_change_prevents_publication(
         )
     assert len(rows(tmp_path)) == 1
     if not change_policy:
-        with sqlite3.connect(path) as connection:
+        with closing(sqlite3.connect(path)) as connection, connection:
             assert (
                 connection.execute(
                     "SELECT value FROM archive_info WHERE key='concurrent'"
@@ -418,7 +452,7 @@ def test_concurrent_archive_or_policy_change_prevents_publication(
 def test_manifest_mismatch_is_rejected_before_any_publication(tmp_path):
     metadata, _ = seed(tmp_path)
     path = wechat_archive_path(tmp_path)
-    with sqlite3.connect(path) as connection:
+    with closing(sqlite3.connect(path)) as connection, connection:
         manifest = json.loads(
             connection.execute(
                 "SELECT value FROM archive_info WHERE key='manifest'"
@@ -444,7 +478,7 @@ def test_manifest_mismatch_is_rejected_before_any_publication(tmp_path):
     ],
 )
 def test_manifest_scope_cannot_replace_unrelated_metadata(statement):
-    with sqlite3.connect(":memory:") as connection:
+    with closing(sqlite3.connect(":memory:")) as connection, connection:
         connection.executescript(restore._SCHEMA + restore._ADDITIVE_SCHEMA)
         connection.execute("INSERT INTO archive_info VALUES('retained','unchanged')")
         scope = restore._install_guards(connection)
@@ -467,7 +501,7 @@ def test_fsync_time_live_change_is_checked_before_the_final_rename(
     fsync = restore.os.fsync
 
     def concurrent(descriptor):
-        with sqlite3.connect(path) as connection:
+        with closing(sqlite3.connect(path)) as connection, connection:
             connection.execute(
                 "INSERT INTO archive_info VALUES('late-writer','preserve')"
             )
@@ -477,13 +511,67 @@ def test_fsync_time_live_change_is_checked_before_the_final_rename(
     with pytest.raises(ValueError, match="archive or exclusions changed"):
         run(tmp_path, [metadata], [record(metadata, "new", server_id="456")])
     assert len(rows(tmp_path)) == 1
-    with sqlite3.connect(path) as connection:
+    with closing(sqlite3.connect(path)) as connection, connection:
         assert (
             connection.execute(
                 "SELECT value FROM archive_info WHERE key='late-writer'"
             ).fetchone()[0]
             == "preserve"
         )
+
+
+@pytest.mark.parametrize("platform_name", ["nt", "posix"])
+def test_stage_sync_uses_a_windows_writable_handle_and_preserves_posix_read_only(
+    tmp_path, monkeypatch, platform_name,
+):
+    from pathlib import Path
+
+    metadata, _ = seed(tmp_path)
+    before = retained(tmp_path)
+    open_file = Path.open
+    handles = []
+
+    def track_stage(path, *args, **kwargs):
+        handle = open_file(path, *args, **kwargs)
+        if path.name.startswith(".wechat-native-restore-"):
+            handles.append(handle)
+        return handle
+
+    class PlatformOs:
+        name = platform_name
+
+        def __getattr__(self, name):
+            return getattr(os, name)
+
+        def fsync(self, descriptor):
+            handle = next(item for item in handles if not item.closed and item.fileno() == descriptor)
+            if self.name == "nt" and not handle.writable():
+                raise OSError(errno.EBADF, "Windows cannot fsync a read-only stage descriptor")
+            assert handle.writable() == (self.name == "nt")
+            return os.fsync(descriptor)
+
+    monkeypatch.setattr(Path, "open", track_stage)
+    monkeypatch.setattr(restore, "os", PlatformOs())
+    result = run(tmp_path, [metadata], [record(metadata, "sync-portable", server_id="7799")])
+    assert result["published"] and result["inserted_messages"] == 1
+    assert all(item in rows(tmp_path) for item in before["messages"])
+    assert handles and all(handle.closed for handle in handles)
+    assert not list(wechat_archive_path(tmp_path).parent.glob(".wechat-native-restore-*"))
+
+
+def test_stage_sync_failure_preserves_the_live_archive_and_cleans_unpublished_stage(tmp_path, monkeypatch):
+    metadata, _ = seed(tmp_path)
+    path = wechat_archive_path(tmp_path)
+    before = path.read_bytes()
+
+    def fail_sync(_descriptor):
+        raise OSError(errno.EIO, "Synthetic native stage sync failure")
+
+    monkeypatch.setattr(restore.os, "fsync", fail_sync)
+    with pytest.raises(OSError, match="Synthetic native stage sync failure"):
+        run(tmp_path, [metadata], [record(metadata, "unpublished-sync", server_id="7800")])
+    assert path.read_bytes() == before
+    assert not list(path.parent.glob(".wechat-native-restore-*"))
 
 
 def test_incorrect_summary_fields_cannot_pass_on_counts_alone(tmp_path, monkeypatch):
@@ -506,7 +594,7 @@ def test_incorrect_summary_fields_cannot_pass_on_counts_alone(tmp_path, monkeypa
 def test_sidless_records_do_not_load_retained_provenance(tmp_path):
     metadata, _ = seed(tmp_path)
     path = wechat_archive_path(tmp_path)
-    with sqlite3.connect(path) as connection:
+    with closing(sqlite3.connect(path)) as connection, connection:
         connection.execute("UPDATE messages SET provenance='opaque retained evidence'")
     old = rows(tmp_path)[0]
     result = run(tmp_path, [metadata], [record(metadata, "no-sid", server_id=None)])
@@ -528,7 +616,7 @@ def test_each_incoming_conversation_checks_actual_retained_index_counts(tmp_path
         snapshot="other",
     )
     path = wechat_archive_path(tmp_path)
-    with sqlite3.connect(path) as connection:
+    with closing(sqlite3.connect(path)) as connection, connection:
         connection.execute(
             "UPDATE conversations SET message_count=message_count+1 WHERE peer_id='peer-direct'"
         )
@@ -580,14 +668,14 @@ def test_ctime_only_drift_requires_matching_original_bytes(tmp_path, monkeypatch
 def test_changed_main_bytes_cannot_hide_behind_restored_size_and_mtime(tmp_path):
     metadata, _ = seed(tmp_path)
     path = wechat_archive_path(tmp_path)
-    with sqlite3.connect(path) as connection:
+    with closing(sqlite3.connect(path)) as connection, connection:
         connection.execute("INSERT INTO archive_info VALUES('drift-fixture','AAAA')")
     initial = path.stat()
     identity = restore._file_identity(path)
 
     def incoming():
         yield record(metadata, "new", server_id="456")
-        with sqlite3.connect(path) as connection:
+        with closing(sqlite3.connect(path)) as connection, connection:
             connection.execute(
                 "UPDATE archive_info SET value='BBBB' WHERE key='drift-fixture'"
             )
@@ -598,7 +686,7 @@ def test_changed_main_bytes_cannot_hide_behind_restored_size_and_mtime(tmp_path)
     with pytest.raises(ValueError, match="archive or exclusions changed"):
         run(tmp_path, [metadata], incoming())
     assert len(rows(tmp_path)) == 1
-    with sqlite3.connect(path) as connection:
+    with closing(sqlite3.connect(path)) as connection, connection:
         assert connection.execute(
             "SELECT value FROM archive_info WHERE key='drift-fixture'"
         ).fetchone()[0] == "BBBB"

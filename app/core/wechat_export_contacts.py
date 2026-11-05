@@ -1,6 +1,6 @@
 """Retain export labels without mistaking mutable aliases for native usernames.
 
-Code version: v1.0.0-codex.0
+Code version: v1.0.1-codex.0
 """
 
 from __future__ import annotations
@@ -31,7 +31,7 @@ from app.core.wechat_contacts import (
 )
 
 
-VERSION = "v1.0.0-codex.0"
+VERSION = "v1.0.1-codex.0"
 _SHA256 = re.compile(r"[0-9a-f]{64}")
 
 
@@ -246,7 +246,7 @@ def publish_export_contacts(
         "inserted": counts,
         "changed": False,
     }
-    lock = target.open("rb") if original[0] is not None else None
+    lock = target.open("rb") if original[0] is not None and sys.platform == "darwin" else None
     try:
         if lock is not None and sys.platform == "darwin":
             import fcntl
@@ -458,14 +458,15 @@ def publish_export_contacts(
                 raise ValueError("The contact registry or sidecars changed before publication.")
             if counts:
                 os.chmod(temporary, 0o600)
-                with temporary.open("rb") as stream:
+                with temporary.open("r+b") as stream:
                     os.fsync(stream.fileno())
                 os.replace(temporary, target)
-                descriptor = os.open(target.parent, os.O_RDONLY)
-                try:
-                    os.fsync(descriptor)
-                finally:
-                    os.close(descriptor)
+                if os.name != "nt":
+                    descriptor = os.open(target.parent, os.O_RDONLY)
+                    try:
+                        os.fsync(descriptor)
+                    finally:
+                        os.close(descriptor)
                 report["changed"] = True
         return report
     finally:

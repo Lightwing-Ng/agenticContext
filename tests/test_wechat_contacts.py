@@ -1,8 +1,9 @@
 """Canonical contact identity and scoped name evidence regression checks.
 
-Code version: v1.2.0-codex.0
+Code version: v1.2.1-codex.0
 """
 
+from contextlib import closing
 from copy import deepcopy
 import hashlib
 import json
@@ -129,7 +130,7 @@ def _make_forwarded_html_store(registry):
     merge_wechat_export(registry, source=source, records=[record], snapshot_id=sha)
     message_id = _identifier(source_id, record_id)
     path = wechat_archive_path(registry)
-    with sqlite3.connect(path) as connection:
+    with closing(sqlite3.connect(path)) as connection, connection:
         row = connection.execute(
             "SELECT conversation_id,timestamp_value FROM messages WHERE id=?",
             (message_id,),

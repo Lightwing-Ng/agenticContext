@@ -1,6 +1,6 @@
 """Adapt observed ChatGPT component text for display without changing stored history.
 
-Code version: v1.0.0-codex.0
+Code version: v1.0.1-codex.0
 Component attributes remain inert source data. This adapter never emits HTML or
 interprets JSX expressions, and unsupported components retain their source text.
 """
@@ -94,8 +94,16 @@ class _CitationParser(HTMLParser):
 
     def __init__(self, source: str) -> None:
         super().__init__(convert_charrefs=True)
+        self.source = source
         self.offsets = [0] + [match.end() for match in re.finditer("\n", source)]
         self.starts: set[int] = set()
+
+    def handle_comment(self, data):
+        line, column = self.getpos()
+        offset = self.offsets[line - 1] + column
+        if self.source.startswith("<![", offset):
+            # Newer HTMLParser releases report malformed marked sections as comments.
+            raise AssertionError("Uncertain marked-section source")
 
     def handle_starttag(self, tag, attrs):
         if tag == "cite":
