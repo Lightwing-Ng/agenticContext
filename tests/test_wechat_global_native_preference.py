@@ -1,10 +1,11 @@
 """Native preference survives local source-order anomalies across public views.
 
-Code version: v1.0.1-codex.0
+Code version: v1.0.2-codex.0
 """
 
 from __future__ import annotations
 
+from contextlib import closing
 from datetime import datetime, timedelta
 import hashlib
 import json
@@ -117,7 +118,7 @@ def test_contact_and_default_export_keep_native_clean_pairs_and_html_only_tail(
 ):
     fixture = native_html_store
     pairs = list(zip(fixture.html_ids, fixture.native_ids, strict=True))
-    with sqlite3.connect(fixture.history) as connection:
+    with closing(sqlite3.connect(fixture.history)) as connection, connection:
         connection.row_factory = sqlite3.Row
         _late_permutation(connection, pairs, same_clock=same_clock)
         html_only = _html_only(connection, fixture.html_ids[-1])
@@ -164,7 +165,7 @@ def test_contact_and_default_export_keep_native_clean_pairs_and_html_only_tail(
 def six_event_store(conversation_store):
     fixture = conversation_store
     pairs = list(fixture.ids)
-    with sqlite3.connect(fixture.repository.path) as connection:
+    with closing(sqlite3.connect(fixture.repository.path)) as connection, connection:
         connection.row_factory = sqlite3.Row
         templates = [
             dict(
@@ -227,7 +228,7 @@ def test_conversation_and_session_export_use_native_pairs_after_local_order_anom
     six_event_store, same_clock
 ):
     fixture = six_event_store
-    with sqlite3.connect(fixture.repository.path) as connection:
+    with closing(sqlite3.connect(fixture.repository.path)) as connection, connection:
         connection.row_factory = sqlite3.Row
         _late_permutation(connection, fixture.pairs, same_clock=same_clock)
         html_only = _html_only(connection, fixture.pairs[0][0])
@@ -265,7 +266,7 @@ def test_equal_clock_order_tolerance_does_not_relax_independent_identity_guards(
     fixture = native_html_store
     pairs = list(zip(fixture.html_ids, fixture.native_ids, strict=True))
     extra = None
-    with sqlite3.connect(fixture.history) as connection:
+    with closing(sqlite3.connect(fixture.history)) as connection, connection:
         connection.row_factory = sqlite3.Row
         _late_permutation(connection, pairs, same_clock=True)
         if mutation == "unverified_owner":
@@ -314,7 +315,7 @@ def test_complete_previous_cache_replays_native_preference_without_rescanning_au
 ):
     fixture = native_html_store
     pairs = list(zip(fixture.html_ids, fixture.native_ids, strict=True))
-    with sqlite3.connect(fixture.history) as connection:
+    with closing(sqlite3.connect(fixture.history)) as connection, connection:
         connection.row_factory = sqlite3.Row
         _late_permutation(connection, pairs, same_clock=True)
     before = fixture.history.read_bytes(), fixture.registry.read_bytes()
@@ -325,7 +326,7 @@ def test_complete_previous_cache_replays_native_preference_without_rescanning_au
         assert old["status"] == "ready"
         assert old["total_count"] == old["observation_count"] == 12
     cache = analysis.contact_analysis_cache_path(fixture.store, grouping.CID)
-    with sqlite3.connect(cache) as connection:
+    with closing(sqlite3.connect(cache)) as connection, connection:
         retained_refs = connection.execute("SELECT * FROM refs ORDER BY id").fetchall()
 
     def no_author_rescan(*_args, **_kwargs):
@@ -345,7 +346,7 @@ def test_complete_previous_cache_replays_native_preference_without_rescanning_au
     assert page["source_fingerprint"] != old["source_fingerprint"]
     assert {item["id"] for item in page["items"]} == set(fixture.native_ids)
     assert all(item["source_label"] == "iPad archive" for item in page["items"])
-    with sqlite3.connect(cache) as connection:
+    with closing(sqlite3.connect(cache)) as connection, connection:
         assert (
             connection.execute("SELECT * FROM refs ORDER BY id").fetchall()
             == retained_refs

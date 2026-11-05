@@ -1,6 +1,6 @@
 """Revalidate bounded native metadata scopes without touching original evidence.
 
-Code version: v1.1.1-codex.0
+Code version: v1.1.2-codex.0
 """
 
 from __future__ import annotations
@@ -16,6 +16,7 @@ import re
 import sqlite3
 import stat
 
+from .owner_only_files import ensure_owner_only
 from .wechat_archive import (
     _file_identity,
     _identifier,
@@ -26,8 +27,10 @@ from .wechat_archive import (
 from .wechat_resource_index import _KINDS, _LABELS, _SCHEMA, _json, _readonly
 
 
-VERSION = "v1.1.1-codex.0"
-_COMPATIBLE_PROOFS = {"v1.0.1-codex.0", "v1.0.2-codex.0", "v1.1.0-codex.0", VERSION}
+VERSION = "v1.1.2-codex.0"
+_COMPATIBLE_PROOFS = {
+    "v1.0.1-codex.0", "v1.0.2-codex.0", "v1.1.0-codex.0", "v1.1.1-codex.0", VERSION,
+}
 MAX_SCOPES = 128
 MAX_ROWS = 100_000
 MAX_BYTES = 128 * 1024**2
@@ -446,9 +449,12 @@ def stage_native_resource_revalidation(
             for owner, count in accounts.items()
         ],
     )
+    created = False
     try:
+        with candidate.open("xb"):
+            created = True
+            ensure_owner_only(candidate)
         with closing(sqlite3.connect(candidate)) as output:
-            candidate.chmod(0o600)
             output.executescript(_SCHEMA)
             output.execute(
                 "CREATE TABLE revalidation_source_proofs (source_snapshot_id INTEGER PRIMARY KEY,source_id TEXT NOT NULL,snapshot_id TEXT NOT NULL,metadata_sha256 TEXT NOT NULL)"
@@ -489,7 +495,8 @@ def stage_native_resource_revalidation(
         report["candidate_bytes"] = candidate.stat().st_size
         return report
     except BaseException:
-        candidate.unlink(missing_ok=True)
+        if created:
+            candidate.unlink(missing_ok=True)
         raise
 
 
@@ -606,6 +613,9 @@ def stage_extended_native_resource_revalidation(
 
 
 def _sync_directory(path):
+    if os.name == "nt":
+        # The Windows CRT cannot open directory descriptors for fsync.
+        return
     descriptor = os.open(path, os.O_RDONLY)
     try:
         os.fsync(descriptor)
@@ -660,10 +670,10 @@ def publish_native_resource_revalidation(local_store_root, report, *, rollback_p
             raise ValueError("The candidate would discard reviewed native coverage.")
         if report["fallback_identity"] is not None:
             _clonefile(fallback, rollback)
-            rollback.chmod(0o600)
+            ensure_owner_only(rollback)
             if _sha256(rollback) != _sha256(fallback):
                 raise ValueError("The fallback rollback differs from its original bytes.")
-            with rollback.open("rb") as stream:
+            with rollback.open("r+b" if os.name == "nt" else "rb") as stream:
                 os.fsync(stream.fileno())
             _sync_directory(rollback.parent)
         unchanged()

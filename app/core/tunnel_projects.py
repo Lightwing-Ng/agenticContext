@@ -1,6 +1,6 @@
 """Explicit project registry for the Secure MCP Tunnel coding backend.
 
-Code version: v1.8.1-codex.0
+Code version: v1.8.2-codex.0
 
 A Tunnel project is an authority-bearing identity mapped to exactly one canonical
 root. Every model-facing filesystem, Git, mutation, and verification tool names
@@ -48,6 +48,7 @@ from app.core.config import default_settings_path
 from app.core.owner_only_files import ensure_owner_only
 from app.core.platform_lock import lock_file, unlock_file
 from app.core.tunnel_git import is_git_root
+from app.core.windows_file_metadata import file_change_time
 
 LOGGER = logging.getLogger(__name__)
 
@@ -316,7 +317,7 @@ class ProjectRegistry:
     def __init__(self, path: Path | None = None) -> None:
         self._path = path
         self._lock = threading.Lock()
-        self._cache_key: tuple[str, int, int, int, int, int] | None = None
+        self._cache_key: tuple[str, int, int, int, int, int, int] | None = None
         self._cache: tuple[TunnelProject, ...] = ()
         self._register_lock = threading.Lock()
 
@@ -337,6 +338,10 @@ class ProjectRegistry:
             return _fallback_project(fallback_workspace)
         except OSError as exc:
             raise ProjectRegistryError("The project registry cannot be read.") from exc
+        try:
+            change_time = file_change_time(path) if os.name == "nt" else 0
+        except OSError as exc:
+            raise ProjectRegistryError("The project registry change metadata cannot be verified.") from exc
         cache_key = (
             str(path),
             int(metadata.st_dev),
@@ -344,6 +349,7 @@ class ProjectRegistry:
             int(metadata.st_mtime_ns),
             int(metadata.st_ctime_ns),
             int(metadata.st_size),
+            change_time,
         )
         with self._lock:
             if self._cache_key == cache_key:

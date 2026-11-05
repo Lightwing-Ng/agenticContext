@@ -1,8 +1,9 @@
 """Forwarded projections reuse canonical text and never open referenced media.
 
-Code version: v1.1.0-codex.0
+Code version: v1.1.1-codex.0
 """
 
+from contextlib import closing
 from copy import deepcopy
 import hashlib
 import json
@@ -55,7 +56,7 @@ def reference_fixture(store, *, canonical_parent=False):
     parent_id = _identifier(metadata["source_id"], parent["extraction_record_id"])
     if canonical_parent:
         replacement = _identifier("canonical_resource_occurrence")
-        with sqlite3.connect(wechat_archive_path(store)) as connection:
+        with closing(sqlite3.connect(wechat_archive_path(store))) as connection, connection:
             connection.execute(
                 "UPDATE messages SET id=? WHERE id=?", (replacement, parent_id)
             )
@@ -66,7 +67,7 @@ def reference_fixture(store, *, canonical_parent=False):
         "table": "Chat_" + hashlib.md5(PEER.encode()).hexdigest(),
         "local_id": 12,
     }
-    with sqlite3.connect(wechat_archive_path(store)) as connection:
+    with closing(sqlite3.connect(wechat_archive_path(store))) as connection, connection:
         connection.row_factory = sqlite3.Row
         original = dict(
             connection.execute(
@@ -91,7 +92,7 @@ def reference_fixture(store, *, canonical_parent=False):
         },
     }
     resource_path = resource_index_path(store)
-    with sqlite3.connect(resource_path) as connection:
+    with closing(sqlite3.connect(resource_path)) as connection, connection:
         connection.executescript(RESOURCE_SCHEMA)
         connection.execute(
             "INSERT INTO conversations VALUES(?,?,?,?,?,?,?,?,?,?,?,?)", conversation
@@ -135,7 +136,7 @@ def reference_fixture(store, *, canonical_parent=False):
 
 
 def set_references(store, parent_id, declaration):
-    with sqlite3.connect(wechat_archive_path(store)) as connection:
+    with closing(sqlite3.connect(wechat_archive_path(store))) as connection, connection:
         row = connection.execute(
             "SELECT provenance FROM messages WHERE id=?", (parent_id,)
         ).fetchone()
@@ -186,7 +187,7 @@ def test_canonical_references_reuse_existing_text_and_stale_resource_metadata(
 
 def test_preview_requires_an_existing_parent_and_unchanged_native_identity(tmp_path):
     _, parent_id, _, declaration = reference_fixture(tmp_path)
-    with sqlite3.connect(wechat_archive_path(tmp_path)) as connection:
+    with closing(sqlite3.connect(wechat_archive_path(tmp_path))) as connection, connection:
         original = json.loads(
             connection.execute(
                 "SELECT provenance FROM messages WHERE id=?", (parent_id,)
@@ -252,7 +253,7 @@ def test_references_fail_closed_for_wrong_scope_identity_and_stale_evidence(
     elif failure == "resource_missing":
         changed["items"][0]["resource_id"] = "f" * 64
     elif failure == "resource_partition":
-        with sqlite3.connect(resource_index_path(tmp_path)) as connection:
+        with closing(sqlite3.connect(resource_index_path(tmp_path))) as connection, connection:
             connection.execute(
                 "UPDATE conversations SET partition_id='ios-wrong-account'"
             )
