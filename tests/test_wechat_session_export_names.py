@@ -1,6 +1,6 @@
 """Session export aliases retain verified source identity and bounded snapshots.
 
-Code version: v1.0.2-codex.0
+Code version: v1.0.3-codex.0
 """
 
 from __future__ import annotations
@@ -78,6 +78,26 @@ def named_export(tmp_path):
         unknown=unknown,
         contact_id=identifier,
     )
+
+
+def test_fixture_releases_sqlite_handles_before_exposing_export_inputs(
+    tmp_path, monkeypatch,
+):
+    connections = []
+    connect = sqlite3.connect
+
+    def retained_connection(*args, **kwargs):
+        connection = connect(*args, **kwargs)
+        connections.append(connection)
+        return connection
+
+    monkeypatch.setattr(sqlite3, "connect", retained_connection)
+    named_export.__wrapped__(tmp_path)
+    # Strong references prevent garbage collection from hiding an unclosed handle.
+    assert connections
+    for connection in connections:
+        with pytest.raises(sqlite3.ProgrammingError, match="closed"):
+            connection.execute("SELECT 1")
 
 
 def _items(fixture, session=None):

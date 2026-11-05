@@ -1,6 +1,6 @@
 """Tunnel MCP adapter and /mcp route tests.
 
-Code version: v2.14.4-codex.0
+Code version: v2.15.1-codex.0
 """
 
 from __future__ import annotations
@@ -873,19 +873,25 @@ def test_apply_edits_is_all_or_nothing(
     assert (workspace / "lib.py").read_text() == "value = 2\nvalue = 2\n"
 
 
+@pytest.mark.parametrize("newline", [b"\n", b"\r\n"], ids=["lf", "crlf"])
 def test_apply_edits_rolls_back_a_second_file_that_failed_after_publication(
     service: TunnelMcpService,
     registry: ProjectRegistry,
     workspace: Path,
     monkeypatch: pytest.MonkeyPatch,
+    newline: bytes,
 ) -> None:
     first = workspace / "first.txt"
     second = workspace / "second.txt"
-    first.write_bytes(b"first-before\n")
-    second.write_bytes(b"second-before\n")
+    first.write_bytes(b"first-before" + newline)
+    second.write_bytes(b"second-before" + newline)
     access = service._workspace_for(registry.resolve("main"))
     original_snapshot = access._current_file_sha256
-    replacement_sha = hashlib.sha256(b"second-after\n").hexdigest()
+    first_before = first.read_bytes()
+    second_before = second.read_bytes()
+    replacement_sha = hashlib.sha256(
+        second_before.replace(b"before", b"after")
+    ).hexdigest()
     failed_after_publish = False
 
     def fail_post_publish(path: Path):
@@ -922,6 +928,8 @@ def test_apply_edits_rolls_back_a_second_file_that_failed_after_publication(
     ]
     assert first.read_text(encoding="utf-8") == "first-before\n"
     assert second.read_text(encoding="utf-8") == "second-before\n"
+    assert first.read_bytes() == first_before
+    assert second.read_bytes() == second_before
 
 
 def test_apply_edits_preserves_a_concurrent_edit_when_rollback_cannot_compare_swap(
@@ -966,23 +974,27 @@ def test_apply_edits_preserves_a_concurrent_edit_when_rollback_cannot_compare_sw
     assert second.read_text(encoding="utf-8") == "second-before\n"
 
 
+@pytest.mark.parametrize("newline", [b"\n", b"\r\n"], ids=["lf", "crlf"])
 def test_apply_edits_reports_a_recovery_write_failure_as_not_concurrent(
     service: TunnelMcpService,
     registry: ProjectRegistry,
     workspace: Path,
     monkeypatch: pytest.MonkeyPatch,
+    newline: bytes,
 ) -> None:
     first = workspace / "first.txt"
     second = workspace / "second.txt"
-    first.write_bytes(b"first-before\n")
-    second.write_bytes(b"second-before\n")
+    first.write_bytes(b"first-before" + newline)
+    second.write_bytes(b"second-before" + newline)
+    first_before = first.read_bytes()
+    first_after = first_before.replace(b"before", b"after")
     access = service._workspace_for(registry.resolve("main"))
     original_replace = access._replace_text_file
 
     def fail_write_or_recovery(relative: Path, old: str, new: str, **kwargs):
         if relative.as_posix() == "second.txt":
             raise OSError(28, "simulated disk full during second write")
-        if relative.as_posix() == "first.txt" and old == "first-after\n":
+        if relative.as_posix() == "first.txt" and old == first_after.decode("utf-8"):
             raise OSError(28, "simulated disk full during recovery")
         return original_replace(relative, old, new, **kwargs)
 
@@ -1010,21 +1022,28 @@ def test_apply_edits_reports_a_recovery_write_failure_as_not_concurrent(
         encoding="utf-8"
     ) == "first-before\n"
 
+    assert first.read_bytes() == first_after
+    recovery_path = workspace / observation["files"][0]["recovery_path"]
+    assert recovery_path.read_bytes() == first_before
 
+
+@pytest.mark.parametrize("newline", [b"\n", b"\r\n"], ids=["lf", "crlf"])
 def test_path_guarded_recovery_cleanup_removes_the_verified_copy_once(
     service: TunnelMcpService,
     registry: ProjectRegistry,
     workspace: Path,
     monkeypatch: pytest.MonkeyPatch,
+    newline: bytes,
 ) -> None:
     access = service._workspace_for(registry.resolve("main"))
     recovery = ".app.py.agent-backup-test.tmp"
     recovery_path = workspace / recovery
-    recovery_path.write_bytes(b'print("hi")\n')
+    payload = b'print("hi")' + newline
+    recovery_path.write_bytes(payload)
     monkeypatch.setattr("app.core.workspace.controller._ANCHORED_MUTATION_SUPPORTED", False)
 
     removed = access._discard_recovery_file(
-        Path("app.py"), recovery, 'print("hi")\n'
+        Path("app.py"), recovery, payload.decode("utf-8")
     )
 
     assert removed is True
@@ -2256,10 +2275,15 @@ def test_current_project_reports_the_exact_saved_authority_without_host_paths(
     assert str(reference) not in rendered
 
 
+@pytest.mark.parametrize("newline", [b"\n", b"\r\n"], ids=["lf", "crlf"])
 def test_switching_the_saved_project_does_not_redirect_a_pinned_task(
     service: TunnelMcpService,
     registry: ProjectRegistry,
+    newline: bytes,
 ) -> None:
+    pinned_path = registry.resolve("main").root / "app.py"
+    pinned_path.write_bytes(b'print("hi")' + newline)
+    pinned_bytes = pinned_path.read_bytes()
     first_selection = service.selection_store.save("main")
     resolved = content(call(service, "current_project", project=None))["current_project"]
 
@@ -2278,9 +2302,7 @@ def test_switching_the_saved_project_does_not_redirect_a_pinned_task(
     assert switched["current_project"]["id"] == "ref"
     assert switched["current_project"]["writable"] is False
     assert content(pinned)["files"][0]["content"] == '1: print("hi")'
-    assert content(pinned)["files"][0]["sha256"] == hashlib.sha256(
-        b'print("hi")\n'
-    ).hexdigest()
+    assert content(pinned)["files"][0]["sha256"] == hashlib.sha256(pinned_bytes).hexdigest()
     assert registry.resolve("main").identity == resolved["identity"]
 
 
@@ -2939,10 +2961,17 @@ def test_reregistering_a_project_rebinds_its_controller(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize("in_place", [False, True], ids=["atomic-replace", "same-inode"])
+@pytest.mark.parametrize("windows_metadata", [False, True], ids=["native", "windows-change-time"])
 def test_registry_cache_invalidates_equal_size_replacement_with_preserved_mtime(
     tmp_path: Path,
     in_place: bool,
+    windows_metadata: bool,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    from types import SimpleNamespace
+
+    from app.core import tunnel_projects
+
     first = tmp_path / "first-root"
     second = tmp_path / "other-root"
     first.mkdir()
@@ -2953,6 +2982,30 @@ def test_registry_cache_invalidates_equal_size_replacement_with_preserved_mtime(
         [{"id": "work", "root": str(first), "writable": True}],
     )
     registry = ProjectRegistry(registry_path)
+    native_change_time = [100]
+    if windows_metadata:
+        module_os = SimpleNamespace(**vars(os))
+        module_os.name = "nt"
+        monkeypatch.setattr(tunnel_projects, "os", module_os)
+        original_stat = Path.stat
+        creation_time = registry_path.stat().st_ctime_ns
+
+        def creation_time_stat(candidate, *args, **kwargs):
+            metadata = original_stat(candidate, *args, **kwargs)
+            if candidate != registry_path:
+                return metadata
+            fields = {
+                name: getattr(metadata, name)
+                for name in dir(metadata) if name.startswith("st_")
+            }
+            fields["st_ctime_ns"] = creation_time
+            return SimpleNamespace(**fields)
+
+        monkeypatch.setattr(Path, "stat", creation_time_stat)
+        monkeypatch.setattr(
+            tunnel_projects, "file_change_time",
+            lambda candidate, **_kwargs: native_change_time[0],
+        )
     previous = registry.resolve("work")
     previous_stat = registry_path.stat()
 
@@ -2985,6 +3038,7 @@ def test_registry_cache_invalidates_equal_size_replacement_with_preserved_mtime(
     if in_place:
         assert current_stat.st_ino == previous_stat.st_ino
 
+    native_change_time[0] += 1
     current = registry.resolve("work")
 
     assert current.root == second.resolve()
@@ -3933,3 +3987,158 @@ def test_tunnel_project_registration_type_is_immutable() -> None:
     project = TunnelProject("main", Path(sys.prefix), True)
     with pytest.raises(AttributeError):
         project.writable = False  # type: ignore[misc]
+
+
+@pytest.mark.parametrize("failure", [OSError, FileNotFoundError])
+def test_registry_refuses_cached_authority_when_native_change_metadata_is_denied(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    failure: type[OSError],
+) -> None:
+    from types import SimpleNamespace
+
+    from app.core import tunnel_projects
+
+    root = tmp_path / "workspace"
+    root.mkdir()
+    registry = write_registry(
+        tmp_path / "projects.json",
+        [{"id": "work", "root": str(root), "writable": True}],
+    )
+    assert registry.resolve("work").root == root.resolve()
+    module_os = SimpleNamespace(**vars(os))
+    module_os.name = "nt"
+    monkeypatch.setattr(tunnel_projects, "os", module_os)
+
+    def denied(*_args, **_kwargs):
+        raise failure("Native change metadata denied")
+
+    monkeypatch.setattr(tunnel_projects, "file_change_time", denied)
+    with pytest.raises(tunnel_projects.ProjectRegistryError, match="change metadata cannot be verified"):
+        registry.resolve("work")
+
+
+def test_git_summary_native_rename_and_leading_spaces_remain_private(
+    service: TunnelMcpService,
+    repo: Path,
+) -> None:
+    private = repo / "private parent"
+    private.mkdir()
+    secret = private / ".env"
+    secret.write_text("private before\n", encoding="utf-8")
+    (repo / " visible old.txt").write_text("visible rename\n", encoding="utf-8")
+    (repo / " visible edge.txt").write_text("edge before\n", encoding="utf-8")
+    commit_all(repo, "Portable adversarial Git path fixture")
+    secret.write_text("private after\n", encoding="utf-8")
+    (repo / " visible edge.txt").write_text("edge after\n", encoding="utf-8")
+    git(repo, "mv", "--", " visible old.txt", " visible new.txt")
+
+    unstaged = content(call(service, "show_changes", {"include_patch": True}))
+    staged = content(call(service, "show_changes", {"include_patch": True, "staged": True}))
+
+    for observation in (unstaged, staged):
+        for field in ("status", "unstaged_stat", "staged_stat", "patch"):
+            assert ".env" not in observation[field]
+            assert "private after" not in observation[field]
+    assert '" visible old.txt" -> " visible new.txt"' in staged["status"]
+    assert ' M " visible edge.txt"' in unstaged["status"]
+    assert "+edge after" in unstaged["patch"]
+    assert "rename from  visible old.txt" in staged["patch"]
+    assert "rename to  visible new.txt" in staged["patch"]
+
+
+def test_git_summaries_withhold_sensitive_paths_in_adversarial_nul_transport(
+    service: TunnelMcpService,
+    repo: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.core import tunnel_git
+
+    # Git can report names that the current host cannot create. Exercise its
+    # exact NUL transport on every host without normalizing those names away.
+    native_run_git = tunnel_git.run_git
+    status_secret = "arrow -> parent\n/.env"
+    patch_secret = 'quote" parent/.env'
+    renamed_secret = "rename -> parent/.env"
+    visible_old = "visible old.txt"
+    visible_new = "visible -> new.txt"
+    edge = " visible edge.txt"
+    raw_status = (
+        "## main\0"
+        f" M {status_secret}\0"
+        f"M  {patch_secret}\0"
+        f"R  {renamed_secret}\0rename source.txt\0"
+        f"R  {visible_new}\0{visible_old}\0"
+        f" M {edge}\0"
+    ).encode("utf-8")
+
+    def git_transport(root, *args, **kwargs):
+        if args[0] == "status":
+            assert "--porcelain=v1" in args and "-z" in args
+            return tunnel_git.GitResult(0, raw_status)
+        if args[0] != "diff":
+            return native_run_git(root, *args, **kwargs)
+        staged = "--cached" in args
+        if "--name-only" in args:
+            assert "-z" in args
+            paths = (
+                [patch_secret, "rename source.txt", renamed_secret, visible_old, visible_new]
+                if staged else [status_secret, edge]
+            )
+            return tunnel_git.GitResult(0, ("\0".join(paths) + "\0").encode())
+        if "--name-status" in args:
+            assert "-z" in args
+            fields = (
+                ["M", patch_secret, "R100", "rename source.txt", renamed_secret,
+                 "R100", visible_old, visible_new]
+                if staged else ["M", status_secret, "M", edge]
+            )
+            return tunnel_git.GitResult(0, ("\0".join(fields) + "\0").encode())
+        paths = args[args.index("--") + 1:]
+        expected = [visible_old, visible_new] if staged else [edge]
+        if staged and "--stat" in args:
+            expected.insert(0, "rename source.txt")
+        assert list(paths) == [f":(literal){path}" for path in expected]
+        if "--stat" in args:
+            payload = "\n".join(f" {path} | 2 +-" for path in expected)
+        elif staged:
+            payload = (
+                f"diff --git a/{visible_old} b/{visible_new}\n"
+                "similarity index 100%\n"
+                f"rename from {visible_old}\nrename to {visible_new}\n"
+            )
+        else:
+            payload = (
+                f"diff --git a/{edge} b/{edge}\n"
+                f"--- a/{edge}\n+++ b/{edge}\n"
+                "@@ -1 +1 @@\n-edge before\n+edge after\n"
+            )
+        return tunnel_git.GitResult(0, payload.encode())
+
+    monkeypatch.setattr(tunnel_git, "run_git", git_transport)
+
+    overview = content(call(service, "project_overview"))
+    unstaged = content(call(service, "show_changes", {"include_patch": True}))
+    staged = content(
+        call(service, "show_changes", {"include_patch": True, "staged": True})
+    )
+
+    for model_visible in (
+        overview["git_status"],
+        unstaged["status"],
+        unstaged["unstaged_stat"],
+        unstaged["staged_stat"],
+        unstaged["patch"],
+        staged["patch"],
+    ):
+        assert ".env" not in model_visible
+        assert "status secret after" not in model_visible
+        assert "rename before" not in model_visible
+        assert "arrow -> parent" not in model_visible
+        assert 'quote" parent' not in model_visible
+        assert "rename -> parent" not in model_visible
+    assert 'visible old.txt -> "visible -> new.txt"' in staged["status"]
+    assert ' M " visible edge.txt"' in unstaged["status"]
+    assert "+edge after" in unstaged["patch"]
+    assert "rename from visible old.txt" in staged["patch"]
+    assert "rename to visible -> new.txt" in staged["patch"]

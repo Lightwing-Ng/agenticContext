@@ -1,4 +1,4 @@
-/* Code version: v1.8.1-codex.0 */
+/* Code version: v1.8.2-codex.0 */
 /* Tunnel onboarding uses the wrapper for layout without painting another panel. */
 .workspace-article-card.agent-tunnel-onboarding-card {
     border: 0;
@@ -13,7 +13,7 @@
  * Worthward allocation badge adapter.
  * Source: foundation/tokens.css v0.46.0 and views/investment-tables.css v1.1.1.
  * Preserve the canonical badge and glyph rules; integers use intrinsic width.
- * The local Univers Next interface font remains the approved typography exception.
+ * Metric size and Univers Next typography follow the shared foundation tokens.
  */
 .agent-tunnel-usage {
     --investment-holdings-allocation-badge-inline-size: 52px;
@@ -101,7 +101,7 @@
     min-height: 0;
     padding-bottom: 0;
     color: inherit;
-    font-size: 21px;
+    font-size: var(--workspace-metric-value-font-size);
     font-weight: var(--workspace-metric-value-font-weight);
     line-height: var(--workspace-metric-value-line-height);
     letter-spacing: var(--workspace-metric-value-letter-spacing);
