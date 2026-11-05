@@ -1,6 +1,6 @@
 """Jury deliberation boundaries with deterministic, browser-free jurors.
 
-Code version: v1.8.2-codex.0
+Code version: v1.8.3-codex.0
 """
 
 from __future__ import annotations
@@ -387,9 +387,11 @@ def test_safari_provider_rejects_non_macos_before_transport(monkeypatch):
 def test_safari_account_check_uses_one_context_three_tabs_and_keeps_collecting(
     tmp_path,
     monkeypatch,
+    macos_host,
 ):
     from app.core import jury_browser, safari_automation
 
+    monkeypatch.setattr(jury_browser, "is_macos_host", lambda: True)
     events = []
     contexts = []
 
@@ -448,7 +450,7 @@ def test_safari_account_check_uses_one_context_three_tabs_and_keeps_collecting(
         lambda *_args, **_kwargs: pytest.fail("Safari Jury must not fall back to Edge."),
     )
     service = JuryService(
-        lambda: ComputerUseSettings(browser="edge"),
+        lambda: ComputerUseSettings(browser="edge", operating_system="macos"),
         CrawlConfig,
         tmp_path / "safari-check",
     )

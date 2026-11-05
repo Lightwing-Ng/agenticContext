@@ -1,11 +1,13 @@
 """Owner-only secret files with one access boundary on POSIX and Windows.
 
-Code version: v1.2.0-codex.0
+Code version: v1.2.1-codex.0
 
 POSIX hosts express the boundary as a regular file with mode ``0600`` owned by
 the effective user. Windows honors only the read-only bit from a POSIX mode, so
 the same boundary is a protected DACL with exactly one ACE that grants the
 current user full control and inherits nothing from the parent directory.
+Directory grants also propagate that same current-user-only access to children;
+regular files keep their separate protected, noninheritable boundary.
 
 Secret bytes are written only after the boundary is applied and verified on the
 new file. Any failure removes the partial file and raises ``OwnerOnlyFileError``
@@ -260,12 +262,13 @@ def _windows_security() -> Any:
     return _WindowsSecurity()
 
 
-@lru_cache(maxsize=1)
-def _windows_owner_sddl() -> str:
+@lru_cache(maxsize=2)
+def _windows_owner_sddl(*, directory: bool = False) -> str:
     sid = _windows_security().current_user_sid()
     if not sid.startswith("S-1-"):
         raise OwnerOnlyFileError("The current Windows user SID could not be read.")
-    return f"D:P(A;;FA;;;{sid})"
+    inheritance = "OICI" if directory else ""
+    return f"D:P(A;{inheritance};FA;;;{sid})"
 
 
 def _parse_dacl(text: str) -> tuple[str, tuple[str, ...]] | None:
@@ -275,9 +278,9 @@ def _parse_dacl(text: str) -> tuple[str, tuple[str, ...]] | None:
     return match.group("flags"), tuple(re.findall(r"\([^)]*\)", match.group("aces")))
 
 
-def _windows_problem(path: Path) -> str:
+def _windows_problem(path: Path, *, directory: bool = False) -> str:
     security = _windows_security()
-    expected = _parse_dacl(security.canonical_dacl(_windows_owner_sddl()))
+    expected = _parse_dacl(security.canonical_dacl(_windows_owner_sddl(directory=directory)))
     actual = _parse_dacl(security.dacl_text(str(path)))
     if expected is None or actual is None:
         return "its Windows DACL could not be parsed"
@@ -350,7 +353,7 @@ def owner_only_directory_problem(path: Path) -> str:
         return "it is not a regular directory"
     if IS_WINDOWS:
         try:
-            return _windows_problem(path)
+            return _windows_problem(path, directory=True)
         except OSError as exc:
             return f"its Windows DACL could not be verified ({exc})"
     if metadata.st_uid != os.geteuid():
@@ -370,7 +373,7 @@ def ensure_owner_only_directory(path: Path) -> None:
     ):
         raise OwnerOnlyFileError(f"{path.name} is not a regular directory.")
     if IS_WINDOWS:
-        _windows_security().set_protected_dacl(str(path), _windows_owner_sddl())
+        _windows_security().set_protected_dacl(str(path), _windows_owner_sddl(directory=True))
     else:
         path.chmod(0o700)
     problem = owner_only_directory_problem(path)
