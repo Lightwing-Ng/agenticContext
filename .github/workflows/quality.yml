@@ -1,4 +1,4 @@
-# Code version: v1.7.0-codex.0
+# Code version: v1.7.1-codex.0
 name: Quality gate
 
 on:
@@ -42,6 +42,15 @@ jobs:
 
       - name: Audit Python dependencies
         run: python -m pip_audit -r requirements.txt
+
+      - name: Prefer the canonical Ubuntu package mirror
+        run: |
+          # Slow Azure archive transfers can consume the unchanged job budget.
+          for source in /etc/apt/apt-mirrors.txt /etc/apt/sources.list /etc/apt/sources.list.d/ubuntu.sources; do
+            if [ -f "$source" ]; then
+              sudo sed -E -i 's|https?://azure\.archive\.ubuntu\.com/ubuntu|https://archive.ubuntu.com/ubuntu|g' "$source"
+            fi
+          done
 
       - name: Install Playwright Chromium
         run: python -m playwright install --with-deps chromium
