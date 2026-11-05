@@ -1,6 +1,6 @@
 """Publish verified WeChat SQLite candidates with reversible atomic macOS swaps.
 
-Code version: v1.1.0-codex.0
+Code version: v1.1.1-codex.0
 
 Each pathname pair is exchanged atomically. The operation receipt journals the
 ordered multi-file publication; it is not a filesystem-wide transaction. Writers
@@ -23,7 +23,7 @@ import subprocess
 import sys
 
 
-VERSION = "v1.1.0-codex.0"
+VERSION = "v1.1.1-codex.0"
 _SPEC = importlib.util.spec_from_file_location(
     "wechat_sqlite_compactor", Path(__file__).with_name("compact_wechat_sqlite.py")
 )
@@ -140,7 +140,7 @@ def _backup_index(paths, reports):
         archive = Path(record["archive"]).absolute()
         if not archive.name.endswith(".zst") or archive.parent != path.parent:
             raise ValueError("Keep the explicit Zstandard artifact beside its rollback receipt.")
-        if any(archive.resolve().is_relative_to(Path(item["database"]).resolve().parent) for item in reports):
+        if any(compactor._inside_directory(archive, Path(item["database"]).parent) for item in reports):
             raise ValueError("Keep external rollback artifacts outside runtime directories.")
         before = compactor.resident(archive)
         if before["size"] != record["archive_bytes"] or compactor.sha256(archive) != record["archive_sha256"]:
@@ -201,6 +201,7 @@ def _sync_pair(source, candidate):
 
 
 def _same(report, *, hash_bytes=False):
+    compactor._independent_candidate(report["database"], report["candidate"])
     for prefix, key in (("source", "database"), ("candidate", "candidate")):
         if compactor.resident(report[key]) != report[prefix + "_identity"]:
             raise ValueError("A publication file changed after preflight.")
@@ -221,7 +222,8 @@ def publish(receipts, backup_receipts, operation_receipt):
     paths = [Path(item[key]).resolve() for item in reports for key in ("database", "candidate")]
     if len(set(paths)) != len(paths):
         raise ValueError("Publication paths must all be distinct.")
-    if any(operation_receipt.resolve().is_relative_to(Path(item["database"]).resolve().parent) for item in reports):
+    compactor._distinct_files(paths)
+    if any(compactor._inside_directory(operation_receipt, Path(item["database"]).parent) for item in reports):
         raise ValueError("Keep the operation receipt outside all runtime directories.")
     backups = _backup_index(backup_receipts, reports)
     _check_pins(reports)

@@ -1,6 +1,6 @@
 """Exercise exact-content compaction and source-bound optional sidecar rebinding.
 
-Code version: v1.2.0-codex.0
+Code version: v1.2.1-codex.0
 """
 
 from __future__ import annotations
@@ -182,6 +182,69 @@ def test_adoption_rejects_modified_content_and_failed_compression_output(archive
     assert not (workstation / "rejected.json").exists()
 
 
+def test_adoption_rejects_a_hardlink_to_the_live_database_before_reading_payloads(archive, monkeypatch):
+    source, workstation = archive
+    alias = workstation / "source-alias.sqlite3"
+    alias.hardlink_to(source)
+    original = source.read_bytes()
+    receipt = workstation / "rejected-alias.json"
+    monkeypatch.setattr(compactor, "sha256", lambda path: pytest.fail("An inode alias reached payload hashing."))
+    with pytest.raises(ValueError, match="distinct|independent"):
+        compactor.adopt_existing(source, alias, receipt, page_size=4096)
+    assert source.read_bytes() == original
+    assert not receipt.exists()
+
+
+def test_legacy_hardlinked_candidate_cannot_rebind_the_live_sidecar(archive):
+    history_report, history_receipt = _prepare(archive)
+    sidecar, workstation = _sidecar(archive)
+    original = sidecar.read_bytes()
+    report, receipt = _prepare((sidecar, workstation))
+    candidate = Path(report["candidate"])
+    candidate.unlink()
+    candidate.hardlink_to(sidecar)
+    report.update(
+        version="v1.2.0-codex.0",
+        candidate_identity=compactor.identity(candidate),
+        candidate_sha256=compactor.sha256(candidate),
+    )
+    receipt.write_text(json.dumps(report))
+    with pytest.raises(ValueError, match="distinct|independent"):
+        compactor.rebind_sidecar(receipt, history_receipt)
+    assert sidecar.read_bytes() == original
+    with compactor.readonly(sidecar) as connection:
+        pin = connection.execute("SELECT value FROM archive_info WHERE key='history_file_identity'").fetchone()[0]
+    assert json.loads(pin) == history_report["source_identity"]
+
+
+@pytest.mark.parametrize("action", ["prepare", "adopt"])
+def test_case_aliased_runtime_directory_cannot_be_a_workstation(archive, action):
+    source, _workstation = archive
+    alias = source.parent.with_name(source.parent.name.upper())
+    aliases_runtime = alias.exists() and alias.samefile(source.parent)
+    if not alias.exists():
+        alias.mkdir()
+    stage = alias / "new-stage"
+    stage.mkdir()
+    candidate, receipt = stage / "candidate.sqlite3", stage / "receipt.json"
+    original = source.read_bytes()
+    if action == "adopt":
+        candidate.write_bytes(original)
+
+    def run():
+        if action == "adopt":
+            return compactor.adopt_existing(source, candidate, receipt, page_size=4096)
+        return compactor.prepare(source, candidate, receipt)
+
+    if aliases_runtime:
+        with pytest.raises(ValueError, match="external"):
+            run()
+        assert not receipt.exists()
+    else:
+        assert run()["status"] == "prepared_not_published"
+    assert source.read_bytes() == original
+
+
 def test_known_ditto_size_cap_rejects_before_hashing_or_creating_a_second_large_copy(tmp_path, monkeypatch):
     candidate = tmp_path / "large-synthetic-file"
     with candidate.open("wb") as stream:
@@ -258,3 +321,16 @@ def test_mount_refresh_rejects_independent_drift_before_any_candidate_change(arc
         compactor.refresh_mount(receipts, output)
     assert not list(output.iterdir())
     assert [compactor.sha256(report["candidate"]) for report in reports] == before
+
+
+def test_mount_refresh_rejects_a_new_hardlink_to_a_candidate_before_rebinding(archive, monkeypatch):
+    receipts, output, _original_identity = _remount_fixture(archive, monkeypatch)
+    reports = [json.loads(path.read_text()) for path in receipts]
+    candidate = Path(reports[1]["candidate"])
+    alias = candidate.with_name("retained-independent-alias.sqlite3")
+    alias.hardlink_to(candidate)
+    before = candidate.read_bytes()
+    with pytest.raises(ValueError, match="distinct|independent"):
+        compactor.refresh_mount(receipts, output)
+    assert candidate.read_bytes() == alias.read_bytes() == before
+    assert not list(output.iterdir())

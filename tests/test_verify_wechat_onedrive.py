@@ -1,12 +1,13 @@
 """Verify metadata-only OneDrive inspection, exact size binding, and exclusions.
 
-Code version: v1.1.0-codex.0
+Code version: v1.1.2-codex.0
 """
 
 from __future__ import annotations
 
 import json
 from pathlib import Path
+import stat
 from types import SimpleNamespace
 
 import pytest
@@ -90,7 +91,8 @@ def test_dataless_payload_and_cache_are_never_opened(workspace, monkeypatch):
     assert report["records"][0]["cloud_preservation_verified"] is False
     assert report["records"][0]["safe_to_release_local_content"] is False
     assert report["public_allocation_after"]["dataless_files"] == 1
-    assert report["canonical_cache_allocation_after"]["allocated_bytes"] == cached.stat().st_blocks * 512
+    blocks = getattr(cached.stat(), "st_blocks", None)
+    assert report["canonical_cache_allocation_after"]["allocated_bytes"] == (None if blocks is None else blocks * 512)
     assert report["payload_bytes_read"] == 0
     assert report["remote_content_hash_verified"] is False
 
@@ -170,3 +172,114 @@ def test_metadata_only_cli_never_certifies_cloud_preservation_or_release(workspa
     stored = json.loads(report_path.read_text())
     assert stored["all_scanned_files_uploaded"] is False
     assert stored["remote_content_hash_verified"] is False
+
+
+def test_parent_traversal_cannot_escape_public_or_cache_namespace(workspace, monkeypatch):
+    root, cache = workspace
+    outside = root.parent.parent / "outside"
+    outside.mkdir()
+    payload = outside / "payload.zst"
+    payload.write_bytes(b"outside the selected provider")
+    escaped = root.parent / ".." / outside.name
+    monkeypatch.setattr(inspector.archiver, "_provider_state", lambda path: pytest.fail("Escaped provider query"))
+    with pytest.raises(ValueError, match="parent traversal"):
+        inspector.canonical_cache_path(escaped / payload.name)
+    with pytest.raises(ValueError, match="parent traversal"):
+        inspector.inspect_workspace(escaped, outside / "report.json")
+    assert not (outside / "report.json").exists()
+    assert payload.read_bytes() == b"outside the selected provider"
+    assert list(cache.iterdir()) == []
+
+
+def test_parent_symlinks_cannot_redirect_a_public_workstation(workspace, tmp_path, monkeypatch):
+    root, _ = workspace
+    outside = tmp_path / "outside"
+    (outside / "workstation").mkdir(parents=True)
+    alias = root.parent / "linked"
+    alias.symlink_to(outside, target_is_directory=True)
+    escaped = alias / "workstation"
+    monkeypatch.setattr(inspector.archiver, "_provider_state", lambda path: pytest.fail("Symlink provider query"))
+    with pytest.raises(ValueError, match="symbolic links"):
+        inspector.canonical_cache_path(escaped / "payload.zst")
+    with pytest.raises(ValueError, match="symbolic links"):
+        inspector.inspect_workspace(escaped, outside / "report.json")
+    assert not (outside / "report.json").exists()
+
+
+def test_cache_parent_symlink_cannot_redirect_allocation_inspection(workspace, tmp_path):
+    root, cache = workspace
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (cache / root.name).symlink_to(outside, target_is_directory=True)
+    with pytest.raises(ValueError, match="symbolic links"):
+        inspector.canonical_cache_path(root / "payload.zst")
+
+
+def test_unknown_allocation_propagates_through_public_and_cache_totals(workspace, monkeypatch):
+    root, cache = workspace
+    (root / "payload.zst").write_bytes(b"public")
+    (cache / root.name).mkdir()
+    (cache / root.name / "payload.zst").write_bytes(b"cached")
+    original = inspector._metadata
+    monkeypatch.setattr(inspector, "_metadata", lambda path: {**original(path), "allocated_bytes": None})
+    monkeypatch.setattr(inspector.archiver, "_provider_state", _uploaded)
+    report = inspector.inspect_workspace(root, root / "report.json")
+    for key in ("public_allocation_after", "canonical_cache_allocation_after"):
+        assert report[key]["allocated_bytes"] is None
+        assert report[key]["unique_inode_allocated_bytes"] is None
+        assert report[key]["allocation_unavailable_files"] == 1
+    assert report["safe_to_release_local_content"] is False
+
+
+def test_metadata_without_native_allocation_field_is_unknown(monkeypatch):
+    state = SimpleNamespace(st_dev=1, st_ino=2, st_size=3, st_mtime_ns=4,
+                            st_mode=stat.S_IFREG | 0o600)
+    monkeypatch.setattr(Path, "lstat", lambda self: state)
+    assert inspector._metadata(Path("synthetic"))["allocated_bytes"] is None
+
+
+@pytest.mark.parametrize("failure", ["leaf_symlink", "os_error"])
+def test_cache_inspection_failure_is_unknown_not_zero_or_absent(workspace, tmp_path, monkeypatch, failure):
+    root, cache = workspace
+    (root / "payload.zst").write_bytes(b"public fixture")
+    cached = cache / root.name / "payload.zst"
+    cached.parent.mkdir()
+    if failure == "leaf_symlink":
+        outside = tmp_path / "outside.zst"
+        outside.write_bytes(b"must not be read")
+        cached.symlink_to(outside)
+        expected_error = "ValueError"
+    else:
+        cached.write_bytes(b"cache metadata cannot be inspected")
+        original = inspector._metadata
+        def deny_cache(path):
+            if path == cached:
+                raise PermissionError("Synthetic metadata denial")
+            return original(path)
+        monkeypatch.setattr(inspector, "_metadata", deny_cache)
+        expected_error = "PermissionError"
+    monkeypatch.setattr(Path, "open", lambda *args, **kwargs: pytest.fail("Payload content was opened"))
+    monkeypatch.setattr(inspector.archiver, "_provider_state", lambda path: pytest.fail("Invalid cache path reached provider query"))
+    report = inspector.inspect_workspace(root, root / "report.json")
+    summary = report["canonical_cache_allocation_after"]
+    assert summary["allocated_bytes"] is None
+    assert summary["unique_inode_allocated_bytes"] is None
+    assert summary["inspection_unavailable_items"] == 1
+    assert report["canonical_cache_unavailable_items"] == 1
+    assert report["canonical_cache_missing_files"] == 0
+    assert report["records"][0]["cache_inspection_error"] == expected_error
+    assert report["payload_bytes_read"] == 0
+    assert report["cloud_preservation_verified"] is False
+    assert report["safe_to_release_local_content"] is False
+
+
+def test_explicit_cache_absence_remains_distinct_from_inspection_failure(workspace, monkeypatch):
+    root, _ = workspace
+    (root / "payload.zst").write_bytes(b"public fixture")
+    monkeypatch.setattr(inspector.archiver, "_provider_state", _uploaded)
+    report = inspector.inspect_workspace(root, root / "report.json")
+    assert report["canonical_cache_allocation_after"]["allocated_bytes"] == 0
+    assert report["canonical_cache_allocation_after"]["inspection_unavailable_items"] == 0
+    assert report["canonical_cache_missing_files"] == 1
+    assert report["canonical_cache_unavailable_items"] == 0
+    assert report["safe_to_release_local_content"] is False

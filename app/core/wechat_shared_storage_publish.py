@@ -1,6 +1,6 @@
 """Stage reversible shared-body migrations and retain exact rollback databases.
 
-Code version: v1.1.1-codex.0
+Code version: v1.1.2-codex.0
 """
 
 from __future__ import annotations
@@ -95,6 +95,22 @@ def _storage_report(before, after):
     }
 
 
+def _inside_directory(path, directory):
+    """Fence rollback destinations by existing directory identity as well as spelling."""
+    path, directory = Path(path).resolve(), Path(directory).resolve()
+    if path.is_relative_to(directory):
+        return True
+    root = directory.stat()
+    for ancestor in (path, *path.parents):
+        try:
+            state = ancestor.stat()
+        except FileNotFoundError:
+            continue
+        if (state.st_dev, state.st_ino) == (root.st_dev, root.st_ino):
+            return True
+    return False
+
+
 def _publish_shared_bodies(
     local_store_root, scope, *, backup_directory, analyze, compact, scope_label
 ):
@@ -116,7 +132,7 @@ def _publish_shared_bodies(
             **_storage_report(storage_before, _storage_snapshot(target)),
         }
     backup = Path(backup_directory).absolute()
-    if backup.resolve().is_relative_to(Path(local_store_root).absolute().resolve()):
+    if _inside_directory(backup, local_store_root):
         raise ValueError("Keep rollback workstations outside the live local_store directory.")
     if backup.exists():
         raise ValueError("Use a new backup directory for each shared-body publication.")
@@ -127,7 +143,7 @@ def _publish_shared_bodies(
     originals = {target: baseline}
     sidecars = {}
     published = []
-    receipt = {"version": "v1.1.1-codex.0", "at": datetime.now(UTC).isoformat(), "backups": {}}
+    receipt = {"version": "v1.1.2-codex.0", "at": datetime.now(UTC).isoformat(), "backups": {}}
     try:
         # clonefile creates copy-on-write rollback evidence, not a raw archive copy.
         saved = backup / target.name

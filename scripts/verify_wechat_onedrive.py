@@ -1,6 +1,6 @@
 """Inspect one explicit OneDrive workstation without downloading or evicting payloads.
 
-Code version: v1.1.1-codex.0
+Code version: v1.1.2-codex.0
 """
 
 from __future__ import annotations
@@ -18,7 +18,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from scripts import archive_wechat_rollbacks as archiver
 
 
-VERSION = "v1.1.1-codex.0"
+VERSION = "v1.1.2-codex.0"
 PUBLIC_ROOT = Path.home() / "Library/CloudStorage/OneDrive-Personal"
 CACHE_ROOT = Path.home() / "Library/Group Containers/UBF8T346G9.OneDriveSyncClientSuite/OneDrive.noindex/OneDrive"
 TRANSACTION_LIMIT = 65_536
@@ -26,11 +26,12 @@ TRANSACTION_LIMIT = 65_536
 
 def _metadata(path):
     value = path.lstat()
+    blocks = getattr(value, "st_blocks", None)
     return {
         "device": value.st_dev,
         "inode": value.st_ino,
         "bytes": value.st_size,
-        "allocated_bytes": value.st_blocks * 512,
+        "allocated_bytes": None if blocks is None else blocks * 512,
         "mtime_ns": value.st_mtime_ns,
         "dataless": bool(getattr(value, "st_flags", 0) & archiver.DATALESS),
         "kind": "file" if stat.S_ISREG(value.st_mode) else "other",
@@ -43,8 +44,21 @@ def _same_identity(before, after):
 
 def canonical_cache_path(path):
     """Map only the currently verified Personal sync-root prefix, without resolving links."""
-    path = Path(path).absolute()
-    return CACHE_ROOT / path.relative_to(PUBLIC_ROOT)
+    path = Path(path).expanduser().absolute()
+    public = PUBLIC_ROOT.expanduser().absolute()
+    for item in (path, public):
+        _assert_plain_path(item)
+    cached = CACHE_ROOT.expanduser().absolute() / path.relative_to(public)
+    _assert_plain_path(cached)
+    return cached
+
+
+def _assert_plain_path(path):
+    if ".." in path.parts:
+        raise ValueError("OneDrive paths must not contain parent traversal.")
+    for component in (path, *path.parents):
+        if component.is_symlink():
+            raise ValueError("OneDrive paths must not contain symbolic links.")
 
 
 def _cache_metadata(path):
@@ -113,10 +127,10 @@ def _inspect_file(path, before):
         "cloud_preservation_verified": False, "safe_to_release_local_content": False,
     }
     try:
-        row["cache_before"] = _cache_metadata(path)
         if before["kind"] != "file":
             row.update(status="excluded", reason="nonregular_item_requires_review")
             return row
+        row["cache_before"] = _cache_metadata(path)
         reason = _in_progress_reason(path, before)
         if reason:
             row.update(status="excluded_in_progress", reason=reason)
@@ -144,19 +158,23 @@ def _inspect_file(path, before):
     finally:
         try:
             row["cache_after"] = _cache_metadata(path)
-        except OSError as error:
+        except (OSError, ValueError) as error:
             row["cache_inspection_error"] = type(error).__name__
     return row
 
 
-def _allocation_summary(metadata):
+def _allocation_summary(metadata, *, inspection_unavailable_items=0):
     files = [value for value in metadata if value.get("kind") == "file"]
     unique = {(value["device"], value["inode"]): value for value in files}
+    unavailable = sum(value["allocated_bytes"] is None for value in files)
+    unique_unavailable = inspection_unavailable_items or any(value["allocated_bytes"] is None for value in unique.values())
     return {
         "files": len(files),
         "logical_bytes": sum(value["bytes"] for value in files),
-        "allocated_bytes": sum(value["allocated_bytes"] for value in files),
-        "unique_inode_allocated_bytes": sum(value["allocated_bytes"] for value in unique.values()),
+        "allocated_bytes": None if unavailable or inspection_unavailable_items else sum(value["allocated_bytes"] for value in files),
+        "unique_inode_allocated_bytes": None if unique_unavailable else sum(value["allocated_bytes"] for value in unique.values()),
+        "allocation_unavailable_files": unavailable,
+        "inspection_unavailable_items": inspection_unavailable_items,
         "dataless_files": sum(value["dataless"] for value in files),
     }
 
@@ -185,6 +203,7 @@ def inspect_workspace(root, report, *, max_workers=4):
     in_progress = sum(row["status"] == "excluded_in_progress" for row in records)
     excluded = sum(row["status"].startswith("excluded") for row in records)
     complete = bool(records) and namespace_stable and uploaded == len(records)
+    cache_unavailable = sum("cache_after" not in row for row in records)
     return {
         "version": VERSION,
         "started_utc": started,
@@ -205,8 +224,12 @@ def inspect_workspace(root, report, *, max_workers=4):
             "excluded_items": excluded,
         },
         "public_allocation_after": _allocation_summary(after.values()),
-        "canonical_cache_allocation_after": _allocation_summary(row.get("cache_after", {}) for row in records),
-        "canonical_cache_missing_files": sum(not row.get("cache_after", {}).get("exists", False) for row in records),
+        "canonical_cache_allocation_after": _allocation_summary(
+            (row.get("cache_after", {}) for row in records),
+            inspection_unavailable_items=cache_unavailable,
+        ),
+        "canonical_cache_missing_files": sum(row.get("cache_after", {}).get("exists") is False for row in records),
+        "canonical_cache_unavailable_items": cache_unavailable,
         "canonical_cache_mapping": {"public_prefix": str(PUBLIC_ROOT), "cache_prefix": str(CACHE_ROOT)},
         "namespace": {"stable": namespace_stable, "added": added, "removed": removed, "changed": changed},
         "enumeration_errors": errors + final_errors,
@@ -219,7 +242,7 @@ def inspect_workspace(root, report, *, max_workers=4):
         "eviction_performed": False,
         "source_files_deleted": False,
         "verification_boundary": "Preliminary local File Provider metadata can conflict with remote sync state; independent remote evidence is required before source retirement or local content release.",
-        "allocation_boundary": "Metadata allocation per inode; APFS shared extents and physical free space are not inferred.",
+        "allocation_boundary": "Unavailable allocation is null. Metadata allocation per inode does not establish APFS shared extents or physical free space.",
     }
 
 

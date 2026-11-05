@@ -1,6 +1,6 @@
 """Verify reversible publication, external preservation gates, and source pins.
 
-Code version: v1.1.0-codex.0
+Code version: v1.1.1-codex.0
 """
 
 from __future__ import annotations
@@ -153,6 +153,66 @@ def test_preservation_and_pin_failures_block_all_swaps(publication, monkeypatch,
         _publish(publication)
     assert not swaps
     assert not publication["operation"].exists()
+
+
+def test_distinct_publication_paths_cannot_share_a_source_inode(publication, monkeypatch):
+    history, sidecar = publication["history"], publication["sidecar"]
+    history_report = json.loads(publication["receipts"][0].read_text())
+    sidecar_report = json.loads(publication["receipts"][1].read_text())
+    sidecar.unlink()
+    sidecar.hardlink_to(history)
+    candidate = Path(sidecar_report["candidate"])
+    candidate.write_bytes(Path(history_report["candidate"]).read_bytes())
+    sidecar_report.update(
+        source_identity=compactor.identity(sidecar),
+        source_sha256=compactor.sha256(sidecar),
+        candidate_identity=compactor.identity(candidate),
+        candidate_sha256=compactor.sha256(candidate),
+        logical_content=history_report["logical_content"],
+        intentional_changes={},
+    )
+    publication["receipts"][1].write_text(json.dumps(sidecar_report))
+    original = history.read_bytes()
+    monkeypatch.setattr(publisher, "_backup_index", lambda *args: pytest.fail("Aliased sources reached backup preflight."))
+    monkeypatch.setattr(publisher, "_swap", lambda *args: pytest.fail("Aliased sources reached publication."))
+    with pytest.raises(ValueError, match="distinct.*identit"):
+        _publish(publication)
+    assert history.read_bytes() == sidecar.read_bytes() == original
+    assert not publication["operation"].exists()
+
+
+def test_new_hardlink_after_preflight_blocks_publication_without_swapping(publication, monkeypatch):
+    original_same = publisher._same
+    alias = Path(publication["reports"][0]["candidate"]).with_name("late-candidate-alias.sqlite3")
+    original = publication["history"].read_bytes()
+
+    def add_alias_after_preflight(report, *, hash_bytes=False):
+        original_same(report, hash_bytes=hash_bytes)
+        if hash_bytes and Path(report["database"]) == publication["history"]:
+            alias.hardlink_to(report["candidate"])
+
+    monkeypatch.setattr(publisher, "_same", add_alias_after_preflight)
+    monkeypatch.setattr(publisher, "_swap", lambda *args: pytest.fail("A linked candidate reached a swap."))
+    with pytest.raises(ValueError, match="distinct|independent"):
+        _publish(publication)
+    assert publication["history"].read_bytes() == original
+    assert json.loads(publication["operation"].read_text())["status"] == "failed_originals_restored"
+
+
+def test_case_aliased_runtime_cannot_receive_the_operation_journal(publication, monkeypatch):
+    runtime = publication["history"].parent
+    alias = runtime.with_name(runtime.name.upper())
+    if alias.exists() and alias.samefile(runtime):
+        publication["operation"] = alias / "unsafe-operation.json"
+        original = publication["history"].read_bytes()
+        monkeypatch.setattr(publisher, "_swap", lambda *args: pytest.fail("An internal journal reached publication."))
+        with pytest.raises(ValueError, match="outside all runtime"):
+            _publish(publication)
+        assert publication["history"].read_bytes() == original
+        assert not publication["operation"].exists()
+    else:
+        alias.mkdir()
+        assert not compactor._inside_directory(alias / "operation.json", runtime)
 
 
 def test_writer_or_view_content_mismatch_blocks_swaps(publication, monkeypatch):

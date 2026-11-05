@@ -1,6 +1,6 @@
 # Operations guide
 
-Documentation version: `v1.53.2-codex.0`
+Documentation version: `v1.53.3-codex.0`
 
 ## iPhone
 
@@ -82,6 +82,35 @@ Implementation: [shared storage](../app/core/wechat_shared_storage.py),
 [publication tests](../tests/test_wechat_shared_storage_publish.py); the matching contracts
 are in [Architecture](ARCHITECTURE.md#wechat-human-message-archives) and
 [Testing](TESTING.md).
+
+### WeChat storage maintenance boundaries
+
+[SQLite preparation](../scripts/compact_wechat_sqlite.py) and
+[atomic publication](../scripts/publish_wechat_compaction.py) require independent candidate
+inodes. Candidates must have one hard link, including when adopting an older preparation
+receipt or rebinding a sidecar. Publication also rejects shared source inodes across the
+selected batch. The original `v1.2.0-codex.0` preparation receipts remain supported, subject
+to these current safety checks.
+
+External workstation fences compare existing ancestor directory identities as well as
+resolved path spelling. Case aliases on a case-insensitive filesystem and alternative
+filesystem paths to the same directory cannot place candidates, rollback artifacts, or
+operation journals inside runtime storage. Distinct directories on a case-sensitive
+filesystem remain independent.
+
+[Workstation preservation](../scripts/preserve_wechat_workstations.py) rejects parent
+traversal and symlink paths before writing. Its exclusive rename backend supports macOS
+and Linux; unsupported platforms reject `--apply` before creating destination files.
+Successive batches retain each earlier locator entry's workstation and receipt. A new
+file at an already preserved relative path requires conflict review before any move;
+it never silently replaces the earlier mapping. Legacy preservation receipts remain
+readable.
+
+[OneDrive inspection](../scripts/verify_wechat_onedrive.py) uses the current user's
+Personal sync root, rejects traversal and symlink escapes, and reports unavailable
+allocation as JSON `null`. Local File Provider flags remain preliminary evidence.
+Require independent cloud-content verification and separate public/canonical-cache
+allocation checks before releasing preserved local content or reporting disk reclamation.
 
 ### Recover HTML forwarded child clocks
 
