@@ -1,10 +1,11 @@
 """Ambiguous native quote roles stay out of contact claims without original proof.
 
-Code version: v1.1.0-codex.0
+Code version: v1.1.1-codex.0
 """
 
 from __future__ import annotations
 
+from contextlib import closing
 import hashlib
 import json
 import sqlite3
@@ -21,7 +22,7 @@ ROOM = "444111222@chatroom"
 
 def _reverse_quote(fixture):
     parent = fixture.parents["native-reply"]
-    with sqlite3.connect(fixture.history) as source:
+    with closing(sqlite3.connect(fixture.history)) as source, source:
         raw = source.execute(
             "SELECT provenance FROM messages WHERE id=?", (parent,)
         ).fetchone()[0]
@@ -41,7 +42,7 @@ def _preserved(fixture):
 
 def _assert_unverified_quote(fixture, reference_id):
     cache = analysis.contact_analysis_cache_path(fixture.store, fixture.target_id)
-    with sqlite3.connect(cache) as connection:
+    with closing(sqlite3.connect(cache)) as connection, connection:
         assert connection.execute(
             "SELECT id FROM refs WHERE id=?", (reference_id,)
         ).fetchone() is None
@@ -128,7 +129,7 @@ def test_incomplete_same_inputs_cache_rechecks_but_does_not_promote_ambiguous_qu
     before = _preserved(fixture)
     page = analysis.query_contact_analysis(fixture.store, fixture.target_id)
     cache = analysis.contact_analysis_cache_path(fixture.store, fixture.target_id)
-    with sqlite3.connect(cache) as retained:
+    with closing(sqlite3.connect(cache)) as retained, retained:
         retained.execute("DELETE FROM statement_groups WHERE reference_id=?", (reference_id,))
         retained.execute("DELETE FROM statement_members WHERE reference_id=?", (reference_id,))
         retained.execute("DELETE FROM refs WHERE id=?", (reference_id,))
@@ -154,7 +155,7 @@ def test_incomplete_same_inputs_cache_rechecks_but_does_not_promote_ambiguous_qu
     assert reference_id not in {item["id"] for item in repaired["items"]}
     _assert_unverified_quote(fixture, reference_id)
     assert repaired["observation_count"] == page["observation_count"]
-    with sqlite3.connect(cache) as rebuilt:
+    with closing(sqlite3.connect(cache)) as rebuilt, rebuilt:
         assert (
             rebuilt.execute(
                 "SELECT value FROM info WHERE key='native_embedded_version'"
@@ -182,12 +183,12 @@ def test_cache_copy_paths_reject_incomplete_native_projection_versions(
         old_fingerprint = hashlib.sha256(
             analysis._json([version, identities]).encode()
         ).hexdigest()
-        with sqlite3.connect(cache) as retained:
+        with closing(sqlite3.connect(cache)) as retained, retained:
             retained.executemany(
                 "UPDATE info SET value=? WHERE key=?",
                 [(version, "version"), (old_fingerprint, "fingerprint")],
             )
-    with sqlite3.connect(cache) as retained:
+    with closing(sqlite3.connect(cache)) as retained, retained:
         if recorded_version is None:
             retained.execute("DELETE FROM info WHERE key='native_embedded_version'")
         else:
@@ -195,7 +196,7 @@ def test_cache_copy_paths_reject_incomplete_native_projection_versions(
                 "UPDATE info SET value=? WHERE key='native_embedded_version'",
                 (recorded_version,),
             )
-    with sqlite3.connect(":memory:") as output:
+    with closing(sqlite3.connect(":memory:")) as output, output:
         output.executescript(analysis._REFERENCE_SCHEMA)
         copier = (
             analysis._copy_legacy_references
@@ -214,7 +215,7 @@ def test_matching_projection_cache_can_refresh_grouping_without_author_rescan(
     before = _preserved(fixture)
     analysis.query_contact_analysis(fixture.store, fixture.target_id)
     cache = analysis.contact_analysis_cache_path(fixture.store, fixture.target_id)
-    with sqlite3.connect(cache) as retained:
+    with closing(sqlite3.connect(cache)) as retained, retained:
         retained.execute("UPDATE info SET value='stale-grouping' WHERE key='fingerprint'")
 
     def no_rescan(*args, **kwargs):
@@ -236,7 +237,7 @@ def test_matching_body_and_server_without_exact_native_source_proof_cannot_keep_
     fixture = native_activity_store
     reference_id = _reverse_quote(fixture)
     primary = fixture.parents["target-primary"]
-    with sqlite3.connect(fixture.history) as source:
+    with closing(sqlite3.connect(fixture.history)) as source, source:
         source.execute(
             "UPDATE messages SET text=?,search_text=? WHERE id=?",
             (fixtures.QUOTED, fixtures.QUOTED.casefold(), primary),
