@@ -1,6 +1,6 @@
 """Nested transcript cards preserve one outer clock rail and literal source text.
 
-Code version: v1.1.1-codex.0
+Code version: v1.1.2-codex.0
 """
 
 from __future__ import annotations
@@ -410,10 +410,12 @@ def _open(page, fixture, *, fragment=""):
 
 
 def _assert_clock_rail(page, fixture):
-    page.wait_for_function("""async selector => {
+    page.evaluate("""async () => {
         // Resize can publish the outer layout before the nested clock observer runs.
         await new Promise(requestAnimationFrame);
         await new Promise(requestAnimationFrame);
+    }""")
+    page.wait_for_function("""selector => {
         const card = document.querySelector(selector);
         if (!card) return false;
         const root = card.parentElement;

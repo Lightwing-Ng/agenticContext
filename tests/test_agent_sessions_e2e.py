@@ -1,4 +1,4 @@
-"""Session switching, capacity, and selected controls. Code version: v1.37.3-codex.0."""
+"""Session switching, capacity, and selected controls. Code version: v1.37.4-codex.0."""
 
 import re
 from copy import deepcopy
@@ -6242,7 +6242,7 @@ def test_route_switch_isolates_worker_and_obeys_global_admission(disposable_brow
 
 @pytest.mark.parametrize("width", [1138, 390])
 def test_tunnel_page_does_not_launch_browser_reads_for_restored_session(
-    disposable_browser, sidebar_server_url, width,
+    disposable_browser, agent_selection_server_url, width,
 ):
     """A restored Browser task must not make the Tunnel page open Edge."""
     context = disposable_browser.new_context(viewport={"width": width, "height": 959})
@@ -6283,7 +6283,7 @@ def test_tunnel_page_does_not_launch_browser_reads_for_restored_session(
         page.route(f"**{path}?*", reject_browser_read)
 
     try:
-        page.goto(f"{sidebar_server_url}/agent/tunnel/chatgpt")
+        page.goto(f"{agent_selection_server_url}/agent/tunnel/chatgpt")
         expect(page.locator("#agent_connection_tunnel")).to_be_checked()
         expect(page.locator(".agent-page")).to_have_attribute(
             "data-agent-run-id", "restored-browser-task"
