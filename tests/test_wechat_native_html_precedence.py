@@ -1,6 +1,6 @@
 """Preferred native observations retain all source evidence and account boundaries.
 
-Code version: v1.4.1-codex.0
+Code version: v1.4.2-codex.0
 """
 
 from __future__ import annotations
@@ -729,7 +729,7 @@ def test_complete_cache_reproof_preserves_references_and_existing_links(
     with monkeypatch.context() as previous:
         previous.setattr(analysis, "INDEX_VERSION", "v1.10.0-codex.0")
         old_fingerprint = analysis._sources(fixture.store)[2]
-    with sqlite3.connect(cache) as connection:
+    with closing(sqlite3.connect(cache)) as connection, connection:
         references = connection.execute("SELECT * FROM refs ORDER BY id").fetchall()
         connection.execute("DELETE FROM statement_members")
         connection.execute("DELETE FROM statement_groups")
@@ -778,7 +778,7 @@ def test_complete_cache_reproof_preserves_references_and_existing_links(
     assert page["total_count"] == 6
     assert page["observation_count"] == 12
     assert {item["id"] for item in page["items"]} == set(fixture.native_ids)
-    with sqlite3.connect(cache) as connection:
+    with closing(sqlite3.connect(cache)) as connection, connection:
         assert (
             connection.execute("SELECT * FROM refs ORDER BY id").fetchall()
             == references

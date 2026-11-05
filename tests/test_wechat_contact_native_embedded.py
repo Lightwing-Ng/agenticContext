@@ -1,9 +1,11 @@
 """Native embedded author references retain roles, source clocks, and bounded hints.
 
-Code version: v1.1.1-codex.0
+Code version: v1.1.2-codex.0
 """
 
 from __future__ import annotations
+
+from contextlib import closing
 
 from copy import deepcopy
 import hashlib
@@ -1018,7 +1020,7 @@ def test_legacy_misattributed_primary_quote_is_removed_only_from_derived_referen
 ):
     fixture = native_activity_store
     identifier = fixture.parents["native-reply"]
-    with sqlite3.connect(fixture.history) as connection:
+    with closing(sqlite3.connect(fixture.history)) as connection, connection:
         provenance = json.loads(
             connection.execute(
                 "SELECT provenance FROM messages WHERE id=?",
@@ -1067,7 +1069,7 @@ def test_legacy_misattributed_primary_quote_is_removed_only_from_derived_referen
         analysis._json([old_version, identities]).encode()
     ).hexdigest()
     cache_path = analysis.contact_analysis_cache_path(fixture.store, fixture.other_id)
-    with sqlite3.connect(cache_path) as cache:
+    with closing(sqlite3.connect(cache_path)) as cache, cache:
         cache.executemany(
             "UPDATE info SET value=? WHERE key=?",
             [
@@ -1090,7 +1092,7 @@ def test_legacy_misattributed_primary_quote_is_removed_only_from_derived_referen
         REPLY,
     }
     assert not any(QUOTED in item["content_text"] for item in repaired["items"])
-    with sqlite3.connect(cache_path) as cache:
+    with closing(sqlite3.connect(cache_path)) as cache, cache:
         assert (
             cache.execute("SELECT 1 FROM refs WHERE id=?", (identifier,)).fetchone()
             is None
@@ -1101,7 +1103,7 @@ def test_legacy_misattributed_primary_quote_is_removed_only_from_derived_referen
     assert target["total_count"] == 2
     assert {item["sender_id"] for item in target["items"]} == {TARGET}
     assert {item["content_text"] for item in target["items"]} == {QUOTED}
-    with sqlite3.connect(fixture.history) as history:
+    with closing(sqlite3.connect(fixture.history)) as history, history:
         assert (
             history.execute(
                 "SELECT text FROM messages WHERE id=?", (identifier,)

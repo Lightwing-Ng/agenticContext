@@ -1,7 +1,9 @@
 """Compact repeated forwarded assertions while retaining independent source events.
 
-Code version: v1.1.0-codex.0
+Code version: v1.1.1-codex.0
 """
+
+from contextlib import closing
 
 from copy import deepcopy
 from datetime import datetime
@@ -664,7 +666,7 @@ def projection_archive_store(retained_review_store):
     f.review_path.write_text(
         json.dumps({"schema_version": 2, "packet_reviews": [], "reference_reviews": []})
     )
-    with sqlite3.connect(f.history) as source, sqlite3.connect(f.cache) as output:
+    with closing(sqlite3.connect(f.history)) as source, source, closing(sqlite3.connect(f.cache)) as output, output:
         source.row_factory = sqlite3.Row
         for snapshot in source.execute(
             "SELECT * FROM source_snapshots WHERE source_id LIKE 'html-%'"
@@ -723,7 +725,7 @@ def projection_archive_store(retained_review_store):
                 (group, ref[0], full["conversation_id"]),
             )
             output.execute("INSERT INTO statement_members VALUES(?,?)", (ref[0], group))
-    with sqlite3.connect(f.cache) as output:
+    with closing(sqlite3.connect(f.cache)) as output, output:
         identities = {
             str(p.resolve()): analysis._identity(p) for p in (f.history, f.registry)
         }
@@ -765,9 +767,9 @@ def test_normal_cache_replay_restores_explicit_display_groups_without_author_res
     page = analysis.query_contact_analysis(f.store, CONTACT)
     assert page["status"] == "ready"
     assert not page["forwarded_statement_copies_collapsed"]
-    with sqlite3.connect(f.cache) as output:
+    with closing(sqlite3.connect(f.cache)) as output, output:
         baseline = _snapshot(output)
-    with sqlite3.connect(f.history) as source, sqlite3.connect(f.cache) as output:
+    with closing(sqlite3.connect(f.history)) as source, source, closing(sqlite3.connect(f.cache)) as output, output:
         source.row_factory = sqlite3.Row
         applied = projection.fold_contact_forwarded_copies(
             source,
@@ -798,7 +800,7 @@ def test_normal_cache_replay_restores_explicit_display_groups_without_author_res
     assert restored["total_count"] == page["total_count"]
     assert restored["observation_count"] == page["observation_count"]
     assert not restored["forwarded_statement_copies_collapsed"]
-    with sqlite3.connect(f.cache) as output:
+    with closing(sqlite3.connect(f.cache)) as output, output:
         assert _snapshot(output) == baseline
         info = dict(output.execute("SELECT key,value FROM info"))
         assert json.loads(info["forwarded_copy_projection"]) == {

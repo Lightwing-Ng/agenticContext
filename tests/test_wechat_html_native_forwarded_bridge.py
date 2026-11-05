@@ -1,9 +1,11 @@
 """Corroborate missing HTML clocks without rewriting native or export observations.
 
-Code version: v1.0.1-codex.0
+Code version: v1.0.2-codex.0
 """
 
 from __future__ import annotations
+
+from contextlib import closing
 
 from datetime import datetime
 import hashlib
@@ -66,7 +68,7 @@ def _native_naive_clocks(fixture):
 
 def _reference_rows(fixture):
     path = analysis.contact_analysis_cache_path(fixture.store, CID)
-    with sqlite3.connect(path) as connection:
+    with closing(sqlite3.connect(path)) as connection, connection:
         return {
             table: connection.execute(
                 "SELECT * FROM " + table + " ORDER BY 1"
@@ -317,7 +319,7 @@ def test_bridge_only_replay_keeps_proven_originals_without_scanning_primary_refs
     def reject_new_original(*args):
         raise AssertionError("A bridge-only replay must preserve existing original links.")
 
-    with analysis._readonly(fixture.history) as source, sqlite3.connect(path) as output:
+    with closing(analysis._readonly(fixture.history)) as source, source, closing(sqlite3.connect(path)) as output, output:
         for reference, statement in output.execute(
             "SELECT sm.reference_id,sm.statement_id FROM statement_members sm "
             "JOIN refs r ON r.id=sm.reference_id WHERE r.source_id=?",

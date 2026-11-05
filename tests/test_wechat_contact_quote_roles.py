@@ -1,7 +1,9 @@
 """Native room/author quote roles require original conversation evidence.
 
-Code version: v1.0.1-codex.0
+Code version: v1.0.2-codex.0
 """
+
+from contextlib import closing
 
 from copy import deepcopy
 import hashlib
@@ -214,7 +216,7 @@ def test_candidate_index_rebuilds_old_room_only_cache_and_preserves_source(tmp_p
     directory = tmp_path / "cache"
     directory.mkdir()
     proof = _quote()
-    with sqlite3.connect(history) as connection:
+    with closing(sqlite3.connect(history)) as connection, connection:
         connection.execute("CREATE TABLE messages(id TEXT PRIMARY KEY,provenance TEXT)")
         connection.execute("INSERT INTO messages VALUES(?,?)", (PARENT, json.dumps(proof)))
     original = history.read_bytes()
@@ -223,7 +225,7 @@ def test_candidate_index_rebuilds_old_room_only_cache_and_preserves_source(tmp_p
             ["v1.0.0-codex.0", str(history.resolve()), embedded._identity(history)]
         ).encode()
     ).hexdigest()
-    with sqlite3.connect(directory / "native-author-candidates.sqlite3") as connection:
+    with closing(sqlite3.connect(directory / "native-author-candidates.sqlite3")) as connection, connection:
         connection.executescript(
             "CREATE TABLE candidates(author TEXT,parent_id TEXT,PRIMARY KEY(author,parent_id)) WITHOUT ROWID;"
             "CREATE TABLE info(key TEXT PRIMARY KEY,value TEXT) WITHOUT ROWID;"
