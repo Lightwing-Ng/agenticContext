@@ -1,6 +1,6 @@
 """Browser-mediated Computer Use agent for signed-in Web AI sessions.
 
-Code version: v3.85.0-claude.0
+Code version: v3.85.1-codex.0
 """
 
 from __future__ import annotations
@@ -102,6 +102,7 @@ from .config import (
     is_windows_host,
 )
 from .gemini_downloader import inspect_gemini_session
+from .owner_only_files import ensure_owner_only, ensure_owner_only_directory
 from .grok_history import _grok_api_json
 from .safari_automation import SafariContext, SafariLocator, SafariNativeActivationError
 from .state import utc_now
@@ -1296,12 +1297,14 @@ def _atomic_write_owner_only_text(path: Path, content: str) -> None:
     temporary_path = Path(raw_temporary_path)
     try:
         temporary_path.chmod(0o600)
+        ensure_owner_only(temporary_path)
         with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
             descriptor = -1
             handle.write(content)
             handle.flush()
             os.fsync(handle.fileno())
         _replace_with_transient_retry(temporary_path, path)
+        ensure_owner_only(path)
         _fsync_directory_path(path.parent)
     finally:
         if descriptor >= 0:
@@ -1820,7 +1823,7 @@ def _cleanup_orphaned_agent_contexts(
         snapshot_path = root / PERSISTED_AGENT_SNAPSHOT_FILENAME
         if _path_is_unsafe_file_leaf(snapshot_path):
             return 0, 0, (snapshot_path,)
-        root.chmod(0o700)
+        ensure_owner_only_directory(root)
         candidates = tuple(root.iterdir())
     except (OSError, ValueError):
         return 0, 0, (raw_root,)
@@ -1843,7 +1846,7 @@ def _cleanup_orphaned_agent_contexts(
                 continue
             resolved_run_directory = run_directory.resolve(strict=True)
             resolved_run_directory.relative_to(root)
-            run_directory.chmod(0o700)
+            ensure_owner_only_directory(run_directory)
             context_stat = context_path.lstat()
             if (
                 _path_is_link_like(context_path)
@@ -1859,7 +1862,7 @@ def _cleanup_orphaned_agent_contexts(
             is_preserved = (
                 preserved is not None and resolved_context_path == preserved
             )
-            context_path.chmod(0o600)
+            ensure_owner_only(context_path)
             if is_preserved:
                 continue
             context_path.unlink()
@@ -2220,7 +2223,7 @@ class ComputerUseAgentService:
             return False
         try:
             raw_runtime_root.mkdir(parents=True, exist_ok=True)
-            raw_runtime_root.chmod(0o700)
+            ensure_owner_only_directory(raw_runtime_root)
             _atomic_write_owner_only_text(
                 path,
                 json.dumps(payload, ensure_ascii=False, indent=2) + "\n",

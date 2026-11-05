@@ -1,6 +1,6 @@
 """Unique contact statements preserve independent observations and native identity.
 
-Code version: v1.2.1-codex.0
+Code version: v1.2.2-codex.0
 """
 
 from __future__ import annotations
@@ -35,7 +35,7 @@ def statement_store(tmp_path):
     store = tmp_path / "store"
     import_wechat_archive(archive, store)
     history = wechat_archive_path(store)
-    with sqlite3.connect(history) as connection:
+    with closing(sqlite3.connect(history)) as connection, connection:
         connection.row_factory = sqlite3.Row
         rows = [
             dict(row)
@@ -72,7 +72,7 @@ def statement_store(tmp_path):
                 (row["conversation_id"],),
             )
     registry = contact_registry_path(store)
-    with sqlite3.connect(registry) as connection:
+    with closing(sqlite3.connect(registry)) as connection, connection:
         initialize_contact_registry(connection)
         connection.execute(
             "INSERT INTO contacts VALUES(?,?,?,?,?,?)",

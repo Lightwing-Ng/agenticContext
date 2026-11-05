@@ -1,6 +1,6 @@
 """Prove complete test partitions and fail-closed branch-coverage aggregation.
 
-Code version: v1.1.0-codex.0
+Code version: v1.1.1-codex.0
 """
 
 from __future__ import annotations
@@ -214,7 +214,12 @@ def test_global_threshold_uses_combined_branch_arcs_not_partial_percentages(proj
     assert shards.aggregate(project, artifacts, 55, "success") == expected
     data = CoverageData(basename=str(project / "test-results/.coverage"))
     data.read()
-    assert set(data.arcs("app/probe.py")) == (TRUE_ARCS | FALSE_ARCS if covered else MODULE_ARCS)
+    measured = data.measured_files()
+    assert {name.replace("\\", "/") for name in measured} == {"app/probe.py"}
+    assert len(measured) == 1
+    assert set(data.arcs(next(iter(measured)))) == (
+        TRUE_ARCS | FALSE_ARCS if covered else MODULE_ARCS
+    )
     report = json.loads((project / "test-results/coverage.json").read_text())
     assert report["meta"]["branch_coverage"] is True
     assert (report["totals"]["percent_covered"] >= 55) == covered

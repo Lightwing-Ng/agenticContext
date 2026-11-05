@@ -1,6 +1,6 @@
 """Typed resource persistence with native media and compressed history SQLite stores."""
 
-# Code version: v2.1.1-codex.0
+# Code version: v2.1.2-codex.0
 
 from __future__ import annotations
 

@@ -1,6 +1,6 @@
 # Architecture guide
 
-Documentation version: `v1.78.1-codex.0`
+Documentation version: `v1.78.2-codex.0`
 
 ## Runtime flow
 
@@ -150,6 +150,14 @@ updates to changed buckets. Snapshot callers still prepare all input rows; chang
 global ordinals can cause additional buckets to be rewritten. This design targets
 interactive local access and storage density; it does not claim optimal performance
 for every workload. The WeChat database remains separate and unchanged.
+
+The offline Gemini Takeout importer uses the same typed SQLite payload and browser summaries.
+Its preview distinguishes canonical SQLite authority from a read-only Parquet baseline;
+publication compares both identities and retains an exact backup in the baseline's own format.
+Version 2 import receipts bind both formats. Legacy version 1 receipts recover only their
+original Parquet publication and never silently adopt an independently migrated SQLite file.
+Fresh SQLite temporary files receive the verified owner-only POSIX mode or native Windows DACL
+before transcript bytes are written.
 
 ## Application layers
 

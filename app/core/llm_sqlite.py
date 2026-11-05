@@ -1,6 +1,6 @@
 """Transactional, indexed, compressed local history storage.
 
-Code version: v2.0.0-codex.0
+Code version: v2.1.0-codex.0
 
 Conversations map to stable compressed hash buckets, sharing compression context
 without requiring full-store reads. Typed Arrow IPC payloads avoid a full Python
@@ -22,6 +22,8 @@ from pathlib import Path
 from typing import Any
 
 import pyarrow as pa
+
+from .owner_only_files import ensure_owner_only
 
 STORE_VERSION = 3
 BUCKET_COUNT = 32
@@ -156,12 +158,15 @@ def write_sqlite_rows(
     path: Path,
     rows: Iterable[Mapping[str, Any]],
     schema: pa.Schema,
+    *,
+    source: str | None = None,
 ) -> None:
     """Commit a typed snapshot atomically while updating only changed groups."""
     if _ORDINAL_COLUMN in schema.names:
         raise ValueError("The history schema uses a reserved internal ordinal column.")
     path = Path(path)
-    source = path.parent.name if path.name == "history.sqlite3" else None
+    if source is None and path.name == "history.sqlite3":
+        source = path.parent.name
     if path.exists():
         _write_store(path, rows, schema, source)
         return
@@ -172,6 +177,7 @@ def write_sqlite_rows(
     os.close(descriptor)
     temporary = Path(temporary_name)
     try:
+        ensure_owner_only(temporary)
         _write_store(temporary, rows, schema, source)
         with closing(_connect(temporary, readonly=True)) as connection:
             if connection.execute("PRAGMA integrity_check").fetchone()[0] != "ok":

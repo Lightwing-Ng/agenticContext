@@ -4,7 +4,7 @@ Run with ``python -m app.core.gemini_export_import SOURCE --timezone AREA/CITY``
 The default is a read-only preview; ``--apply`` explicitly publishes the plan.
 """
 
-# Code version: v1.0.2-codex.0
+# Code version: v2.0.0-codex.0
 
 from __future__ import annotations
 
@@ -20,26 +20,29 @@ import os
 from pathlib import Path, PurePosixPath
 import re
 import shutil
+import sqlite3
 import tempfile
 import unicodedata
 from urllib.parse import unquote, urlsplit
 from zoneinfo import ZoneInfo
 
+import pyarrow as pa
 import pyarrow.parquet as pq
 
 from .config import LOCAL_STORE_ROOT
 from .gemini_downloader import gemini_history_path, normalize_gemini_conversation_url
 from .job_lock import CACHE_TASK_LOCK_NAME, CacheMaintenanceLock, CacheTaskLock
+from .llm_sqlite import read_sqlite_rows, read_sqlite_schema, write_sqlite_rows
 from .owner_only_files import ensure_owner_only, ensure_owner_only_directory
 from .resource_persistence import (
     GEMINI_HISTORY_SCHEMA,
     GEMINI_HISTORY_SCHEMA_VERSION,
-    write_parquet_rows_atomic,
 )
 
 
-# Publication receipts keep their format version across implementation-only repairs.
-VERSION = "v1.0.0-codex.0"
+VERSION = "v2.0.0-codex.0"
+_LEGACY_RECEIPT_VERSION = "v1.0.0-codex.0"
+_HISTORY_SUFFIXES = {"parquet": ".parquet", "sqlite": ".sqlite3"}
 _VOID = {"area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "param", "source", "track", "wbr"}
 _DATE = re.compile(
     r"^([A-Z][a-z]{2}) (\d{1,2}), (\d{4}), (\d{1,2}):(\d{2}):(\d{2})\s*([AP]M)(?:\s+([A-Za-z]{2,6}))?$"
@@ -324,15 +327,69 @@ def parse_takeout(source: Path | str, *, timezone: str) -> dict:
             "source_digest": digest, "events": events}
 
 
+def _history_format(path: Path) -> str:
+    for name, suffix in _HISTORY_SUFFIXES.items():
+        if path.suffix == suffix:
+            return name
+    raise TakeoutImportError("Unsupported Gemini history format.")
+
+
+def _history_file(bundle: Path, stem: str, format_name: str) -> Path:
+    if format_name not in _HISTORY_SUFFIXES:
+        raise TakeoutImportError("Unsupported Gemini import receipt format.")
+    return bundle / f"{stem}{_HISTORY_SUFFIXES[format_name]}"
+
+
+def _history_sha(path: Path) -> str | None:
+    _reject_symlink_ancestors(path)
+    if path.exists() and not path.is_file():
+        raise TakeoutImportError("Gemini history must be a regular file.")
+    if path.suffix == ".sqlite3":
+        for suffix in ("-wal", "-shm", "-journal"):
+            sidecar = Path(f"{path}{suffix}")
+            if sidecar.exists() or sidecar.is_symlink():
+                raise TakeoutImportError("Gemini SQLite history has an active sidecar; close its writer before importing.")
+    return _file_sha(path)
+
+
+@dataclass(frozen=True)
+class _HistoryState:
+    """Keep physical fallback bytes distinct from canonical SQLite authority."""
+
+    format: str | None
+    sha256: str | None
+    canonical_sha256: str | None
+
+
+def _history_state(history: Path) -> _HistoryState:
+    canonical_sha = _history_sha(history)
+    if canonical_sha is not None:
+        return _HistoryState("sqlite", canonical_sha, canonical_sha)
+    legacy_sha = _history_sha(history.with_suffix(".parquet"))
+    return _HistoryState("parquet" if legacy_sha is not None else None, legacy_sha, None)
+
+
+def _state_path(history: Path, state: _HistoryState) -> Path:
+    return history.with_suffix(_HISTORY_SUFFIXES[state.format]) if state.format else history
+
+
 def _baseline(path: Path) -> list[dict]:
     if not path.exists():
         return []
-    with path.open("rb") as handle:
-        with pq.ParquetFile(handle) as reader:
-            table = reader.read()
-            if not table.schema.equals(GEMINI_HISTORY_SCHEMA, check_metadata=False):
-                raise TakeoutImportError("Existing Gemini history has an unsupported schema.")
-            rows = table.to_pylist()
+    try:
+        if _history_format(path) == "sqlite":
+            schema = read_sqlite_schema(path)
+            rows = read_sqlite_rows(path)
+        else:
+            with path.open("rb") as handle:
+                with pq.ParquetFile(handle) as reader:
+                    table = reader.read()
+                    schema = table.schema
+                    rows = table.to_pylist()
+        if not schema.equals(GEMINI_HISTORY_SCHEMA, check_metadata=False):
+            raise TakeoutImportError("Existing Gemini history has an unsupported schema.")
+    except (OSError, ValueError, sqlite3.Error, pa.ArrowException) as error:
+        raise TakeoutImportError("Existing Gemini history cannot be verified.") from error
     keys = set()
     positions = defaultdict(list)
     for row in rows:
@@ -386,14 +443,43 @@ def _matches_for_event(originals: list[dict], event: dict, aggregate: bool, used
     return {"assistant": assistants[0]} if len(assistants) == 1 else {}
 
 
-def _verify_receipt(bundle: Path, catalog: dict, history_sha256: str | None) -> dict:
+def _receipt_formats(receipt: dict) -> tuple[str | None, str]:
+    if receipt.get("version") == _LEGACY_RECEIPT_VERSION:
+        return "parquet" if receipt.get("baseline_sha256") is not None else None, "parquet"
+    if receipt.get("version") != VERSION:
+        raise TakeoutImportError("Unsupported Gemini import receipt version.")
+    baseline_format = receipt.get("baseline_format")
+    if (baseline_format not in {None, "parquet", "sqlite"}
+            or receipt.get("candidate_format") != "sqlite"
+            or (baseline_format is None) != (receipt.get("baseline_sha256") is None)
+            or receipt.get("canonical_baseline_sha256") != (
+                receipt.get("baseline_sha256") if baseline_format == "sqlite" else None)):
+        raise TakeoutImportError("Unsupported Gemini import receipt format.")
+    return baseline_format, "sqlite"
+
+
+def _receipt_pending(receipt: dict, state: _HistoryState) -> bool:
+    _baseline_format, candidate_format = _receipt_formats(receipt)
+    return state.format != candidate_format or receipt["candidate_sha256"] != state.sha256
+
+
+def _verify_receipt(bundle: Path, catalog: dict, state: _HistoryState) -> dict:
     receipt = json.loads((bundle / "receipt.json").read_text())
-    pending = receipt.get("state") == "prepared" and receipt.get("baseline_sha256") == history_sha256
-    if (receipt.get("version") != VERSION or receipt.get("state") not in {"prepared", "committed"}
+    baseline_format, candidate_format = _receipt_formats(receipt)
+    completed = state.format == candidate_format and receipt.get("candidate_sha256") == state.sha256
+    pending = (
+        receipt.get("state") == "prepared"
+        and state.format == baseline_format
+        and receipt.get("baseline_sha256") == state.sha256
+        and state.canonical_sha256 == receipt.get("canonical_baseline_sha256")
+    )
+    if ((receipt.get("version") == _LEGACY_RECEIPT_VERSION and state.canonical_sha256 is not None)
+            or receipt.get("state") not in {"prepared", "committed"}
             or receipt.get("source_digest") != catalog["source_digest"]
             or receipt.get("timezone") != catalog["timezone"]
             or not isinstance(receipt.get("candidate_sha256"), str)
-            or receipt["candidate_sha256"] != history_sha256 and not pending):
+            or not re.fullmatch(r"[0-9a-f]{64}", receipt["candidate_sha256"])
+            or not completed and not pending):
         raise TakeoutImportError("This source has a receipt for a different timezone or changed history; refusing replay.")
     for name, key in (("events.json", "catalog_sha256"), ("provenance.json", "provenance_sha256")):
         _reject_symlink_ancestors(bundle / name)
@@ -401,15 +487,16 @@ def _verify_receipt(bundle: Path, catalog: dict, history_sha256: str | None) -> 
             raise TakeoutImportError("Published import provenance is missing or changed.")
     if _source_files(bundle / "source" / "MyActivity.html")[2] != catalog["source_digest"]:
         raise TakeoutImportError("Published source bundle is missing or changed.")
-    if receipt.get("baseline_sha256") is not None:
-        backup = bundle / "history-before.parquet"
+    if baseline_format is not None:
+        backup = _history_file(bundle, "history-before", baseline_format)
         _reject_symlink_ancestors(backup)
-        if _file_sha(backup) != receipt["baseline_sha256"]:
+        if _history_sha(backup) != receipt["baseline_sha256"]:
             raise TakeoutImportError("Published import backup is missing or changed.")
-    if pending and receipt["candidate_sha256"] != history_sha256:
-        candidate = bundle / "history-candidate.parquet"
+        _baseline(backup)
+    if pending and not completed:
+        candidate = _history_file(bundle, "history-candidate", candidate_format)
         _reject_symlink_ancestors(candidate)
-        if _file_sha(candidate) != receipt["candidate_sha256"]:
+        if _history_sha(candidate) != receipt["candidate_sha256"]:
             raise TakeoutImportError("The prepared import candidate is missing or changed.")
         _baseline(candidate)
     return receipt
@@ -426,6 +513,7 @@ class ImportPlan:
     rows: list[dict]
     provenance: list[dict]
     summary: dict
+    history_state: _HistoryState
     existing_receipt: dict | None = None
 
 
@@ -440,20 +528,23 @@ def plan_import(source: Path | str, *, timezone: str, local_store_root: Path | s
         raise TakeoutImportError("The output store and source bundle must have separate directory trees.")
     history = gemini_history_path(root)
     _reject_symlink_ancestors(history)
-    before_sha = _file_sha(history)
-    rows = _baseline(history)
+    state = _history_state(history)
+    before_sha = state.sha256
+    rows = _baseline(_state_path(history, state))
+    if _history_state(history) != state:
+        raise TakeoutImportError("Gemini history changed during preview; make a new plan.")
     receipt_path = history.parent / "imports" / f"takeout-{catalog['source_digest']}" / "receipt.json"
     _reject_symlink_ancestors(receipt_path)
     if receipt_path.exists():
-        receipt = _verify_receipt(receipt_path.parent, catalog, before_sha)
-        pending = receipt["candidate_sha256"] != before_sha
+        receipt = _verify_receipt(receipt_path.parent, catalog, state)
+        pending = _receipt_pending(receipt, state)
         if pending:
-            rows = _baseline(receipt_path.parent / "history-candidate.parquet")
+            rows = _baseline(_history_file(receipt_path.parent, "history-candidate", _receipt_formats(receipt)[1]))
         return ImportPlan(source, root, catalog, before_sha, rows, [], {
             "version": VERSION, "dry_run": True, "already_imported": not pending,
             "resuming_prepared_import": pending, "added_rows": receipt["added_rows"] if pending else 0,
             "history_rows": len(rows), "source_cards": len(catalog["events"]),
-        }, receipt)
+        }, state, receipt)
     originals = defaultdict(list)
     for row in rows:
         originals[row["conversation_id"]].append(row)
@@ -522,7 +613,26 @@ def plan_import(source: Path | str, *, timezone: str, local_store_root: Path | s
                "aggregate_prompt_cards": sum(event["source_kind"] == "Prompted" and len(event["conversation_urls"]) > 1 for event in catalog["events"]),
                "nonprompt_cards_preserved_without_role_inference": sum(event["source_kind"] != "Prompted" for event in catalog["events"]),
                "source_digest": catalog["source_digest"], "baseline_sha256": before_sha}
-    return ImportPlan(source, root, catalog, before_sha, rows, provenance, summary)
+    return ImportPlan(source, root, catalog, before_sha, rows, provenance, summary, state)
+
+
+def _publish_candidate(candidate: Path, history: Path, expected_sha256: str | None) -> None:
+    """Avoid replacing a canonical store that appeared after an absent preview."""
+    if expected_sha256 is None:
+        os.link(candidate, history)
+        candidate.unlink()
+    else:
+        os.replace(candidate, history)
+    _sync_directory(history.parent)
+
+
+def _remove_published_candidate(candidate: Path, history: Path, expected_sha256: str) -> None:
+    """Finish an interrupted no-clobber link without changing published bytes."""
+    if candidate.exists() and candidate.samefile(history):
+        if _history_sha(candidate) != expected_sha256:
+            raise TakeoutImportError("An unconsumed import candidate conflicts with published history.")
+        candidate.unlink()
+        _sync_directory(candidate.parent)
 
 
 def apply_import(plan: ImportPlan) -> dict:
@@ -532,15 +642,18 @@ def apply_import(plan: ImportPlan) -> dict:
     _reject_symlink_ancestors(history)
     _reject_symlink_ancestors(root / CACHE_TASK_LOCK_NAME)
     bundle = history.parent / "imports" / f"takeout-{plan.catalog['source_digest']}"
-    for relative in ("source", "receipt.json", "events.json", "provenance.json", "history-before.parquet", "history-candidate.parquet"):
+    for relative in ("source", "receipt.json", "events.json", "provenance.json",
+                     "history-before.parquet", "history-candidate.parquet",
+                     "history-before.sqlite3", "history-candidate.sqlite3"):
         _reject_symlink_ancestors(bundle / relative)
     lock = CacheMaintenanceLock(CacheTaskLock(root / CACHE_TASK_LOCK_NAME), root)
     if not lock.acquire("Gemini Takeout import"):
         raise TakeoutImportError("A cache task is active; Takeout import requires exclusive maintenance access.")
     try:
-        if _file_sha(history) != plan.baseline_sha256:
+        if plan.baseline_sha256 != plan.history_state.sha256 or _history_state(history) != plan.history_state:
             raise TakeoutImportError("Gemini history changed after preview; make a new plan.")
-        baseline_rows = _baseline(history)
+        baseline_path = _state_path(history, plan.history_state)
+        baseline_rows = _baseline(baseline_path)
         if plan.rows[:len(baseline_rows)] != baseline_rows:
             raise TakeoutImportError("The plan does not preserve every existing row, field, and relative position.")
         _html_path, files, digest = _source_files(plan.source)
@@ -549,15 +662,21 @@ def apply_import(plan: ImportPlan) -> dict:
         bundle = history.parent / "imports" / f"takeout-{digest}"
         receipt_path = bundle / "receipt.json"
         if plan.existing_receipt is not None:
-            receipt = _verify_receipt(bundle, plan.catalog, plan.baseline_sha256)
+            receipt = _verify_receipt(bundle, plan.catalog, plan.history_state)
             if receipt != plan.existing_receipt:
                 raise TakeoutImportError("The import receipt changed after preview.")
             if receipt.get("state") == "prepared":
-                if receipt["candidate_sha256"] != plan.baseline_sha256:
-                    os.replace(bundle / "history-candidate.parquet", history)
-                    _sync_directory(history.parent)
-                    if _file_sha(history) != receipt["candidate_sha256"] or _baseline(history) != plan.rows:
+                candidate_format = _receipt_formats(receipt)[1]
+                target = history.with_suffix(_HISTORY_SUFFIXES[candidate_format])
+                candidate = _history_file(bundle, "history-candidate", candidate_format)
+                if _receipt_pending(receipt, plan.history_state):
+                    if _history_state(history) != plan.history_state:
+                        raise TakeoutImportError("Gemini history changed during staging; publication refused.")
+                    _publish_candidate(candidate, target, plan.history_state.canonical_sha256
+                                       if candidate_format == "sqlite" else plan.baseline_sha256)
+                    if _history_sha(target) != receipt["candidate_sha256"] or _baseline(target) != plan.rows:
                         raise TakeoutImportError("Resumed publication readback failed; preserve the verified backup.")
+                _remove_published_candidate(candidate, target, receipt["candidate_sha256"])
                 receipt["state"] = "committed"
                 _atomic_json(receipt_path, receipt)
             return {**plan.summary, "dry_run": False}
@@ -591,36 +710,38 @@ def apply_import(plan: ImportPlan) -> dict:
                 raise TakeoutImportError("Source bundle verification failed.")
         _atomic_json(bundle / "events.json", plan.catalog)
         _atomic_json(bundle / "provenance.json", plan.provenance)
-        backup = bundle / "history-before.parquet"
+        backup = (_history_file(bundle, "history-before", plan.history_state.format)
+                  if plan.history_state.format else None)
         if plan.baseline_sha256 is not None:
             if backup.exists() and _file_sha(backup) != plan.baseline_sha256:
                 raise TakeoutImportError("An existing backup has conflicting bytes.")
             if not backup.exists():
                 with backup.open("xb") as output:
                     ensure_owner_only(backup)
-                    with history.open("rb") as incoming:
+                    with baseline_path.open("rb") as incoming:
                         shutil.copyfileobj(incoming, output)
                 _sync_file(backup)
-            if _file_sha(backup) != plan.baseline_sha256 or _baseline(backup) != _baseline(history):
+            if _history_sha(backup) != plan.baseline_sha256 or _baseline(backup) != baseline_rows:
                 raise TakeoutImportError("History backup verification failed.")
-        candidate = bundle / "history-candidate.parquet"
-        write_parquet_rows_atomic(candidate, plan.rows, GEMINI_HISTORY_SCHEMA)
+        candidate = _history_file(bundle, "history-candidate", "sqlite")
+        write_sqlite_rows(candidate, plan.rows, GEMINI_HISTORY_SCHEMA, source="gemini")
         ensure_owner_only(candidate)
         if _baseline(candidate) != plan.rows:
             raise TakeoutImportError("Typed candidate readback differs from the plan.")
         _sync_file(candidate)
         receipt = {"version": VERSION, "state": "prepared", "source_digest": digest,
                    "timezone": plan.catalog["timezone"], "baseline_sha256": plan.baseline_sha256,
-                   "candidate_sha256": _file_sha(candidate), "added_rows": plan.summary["added_rows"],
+                   "baseline_format": plan.history_state.format, "candidate_format": "sqlite",
+                   "canonical_baseline_sha256": plan.history_state.canonical_sha256,
+                   "candidate_sha256": _history_sha(candidate), "added_rows": plan.summary["added_rows"],
                    "source_event_ids": [event["source_event_id"] for event in plan.catalog["events"]],
                    "provenance_sha256": _file_sha(bundle / "provenance.json"),
                    "catalog_sha256": _file_sha(bundle / "events.json")}
         _atomic_json(receipt_path, receipt)
-        if _file_sha(history) != plan.baseline_sha256 or _source_files(plan.source)[2] != digest:
+        if _history_state(history) != plan.history_state or _source_files(plan.source)[2] != digest:
             raise TakeoutImportError("Source or history changed during staging; publication refused.")
-        os.replace(candidate, history)
-        _sync_directory(history.parent)
-        if _file_sha(history) != receipt["candidate_sha256"] or _baseline(history) != plan.rows:
+        _publish_candidate(candidate, history, plan.history_state.canonical_sha256)
+        if _history_sha(history) != receipt["candidate_sha256"] or _baseline(history) != plan.rows:
             raise TakeoutImportError("Published history verification failed; preserve the verified backup for recovery.")
         receipt["state"] = "committed"
         _atomic_json(receipt_path, receipt)

@@ -1,7 +1,9 @@
 """Proven cross-source session events preserve original rows and uncertain repeats.
 
-Code version: v1.0.1-codex.0
+Code version: v1.0.2-codex.0
 """
+
+from contextlib import closing
 
 from datetime import datetime
 import hashlib
@@ -33,7 +35,7 @@ def event_store(tmp_path):
     store = tmp_path / "store"
     repository = WechatArchiveRepository(store)
     repository.path.parent.mkdir(parents=True)
-    with sqlite3.connect(repository.path) as connection:
+    with closing(sqlite3.connect(repository.path)) as connection, connection:
         connection.executescript(_SCHEMA)
         connection.execute(
             "CREATE TABLE source_snapshots(id INTEGER PRIMARY KEY,snapshot_id TEXT,source_id TEXT,metadata TEXT)"
@@ -182,7 +184,7 @@ def event_store(tmp_path):
                 )
             ids.append((html_id, native_id))
     registry = contact_registry_path(store)
-    with sqlite3.connect(registry) as connection:
+    with closing(sqlite3.connect(registry)) as connection, connection:
         initialize_contact_registry(connection)
         for sender in (OWNER, PEER):
             contact = insert_contact(connection, sender)

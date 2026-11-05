@@ -1,6 +1,6 @@
 # Operations guide
 
-Documentation version: `v1.55.1-codex.0`
+Documentation version: `v1.55.2-codex.0`
 
 ## Media metadata migration
 

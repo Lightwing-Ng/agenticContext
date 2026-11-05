@@ -1,11 +1,12 @@
 """Exercise exact-content compaction and source-bound optional sidecar rebinding.
 
-Code version: v1.2.0-codex.0
+Code version: v1.3.0-codex.0
 """
 
 from __future__ import annotations
 
 import importlib.util
+from contextlib import closing
 import json
 from pathlib import Path
 import sqlite3
@@ -27,7 +28,7 @@ def archive(tmp_path):
     runtime.mkdir()
     workstation.mkdir()
     database = runtime / "history.sqlite3"
-    with sqlite3.connect(database) as connection:
+    with closing(sqlite3.connect(database)) as connection, connection:
         connection.executescript(
             "CREATE TABLE partitions(id TEXT PRIMARY KEY,account_key TEXT,account_id TEXT);"
             "INSERT INTO partitions VALUES('source','account','owner');"
@@ -68,7 +69,7 @@ def test_vacuum_into_preserves_typed_rows_duplicates_schema_and_source_bytes(arc
 @pytest.mark.parametrize("changed", ["database", "candidate"])
 def test_source_or_candidate_drift_blocks_verification(archive, changed):
     report, receipt = _prepare(archive)
-    with sqlite3.connect(report[changed]) as connection:
+    with closing(sqlite3.connect(report[changed])) as connection, connection:
         connection.execute("INSERT INTO duplicates VALUES('New independent evidence',2.0)")
     with pytest.raises(ValueError, match="changed"):
         compactor.verify(receipt)
@@ -95,7 +96,7 @@ def _sidecar(archive, *, stale=False, bad_partitions=False):
     if stale:
         pin["inode"] += 1
     fingerprint = compactor.hashlib.sha256(json.dumps(rows, ensure_ascii=False, separators=(",", ":")).encode()).hexdigest()
-    with sqlite3.connect(path) as connection:
+    with closing(sqlite3.connect(path)) as connection, connection:
         connection.executescript(
             "CREATE TABLE archive_info(key TEXT PRIMARY KEY,value TEXT NOT NULL);"
             "CREATE TABLE messages(id TEXT PRIMARY KEY,text TEXT);"
@@ -165,13 +166,42 @@ def test_existing_plain_vacuum_output_can_be_adopted_without_another_copy(archiv
     assert compactor.verify(receipt)["logical_content"] == original["logical_content"]
 
 
+def test_adoption_reports_unknown_allocation_when_platform_omits_st_blocks(archive, monkeypatch):
+    original, _receipt = _prepare(archive)
+    source, workstation = archive
+    candidate = Path(original["candidate"])
+    before_source, before_candidate = source.read_bytes(), candidate.read_bytes()
+    stat_path = Path.stat
+
+    class WithoutBlocks:
+        def __init__(self, metadata):
+            self.metadata = metadata
+
+        def __getattr__(self, name):
+            if name == "st_blocks":
+                raise AttributeError("Windows does not provide st_blocks")
+            return getattr(self.metadata, name)
+
+    def no_blocks(path, *args, **kwargs):
+        metadata = stat_path(path, *args, **kwargs)
+        return WithoutBlocks(metadata) if path == candidate else metadata
+
+    monkeypatch.setattr(Path, "stat", no_blocks)
+    receipt = workstation / "unknown-allocation.json"
+    report = compactor.adopt_existing(source, candidate, receipt)
+    assert report["hfs_compression"]["allocated_bytes_after"] is None
+    assert report["filesystem_bytes_reclaimed"] == 0
+    assert source.read_bytes() == before_source and candidate.read_bytes() == before_candidate
+    assert compactor.verify(receipt)["logical_content"] == original["logical_content"]
+
+
 @pytest.mark.parametrize("changed", ["logical_row", "failed_pending"])
 def test_adoption_rejects_modified_content_and_failed_compression_output(archive, changed):
     report, _receipt = _prepare(archive)
     source, workstation = archive
     candidate = Path(report["candidate"])
     if changed == "logical_row":
-        with sqlite3.connect(candidate) as connection:
+        with closing(sqlite3.connect(candidate)) as connection, connection:
             connection.execute("INSERT INTO duplicates VALUES('Independent unexpected evidence',3.0)")
     else:
         pending = candidate.with_name(candidate.name + ".hfs-pending")
@@ -244,7 +274,7 @@ def test_mount_refresh_rejects_independent_drift_before_any_candidate_change(arc
         monkeypatch.setattr(compactor, "identity", drifted_identity)
     elif failure == "candidate_bytes":
         state = candidate.stat()
-        with sqlite3.connect(candidate) as connection:
+        with closing(sqlite3.connect(candidate)) as connection, connection:
             connection.execute("UPDATE messages SET text=replace(text,'resource','RESOURCE')")
         compactor.os.utime(candidate, ns=(state.st_atime_ns, state.st_mtime_ns))
     else:

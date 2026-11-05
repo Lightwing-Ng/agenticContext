@@ -1,10 +1,11 @@
 """Stage reversible shared-body migrations and retain exact rollback databases.
 
-Code version: v1.1.1-codex.0
+Code version: v1.1.2-codex.0
 """
 
 from __future__ import annotations
 
+from contextlib import closing
 from datetime import UTC, datetime
 import hashlib
 import json
@@ -60,11 +61,14 @@ def _stage(path):
 
 
 def _sync(path):
-    with path.open("rb") as stream:
+    # A writable open decompresses retained APFS rollback clones on macOS.
+    with path.open("r+b" if os.name == "nt" else "rb") as stream:
         os.fsync(stream.fileno())
 
 
 def _sync_directory(path):
+    if os.name == "nt":
+        return
     descriptor = os.open(path, os.O_RDONLY)
     try:
         os.fsync(descriptor)
@@ -107,7 +111,7 @@ def _publish_shared_bodies(
     target = wechat_archive_path(local_store_root).absolute()
     baseline = _identity(target)
     storage_before = _storage_snapshot(target)
-    with sqlite3.connect(target.as_uri() + "?mode=ro", uri=True) as source:
+    with closing(sqlite3.connect(target.as_uri() + "?mode=ro", uri=True)) as source:
         analysis = analyze(source, scope)
         fingerprint = wechat_history_partition_fingerprint(source)
     if not analysis["observations_to_rewrite"]:
@@ -127,7 +131,7 @@ def _publish_shared_bodies(
     originals = {target: baseline}
     sidecars = {}
     published = []
-    receipt = {"version": "v1.1.1-codex.0", "at": datetime.now(UTC).isoformat(), "backups": {}}
+    receipt = {"version": "v1.1.2-codex.0", "at": datetime.now(UTC).isoformat(), "backups": {}}
     try:
         # clonefile creates copy-on-write rollback evidence, not a raw archive copy.
         saved = backup / target.name
@@ -139,7 +143,7 @@ def _publish_shared_bodies(
         _sync(saved)
         receipt["backups"][target.name] = original_digest
         staged[target] = _stage(target)
-        with sqlite3.connect(staged[target]) as output:
+        with closing(sqlite3.connect(staged[target])) as output, output:
             result = compact(output, scope)
             if result != analysis:
                 raise ValueError(
@@ -159,7 +163,7 @@ def _publish_shared_bodies(
                 sidecars[name] = "cloud-only or linked; unchanged, not revalidated"
                 continue
             identity = _identity(path)
-            with sqlite3.connect(path.as_uri() + "?mode=ro", uri=True) as source:
+            with closing(sqlite3.connect(path.as_uri() + "?mode=ro", uri=True)) as source:
                 info = dict(source.execute("SELECT key,value FROM archive_info"))
             if (
                 info.get("schema_version") != "1"
@@ -178,7 +182,7 @@ def _publish_shared_bodies(
             _sync(saved)
             receipt["backups"][name] = digest
             staged[path] = _stage(path)
-            with sqlite3.connect(staged[path]) as output:
+            with closing(sqlite3.connect(staged[path])) as output, output:
                 output.execute(
                     "UPDATE archive_info SET value=? WHERE key='history_file_identity'",
                     (json.dumps(replacement_identity, sort_keys=True, separators=(",", ":")),),
@@ -217,7 +221,7 @@ def _publish_shared_bodies(
             if path == target:
                 continue
             restored = _stage(backup / path.name)
-            with sqlite3.connect(restored) as output:
+            with closing(sqlite3.connect(restored)) as output, output:
                 output.execute(
                     "UPDATE archive_info SET value=? WHERE key='history_file_identity'",
                     (json.dumps(restored_identity, sort_keys=True, separators=(",", ":")),),
@@ -229,7 +233,7 @@ def _publish_shared_bodies(
                 if path == target or path in published:
                     continue
                 restored = _stage(backup / path.name)
-                with sqlite3.connect(restored) as output:
+                with closing(sqlite3.connect(restored)) as output, output:
                     output.execute(
                         "UPDATE archive_info SET value=? WHERE key='history_file_identity'",
                         (json.dumps(restored_identity, sort_keys=True, separators=(",", ":")),),

@@ -1,13 +1,15 @@
 """Verify source-preserving, inert ChatGPT component display fallbacks.
 
-Code version: v1.0.0-codex.0
+Code version: v1.0.1-codex.0
 """
 
 from __future__ import annotations
 
+from html.parser import HTMLParser
 from markdown_it import MarkdownIt
 import pytest
 
+from app.core import chatgpt_display
 from app.core.chatgpt_display import format_chatgpt_display_markdown
 
 
@@ -164,6 +166,17 @@ def test_malformed_component_declaration_falls_back_to_its_complete_source():
 
 
 def test_citation_scan_preserves_source_when_a_malformed_declaration_blocks_parsing():
+    original = '<![invalid]>\n\nClaim <Cite ref="turn0search1"/>'
+    assert format_chatgpt_display_markdown(original) == original
+
+
+def test_citation_scan_preserves_marked_sections_reported_as_bogus_comments(monkeypatch):
+    # Model the newer parser behavior on every supported Python version.
+    monkeypatch.setattr(
+        chatgpt_display._CitationParser,
+        "parse_html_declaration",
+        HTMLParser.parse_bogus_comment,
+    )
     original = '<![invalid]>\n\nClaim <Cite ref="turn0search1"/>'
     assert format_chatgpt_display_markdown(original) == original
 

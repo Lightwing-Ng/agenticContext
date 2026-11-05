@@ -1,7 +1,8 @@
 """Additive native-text reconciliation preserves original account evidence."""
 
-# Code version: v1.1.0-codex.0
+# Code version: v1.1.1-codex.0
 
+from contextlib import closing
 from copy import deepcopy
 from datetime import datetime
 import hashlib
@@ -68,7 +69,7 @@ def rows(store, table="messages"):
     path = wechat_archive_path(store)
     if not path.exists():
         return []
-    with sqlite3.connect(path.as_uri() + "?mode=ro", uri=True) as connection:
+    with closing(sqlite3.connect(path.as_uri() + "?mode=ro", uri=True)) as connection:
         return connection.execute(f"SELECT * FROM {table} ORDER BY 1").fetchall()
 
 
