@@ -1,6 +1,6 @@
 """Published HTML forwarding reuses the collapsed transcript and message rows.
 
-Code version: v1.3.0-codex.0
+Code version: v1.3.1-codex.0
 """
 
 from __future__ import annotations
@@ -338,6 +338,61 @@ def test_html_forwarded_source_uses_existing_collapsed_transcript(
             abs(clock["right"] - geometry["referenceRight"]) <= 1
             for clock in geometry["clocks"]
         )
+        if geometry["documentOverflow"] != 0 or geometry["listOverflow"] != 0:
+            presented = page.evaluate("""() => {
+                const port = document.querySelector('[data-chat-scrollport]');
+                const details = port?.querySelector('details[data-wechat-forwarded]');
+                const root = details?.closest('.wechat-message');
+                const describe = node => {
+                    if (!node) return null;
+                    const box = node.getBoundingClientRect();
+                    const style = getComputedStyle(node);
+                    return {tag: node.tagName, id: node.id.slice(0, 120),
+                        classes: String(node.className).slice(0, 180),
+                        rect: {left: box.left, right: box.right, top: box.top,
+                            bottom: box.bottom, width: box.width, height: box.height},
+                        client: [node.clientWidth, node.clientHeight],
+                        scroll: [node.scrollWidth, node.scrollHeight],
+                        style: Object.fromEntries([
+                            'display', 'visibility', 'position', 'width', 'minWidth',
+                            'maxWidth', 'boxSizing', 'whiteSpace', 'overflowWrap',
+                            'overflowX', 'overflowY', 'marginInlineStart',
+                            'marginInlineEnd', 'transform', 'transition',
+                        ].map(name => [name, style[name]]))};
+                };
+                const offenders = (scope, edge) => scope
+                    ? [...scope.querySelectorAll('*')]
+                        .filter(node => node.getBoundingClientRect().right > edge + 1)
+                        .sort((a, b) => b.getBoundingClientRect().right
+                            - a.getBoundingClientRect().right)
+                        .slice(0, 8).map(describe)
+                    : [];
+                return {phase: 'after-failed-overflow-measurement',
+                    viewport: [innerWidth, innerHeight], deviceScale: devicePixelRatio,
+                    documentState: document.readyState, fonts: document.fonts.status,
+                    sidebarExpanded: document.querySelector('#sidebar_toggle')?.getAttribute('aria-expanded'),
+                    document: {clientWidth: document.documentElement.clientWidth,
+                        scrollWidth: document.documentElement.scrollWidth},
+                    port: describe(port), root: describe(root),
+                    documentOffenders: offenders(document.documentElement, innerWidth),
+                    listOffenders: offenders(port, port?.getBoundingClientRect().right ?? innerWidth),
+                    finiteAnimations: document.getAnimations().filter(animation =>
+                        Number.isFinite(animation.effect?.getTiming().iterations)
+                        && (animation.pending || animation.playState === 'running')
+                    ).slice(0, 12).map(animation => ({
+                        type: animation.constructor.name, property: animation.transitionProperty || '',
+                        state: animation.playState, pending: animation.pending,
+                        currentTime: animation.currentTime,
+                        duration: animation.effect.getTiming().duration,
+                        target: describe(animation.effect.target),
+                    }))};
+            }""")
+            print("Synthetic forwarded overflow: " + json.dumps({
+                "measuredDocumentOverflow": geometry["documentOverflow"],
+                "measuredListOverflow": geometry["listOverflow"],
+                "measuredClockRail": geometry["referenceRight"],
+                "measuredClocks": geometry["clocks"], "presented": presented,
+            }, separators=(",", ":")))
         assert geometry["documentOverflow"] == geometry["listOverflow"] == 0
         assert max(clock["topError"] for clock in geometry["clocks"]) <= 1
         assert (
