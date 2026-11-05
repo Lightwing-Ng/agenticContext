@@ -1,6 +1,6 @@
 """Typed, indexed media state with transactional keyed updates.
 
-Code version: v1.0.1-codex.0
+Code version: v1.0.2-codex.0
 
 Legacy Parquet is read without mutation. The first explicit write imports a
 matching legacy schema; callers repairing older schemas must explicitly replace
@@ -451,6 +451,7 @@ class MediaSQLiteStore:
         import_legacy: bool = True,
     ) -> _T:
         if _exists(self.path):
+            ensure_owner_only(self.path, allow_hard_links=True)
             with closing(_connect(self.path)) as connection:
                 connection.execute("BEGIN IMMEDIATE")
                 try:
