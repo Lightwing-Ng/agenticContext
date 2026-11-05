@@ -1,6 +1,6 @@
 """Contact statements fit their scrollport and keep shared header alignment.
 
-Code version: v1.2.0-codex.0
+Code version: v1.2.1-codex.0
 """
 
 from __future__ import annotations
@@ -52,6 +52,10 @@ def _responsive_results(fixture):
                 ("5 Apr 2019 19:40:17", "5 Apr 2019 19:38:52"),
             ):
                 item["timestamp_label"] = timestamp
+        # The real oldest-first query assigns authoritative ordinals to each row.
+        offset = (result["current_page"] - 1) * result["page_size"]
+        for position, item in enumerate(result["items"], offset + 1):
+            item["sequence_number"] = position
         return result
 
     return results
