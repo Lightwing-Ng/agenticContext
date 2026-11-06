@@ -1,6 +1,6 @@
 """Prepare and verify one lossless SQLite compaction outside the runtime directory.
 
-Code version: v1.2.3-codex.0
+Code version: v1.2.4-codex.0
 
 This tool never publishes, removes, or backs up a live database. The caller must
 preserve an independently verified external rollback before an atomic pathname
@@ -23,8 +23,8 @@ import subprocess
 import sys
 
 
-VERSION = "v1.2.3-codex.0"
-_SUPPORTED_VERSIONS = {"v1.0.0-codex.0", "v1.1.0-codex.0", "v1.1.1-codex.0", "v1.2.0-codex.0", "v1.2.1-codex.0", "v1.2.2-codex.0", VERSION}
+VERSION = "v1.2.4-codex.0"
+_SUPPORTED_VERSIONS = {"v1.0.0-codex.0", "v1.1.0-codex.0", "v1.1.1-codex.0", "v1.2.0-codex.0", "v1.2.1-codex.0", "v1.2.2-codex.0", "v1.2.3-codex.0", VERSION}
 _MODULUS = 1 << 256
 _DATALESS = 0x40000000
 _PIN = "history_file_identity"
@@ -60,6 +60,37 @@ def resident(path):
         if extra.is_symlink() or extra.exists() and extra.stat().st_size:
             raise ValueError("Finish the SQLite writer and nonempty sidecars first.")
     return identity(path)
+
+
+def _distinct_files(paths):
+    """Require independent inodes across a publication or mount-refresh batch."""
+    states = [resident(path) for path in paths]
+    if len({(state["dev"], state["inode"]) for state in states}) != len(states):
+        raise ValueError("Require distinct file identities for all sources and candidates.")
+    return states
+
+
+def _independent_candidate(database, candidate):
+    states = _distinct_files((database, candidate))
+    if Path(candidate).stat().st_nlink != 1:
+        raise ValueError("Require an independent single-link candidate before modification.")
+    return states
+
+
+def _inside_directory(path, directory):
+    """Recognize case and filesystem aliases through existing directory identities."""
+    path, directory = Path(path).resolve(), Path(directory).resolve()
+    if path.is_relative_to(directory):
+        return True
+    root = directory.stat()
+    for ancestor in (path, *path.parents):
+        try:
+            state = ancestor.stat()
+        except FileNotFoundError:
+            continue
+        if (state.st_dev, state.st_ino) == (root.st_dev, root.st_ino):
+            return True
+    return False
 
 
 def sha256(path):
@@ -203,7 +234,7 @@ def prepare(database, candidate, receipt, *, page_size=32768, hfs_compression=Fa
     for output in (candidate, receipt):
         if output.exists() or output.is_symlink():
             raise ValueError("Candidate and receipt paths must both be new.")
-        if not output.parent.is_dir() or output.parent.resolve().is_relative_to(database.parent.resolve()):
+        if not output.parent.is_dir() or _inside_directory(output.parent, database.parent):
             raise ValueError("Keep candidates and receipts in an existing external workstation.")
     if candidate == receipt or candidate.parent.stat().st_dev != baseline["dev"]:
         raise ValueError("Keep distinct output paths on the runtime volume.")
@@ -272,11 +303,11 @@ def adopt_existing(database, candidate, receipt, *, page_size=32768, compression
         raise ValueError("Record an explicit supported compression-attempt status.")
     if candidate.name.endswith(".hfs-pending"):
         raise ValueError("Do not adopt an output from a failed compression attempt.")
-    baseline, candidate_baseline = resident(database), resident(candidate)
+    baseline, candidate_baseline = _independent_candidate(database, candidate)
     if (
         database.resolve() == candidate.resolve()
-        or candidate.parent.resolve().is_relative_to(database.parent.resolve())
-        or receipt.parent.resolve().is_relative_to(database.parent.resolve())
+        or _inside_directory(candidate.parent, database.parent)
+        or _inside_directory(receipt.parent, database.parent)
         or not receipt.parent.is_dir()
         or receipt.exists()
         or receipt.is_symlink()
@@ -321,6 +352,7 @@ def adopt_existing(database, candidate, receipt, *, page_size=32768, compression
 def verify(receipt, *, full_content=True):
     """Recheck the exact candidate and unchanged source before caller publication."""
     report = _read_receipt(receipt)
+    _independent_candidate(report["database"], report["candidate"])
     source_pin_identities(report)
     for prefix, key in (("source", "database"), ("candidate", "candidate")):
         path = Path(report[key])
@@ -385,6 +417,9 @@ def refresh_mount(receipts, output_directory):
     file_paths = [Path(item[key]).resolve() for item in reports for key in ("database", "candidate")]
     if len(set(file_paths)) != len(file_paths):
         raise ValueError("Mount refresh source and candidate paths must all be distinct.")
+    _distinct_files(file_paths)
+    for report in reports:
+        _independent_candidate(report["database"], report["candidate"])
     histories = [item for item in reports if Path(item["database"]).name == "history.sqlite3"]
     if len(histories) != 1 or histories[0]["intentional_changes"]:
         raise ValueError("Include exactly one unchanged primary archive receipt.")
@@ -398,7 +433,7 @@ def refresh_mount(receipts, output_directory):
         states = {}
         for prefix, key in (("source", "database"), ("candidate", "candidate")):
             path = Path(report[key])
-            if output_directory.resolve().is_relative_to(path.resolve().parent):
+            if _inside_directory(output_directory, path.resolve().parent):
                 raise ValueError("Keep refreshed receipts outside source and candidate directories.")
             previous, current = report[prefix + "_identity"], resident(path)
             if not _device_only_change(previous, current):
@@ -446,6 +481,7 @@ def refresh_mount(receipts, output_directory):
     ):
         previous_source, previous_candidate = report["source_identity"], report["candidate_identity"]
         if report is not history:
+            _independent_candidate(report["database"], report["candidate"])
             replacement = json.dumps(new_history, sort_keys=True, separators=(",", ":"))
             with closing(sqlite3.connect(report["candidate"])) as connection, connection:
                 connection.execute("UPDATE archive_info SET value=? WHERE key=?", (replacement, _PIN))
@@ -501,6 +537,7 @@ def rebind_sidecar(receipt, history_receipt):
         if info.get("history_partitions_sha256") != fingerprint:
             return {"status": "partition_pin_stale_unchanged", "receipt": str(receipt)}
     replacement = json.dumps(history["candidate_identity"], sort_keys=True, separators=(",", ":"))
+    _independent_candidate(report["database"], candidate)
     with closing(sqlite3.connect(candidate)) as connection, connection:
         connection.execute("UPDATE archive_info SET value=? WHERE key=?", (replacement, _PIN))
     if logical_content(candidate, original_pin=info[_PIN]) != report["logical_content"]:
