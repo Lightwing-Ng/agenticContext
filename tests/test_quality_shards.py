@@ -1,6 +1,6 @@
 """Prove complete test partitions and fail-closed branch-coverage aggregation.
 
-Code version: v1.1.1-codex.0
+Code version: v1.1.2-codex.0
 """
 
 from __future__ import annotations
@@ -9,6 +9,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import subprocess
 import sys
 
@@ -24,6 +25,28 @@ ARGUMENTS = ["-q", "-p", "no:cacheprovider", "-m", "not live", "--cov=app", "--c
 MODULE_ARCS = {(-1, 1), (1, -1)}
 TRUE_ARCS = MODULE_ARCS | {(-1, 2), (2, 3), (3, -1)}
 FALSE_ARCS = MODULE_ARCS | {(-1, 2), (2, 4), (4, -1)}
+
+
+@pytest.mark.parametrize("job,consumer_steps", [
+    ("check-shards", ["Run the quality gate"]),
+    ("check-windows-shards", [
+        "Verify the first Windows browser boundary", "Run the quality gate",
+    ]),
+])
+def test_ci_browser_install_and_consumers_share_a_home_independent_cache(job, consumer_steps):
+    """The isolated test HOME must not redirect an installed browser into a missing cache."""
+    workflow = (ROOT / ".github/workflows/quality.yml").read_text(encoding="utf-8")
+    jobs = dict(re.findall(
+        r"(?ms)^  ([\w-]+):\n(.*?)(?=^  [\w-]+:\n|\Z)", workflow,
+    ))
+    steps = dict(re.findall(
+        r"(?ms)^      - name: ([^\n]+)\n(.*?)(?=^      - name: |\Z)", jobs[job],
+    ))
+    for name in ["Install Playwright Chromium", *consumer_steps]:
+        environment = re.search(r"(?m)^        env:\n((?:          [^\n]*\n)+)", steps[name])
+        assert environment is not None, f"{job}/{name} does not pin the browser cache"
+        values = dict(re.findall(r"(?m)^          ([A-Z_]+): ([^\n]+)$", environment[1]))
+        assert values.get("PLAYWRIGHT_BROWSERS_PATH") == "${{ runner.temp }}/ms-playwright", name
 
 
 @pytest.fixture

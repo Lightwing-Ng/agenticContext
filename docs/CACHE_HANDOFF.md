@@ -1,12 +1,46 @@
 # Cache handoff and operating runbook
 
-Documentation version: `v1.32.1-codex.0`
+Documentation version: `v1.33.1-codex.0`
 
 This is the authoritative handoff document for the second Dock item, `Cache`.
 Read it before changing Cache routes, source switching, Text/Media behavior, local
 history persistence, or Grok synchronization. The third Dock item is `Local resources`;
 it is the read-only review surface for cached media and text and must not be confused
 with the Cache execution surface.
+
+## Current LLM storage contract
+
+Provider text histories use `local_store/llm/<source>/history.sqlite3`, independently
+of media, Agent discovery, saved prompts, and the separate WeChat archive. Copilot
+coverage and directory evidence also use SQLite. The LLM-root `.cache_catalog.sqlite3`
+is distinct from media catalogs outside that root. New callers use
+`read_resource_rows` and `write_resource_rows_atomic`; their legacy Parquet-named
+aliases remain compatible. Only an absent SQLite target permits a read-only Parquet
+fallback. Do not point a provider at another provider's store or relabel database
+bytes with a `.parquet` extension.
+
+The backend stores Zstandard-compressed Arrow IPC payloads in 32 stable SHA-256
+conversation buckets, retaining explicit original row ordinals, exact Arrow schemas,
+and provider provenance. New writes use storage format version 3; version 2 JSON
+payloads remain readable through the unchanged public APIs. Primary-key
+conversation mappings support scoped reads; derived session summaries support the
+overview without loading every body. Compressed JSON summary version 2 contains
+metadata only and omits message-body previews. Search, complete exports, and the specialized
+Zhihu path still process full history. Writes use a `FULL`-synchronous SQLite
+transaction with a `DELETE` journal and update changed buckets. They retain the
+provider's existing merge or replacement semantics; reordering global ordinals can
+also change buckets whose message text is unchanged.
+
+Use `scripts/migrate_llm_sqlite.py --report <private-report>` for a preview, then
+explicit `--apply --retire-legacy` with a reviewed rollback destination. Each retired
+source has a gzip backup verified against its original bytes. Preserve reports,
+backups, and protected numbered histories. Logical savings, resident allocation,
+rollback allocation, and any net disk change must be reported separately; neither
+format choice nor cloud placeholder size establishes a measured benefit. See
+[Operations](OPERATIONS.md#llm-history-migration-and-rollback) for the migration and
+rollback procedure and [Architecture](ARCHITECTURE.md#llm-history-persistence)
+for the storage boundaries. Historical acceptance hashes below identify their
+original files and remain historical evidence after migration.
 
 ## 1. Product boundaries
 
@@ -190,11 +224,11 @@ prompt and does not change sign-in.
 Safari participates in the shared Cache queue and owns only its temporary task window.
 
 Complete sessions are atomically persisted to
-`local_store/llm/copilot/history.parquet`. Stable provider message identities preserve
+`local_store/llm/copilot/history.sqlite3`. Stable provider message identities preserve
 repeat-import idempotence, and unreadable, empty, interrupted, or shorter captures
 preserve the prior session. Missing provider timestamps remain unknown; local capture
 metadata is not presented as a message date. Catalog and transcript completion are
-persisted separately in `llm/copilot/sync-state.parquet`. Legacy caches without this
+persisted separately in `llm/copilot/sync-state.sqlite3`. Legacy caches without this
 evidence remain unverified after reload. The UI shows `Partial` without a full-history
 percentage until discovery is verified; it shows `Scanning` during discovery.
 After discovery, failed or stopped synchronization remains `Partial` even when
@@ -267,9 +301,11 @@ records contain 357 distinct native IDs; repeated IDs have identical records.
 `merged-legacy-catalog.v1.json` retains original observations. Two current AX titles
 have no exact match in this cached catalog, so no fuzzy identity reconciliation is
 performed. Cached pagination order remains unproven.
-The validated typed directory is also preserved in
+The historical validated typed directory was preserved as
 `local_store/llm/copilot/legacy-catalog.parquet` (SHA-256
 `c934dc7297ff2859bdbd16afd4abe5f8da2760df72563833c6c2b8bab073241f`).
+That hash identifies the original Parquet bytes; after migration, the canonical directory is
+`local_store/llm/copilot/legacy-catalog.sqlite3` and the rollback receipt identifies the preserved original.
 It is separate from message history. Application v1.43.2 retains Partial on sync
 and reload whenever this legacy evidence remains unverified, while still caching
 available current-web messages. Invalid directory evidence cannot permit a full
@@ -330,7 +366,7 @@ is not a web Chat export. Missing mapped transcripts and malformed records are
 reported as incomplete; existing cached messages are retained.
 
 The importer stores visible user and assistant text, timestamps, model labels,
-and titles in `local_store/llm/claude_code/history.parquet`. It excludes tool
+and titles in `local_store/llm/claude_code/history.sqlite3`. It excludes tool
 payloads, internal reasoning, subagents, and metadata-only messages. Source files
 are never modified. Stable message identities support repeat imports without
 duplicates, and an unchanged import leaves the cache file unchanged.
@@ -354,7 +390,7 @@ identity, timestamps, model metadata, and source-file provenance. It excludes
 system and developer instructions, tool payloads, internal reasoning, duplicate
 event notifications, and subagent transcripts. Source files are read only.
 Cached history is cumulative and independently stored in
-`local_store/llm/codex/history.parquet`; repeat imports retain stable message
+`local_store/llm/codex/history.sqlite3`; repeat imports retain stable message
 identities and leave unchanged cache bytes and modification time intact.
 Malformed transcripts report an incomplete import while retaining prior data.
 
@@ -376,7 +412,7 @@ The importer reads visible user and assistant messages from the native local
 session records and uses session metadata for titles, model labels, and times.
 It excludes internal reasoning, tool payloads, system context, and subagent
 sessions. Source files stay read only. The independent typed cache is
-`local_store/llm/grok_build/history.parquet`; repeat imports preserve stable
+`local_store/llm/grok_build/history.sqlite3`; repeat imports preserve stable
 message identities, and partial or malformed inputs cannot delete cached history.
 
 Local resources exposes Grok Chat and Grok Build separately for session browsing,
@@ -400,7 +436,7 @@ the top of the Cache sidebar:
   canonical `/cache/<source>` page. Local resources remains the read-only history
   viewer; selecting Text in Cache does not navigate there.
 - Start, Stop, metrics, and status polling use the same explicit content mode.
-  Grok Text displays session/message counts from its history worker and Parquet file,
+  Grok Text displays session/message counts from its history worker and SQLite database,
   independently of Media asset counters. Responses for a previously selected mode
   are discarded after a mode change.
 - The `all` source view is an aggregate view. It must include the ChatGPT, Gemini, Grok Chat, Grok Build,
@@ -452,7 +488,7 @@ was preserved. Prompt backfill honored its bounded time budget and deferred the 
 metadata without losing image work. The later v1.43.5 landing-redirect fix has its
 own isolated navigation checks; it does not require another full media download.
 
-ChatGPT Text writes `local_store/llm/chatgpt/history.parquet`, independent of the
+ChatGPT Text writes `local_store/llm/chatgpt/history.sqlite3`, independent of the
 Media project directory. Schema v2 adds nullable `provider_revision` metadata.
 Discovery captures `update_time`; only an equal non-empty persisted revision with
 complete source timestamps permits skipping. Missing/changed revisions trigger a
@@ -514,8 +550,9 @@ reconstruct the provider's interactive graphics.
 Rows written before this rendering existed are repaired locally by
 `python -m app.core.chatgpt_history_cleanup --normalize-markdown`. Without `--apply` the command
 only reports the count. With `--apply` it takes the cache maintenance lock, writes
-`local_store/recovery/chatgpt-markdown-<timestamp>/history.parquet` and `normalization.json`, and then
-atomically replaces `history.parquet`. Rows are never removed: a message whose only content was a provider token keeps
+a backup with the original history file's actual extension under
+`local_store/recovery/chatgpt-markdown-<timestamp>/` and `normalization.json`, and then
+commits the repaired `history.sqlite3` transactionally. Rows are never removed: a message whose only content was a provider token keeps
 an empty body, so turn and message indexes and each session's stored revision keep matching the skip logic.
 
 Every source registers one runtime per content mode, each with its own task state, worker,
@@ -557,7 +594,7 @@ The Text worker performs this sequence:
 4. Batch all response IDs into `POST
    /rest/app-chat/conversations/<conversation-id>/load-responses`.
 5. Keep `human`/`user` and `assistant` responses with non-empty text.
-6. Persist the normalized rows atomically to the Grok Text Parquet file.
+6. Commit the normalized rows transactionally to the Grok Text SQLite database.
 
 The response-node tree is important. A DOM scroll only exposes a partial, selected
 branch and is not evidence that all history was discovered. The API list is paginated,
@@ -580,7 +617,7 @@ legacy or incomplete cache data uses a safe
 unlinked fallback rather than exposing provider tags or inventing a URL. The versioned contract is
 part of the Grok Agent `session-history` cache identity. Advancing it invalidates only that source
 kind for Grok; recent sessions, Projects, other providers, and
-`local_store/llm/grok/history.parquet` remain intact. Third-level heading rhythm, citation chips,
+`local_store/llm/grok/history.sqlite3` remain intact. Third-level heading rhythm, citation chips,
 and horizontally scroll-contained tables belong to the Agent answer surface and do not redefine a
 shared Cache or Local resources style.
 
@@ -609,8 +646,9 @@ An official Claude data export (claude.ai Settings > Privacy > Export data) is t
 browser-independent backup. Keep its zips under `local_store/llm/claude/exports/<date>/` and import
 `conversations-000.zip` with `python -m app.core.claude_export_import <zip>`. Without `--apply` the
 command only reports counts. With `--apply` it takes the cache maintenance lock, writes
-`local_store/recovery/claude-export-<timestamp>/history.parquet` and `import.json`, and then
-atomically replaces `history.parquet`. Each exported session replaces the cached rows of that
+a backup with the original history file's actual extension under
+`local_store/recovery/claude-export-<timestamp>/` and `import.json`, and then
+commits `history.sqlite3` transactionally. Each exported session replaces the cached rows of that
 session through the same conversion as the recorded payload; the export has no current-leaf
 field, so the newest childless message ends the kept branch. Sessions missing from the export are
 kept, and messages without text, such as an interrupted reply, are not stored.
@@ -660,28 +698,29 @@ The current persistent cache layout is:
 | Path | Owner | Meaning |
 | --- | --- | --- |
 | `local_store/media/grok/` | Grok media runtime | Media files, catalog, manifest, and work queue |
-| `local_store/llm/chatgpt/history.parquet` | ChatGPT Text runtime | Typed ChatGPT messages |
-| `local_store/llm/gemini/history.parquet` | Gemini Text runtime | Typed Gemini messages |
-| `local_store/llm/grok/history.parquet` | Grok Text runtime | Typed Grok messages |
-| `local_store/llm/grok_build/history.parquet` | Local Grok Build runtime | Typed local Build messages, independently cached |
-| `local_store/llm/claude/history.parquet` | Claude Text runtime | Typed Claude messages |
-| `local_store/llm/claude_code/history.parquet` | Local Claude Code runtime | Typed local Code messages, independently cached |
-| `local_store/llm/codex/history.parquet` | Local Codex runtime | Typed local app and CLI messages, independently cached |
-| `local_store/llm/zhihu/history.parquet` | Zhihu Text runtime | One answer per typed row; rich-text source and source links retained |
+| `local_store/llm/.cache_catalog.sqlite3` | LLM-root resource catalog | Root-specific typed catalog, separate from non-LLM media indexes |
+| `local_store/llm/chatgpt/history.sqlite3` | ChatGPT Text runtime | Typed ChatGPT messages |
+| `local_store/llm/gemini/history.sqlite3` | Gemini Text runtime | Typed Gemini messages |
+| `local_store/llm/grok/history.sqlite3` | Grok Text runtime | Typed Grok messages |
+| `local_store/llm/grok_build/history.sqlite3` | Local Grok Build runtime | Typed local Build messages, independently cached |
+| `local_store/llm/claude/history.sqlite3` | Claude Text runtime | Typed Claude messages |
+| `local_store/llm/claude_code/history.sqlite3` | Local Claude Code runtime | Typed local Code messages, independently cached |
+| `local_store/llm/codex/history.sqlite3` | Local Codex runtime | Typed local app and CLI messages, independently cached |
+| `local_store/llm/zhihu/history.sqlite3` | Zhihu Text runtime | One answer per typed row; rich-text source and source links retained |
 | `local_store/prompt/prompts.parquet` | Prompt manager | Saved prompt content snapshots plus source-message pointers, or a `media-prompt:` content key for a media prompt whose conversation has no cached text |
 | `local_store/.cache_task.lock` | Cache runtimes | Gate a starting task passes and a backup or history repair holds |
 | `local_store/.cache_task.<resource>.lock` | Cache runtimes | One advisory lock per running task, exclusive browser, or shared store |
 | `logs/cachelikes.log.jsonl` | All runtimes | Structured diagnostics |
 
-The five formal text-history files derive their ordered message fields from one schema builder in
+The formal text-history stores derive their ordered message fields from one schema builder in
 `app/core/resource_persistence.py`. ChatGPT adds nullable `provider_revision`; every runtime still
 has its own source-specific schema constant and file. Do not silently point one provider at another
-provider's file merely because all filenames are `history.parquet`.
+provider's file merely because all filenames are `history.sqlite3`.
 
 Grok Text rows contain a stable `message_key` formed as
 `<conversation-id>:<response-id>`. The store replaces one conversation at a time,
-preserves `first_seen_at`, updates `last_seen_at`, and writes through an atomic
-temporary Parquet file. Do not edit the Parquet file by hand during a sync.
+preserves `first_seen_at`, updates `last_seen_at`, and commits changed storage buckets
+in one SQLite transaction. Do not edit the database by hand during a sync.
 
 ## 6. Verified Grok baseline
 
@@ -694,7 +733,7 @@ On `13 Aug 2026`, a live Edge-authenticated run completed through the Text pipel
 - Assistant messages: `729`
 - Failed sessions: `0`
 - Empty sessions: `1`
-- Output: `local_store/llm/grok/history.parquet`
+- Output: `local_store/llm/grok/history.sqlite3`
 
 The Local resources page was then opened with `source=grok` and showed `1,537`
 messages and `165` sessions. This baseline is a diagnostic reference, not a hardcoded
@@ -715,7 +754,7 @@ Media uses a task-owned Safari session to inspect rendered chat images from the 
 files and a catalog under `local_store/media/gemini/`. It honors size limits, known-file
 hashes, and Local resources deletion exclusions. Videos, external search thumbnails,
 blob URLs, and other attachments are outside this image-only mode. Failed images or
-sessions produce an incomplete status; policy skips do not. Text keeps its Parquet store
+sessions produce an incomplete status; policy skips do not. Text keeps its SQLite store
 and reports failed sessions as incomplete. Switching modes never displays text-message
 counts as downloaded images. Gemini Media is selectable in Local resources.
 
@@ -894,10 +933,10 @@ python3 - <<'PY'
 from collections import Counter
 from pathlib import Path
 
-from app.core.resource_persistence import read_parquet_rows
+from app.core.resource_persistence import read_resource_rows
 
-path = Path("local_store/llm/grok/history.parquet")
-rows = read_parquet_rows(path) or []
+path = Path("local_store/llm/grok/history.sqlite3")
+rows = read_resource_rows(path) or []
 print({
     "path": str(path),
     "messages": len(rows),
@@ -915,10 +954,10 @@ py -3 -c @'
 from collections import Counter
 from pathlib import Path
 
-from app.core.resource_persistence import read_parquet_rows
+from app.core.resource_persistence import read_resource_rows
 
-path = Path('local_store/llm/grok/history.parquet')
-rows = read_parquet_rows(path) or []
+path = Path('local_store/llm/grok/history.sqlite3')
+rows = read_resource_rows(path) or []
 print({
     'path': str(path),
     'messages': len(rows),
@@ -971,7 +1010,7 @@ Do not kill an unrelated process and do not restart the sibling project. After r
 
 Check the URL first. A Grok Text review must contain `source=grok`; `/browser` without
 the source filter is an aggregate view and may be sorted or paginated differently.
-Then check the Parquet file directly. If the file has rows but the page is empty,
+Then check the SQLite history directly through `read_resource_rows`. If the file has rows but the page is empty,
 inspect `app/core/chat_history_browser.py` for the Grok path mapping and the
 `source_paths` tuple used by the `all` view.
 
@@ -1041,17 +1080,20 @@ Read these files together before changing Cache behavior:
 - `app/web/static/cache-page.js`: mode memory and Cache status polling.
 - `app/web/cache_sources.py`: source registry and canonical page metadata.
 - `app/web/app.py`: runtime registration, routes, status reconciliation, and redirects.
-- `app/core/grok_history.py`: Grok API traversal, normalization, and Parquet persistence.
+- `app/core/grok_history.py`: Grok API traversal, normalization, and SQLite persistence.
 - `app/core/cache_task_coordinator.py`: task admission, the queue, and resource locks.
 - `app/core/cache_service_support.py`: worker lifecycle shared by every cache service.
 - `app/core/grok_history_service.py`: Grok Text worker lifecycle.
-- `app/core/claude_history.py`: Claude discovery, recorded-payload and rendered-transcript extraction, and Parquet persistence.
+- `app/core/claude_history.py`: Claude discovery, recorded-payload and rendered-transcript extraction, and SQLite persistence.
 - `app/core/claude_history_service.py`: Claude worker lifecycle, one worker per mode.
 - `app/core/claude_export_import.py`: official Claude export import into Claude history.
 - `app/core/chatgpt_markdown.py`: ChatGPT interactive-token rendering for Text synchronization and repair.
 - `app/core/chatgpt_history_cleanup.py`: ChatGPT history repair (legacy traces and Markdown rendering).
 - `app/core/chat_history_browser.py`: source path mapping and Local resources queries.
-- `app/core/resource_persistence.py`: typed Parquet schemas and atomic writes.
+- `app/core/resource_persistence.py`: typed schemas, SQLite dispatch, and legacy Parquet compatibility.
+- `app/core/llm_sqlite.py` and `app/core/llm_history_index.py`: compressed row buckets,
+  scoped conversation mappings, transactions, and derived browser summaries.
+- `scripts/migrate_llm_sqlite.py`: explicit migration, verified rollback, and private benchmarks.
 - `tests/test_grok_history.py`: deterministic Grok Text regression coverage.
 - `tests/test_cache_task_coordinator.py` and `tests/test_cache_concurrency_web.py`: concurrent
   and queued task coverage at the coordinator and route level.

@@ -1,6 +1,6 @@
 """Local Claude Code configuration, lifecycle, and cache isolation regressions."""
 
-# Code version: v1.0.0-codex.0
+# Code version: v1.1.0-codex.0
 
 from __future__ import annotations
 
@@ -41,7 +41,7 @@ def _state() -> TaskState:
 
 
 def _cache_fixture(root: Path, *, source: str = "claude_code") -> Path:
-    path = root / "llm" / source / "history.parquet"
+    path = root / "llm" / source / "history.sqlite3"
     write_parquet_rows_atomic(
         path,
         [{
@@ -138,7 +138,7 @@ def test_initial_snapshot_counts_only_claude_code_cache(tmp_path: Path) -> None:
 
 
 def test_corrupt_cache_snapshot_exposes_error_without_replacing_file(tmp_path: Path) -> None:
-    path = tmp_path / "llm/claude_code/history.parquet"
+    path = tmp_path / "llm/claude_code/history.sqlite3"
     path.parent.mkdir(parents=True)
     path.write_bytes(b"invalid fixture")
     snapshot = build_claude_code_initial_snapshot("test", tmp_path)

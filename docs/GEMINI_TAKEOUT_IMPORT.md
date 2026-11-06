@@ -1,6 +1,6 @@
 # Gemini Takeout import and browser refresh protection
 
-Documentation version: `v1.0.0-codex.0`
+Documentation version: `v2.0.0-codex.0`
 
 The Gemini browser collector can expose only a rendered portion of a long conversation.
 An official Google Takeout export provides a separate source for recovering older text. The
@@ -46,8 +46,21 @@ the reviewed inputs before publication.
 
 The applied import stores the original export and file hashes under
 `local_store/llm/gemini/imports/`, records source provenance, saves existing history as
-`history-before.parquet` inside that import bundle, and publishes a verified typed Parquet file
-atomically. Reapplying the same source against unchanged history is idempotent. If another
+`history-before.sqlite3` or `history-before.parquet` in its original format, and atomically
+publishes verified typed `history.sqlite3`. A missing SQLite history may use the legacy Parquet
+file as its baseline; preview never creates SQLite, and publication retains the original Parquet
+bytes. An existing SQLite history takes precedence and must be valid. The importer checks both
+the physical baseline and the presence or identity of canonical SQLite before publication.
+An active SQLite WAL, shared-memory, or rollback-journal sidecar requires closing its writer
+before this byte-preserving import can proceed.
+
+New version 2 receipts record the baseline and candidate formats independently. Version 1
+Parquet receipts remain readable and recover interrupted Parquet publication in their original
+format. A completed legacy receipt is not rewritten. A separate SQLite migration changes that
+publication identity, so automatic replay of its legacy receipt is refused. The importer does
+not infer a transition from similar rows.
+
+Reapplying the same source against unchanged history is idempotent. If another
 operation changes or rewrites history after import, the receipt refuses automatic replay;
 reconcile that change before reusing the source. Preserve the import artifacts together with
 history when backing up the store; they retain the evidence needed to reconcile interrupted

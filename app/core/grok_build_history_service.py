@@ -1,6 +1,6 @@
 """Background import of local Grok Build transcripts into their own cache."""
 
-# Code version: v1.0.0-codex.0
+# Code version: v1.1.0-codex.0
 
 from __future__ import annotations
 
@@ -18,7 +18,7 @@ from .cache_task_coordinator import CacheTaskCoordinator, CacheTaskIdentity
 from .grok_build_history import grok_build_history_path, import_grok_build_history
 from .config import LOCAL_STORE_ROOT, CrawlConfig
 from .job_lock import CacheTaskLock
-from .resource_persistence import read_parquet_rows
+from .resource_persistence import read_resource_rows
 from .shadow_backup import ShadowBackupService
 from .state import TaskSnapshot, TaskState
 
@@ -39,9 +39,9 @@ def build_grok_build_initial_snapshot(
         progress_unit="sessions",
         performance_metrics={"content_mode": "text", "source_kind": "local"},
     )
-    rows = read_parquet_rows(history_path)
-    if rows is None and history_path.exists():
-        snapshot.last_error = f"Grok Build history Parquet is unreadable: {history_path}"
+    rows = read_resource_rows(history_path)
+    if rows is None and (history_path.exists() or history_path.with_suffix(".parquet").exists()):
+        snapshot.last_error = f"Grok Build history store is unreadable: {history_path}"
         snapshot.message = snapshot.last_error
         return snapshot
     messages = {

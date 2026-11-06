@@ -1,6 +1,6 @@
 """Persist Copilot history coverage independently of cached conversation content."""
 
-# Code version: v1.0.0-codex.0
+# Code version: v1.1.0-codex.0
 
 from __future__ import annotations
 
@@ -11,11 +11,11 @@ from typing import Any
 import pyarrow as pa
 
 from .config import LOCAL_STORE_ROOT
-from .resource_persistence import read_parquet_rows, write_parquet_rows_atomic
+from .resource_persistence import read_resource_rows, write_resource_rows_atomic
 
 
 COPILOT_SYNC_STATE_SCHEMA_VERSION = 1
-COPILOT_SYNC_STATE_FILENAME = "sync-state.parquet"
+COPILOT_SYNC_STATE_FILENAME = "sync-state.sqlite3"
 COPILOT_SYNC_STATE_SCHEMA = pa.schema(
     [
         pa.field("schema_version", pa.int16(), nullable=False),
@@ -106,9 +106,9 @@ def read_copilot_sync_state(local_store_root: Path | str = LOCAL_STORE_ROOT) -> 
     """Read coverage conservatively without creating or repairing any local files."""
 
     path = copilot_sync_state_path(local_store_root)
-    if not path.exists():
+    if not path.exists() and not path.with_suffix(".parquet").exists():
         return _unverified_state("History completeness has not been verified.")
-    rows = read_parquet_rows(path)
+    rows = read_resource_rows(path)
     if rows is None or len(rows) != 1 or set(rows[0]) != set(COPILOT_SYNC_STATE_SCHEMA.names):
         return _unverified_state("The saved history coverage state is unreadable or invalid.", status="invalid")
     try:
@@ -124,4 +124,4 @@ def write_copilot_sync_state(
     """Atomically replace one validated coverage checkpoint without touching history."""
 
     row = _validated_state(value)
-    write_parquet_rows_atomic(copilot_sync_state_path(local_store_root), [row], COPILOT_SYNC_STATE_SCHEMA)
+    write_resource_rows_atomic(copilot_sync_state_path(local_store_root), [row], COPILOT_SYNC_STATE_SCHEMA)

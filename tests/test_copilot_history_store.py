@@ -1,6 +1,6 @@
 """Copilot storage durability, transcript validation, and source isolation regressions."""
 
-# Code version: v1.2.0-codex.0
+# Code version: v1.3.0-codex.0
 
 from pathlib import Path
 from unittest.mock import patch
@@ -12,7 +12,7 @@ from app.core.copilot_history_store import (
     build_copilot_initial_snapshot,
     copilot_history_path,
 )
-from app.core.resource_persistence import COPILOT_HISTORY_SCHEMA, read_parquet_rows
+from app.core.resource_persistence import COPILOT_HISTORY_SCHEMA, read_resource_rows
 
 
 def _conversation(identity: str = "session-1") -> dict:
@@ -40,7 +40,7 @@ def test_round_trip_uses_independent_path_and_retains_unknown_provider_dates(tmp
     store = CopilotHistoryStore(tmp_path)
     assert not copilot_history_path(tmp_path).exists()
     result = store.replace_conversation(_conversation(), _messages(), "2026-10-21T01:00:00Z")
-    assert store.path == tmp_path / "llm/copilot/history.parquet"
+    assert store.path == tmp_path / "llm/copilot/history.sqlite3"
     assert result == {
         "message_count": 2,
         "added_or_changed": 2,
@@ -131,21 +131,21 @@ def test_complete_replacement_removes_old_session_rows_but_retains_other_session
     assert result["unchanged_sessions"] == 0
     assert store.cached_messages == 3
     assert [row for row in store.rows if row["conversation_id"] == "session-2"] == second_session
-    assert len(read_parquet_rows(store.path)) == 3
+    assert len(read_resource_rows(store.path)) == 3
 
 
 def test_failed_atomic_write_does_not_change_in_memory_or_persisted_rows(tmp_path: Path) -> None:
     store = CopilotHistoryStore(tmp_path)
     store.replace_conversation(_conversation(), _messages())
     before = (store.rows, store.path.read_bytes())
-    with patch("app.core.copilot_history_store.write_parquet_rows_atomic", side_effect=OSError("Fixture write failed.")):
+    with patch("app.core.copilot_history_store.write_resource_rows_atomic", side_effect=OSError("Fixture write failed.")):
         with pytest.raises(OSError, match="Fixture write failed"):
             store.replace_conversation(_conversation(), _messages()[:1])
     assert (store.rows, store.path.read_bytes()) == before
 
 
 def test_snapshot_is_isolated_and_corrupt_cache_is_preserved(tmp_path: Path) -> None:
-    other = tmp_path / "llm/chatgpt/history.parquet"
+    other = tmp_path / "llm/chatgpt/history.sqlite3"
     other.parent.mkdir(parents=True)
     other.write_bytes(b"Other provider fixture.")
     assert build_copilot_initial_snapshot("test", tmp_path).downloaded_tweets == 0

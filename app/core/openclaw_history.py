@@ -1,6 +1,6 @@
 """Import preserved OpenClaw transcripts with explicit provider provenance.
 
-Code version: v1.0.2-codex.0
+Code version: v1.1.0-codex.0
 """
 
 from __future__ import annotations
@@ -18,12 +18,12 @@ import pyarrow as pa
 
 from .resource_persistence import (
     CLAUDE_HISTORY_SCHEMA,
-    read_parquet_rows,
-    write_parquet_rows_atomic,
+    read_resource_rows,
+    write_resource_rows_atomic,
 )
 
 
-OPENCLAW_HISTORY_FILENAME = "history.parquet"
+OPENCLAW_HISTORY_FILENAME = "history.sqlite3"
 OPENCLAW_SOURCE_LABELS = {
     "chatgpt_openclaw": "ChatGPT OpenClaw",
     "gemini_openclaw": "Gemini OpenClaw",
@@ -453,8 +453,8 @@ def import_openclaw_history(
                    "migrated_legacy_keys": 0, "archive_directory": str(archive), "source_counts": {}})
     for key in selected:
         path = _safe_path(openclaw_history_path(root, key), root)
-        previous = read_parquet_rows(path)
-        if path.exists() and previous is None:
+        previous = read_resource_rows(path)
+        if (path.exists() or path.with_suffix(".parquet").exists()) and previous is None:
             raise RuntimeError("Existing OpenClaw history is unreadable; import refused.")
         merged = {row["message_key"]: row for row in previous or []}
         retired = _legacy_synthetic_keys(merged, incoming[key])
@@ -464,7 +464,7 @@ def import_openclaw_history(
         merged.update(incoming[key])
         values = sorted(merged.values(), key=lambda row: (row["conversation_id"], row["message_index"], row["message_key"]))
         if changed or retired:
-            write_parquet_rows_atomic(path, values, OPENCLAW_HISTORY_SCHEMA)
+            write_resource_rows_atomic(path, values, OPENCLAW_HISTORY_SCHEMA)
             path.chmod(0o600)
             result["applied"] = True
         count = len({row["conversation_id"] for row in values})

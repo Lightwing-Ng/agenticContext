@@ -5,7 +5,7 @@ selected project. The Browser Agent controller and the Tunnel MCP server both re
 it through the controller's ``run`` action, so neither connection can widen it.
 """
 
-# Code version: v1.0.0-claude.0
+# Code version: v1.0.1-codex.0
 
 from __future__ import annotations
 
@@ -575,20 +575,24 @@ def inspection_command_parts(
                     "Python run actions must use the controller runtime version."
                 )
             try:
-                trusted_override = Path(sys.executable).resolve(strict=True)
-                if workspace is not None:
-                    trusted_override.relative_to(workspace.resolve(strict=True))
-            except ValueError:
-                pass
-            except OSError as exc:
+                # Preserve the controller's venv launcher while verifying its targets.
+                trusted_override = Path(os.path.abspath(sys.executable))
+                runtime_parent = trusted_override.parent.resolve(strict=True)
+                runtime_executable = trusted_override.resolve(strict=True)
+                project_root = workspace.resolve(strict=True) if workspace is not None else None
+                if not runtime_executable.is_file():
+                    raise ValueError("The controller Python runtime is unavailable.")
+            except (OSError, RuntimeError, ValueError) as exc:
                 raise ValueError(
                     "The controller Python runtime is unavailable."
                 ) from exc
-            else:
-                if workspace is not None:
-                    raise ValueError(
-                        "The controller Python runtime cannot be inside the selected project."
-                    )
+            if project_root is not None and any(
+                path.is_relative_to(project_root)
+                for path in (trusted_override, runtime_parent, runtime_executable)
+            ):
+                raise ValueError(
+                    "The controller Python runtime cannot be inside the selected project."
+                )
         canonical_executable = _canonical_inspection_executable(
             parts[0],
             executable_name,

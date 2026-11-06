@@ -1,6 +1,6 @@
 # Architecture guide
 
-Documentation version: `v1.75.3-codex.0`
+Documentation version: `v1.78.0-codex.0`
 
 ## Runtime flow
 
@@ -90,6 +90,48 @@ that every Web module reaches Core only through the five façades, that no Core 
 reach a project only through the published `WorkspaceAccess` surface. A Web module may depend on any
 subset of the façades; the regression no longer freezes one module's exact façade list.
 
+## LLM history persistence
+
+`local_store/llm/<source>/history.sqlite3` is each provider's canonical text store.
+Copilot's directory and coverage evidence use `legacy-catalog.sqlite3` and
+`sync-state.sqlite3`; the LLM-root media index uses `.cache_catalog.sqlite3`.
+`resource_persistence.py` dispatches neutral `read_resource_rows` and
+`write_resource_rows_atomic` calls by format. A missing SQLite path may read its
+legacy Parquet counterpart without creating or changing files. An existing invalid
+SQLite store fails closed; it must not be replaced by a legacy fallback silently.
+Media catalogs outside the LLM root, Agent discovery, and saved prompts retain their
+existing formats and ownership boundaries.
+
+`llm_sqlite.py` stores Zstandard-compressed Arrow IPC payloads in 32 buckets
+selected by a stable SHA-256 of each conversation ID. Every payload includes an
+explicit original row ordinal. The original ordinals and exact Arrow validation
+schema preserve duplicates, provider-specific provenance, and complete export order. New writes
+use storage format version 3; version 2 JSON payloads remain readable through the
+same public APIs. `conversation_groups`
+maps conversation IDs to `row_groups` through primary-key lookups. A detail or
+message lookup decompresses its matching bucket and filters that bucket's rows.
+`llm_history_index.py` derives compact compressed JSON session summaries for overview
+navigation without decoding transcript bodies. Summary version 2 retains metadata
+only and omits message-body previews. These summaries are projections, not another
+source of truth.
+
+The indexed browser path preserves the existing session, project, metadata overlay,
+ordering, and pagination contracts. Text search and the dedicated Zhihu grouping
+path still use full-history processing. Full exports necessarily decode the complete
+archive. SQLite uses `DELETE` journal mode and `synchronous=FULL`, with transactional
+updates to changed buckets. Snapshot callers still prepare all input rows; changed
+global ordinals can cause additional buckets to be rewritten. This design targets
+interactive local access and storage density; it does not claim optimal performance
+for every workload. The WeChat database remains separate and unchanged.
+
+The offline Gemini Takeout importer uses the same typed SQLite payload and browser summaries.
+Its preview distinguishes canonical SQLite authority from a read-only Parquet baseline;
+publication compares both identities and retains an exact backup in the baseline's own format.
+Version 2 import receipts bind both formats. Legacy version 1 receipts recover only their
+original Parquet publication and never silently adopt an independently migrated SQLite file.
+Fresh SQLite temporary files receive the verified owner-only POSIX mode or native Windows DACL
+before transcript bytes are written.
+
 ## Application layers
 
 - `app/core/config.py`: runtime defaults, persisted settings, paths, and input normalization.
@@ -107,16 +149,16 @@ subset of the façades; the regression no longer freezes one module's exact faç
   API traversal, normalized message persistence, and the independent Grok Text worker.
 - `app/core/copilot_history.py`, `copilot_history_store.py`, `copilot_sync_state.py`,
   and `copilot_history_service.py`: authenticated Microsoft Copilot all-chats
-  cursor traversal, ordered rendered transcript capture, isolated atomic Parquet persistence, and
+  cursor traversal, ordered rendered transcript capture, isolated transactional SQLite persistence, and
   the text-only worker. Safari uses the existing exclusive browser lease. Unknown
   source times stay empty; failed, interrupted, or shorter captures cannot replace
   a prior session. An empty provider `syncState` establishes exhaustion of the
   current catalog; it cannot establish coverage of separate legacy Copilot or Bing
   history surfaces. Successful synchronization also requires every discovered
   session to be processed without failure.
-  A separate `llm/copilot/sync-state.parquet` manifest keeps this evidence across
+  A separate `llm/copilot/sync-state.sqlite3` manifest keeps this evidence across
   restarts, without inferring completeness from the archive size. Missing legacy
-  evidence remains unverified. Local resources consumes `llm/copilot/history.parquet`
+  evidence remains unverified. Local resources consumes `llm/copilot/history.sqlite3`
   through the common history reader. The v1.43.1 real acceptance traversed two
   current-catalog pages containing 17 unique sessions, read two sessions with four
   messages, and was deliberately stopped. The durable 17-session, 74-message archive
@@ -124,7 +166,7 @@ subset of the façades; the regression no longer freezes one module's exact faç
   `copilot.microsoft.com/chats/<short-id>`. Its 357 visible titles were preserved.
   Nineteen verified native HTTP catalog responses then supplied 377 physical records
   and 357 distinct provider IDs. `copilot_legacy_catalog.py` preserves these in a
-  separate typed `llm/copilot/legacy-catalog.parquet`, including original observations
+  separate typed `llm/copilot/legacy-catalog.sqlite3`, including original observations
   and response hashes. Its metadata timestamps are not message dates; derived
   conversation URLs are explicitly labeled. Cached response enumeration does not
   prove current cursor exhaustion. Application v1.43.2 reads this evidence on sync
@@ -149,7 +191,7 @@ subset of the façades; the regression no longer freezes one module's exact faç
   persistence, and the ordinary Zhihu Cache worker.
 - `app/core/codex_history.py` and `app/core/codex_history_service.py`: read-only local
   Codex transcript import and its independent text-only Cache worker. Explicit user
-  and assistant message records are cumulatively merged into `llm/codex/history.parquet`;
+  and assistant message records are cumulatively merged into `llm/codex/history.sqlite3`;
   webpage ChatGPT history, browser sessions, and source transcripts remain separate.
 - `app/core/scraper.py` and `app/core/browser_sessions.py`: X timeline discovery and browser
   session probing for Chrome, Edge, and Safari.
@@ -215,7 +257,7 @@ subset of the façades; the regression no longer freezes one module's exact faç
 - `app/core/cache_catalog.py` and `app/core/local_media_browser.py`: durable local indexes,
   media discovery, secure path resolution, deletion tombstones, and restoration.
 - `app/core/resource_persistence.py` and `app/core/history_rows.py`: ordered provider-specific
-  Parquet schemas, atomic persistence, and pure conversation-row partitioning, comparison, and
+  validation schemas, format-aware persistence, and pure conversation-row partitioning, comparison, and
   deterministic ordering. Provider stores retain their distinct replace, merge, and save timing.
 - `app/core/logging_setup.py`: process-wide JSON-line logging.
 - `app/web/app.py`: the composition root. It configures Flask, builds the services, installs the
@@ -758,7 +800,7 @@ authenticated Edge session cloned into an isolated Chromium context
   -> paginated /rest/app-chat/conversations API
   -> response-node tree and batched load-responses API
   -> GrokHistoryStore
-  -> local_store/llm/grok/history.parquet
+  -> local_store/llm/grok/history.sqlite3
 ```
 
 Grok Text is deliberately separate from the Grok media runtime. Conversation pagination
@@ -776,7 +818,7 @@ selected Edge or Chrome profile cloned into an isolated Chromium context
   -> blank input: paginated MEMBER_VOTEUP_ANSWER activity targets
   -> answerer URL: paginated /api/v4/members/<token>/answers records
   -> isolated answer-body HTML, portable Markdown, and allowlisted source links
-  -> cumulative atomic local_store/llm/zhihu/history.parquet merge
+  -> cumulative transactional local_store/llm/zhihu/history.sqlite3 merge
   -> Local resources source=zhihu
 ```
 
@@ -1210,7 +1252,7 @@ selected authenticated Safari session
   -> one standard task-owned background window
   -> Gemini virtualized conversation navigation
   -> rendered user-query and model-response extraction
-  -> atomic local_store/llm/gemini/history.parquet replacement
+  -> transactional local_store/llm/gemini/history.sqlite3 commit
   -> native window close with Safari window-ID verification
 ```
 
@@ -1432,7 +1474,7 @@ Doctor. The service never replays a local Action or continues automatically.
 | `local_store/prompt/` | Snapshot-backed saved prompts retaining source pointers for traceability; a media prompt without cached text history keeps a content-derived key | Ignored except `.gitkeep` |
 | `local_store/messaging/wechat/history.sqlite3` | Source-separated, text-only human-message index; no media payloads | Ignored |
 | `local_store/messaging/wechat/contacts.sqlite3` | Native contact identities, scoped name observations, and pinned speaker corroboration | Ignored |
-| `local_store/llm/zhihu/history.parquet` | Formal Zhihu answer text, rich-text source, and source links indexed by Local resources | Ignored |
+| `local_store/llm/zhihu/history.sqlite3` | Formal Zhihu answer text, rich-text source, and source links indexed by Local resources | Ignored |
 | `local_store/messaging/wechat/history.sqlite3` | Source-separated, text-only human-message index; no media payloads | Ignored |
 | `local_store/messaging/wechat/resource_references.sqlite3` | Additive media/file reference metadata, source locators, and pinned archive identity; no payload copies | Ignored |
 | `local_store/messaging/wechat/contacts.sqlite3` | Native contact identities, scoped name observations, and pinned speaker corroboration | Ignored |

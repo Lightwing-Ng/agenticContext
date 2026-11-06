@@ -1,6 +1,6 @@
 """Read preserved OpenClaw transcripts without depending on its installed runtime.
 
-Code version: v1.0.0-codex.0
+Code version: v1.1.0-codex.0
 """
 
 from __future__ import annotations
@@ -23,7 +23,7 @@ from .openclaw_history import (
     import_openclaw_history,
     openclaw_history_path,
 )
-from .resource_persistence import read_parquet_rows
+from .resource_persistence import read_resource_rows
 from .shadow_backup import ShadowBackupService
 from .state import TaskSnapshot, TaskState
 
@@ -47,9 +47,9 @@ def build_openclaw_initial_snapshot(
         progress_unit="sessions",
         performance_metrics={"content_mode": "text", "source_kind": "archive"},
     )
-    rows = read_parquet_rows(path)
-    if rows is None and path.exists():
-        snapshot.last_error = f"{label} history Parquet is unreadable: {path}"
+    rows = read_resource_rows(path)
+    if rows is None and (path.exists() or path.with_suffix(".parquet").exists()):
+        snapshot.last_error = f"{label} history store is unreadable: {path}"
         snapshot.message = snapshot.last_error
         return snapshot
     messages = {

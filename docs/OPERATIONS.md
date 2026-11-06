@@ -1,6 +1,6 @@
 # Operations guide
 
-Documentation version: `v1.53.5-codex.0`
+Documentation version: `v1.54.3-codex.0`
 
 ## iPhone
 
@@ -380,10 +380,10 @@ admits only its OAuth metadata/endpoints and `/mcp/gemini`; every console path r
   An explicitly empty continuation cursor proves exhaustion of the current catalog,
   not every legacy Copilot or Bing history surface. A short sidebar list does not
   prove catalog exhaustion. Legacy caches remain `Partial` until completion evidence
-  has been persisted in `llm/copilot/sync-state.parquet`. A busy Safari
+  has been persisted in `llm/copilot/sync-state.sqlite3`. A busy Safari
   task queues through the shared coordinator. Verification or sign-in pages stop
   collection; no automatic login repair is attempted. Review the independent
-  `llm/copilot/history.parquet` cache through Local resources.
+  `llm/copilot/history.sqlite3` cache through Local resources.
 
 - Opening or restoring a blank Jury page, choosing another browser, changing a juror or model,
   and choosing `New session` do not launch a browser clone. `Check accounts` is the explicit
@@ -579,7 +579,7 @@ no exact cached-title match; do not reconcile them by similarity. Directory
 `updatedAt` values describe metadata, not message dates. Native conversation URLs
 are derived from the observed route and are labeled accordingly. A null cursor in
 one cached response does not prove the complete live pagination chain.
-The typed canonical directory is `local_store/llm/copilot/legacy-catalog.parquet`.
+The typed canonical directory is `local_store/llm/copilot/legacy-catalog.sqlite3`.
 Application v1.43.2 uses it to keep current-web sync and reload Partial until legacy
 coverage can be verified; it does not add title-only messages or stop collection of
 available current-web messages. The existing 17-session, 74-message archive is
@@ -1125,11 +1125,17 @@ interrupt it, so the optimizer must checkpoint frequently enough for the workloa
 | `local_store/x/` | X media and cache-catalog state |
 | `local_store/media/grok/` | Grok media, catalog, manifest, and work queue |
 | `local_store/media/chatgpt/<project-name>/` | ChatGPT images and catalog state |
-| `local_store/llm/chatgpt/history.parquet` | ChatGPT typed text history |
-| `local_store/llm/gemini/history.parquet` | Gemini typed text history |
-| `local_store/llm/grok/history.parquet` | Grok typed text history |
-| `local_store/llm/claude/history.parquet` | Claude typed text history |
-| `local_store/llm/zhihu/history.parquet` | Formal Zhihu answer text, rich-text source, and source links |
+| `local_store/llm/chatgpt/history.sqlite3` | ChatGPT typed text history |
+| `local_store/llm/gemini/history.sqlite3` | Gemini typed text history |
+| `local_store/llm/grok/history.sqlite3` | Grok typed text history |
+| `local_store/llm/claude/history.sqlite3` | Claude typed text history |
+| `local_store/llm/claude_code/history.sqlite3` | Local Claude Code text history |
+| `local_store/llm/codex/history.sqlite3` | Local Codex text history |
+| `local_store/llm/grok_build/history.sqlite3` | Local Grok Build text history |
+| `local_store/llm/copilot/history.sqlite3` | Microsoft Copilot text history |
+| `local_store/llm/<provider>_openclaw/history.sqlite3` | Provider-attributed preserved OpenClaw text |
+| `local_store/llm/.cache_catalog.sqlite3` | LLM-root resource catalog; independent of non-LLM media catalogs |
+| `local_store/llm/zhihu/history.sqlite3` | Formal Zhihu answer text, rich-text source, and source links |
 | `local_store/prompt/prompts.parquet` | Saved prompt content snapshots and source pointers; prompts remain available if source history disappears. A prompt saved from a media card whose conversation has no cached text carries a `media-prompt:` content key instead of a message pointer. Removing a saved prompt deletes its row and remarks; only the running process can restore it, until it exits |
 | `local_store/agent/agent_source_catalog.parquet` | Provider-neutral Agent session and Project discovery cache |
 | `local_store/.cache_task.lock` | Gate that a starting cache task passes and a shadow backup or history repair holds |
@@ -1142,6 +1148,61 @@ interrupt it, so the optimizer must checkpoint frequently enough for the workloa
 All cache and log paths are ignored by Git. Back up local media before using any destructive reset
 operation.
 
+### LLM history migration and rollback
+
+Each provider now writes `local_store/llm/<source>/history.sqlite3`. Existing
+Parquet sources remain readable only when the corresponding SQLite store is absent.
+Migration is explicit; application reads do not create a database or retire a source.
+New SQLite writes use storage format version 3: 32 stable SHA-256 conversation
+buckets with Zstandard-compressed Arrow IPC payloads, explicit original row ordinals,
+and the exact Arrow schema. Version 2 JSON payloads remain readable. Compressed JSON
+summary version 2 contains metadata only; public reader and writer APIs are unchanged.
+Finish Cache jobs before migration, use the canonical Terminal for any necessary
+runtime shutdown, and leave unrelated browser and Terminal windows intact.
+
+On macOS, preview the eligible canonical stores and retain the private report:
+
+```bash
+python3 scripts/migrate_llm_sqlite.py --report /private/var/tmp/llm-sqlite-review/report.json
+```
+
+After reviewing scope, apply with a new private rollback directory on durable storage:
+
+```bash
+python3 scripts/migrate_llm_sqlite.py \
+  --report /private/var/tmp/llm-sqlite-review/applied.json \
+  --backup-directory /path/to/private/llm-sqlite-rollback \
+  --apply --retire-legacy
+```
+
+Use `py -3` with host-appropriate paths on Windows. The migration holds the cache
+maintenance gate and checks open handles. It verifies exact schema, every row,
+duplicate, original order, SQLite integrity, and source stability before publication.
+It preserves source modification times for discovery overlays. Before retiring each
+canonical Parquet file, it writes a gzip rollback and verifies the decompressed
+bytes against the original SHA-256. Existing conflicting SQLite targets are not
+overwritten. Numbered histories, imported evidence, media, other catalogs, and
+browser profiles are outside its retirement scope. Keep failed or partial reports
+and rollback receipts; resolve the named conflict before an explicit retry.
+
+The private report separates initial and resident source allocation, logical sizes,
+SQLite allocation, and rollback allocation. Cloud placeholders can initially have
+zero allocated bytes; reading them can hydrate content. A smaller logical SQLite
+archive does not prove disk space was reclaimed, particularly while backups or
+numbered histories remain. Benchmarks use warm filesystem caches and disposable
+write copies; report their scope and sample distributions instead of treating them
+as cold-start or universal throughput results. Keep account-specific measurements
+in the private report rather than repository documentation.
+
+For rollback, finish all writers and preserve the current SQLite database first.
+Decompress the receipt's gzip file to a new private candidate, verify its exact
+restored hash and bytes, and validate it through the history reader in an isolated
+root. Restore only to the receipt's explicit provider path after preserving the
+SQLite target elsewhere; an existing SQLite file otherwise takes precedence over
+Parquet. Never restore over an active database or infer that an unverified cloud copy
+is a durable backup. Retain the report and reversible path mapping until rollback
+and resumed application reads have been verified.
+
 ### Zhihu text cache
 
 Open `GET /cache/zhihu`. Edge is selected by default; Chrome is the only alternative. The account
@@ -1151,7 +1212,7 @@ card calls the ordinary browser-session probe and enables Start only after
 Leave `Answerer URL` blank to cache every unique answer found while paging that account's
 `MEMBER_VOTEUP_ANSWER` activity. Enter a validated Zhihu people or Answers URL to cache every
 answer exposed by that answerer's paginated API instead. Both modes recheck the newest page before
-an atomic cumulative merge into `local_store/llm/zhihu/history.parquet`; a later run never removes
+an atomic cumulative merge into `local_store/llm/zhihu/history.sqlite3`; a later run never removes
 answers collected by an earlier mode. An activity target whose body is unavailable is retained as
 an excerpt-plus-source-link record instead of aborting the complete liked-answer run. Review the
 answers under Local resources with source `Zhihu`; the source-specific sidebar removes Clear
@@ -1275,7 +1336,7 @@ you intend to discard that cache. Do not use reset operations as a routine troub
   on the next Text sync even when their provider revision matches; each successful fetch replaces
   that session's rows while preserving retained messages' first-seen timestamps. Failed fetches
   leave existing rows intact. Let an active cache task finish before restarting into the new code
-  and running Text sync; do not edit its live Parquet file or reset cached media to apply this change.
+  and running Text sync; do not edit its live SQLite database or reset cached media to apply this change.
 - Legacy ChatGPT tool traces can be reviewed offline with
   `python3 -m app.core.chatgpt_history_cleanup` (use `py -3 -m` on Windows).
   Add `--apply` to remove recognized traces preceding a later reply in the same turn.
@@ -1284,7 +1345,7 @@ you intend to discard that cache. Do not use reset operations as a routine troub
   Every line must match the protocol; mixed prose and fenced examples are retained.
   Ordinary prose is retained unless explicitly reviewed with `--remove-message chat-<id>`.
   The command holds the cache gate and refuses to run while any cache task is active. It backs up
-  the original Parquet and a removal manifest
+  the original history file with its actual extension and a removal manifest
   under `local_store/recovery/`, and atomically writes the cleaned history. It preserves user
   messages, retained content, timestamps, and session IDs. Do not restore the backup over an
   active cache job. Channel-less future messages also reject standalone tool syntax; explicit
@@ -1309,7 +1370,7 @@ you intend to discard that cache. Do not use reset operations as a routine troub
   is a terminal result for that run. Keep the existing archive, open the profile in the selected
   host browser, complete the provider's check manually, and explicitly retry. Do not copy cookies,
   add a CAPTCHA solver, switch to a raw HTTP scraper, or loop retries around the challenge.
-- Zhihu count mismatch: do not edit the Parquet file or invent missing IDs. A short terminal result
+- Zhihu count mismatch: do not edit the SQLite database or invent missing IDs. A short terminal result
   whose raw count is also below the reported total fails closed. A duplicate-backed provider gap is
   accepted only after two full enumerations reproduce the same ordered unique IDs and pagination
   counts; the gap is then persisted and shown as Not enumerable. Any drift preserves the earlier

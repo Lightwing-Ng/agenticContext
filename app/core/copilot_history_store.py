@@ -1,6 +1,6 @@
 """Durable, isolated storage for Microsoft Copilot text conversations."""
 
-# Code version: v1.2.0-codex.0
+# Code version: v1.3.0-codex.0
 
 from __future__ import annotations
 
@@ -22,8 +22,8 @@ from .resource_persistence import (
     COPILOT_HISTORY_FILENAME,
     COPILOT_HISTORY_SCHEMA,
     COPILOT_HISTORY_SCHEMA_VERSION,
-    read_parquet_rows,
-    write_parquet_rows_atomic,
+    read_resource_rows,
+    write_resource_rows_atomic,
 )
 from .state import TaskSnapshot, utc_now
 
@@ -72,9 +72,9 @@ class CopilotHistoryStore:
 
     def __init__(self, local_store_root: Path | str = LOCAL_STORE_ROOT) -> None:
         self.path = copilot_history_path(local_store_root)
-        rows = read_parquet_rows(self.path)
-        if self.path.exists() and rows is None:
-            raise RuntimeError(f"Copilot history Parquet is unreadable: {self.path}")
+        rows = read_resource_rows(self.path)
+        if (self.path.exists() or self.path.with_suffix(".parquet").exists()) and rows is None:
+            raise RuntimeError(f"Copilot history store is unreadable: {self.path}")
         if any(row.get("platform") != "copilot" for row in rows or []):
             raise RuntimeError("Copilot history contains rows from an unexpected provider.")
         self._rows = {
@@ -172,7 +172,7 @@ class CopilotHistoryStore:
             len(previous) == len(messages) and unchanged_messages == len(messages)
         )
         if not unchanged_session:
-            write_parquet_rows_atomic(
+            write_resource_rows_atomic(
                 self.path,
                 sort_history_rows(next_rows.values()),
                 COPILOT_HISTORY_SCHEMA,

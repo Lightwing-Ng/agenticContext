@@ -1,11 +1,12 @@
-"""Shared Parquet schemas and atomic persistence for cached resource state."""
+"""Typed resource persistence with SQLite histories and legacy Parquet import."""
 
-# Code version: v1.11.2-codex.0
+# Code version: v2.0.1-codex.0
 
 from __future__ import annotations
 
 import os
 import tempfile
+import sqlite3
 from collections.abc import Iterable, Mapping
 from pathlib import Path
 from typing import Any
@@ -27,13 +28,13 @@ LEGACY_GROK_WORK_QUEUE_FILENAME = ".grok_work_queue.json"
 DELETED_MEDIA_FILENAME = ".browser_deleted.parquet"
 LEGACY_DELETED_MEDIA_FILENAME = ".browser_deleted.json"
 X_CACHE_CATALOG_FILENAME = ".cache_catalog.parquet"
-X_HISTORY_FILENAME = "history.parquet"
-GEMINI_HISTORY_FILENAME = "history.parquet"
-CHATGPT_HISTORY_FILENAME = "history.parquet"
-GROK_HISTORY_FILENAME = "history.parquet"
-CLAUDE_HISTORY_FILENAME = "history.parquet"
-COPILOT_HISTORY_FILENAME = "history.parquet"
-ZHIHU_HISTORY_FILENAME = "history.parquet"
+X_HISTORY_FILENAME = "history.sqlite3"
+GEMINI_HISTORY_FILENAME = "history.sqlite3"
+CHATGPT_HISTORY_FILENAME = "history.sqlite3"
+GROK_HISTORY_FILENAME = "history.sqlite3"
+CLAUDE_HISTORY_FILENAME = "history.sqlite3"
+COPILOT_HISTORY_FILENAME = "history.sqlite3"
+ZHIHU_HISTORY_FILENAME = "history.sqlite3"
 PROMPT_FILENAME = "prompts.parquet"
 PROMPT_REMARKS_FILENAME = "remarks.parquet"
 
@@ -255,7 +256,17 @@ ZHIHU_HISTORY_SCHEMA = _history_schema()
 
 
 def read_parquet_rows(path: Path) -> list[dict[str, Any]] | None:
-    """Read rows from one Parquet state file, returning None when it is unavailable or invalid."""
+    """Compatibility alias for format-aware resource reads."""
+    path = Path(path)
+    if path.suffix == ".sqlite3":
+        from .llm_sqlite import read_sqlite_rows
+
+        if path.exists() or path.is_symlink():
+            try:
+                return read_sqlite_rows(path)
+            except (OSError, ValueError, sqlite3.Error, pa.ArrowException):
+                return None
+        path = path.with_suffix(".parquet")
     if not path.is_file():
         return None
     try:
@@ -271,7 +282,13 @@ def write_parquet_rows_atomic(
     rows: Iterable[Mapping[str, Any]],
     schema: pa.Schema,
 ) -> None:
-    """Atomically persist typed rows and verify the temporary Parquet file before replacement."""
+    """Commit SQLite state or atomically replace a legacy Parquet resource."""
+    path = Path(path)
+    if path.suffix == ".sqlite3":
+        from .llm_sqlite import write_sqlite_rows
+
+        write_sqlite_rows(path, rows, schema)
+        return
     materialized_rows = [dict(row) for row in rows]
     path.parent.mkdir(parents=True, exist_ok=True)
     descriptor, temporary_name = tempfile.mkstemp(
@@ -304,3 +321,7 @@ def retire_legacy_file(path: Path) -> bool:
     except FileNotFoundError:
         return False
     return True
+
+
+read_resource_rows = read_parquet_rows
+write_resource_rows_atomic = write_parquet_rows_atomic

@@ -1,4 +1,8 @@
-"""Round-action sizing and shared-shell anchor checks. Code version: v1.1.0-codex.0."""
+"""Round-action sizing and shared-shell anchor checks. Code version: v1.1.1-codex.0."""
+
+import json
+import re
+from urllib.parse import urlsplit
 
 import pytest
 from playwright.sync_api import expect
@@ -7,6 +11,69 @@ from tests import test_sidebar_e2e
 
 disposable_browser = test_sidebar_e2e.disposable_browser
 sidebar_server_url = test_sidebar_e2e.sidebar_server_url
+
+
+def _circular_asset_observer(page):
+    """Cache bounded asset-event metadata without issuing diagnostic browser RPCs."""
+    requests, stylesheets, failed, console = [], [], [], []
+    lifecycle = {"domcontentloaded": False, "load": False}
+
+    def resource_name(url):
+        path = urlsplit(url).path
+        return path.rsplit("/", 1)[-1][:128] if path.startswith("/static/") else ""
+
+    def requested(request):
+        name = resource_name(request.url)
+        if name and request.resource_type in {"stylesheet", "font"} and len(requests) < 24:
+            requests.append({"resource": name, "type": request.resource_type})
+
+    def responded(response):
+        name = resource_name(response.url)
+        if name.endswith(".css") and len(stylesheets) < 8:
+            # These properties read Playwright's cached response initializer.
+            headers = response.headers
+            raw_length = headers.get("content-length", "")
+            length = int(raw_length) if raw_length.isdecimal() and len(raw_length) <= 10 else None
+            stylesheets.append({"resource": name, "status": response.status,
+                                "mime": headers.get("content-type", "").split(";", 1)[0][:80],
+                                "declared_bytes": length})
+
+    def request_failed(request):
+        name = resource_name(request.url)
+        if name and len(failed) < 16:
+            failed.append({"resource": name, "codes": re.findall(r"\bERR_[A-Z0-9_]+\b", str(request.failure)[:500])[:8]})
+
+    def console_error(message):
+        name = resource_name(message.location.get("url", ""))
+        if message.type == "error" and name and len(console) < 16:
+            console.append({"resource": name, "codes": re.findall(r"\bERR_[A-Z0-9_]+\b", message.text[:500])[:8]})
+
+    def dom_ready():
+        lifecycle["domcontentloaded"] = True
+
+    def loaded():
+        lifecycle["load"] = True
+
+    listeners = (("request", requested), ("response", responded), ("requestfailed", request_failed),
+                 ("console", console_error), ("domcontentloaded", dom_ready), ("load", loaded))
+    for event, listener in listeners:
+        page.on(event, listener)
+
+    def capture():
+        try:
+            print("Circular action asset failure: " + json.dumps({"document_events": lifecycle,
+                "requests": requests, "stylesheets": stylesheets, "failed": failed, "console_codes": console}, separators=(",", ":")))
+        except Exception as error:
+            print("Circular action asset diagnostic unavailable: " + type(error).__name__)
+
+    def close():
+        for event, listener in listeners:
+            try:
+                page.remove_listener(event, listener)
+            except Exception:
+                pass
+
+    return capture, close
 
 
 def _geometry(page):
@@ -85,6 +152,7 @@ def test_circular_actions_keep_size_and_shell_anchors(
         reduced_motion="reduce",
     )
     page = context.new_page()
+    capture_failure, close_observer = _circular_asset_observer(page)
     try:
         page.goto(f"{sidebar_server_url}{route}", wait_until="domcontentloaded")
         toggle = page.locator('[data-layout-role="sidebar-toggle"]')
@@ -198,5 +266,9 @@ def test_circular_actions_keep_size_and_shell_anchors(
             expect(connection).to_have_class("circular-icon-button")
             expect(connection).to_have_css("width", f"{expected_size}px")
             expect(connection).to_have_css("height", f"{expected_size}px")
+    except AssertionError:
+        capture_failure()
+        raise
     finally:
+        close_observer()
         context.close()

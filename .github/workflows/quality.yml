@@ -1,4 +1,4 @@
-# Code version: v1.7.1-codex.0
+# Code version: v1.7.2-codex.0
 name: Quality gate
 
 on:
@@ -53,6 +53,8 @@ jobs:
           done
 
       - name: Install Playwright Chromium
+        env:
+          PLAYWRIGHT_BROWSERS_PATH: ${{ runner.temp }}/ms-playwright
         run: python -m playwright install --with-deps chromium
 
       - name: Set up Node.js 22
@@ -61,6 +63,8 @@ jobs:
           node-version: '22'
 
       - name: Run the quality gate
+        env:
+          PLAYWRIGHT_BROWSERS_PATH: ${{ runner.temp }}/ms-playwright
         run: AGENTIC_CONTEXT_PYTHON="$(command -v python)" ./scripts/check.sh
 
       - name: Upload coverage data
@@ -102,6 +106,8 @@ jobs:
         run: python -m pip_audit -r requirements.txt
 
       - name: Install Playwright Chromium
+        env:
+          PLAYWRIGHT_BROWSERS_PATH: ${{ runner.temp }}/ms-playwright
         run: python -m playwright install chromium
 
       - name: Set up Node.js 22
@@ -110,6 +116,8 @@ jobs:
           node-version: '22'
 
       - name: Verify the first Windows browser boundary
+        env:
+          PLAYWRIGHT_BROWSERS_PATH: ${{ runner.temp }}/ms-playwright
         shell: pwsh
         run: |
           $env:AGENTIC_CONTEXT_PYTHON = (Get-Command python).Source
@@ -117,6 +125,8 @@ jobs:
             "tests/test_agent_activity_e2e.py::test_sidebar_icons_share_provider_axis_without_moving_dock"
 
       - name: Run the quality gate
+        env:
+          PLAYWRIGHT_BROWSERS_PATH: ${{ runner.temp }}/ms-playwright
         shell: pwsh
         run: |
           $env:AGENTIC_CONTEXT_PYTHON = (Get-Command python).Source

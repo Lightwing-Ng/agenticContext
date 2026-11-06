@@ -1,4 +1,6 @@
-"""Isolated Claude Code cache and Local resources navigation. Code version: v1.0.1-codex.0."""
+"""Isolated Claude Code cache and Local resources navigation."""
+
+# Code version: v1.1.2-codex.0
 
 from collections.abc import Iterator
 from threading import Thread
@@ -30,7 +32,7 @@ def claude_code_browser_server(tmp_path_factory: pytest.TempPathFactory) -> Iter
     (source_folder / "sessions").mkdir(parents=True)
     for source, text in (("claude", "The web chat prompt."), ("claude_code", "Review the local parser.")):
         write_parquet_rows_atomic(
-            root / "llm" / source / "history.parquet",
+            root / "llm" / source / "history.sqlite3",
             [_row(source, "shared-id", text)],
             CLAUDE_HISTORY_SCHEMA,
         )

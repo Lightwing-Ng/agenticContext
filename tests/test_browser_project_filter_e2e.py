@@ -1,13 +1,15 @@
-"""Isolated Local resources Project filtering. Code version: v1.1.0-codex.0."""
+"""Isolated Local resources Project filtering. Code version: v1.1.3-codex.0."""
 
 from __future__ import annotations
 
 from collections.abc import Iterator
 from threading import Thread
+import time
 from urllib.parse import parse_qs, urlsplit
+from uuid import uuid4
 
 import pytest
-from playwright.sync_api import Browser, Locator, Page, expect
+from playwright.sync_api import Browser, Locator, Page, TimeoutError as PlaywrightTimeoutError, expect
 from werkzeug.serving import make_server
 
 from app.core.agent_source_cache import AgentSourceCache
@@ -120,6 +122,105 @@ def _sidebar(page: Page, *, opened: bool) -> None:
     if (toggle.get_attribute("aria-expanded") == "true") != opened:
         toggle.click()
     expect(toggle).to_have_attribute("aria-expanded", str(opened).lower())
+    _wait_for_session_table_layout(page, require_source_hit=not opened)
+
+
+def _wait_for_session_table_layout(page: Page, *, require_source_hit: bool) -> None:
+    deadline = time.monotonic() + 30
+    last_geometry_error: AssertionError | None = None
+    while True:
+        remaining_ms = (deadline - time.monotonic()) * 1_000
+        if remaining_ms <= 0:
+            if last_geometry_error is not None:
+                raise last_geometry_error
+            raise PlaywrightTimeoutError("Session table layout did not settle within 30,000ms.")
+        try:
+            geometry = _stable_session_table_geometry(page, timeout_ms=remaining_ms)
+        except PlaywrightTimeoutError:
+            if last_geometry_error is not None:
+                raise last_geometry_error
+            raise
+        try:
+            _assert_session_table_geometry(geometry, require_source_hit=require_source_hit)
+        except AssertionError as error:
+            # A stable sample can precede the queued table-column measurement.
+            last_geometry_error = error
+        else:
+            return
+
+
+def _stable_session_table_geometry(page: Page, *, timeout_ms: float) -> dict:
+    settled = page.wait_for_function(
+        """token => {
+            const rect = node => {
+                if (!node) return null;
+                const box = node.getBoundingClientRect();
+                return [box.x, box.y, box.width, box.height];
+            };
+            const table = document.querySelector('.browser-session-index-shell');
+            const header = table?.querySelector('[data-table-header]');
+            const body = table?.querySelector('[data-table-body]');
+            const scrollport = table?.querySelector('[data-table-scroll]');
+            const trigger = document.querySelector(
+                '[data-browser-header-filter] [data-browser-source-filter-trigger]');
+            const headerCells = Array.from(header?.rows[0]?.cells || [], rect);
+            const bodyCells = Array.from(body?.rows[0]?.cells || [], rect);
+            const geometry = JSON.stringify([
+                rect(document.querySelector('.app-shell')),
+                rect(document.querySelector('.sidebar')),
+                rect(table), rect(header), rect(body), rect(trigger), headerCells, bodyCells,
+            ]);
+            const previous = window.__projectFilterLayoutSample;
+            const frameTime = document.timeline.currentTime;
+            const sameGeometry = previous?.token === token && previous.geometry === geometry;
+            const frameAdvanced = Number.isFinite(frameTime)
+                && Number.isFinite(previous?.frameTime) && frameTime > previous.frameTime;
+            const frames = sameGeometry && Number.isFinite(frameTime)
+                ? previous.frames + Number(frameAdvanced) : 0;
+            window.__projectFilterLayoutSample = {token, geometry, frames, frameTime};
+            // Aria updates before ResizeObserver queues the next header-column sync.
+            // The immediate first predicate and each geometry change are baselines.
+            if (frames < 3) return false;
+            const box = trigger?.getBoundingClientRect();
+            const centerX = box ? box.x + box.width / 2 : null;
+            const centerY = box ? box.y + box.height / 2 : null;
+            const centerInViewport = box && centerX >= 0 && centerX < innerWidth
+                && centerY >= 0 && centerY < innerHeight;
+            return {
+                headerCells, bodyCells,
+                hasTable: Boolean(table),
+                scrollbarWidth: scrollport ? scrollport.offsetWidth - scrollport.clientWidth : 0,
+                triggerHit: Boolean(centerInViewport
+                    && trigger.contains(document.elementFromPoint(centerX, centerY))),
+            };
+        }""",
+        arg=uuid4().hex,
+        polling="raf",
+        timeout=timeout_ms,
+    )
+    try:
+        geometry = settled.json_value()
+    finally:
+        settled.dispose()
+    return geometry
+
+
+def _assert_session_table_geometry(geometry: dict, *, require_source_hit: bool) -> None:
+    header_cells = geometry["headerCells"]
+    body_cells = geometry["bodyCells"]
+    if geometry["hasTable"]:
+        assert header_cells and body_cells, (
+            "The session table must have header and body columns."
+        )
+    assert len(header_cells) == len(body_cells)
+    for index, (header, body) in enumerate(zip(header_cells, body_cells, strict=True)):
+        scrollbar = geometry["scrollbarWidth"] if index == len(body_cells) - 1 else 0
+        assert abs(header[0] - body[0]) <= 1, "Header/body column left edges differ."
+        assert abs(header[2] - body[2] - scrollbar) <= 1, (
+            "Header/body column widths differ."
+        )
+    if require_source_hit:
+        assert geometry["triggerHit"], "The settled Source trigger is obstructed."
 
 
 def _project_trigger(page: Page) -> Locator:
@@ -144,6 +245,116 @@ def _assert_no_horizontal_overflow(page: Page) -> None:
         "Math.max(document.documentElement.scrollWidth, document.body.scrollWidth)"
         " <= window.innerWidth + 1"
     )
+
+
+@pytest.mark.parametrize(
+    ("fault", "message"),
+    (
+        ("column-offset", "Header/body column left edges"),
+        ("obstruction", "Source trigger is obstructed"),
+    ),
+)
+def test_sidebar_layout_readiness_rejects_stable_geometry_defects(
+    disposable_browser: Browser,
+    project_browser_server_url: str,
+    fault: str,
+    message: str,
+) -> None:
+    context = disposable_browser.new_context(
+        viewport={"width": 1_006, "height": 844},
+        reduced_motion="reduce",
+    )
+    page = context.new_page()
+    try:
+        page.goto(
+            f"{project_browser_server_url}/browser?view=text&source=chatgpt&session_view=1"
+        )
+        _sidebar(page, opened=False)
+        if fault == "column-offset":
+            page.add_style_tag(
+                content=".browser-session-index-shell > [data-table-header] { transform: translateX(4px); }",
+            )
+        else:
+            page.locator(
+                "[data-browser-header-filter] [data-browser-source-filter-trigger]",
+            ).evaluate("""trigger => {
+                const rect = trigger.getBoundingClientRect();
+                const obstruction = document.createElement('div');
+                Object.assign(obstruction.style, {
+                    position: 'fixed', left: `${rect.x}px`, top: `${rect.y}px`,
+                    width: `${rect.width}px`, height: `${rect.height}px`, zIndex: '2147483647',
+                });
+                document.body.append(obstruction);
+            }""")
+        # Stability must not conceal a persistent alignment or hit-test defect.
+        with pytest.raises(AssertionError, match=message):
+            _sidebar(page, opened=False)
+    finally:
+        context.close()
+
+
+@pytest.mark.parametrize("deferred_frames", (2, 5))
+def test_sidebar_layout_readiness_waits_for_deferred_table_measurement(
+    disposable_browser: Browser,
+    project_browser_server_url: str,
+    deferred_frames: int,
+) -> None:
+    context = disposable_browser.new_context(
+        viewport={"width": 1_006, "height": 844},
+        reduced_motion="reduce",
+    )
+    context.add_init_script("""(() => {
+        const NativeResizeObserver = window.ResizeObserver;
+        const nextFrame = window.requestAnimationFrame.bind(window);
+        window.__deferredTableDeliveries = 0;
+        window.__deferredTableFrameTimes = [];
+        window.ResizeObserver = class extends NativeResizeObserver {
+            constructor(callback) {
+                super((entries, observer) => {
+                    if (entries.some(entry => entry.target.closest('.browser-session-index-shell'))) {
+                        // Retain the real table observer and column sync across deferred frames.
+                        const deliver = (remaining, frameTimes) => {
+                            if (remaining > 0) {
+                                nextFrame(frameTime => deliver(
+                                    remaining - 1, [...frameTimes, frameTime]));
+                                return;
+                            }
+                            window.__deferredTableDeliveries += 1;
+                            window.__deferredTableFrameTimes = frameTimes;
+                            callback(entries, observer);
+                        };
+                        deliver(DEFERRED_FRAMES, []);
+                    } else {
+                        callback(entries, observer);
+                    }
+                });
+            }
+        };
+    })();""".replace("DEFERRED_FRAMES", str(deferred_frames)))
+    page = context.new_page()
+    try:
+        page.goto(
+            f"{project_browser_server_url}/browser?view=text&source=chatgpt&session_view=1"
+        )
+        _choose_project(page, "No project")
+        expect(page.locator(SESSION_TITLES)).to_have_text(["Ordinary session"])
+        deliveries_before = page.evaluate("window.__deferredTableDeliveries")
+        _sidebar(page, opened=False)
+        assert page.evaluate("window.__deferredTableDeliveries") > deliveries_before
+        frame_times = page.evaluate("window.__deferredTableFrameTimes")
+        assert len(frame_times) == deferred_frames
+        assert all(later > earlier for earlier, later in zip(frame_times, frame_times[1:]))
+        page.locator(
+            "[data-browser-header-filter] [data-browser-source-filter-trigger]"
+        ).click()
+        with page.expect_navigation(wait_until="domcontentloaded"):
+            page.locator(
+                '#browser_header_source_filter_options [data-browser-source-filter-option="chatgpt"]'
+            ).click()
+        assert _query(page)["project"] == [CHATGPT_NO_PROJECT_FILTER]
+        expect(page.locator(SESSION_TITLES)).to_have_text(["Ordinary session"])
+    finally:
+        context.close()
 
 
 @pytest.mark.parametrize(
@@ -269,6 +480,7 @@ def test_project_filter_survives_navigation_and_clears_other_scopes(
             f"&session_view=1&project={ALPHA_PROJECT}"
         )
         page.goto(scoped_url)
+        _wait_for_session_table_layout(page, require_source_hit=True)
         page.locator("[data-browser-header-filter] [data-browser-source-filter-trigger]").click()
         with page.expect_navigation(wait_until="domcontentloaded"):
             page.locator(
@@ -334,6 +546,7 @@ def test_no_project_selection_survives_search_details_and_same_source_selection(
         expect(page.locator("#browser_search_input")).to_have_attribute(
             "data-browser-search-submit-copy", "Press Enter to search chats without a project.",
         )
+        _wait_for_session_table_layout(page, require_source_hit=True)
         page.locator("[data-browser-header-filter] [data-browser-source-filter-trigger]").click()
         with page.expect_navigation(wait_until="domcontentloaded"):
             page.locator(
