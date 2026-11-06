@@ -1,8 +1,10 @@
-# Code version: v1.7.2-codex.0
+# Code version: v1.7.3-codex.0
 name: Quality gate
 
 on:
   push:
+    branches-ignore:
+      - codex/contact-linux-diagnostic-20261106
   pull_request:
 
 permissions:

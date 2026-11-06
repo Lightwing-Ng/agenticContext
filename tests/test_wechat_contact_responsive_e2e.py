@@ -1,6 +1,6 @@
 """Contact statements fit their scrollport and keep shared header alignment.
 
-Code version: v1.2.3-codex.0
+Code version: v1.2.4-codex.0
 """
 
 from __future__ import annotations
@@ -95,6 +95,9 @@ def _observe_contact_table_failure(page, measurements=None):
     try:
         yield
     except AssertionError:
+        from tests.contact_linux_diagnostic import capture
+
+        capture(page)
         try:
             state = page.evaluate("""() => {
                 const properties = ['number', 'time', 'statement', 'conversation', 'account'];

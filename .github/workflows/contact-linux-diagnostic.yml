@@ -1,0 +1,44 @@
+# Code version: v1.0.0-codex.0
+name: Contact Linux diagnostic
+
+on:
+  push:
+    branches:
+      - codex/contact-linux-diagnostic-20261106
+
+permissions:
+  contents: read
+
+jobs:
+  contact-geometry:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      TZ: UTC
+      PLAYWRIGHT_BROWSERS_PATH: ${{ runner.temp }}/ms-playwright
+      CONTACT_LINUX_DIAGNOSTIC: test-results/contact-linux-diagnostic
+    steps:
+      - name: Check out exact diagnostic source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Set up Python 3.13
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7
+        with:
+          python-version: '3.13'
+          cache: pip
+          cache-dependency-path: requirements.txt
+      - name: Install original Python dependencies
+        run: python -m pip install -r requirements.txt
+      - name: Install original Playwright Chromium
+        run: python -m playwright install --with-deps chromium
+      - name: Run both original failing nodes once
+        run: >-
+          python -m pytest -vv --tb=long -p no:cacheprovider
+          'tests/test_wechat_contact_responsive_e2e.py::test_contact_columns_fit_without_horizontal_scroll_and_keep_centered_numbers[light-1280]'
+          'tests/test_wechat_contact_responsive_e2e.py::test_contact_columns_fit_without_horizontal_scroll_and_keep_centered_numbers[dark-1280]'
+      - name: Preserve failure-only geometry and original test result
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: contact-linux-diagnostic-${{ github.sha }}
+          path: test-results/contact-linux-diagnostic
+          if-no-files-found: ignore

@@ -1,8 +1,10 @@
-# Code version: v1.0.0-codex.1
+# Code version: v1.0.1-codex.0
 name: CodeQL
 
 on:
   push:
+    branches-ignore:
+      - codex/contact-linux-diagnostic-20261106
   pull_request:
   schedule:
     - cron: "17 20 * * 0"
