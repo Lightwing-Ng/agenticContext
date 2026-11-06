@@ -1,6 +1,6 @@
 """Capture one real Windows rename/read boundary without changing production source.
 
-Code version: v1.0.0-codex.0
+Code version: v1.0.1-codex.0
 """
 from concurrent.futures import ThreadPoolExecutor
 import ctypes
@@ -29,7 +29,7 @@ kernel.SetFileInformationByHandle.restype = wintypes.BOOL
 kernel.CloseHandle.argtypes = [wintypes.HANDLE]
 kernel.CloseHandle.restype = wintypes.BOOL
 record = {
-    "version": "v1.0.0-codex.0", "head": os.environ["GITHUB_SHA"],
+    "version": "v1.0.1-codex.0", "head": os.environ["GITHUB_SHA"],
     "run": os.environ["GITHUB_RUN_ID"], "attempt": os.environ["GITHUB_RUN_ATTEMPT"],
     "python": sys.version, "platform": platform.platform(), "timezone": os.environ.get("TZ"),
     "pytest": importlib.metadata.version("pytest"),
@@ -74,13 +74,17 @@ with tempfile.TemporaryDirectory(prefix="compute-metadata-native-") as temporary
         writer = executor.submit(publish_and_hold_rename_handle)
         try:
             assert held.wait(5), "The native writer did not reach its rename boundary."
+            read_handle = kernel.CreateFileW(str(path), 0x80000000, 0x00000003, None, 3, 0, None)
+            assert read_handle == ctypes.c_void_p(-1).value
+            record["native_open_winerror"] = ctypes.get_last_error()
+            assert record["native_open_winerror"] == 32
             for name, read in (("crt_read", lambda: path.read_text(encoding="utf-8")), ("manager_load_metadata", lambda: manager._load_metadata(job_id)), ("workspace_scan", manager._all_metadata)):
                 try:
                     read()
                 except (OSError, compute_jobs.ComputeJobError) as error:
                     cause = error.__cause__ or error
                     item = {"reader": name, "error": type(error).__name__, "cause": type(cause).__name__, "errno": getattr(cause, "errno", None), "winerror": getattr(cause, "winerror", None)}
-                    assert item["errno"] == 13 and item["winerror"] == 32, item
+                    assert item["errno"] == 13 and item["winerror"] is None, item
                     record["results"].append(item)
                 else:
                     raise AssertionError(f"Unprotected reader {name} unexpectedly crossed the native DELETE handle.")
