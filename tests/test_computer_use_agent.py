@@ -1,6 +1,6 @@
 """Focused tests for the Web Computer Use controller.
 
-Code version: v3.85.2-codex.0
+Code version: v3.85.4-codex.0
 """
 
 from __future__ import annotations
@@ -23,6 +23,7 @@ from threading import Event, Thread
 import time
 from types import SimpleNamespace
 from typing import Callable
+import venv
 
 import pytest
 
@@ -14169,6 +14170,88 @@ def test_python_verification_allows_focused_unittest_and_workspace_scripts(
     assert script_command[-3] == "script"
     assert Path(script_command[-2]).samefile(verify_script)
     assert script_command[-1] == "--start-server"
+
+
+@pytest.mark.parametrize("launcher_form", ("bare", "explicit"))
+def test_python_verification_keeps_external_venv_packages(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    launcher_form: str,
+) -> None:
+    """The real verifier must retain packages and prefix from its controller venv."""
+    environment = tmp_path / "controller-venv"
+    venv.EnvBuilder(with_pip=False, symlinks=os.name != "nt").create(environment)
+    launcher = environment / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+    package_root = Path(subprocess.check_output(
+        [str(launcher), "-I", "-c", "import sysconfig; print(sysconfig.get_path('purelib'))"],
+        text=True,
+        timeout=10,
+    ).strip())
+    (package_root / "controller_runtime_probe.py").write_text(
+        "VALUE = 'external-controller-package'\n", encoding="utf-8",
+    )
+    workspace = tmp_path / "project"
+    workspace.mkdir()
+    (workspace / "test_verify.py").write_text(
+        "from pathlib import Path\n"
+        "import sys\n"
+        "import unittest\n"
+        "import controller_runtime_probe\n\n"
+        "class ControllerRuntimeTest(unittest.TestCase):\n"
+        "    def test_external_package_and_prefix(self):\n"
+        "        self.assertEqual(controller_runtime_probe.VALUE, 'external-controller-package')\n"
+        f"        self.assertTrue(Path(sys.prefix).samefile({str(environment)!r}))\n"
+        "        self.assertEqual(sys.flags.isolated, 1)\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(sys, "executable", str(launcher))
+
+    executable = "python" if launcher_form == "bare" else f'"{launcher}"'
+    command = inspection_command_parts(
+        f"{executable} -m unittest -v test_verify.py", workspace=workspace,
+    )
+    completed = subprocess.run(
+        command, cwd=workspace, text=True, capture_output=True, timeout=10,
+    )
+
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    assert "test_external_package_and_prefix" in completed.stderr
+    assert command[1:3] == ["-I", "-c"]
+
+
+@pytest.mark.parametrize("inside_project", ("launch_path", "resolved_parent", "resolved_target"))
+def test_python_verification_rejects_project_owned_controller_runtime(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    inside_project: str,
+) -> None:
+    """Reject runtime aliases without requiring Windows symlink privileges."""
+    workspace = tmp_path / "project"
+    workspace.mkdir()
+    external = tmp_path / "controller"
+    external.mkdir()
+    (workspace / "test_verify.py").write_text("import unittest\n", encoding="utf-8")
+    launcher = (workspace if inside_project == "launch_path" else external) / "bin/python"
+    launcher.parent.mkdir()
+    launcher.write_text("controller launcher", encoding="utf-8")
+    resolved_target = (workspace if inside_project == "resolved_target" else external) / "base-python"
+    resolved_target.write_text("controller executable", encoding="utf-8")
+    resolved_parent = (workspace if inside_project == "resolved_parent" else external) / "venv-bin"
+    resolved_parent.mkdir()
+    original_resolve = Path.resolve
+
+    def resolve(path: Path, *, strict: bool = False) -> Path:
+        if path == launcher:
+            return resolved_target
+        if path == launcher.parent:
+            return resolved_parent
+        return original_resolve(path, strict=strict)
+
+    monkeypatch.setattr(Path, "resolve", resolve)
+    monkeypatch.setattr(sys, "executable", str(launcher))
+
+    with pytest.raises(ValueError, match="controller Python runtime cannot be inside"):
+        inspection_command_parts("python -m unittest -q test_verify.py", workspace=workspace)
 
 
 def test_python_module_runner_blocks_workspace_and_sitecustomize_shadowing(
