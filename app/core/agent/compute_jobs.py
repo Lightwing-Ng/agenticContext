@@ -1,6 +1,6 @@
 """Durable local compute jobs for approved optimization entrypoints.
 
-Code version: v1.6.8-codex.0
+Code version: v1.6.9-codex.0
 """
 
 from __future__ import annotations
@@ -306,10 +306,15 @@ def _stable_regular_file_bytes(
 
 
 @contextmanager
-def _metadata_file_lock(metadata_path: Path) -> Iterator[None]:
+def _metadata_file_lock(
+    metadata_path: Path,
+    *,
+    create_parent: bool = True,
+) -> Iterator[None]:
     """Serialize metadata state transitions across the launcher and worker."""
     lock_path = metadata_path.with_name("metadata.lock")
-    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    if create_parent:
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
     with lock_path.open("a+b") as handle:
         if os.name == "nt":
             import msvcrt
@@ -355,6 +360,21 @@ def _update_metadata_file(
         updated["revision"] = revision + 1
         _atomic_write_json(metadata_path, updated)
         return updated
+
+
+def _read_metadata_file(metadata_path: Path) -> dict[str, Any]:
+    """Read a published record under the same lock as atomic state transitions."""
+    if metadata_path.is_symlink() or not metadata_path.is_file():
+        raise ComputeJobError(
+            f"Required regular JSON file is unavailable: {metadata_path.name}"
+        )
+    # A Windows rename retains DELETE access until its native handle closes.
+    # Serializing the reader also keeps its CRT handle out of the writer's way.
+    with _metadata_file_lock(metadata_path, create_parent=False):
+        return _validate_compute_job_metadata(
+            _read_json_object(metadata_path, maximum_bytes=MAX_METADATA_BYTES),
+            expected_job_id=metadata_path.parent.name,
+        )
 
 
 def _read_json_object(path: Path, *, maximum_bytes: int) -> dict[str, Any]:
@@ -527,14 +547,7 @@ def _scan_workspace_job_metadata(
             or not job_root.is_dir()
         ):
             raise ComputeJobError("Compute-job runtime contains an invalid job directory.")
-        metadata = _read_json_object(
-            job_root / "metadata.json",
-            maximum_bytes=MAX_METADATA_BYTES,
-        )
-        metadata = _validate_compute_job_metadata(
-            metadata,
-            expected_job_id=job_root.name,
-        )
+        metadata = _read_metadata_file(job_root / "metadata.json")
         if reconcile_liveness:
             metadata = _reconcile_scanned_compute_job_metadata(
                 job_root / "metadata.json",
@@ -1866,14 +1879,7 @@ class ComputeJobManager:
         return self.jobs_root / job_id / "metadata.json"
 
     def _load_metadata(self, job_id: str) -> dict[str, Any]:
-        metadata = _read_json_object(
-            self._metadata_path(job_id),
-            maximum_bytes=MAX_METADATA_BYTES,
-        )
-        return _validate_compute_job_metadata(
-            metadata,
-            expected_job_id=job_id,
-        )
+        return _read_metadata_file(self._metadata_path(job_id))
 
     def _save_metadata(self, metadata: dict[str, Any]) -> None:
         job_id = str(metadata.get("job_id") or "")
@@ -2548,10 +2554,7 @@ def _wait_for_worker_ownership(metadata_path: Path) -> dict[str, Any] | None:
     deadline = time.monotonic() + WORKER_OWNERSHIP_HANDSHAKE_SECONDS
     while time.monotonic() < deadline:
         try:
-            metadata = _validate_compute_job_metadata(
-                _read_json_object(metadata_path, maximum_bytes=MAX_METADATA_BYTES),
-                expected_job_id=metadata_path.parent.name,
-            )
+            metadata = _read_metadata_file(metadata_path)
         except ComputeJobError:
             return None
         if metadata.get("state") in TERMINAL_STATES:
@@ -2977,13 +2980,7 @@ def _worker_main(arguments: list[str]) -> int:
                 _bounded_log_append(log_path, chunk)
             now = time.monotonic()
             if now - last_state_check >= 0.1:
-                current = _validate_compute_job_metadata(
-                    _read_json_object(
-                        metadata_path,
-                        maximum_bytes=MAX_METADATA_BYTES,
-                    ),
-                    expected_job_id=metadata_path.parent.name,
-                )
+                current = _read_metadata_file(metadata_path)
                 if current.get("state") == "stopping":
                     stop_committed = True
                 elif current.get("state") != "running":

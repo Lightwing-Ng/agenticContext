@@ -1,4 +1,4 @@
-"""Session switching, capacity, and selected controls. Code version: v1.37.6-codex.0."""
+"""Session switching, capacity, and selected controls. Code version: v1.37.7-codex.0."""
 
 import json
 import re
@@ -2093,6 +2093,207 @@ def test_tunnel_reconnect_accepts_a_new_runtime_and_ignores_its_late_old_status(
         context.close()
 
 
+@contextmanager
+def _native_tunnel_guide_motion(page, guide):
+    """Sample the original UA-slot transitions at native animation times."""
+    import asyncio
+    from time import monotonic
+
+    channel = None
+    object_id = None
+    original_error = None
+    deadline = monotonic() + 30
+
+    def remaining():
+        seconds = deadline - monotonic()
+        if seconds <= 0:
+            raise TimeoutError("Native guide motion exceeded the browser-action deadline")
+        return seconds
+
+    def send(method, params=None):
+        # All protocol work, including cleanup, shares the existing action ceiling.
+        seconds = remaining()
+        return page.context._sync(
+            asyncio.wait_for(channel.send(method, params), timeout=seconds)
+        )
+
+    def call(function, await_promise=False):
+        result = send(
+            "Runtime.callFunctionOn",
+            {
+                "objectId": object_id,
+                "functionDeclaration": function,
+                "returnByValue": True,
+                "awaitPromise": await_promise,
+            },
+        )
+        assert "exceptionDetails" not in result, result
+        return result["result"].get("value")
+
+    try:
+        key = guide.get_attribute("data-collapse", timeout=remaining() * 1000)
+        assert key and re.fullmatch(r"[a-z0-9-]+", key)
+        seconds = remaining()
+        channel = page.context._sync(
+            asyncio.wait_for(
+                page.context._impl_obj.new_cdp_session(page._impl_obj), timeout=seconds
+            )
+        )
+        send("Page.enable")
+        send("DOM.enable")
+        document = send("DOM.getDocument", {"depth": 1, "pierce": True})
+        match = send(
+            "DOM.querySelector",
+            {
+                "nodeId": document["root"]["nodeId"],
+                "selector": f'details[data-agent-tunnel-guide][data-collapse="{key}"]',
+            },
+        )
+        node = send(
+            "DOM.describeNode",
+            {
+                "nodeId": match["nodeId"],
+                "depth": 1,
+                "pierce": True,
+            },
+        )["node"]
+        roots = [
+            root
+            for root in node["shadowRoots"]
+            if root["shadowRootType"] == "user-agent"
+        ]
+        assert len(roots) == 1, roots
+        slots = [
+            child
+            for child in roots[0]["children"]
+            if (
+                child["nodeName"] == "SLOT"
+                and dict(
+                    zip(
+                        child.get("attributes", [])[::2],
+                        child.get("attributes", [])[1::2],
+                    )
+                ).get("id")
+                == "details-content"
+            )
+        ]
+        assert len(slots) == 1, slots
+        object_id = send(
+            "DOM.resolveNode",
+            {
+                "backendNodeId": slots[0]["backendNodeId"],
+            },
+        )["object"]["objectId"]
+        armed = call("""function() {
+            const slot = this;
+            if (slot.__testTunnelGuideMotion) throw new Error('Duplicate native motion capture');
+            const state = {animations: [], listenerAttached: true};
+            state.ready = new Promise((resolve, reject) => {
+                state.listener = event => {
+                    if (event.target !== slot || event.propertyName !== 'height') return;
+                    slot.removeEventListener('transitionrun', state.listener);
+                    state.listenerAttached = false;
+                    try {
+                        const group = slot.getAnimations().filter(animation => (
+                            animation instanceof CSSTransition && animation.effect.target === slot
+                        ));
+                        const properties = group.map(animation => animation.transitionProperty).sort();
+                        if (properties.join(',') !== 'content-visibility,height,opacity') {
+                            throw new Error('Expected the three original UA-slot transitions');
+                        }
+                        for (const animation of group) {
+                            const timing = animation.effect.getTiming();
+                            const duration = animation.transitionProperty === 'opacity' ? 240 : 420;
+                            const easing = animation.transitionProperty === 'height'
+                                ? 'cubic-bezier(0.16, 1, 0.3, 1)'
+                                : animation.transitionProperty === 'opacity'
+                                    ? 'cubic-bezier(0.2, 0, 0, 1)' : 'ease';
+                            if (timing.duration !== duration || timing.delay !== 0
+                                || timing.endDelay !== 0 || timing.iterations !== 1
+                                || timing.easing !== easing || animation.playbackRate !== 1) {
+                                throw new Error('Native transition timing changed');
+                            }
+                        }
+                        state.animations = group;
+                        group.forEach(animation => { animation.pause(); animation.currentTime = 0; });
+                        Promise.all(group.map(animation => animation.ready)).then(() => resolve(true), reject);
+                    } catch (error) { reject(error); }
+                };
+                slot.addEventListener('transitionrun', state.listener);
+            });
+            state.ready.catch(() => {});
+            slot.__testTunnelGuideMotion = state;
+            return {tag: slot.tagName, id: slot.id, host: slot.getRootNode().host.getAttribute('data-collapse')};
+        }""")
+        assert armed == {"tag": "SLOT", "id": "details-content", "host": key}, armed
+
+        def sample():
+            assert call(
+                "function() { return this.__testTunnelGuideMotion.ready; }", True
+            )
+            return call("""function() {
+                const state = this.__testTunnelGuideMotion;
+                const host = this.getRootNode().host;
+                return [0, 80, 420].map(time => {
+                    state.animations.forEach(animation => {
+                        animation.currentTime = Math.min(time, animation.effect.getTiming().duration);
+                    });
+                    return host.getBoundingClientRect().height;
+                });
+            }""")
+
+        yield sample
+    except BaseException as error:
+        original_error = error
+        raise
+    finally:
+        errors = []
+        if object_id:
+            try:
+                cleanup = call(
+                    """function() {
+                    const state = this.__testTunnelGuideMotion;
+                    if (!state) return {active: 0, states: [], listenerAttached: false};
+                    this.removeEventListener('transitionrun', state.listener);
+                    state.listenerAttached = false;
+                    state.animations.forEach(animation => animation.finish());
+                    delete this.__testTunnelGuideMotion;
+                    return Promise.all(state.animations.map(animation => animation.finished)).then(() => ({
+                        active: this.getAnimations().filter(animation => ['running', 'paused'].includes(animation.playState)).length,
+                        states: state.animations.map(animation => ({state: animation.playState,
+                            pending: animation.pending, rate: animation.playbackRate})),
+                        listenerAttached: state.listenerAttached,
+                    }));
+                }""",
+                    True,
+                )
+                assert cleanup["active"] == 0 and not cleanup["listenerAttached"], (
+                    cleanup
+                )
+                assert all(
+                    state == {"state": "finished", "pending": False, "rate": 1}
+                    for state in cleanup["states"]
+                ), cleanup
+            except Exception as error:
+                errors.append(error)
+            try:
+                send("Runtime.releaseObject", {"objectId": object_id})
+            except Exception as error:
+                errors.append(error)
+        if channel:
+            try:
+                seconds = remaining()
+                page.context._sync(asyncio.wait_for(channel.detach(), timeout=seconds))
+            except Exception as error:
+                errors.append(error)
+        if errors:
+            if original_error is None:
+                raise errors[0]
+            original_error.add_note(
+                "Native guide motion cleanup failed: " + type(errors[0]).__name__
+            )
+
+
 @pytest.mark.parametrize(
     ("width", "color_scheme"),
     [(1280, "light"), (867, "dark"), (390, "dark")],
@@ -2222,19 +2423,10 @@ def test_tunnel_guides_use_native_disclosure_and_vector_cards(
         closed_height = guides.nth(0).evaluate(
             "details => details.getBoundingClientRect().height"
         )
-        summaries.nth(0).focus()
-        summaries.nth(0).press("Enter")
-        opening_start = guides.nth(0).evaluate(
-            "details => details.getBoundingClientRect().height"
-        )
-        page.wait_for_timeout(80)
-        opening_middle = guides.nth(0).evaluate(
-            "details => details.getBoundingClientRect().height"
-        )
-        page.wait_for_timeout(500)
-        opening_end = guides.nth(0).evaluate(
-            "details => details.getBoundingClientRect().height"
-        )
+        with _native_tunnel_guide_motion(page, guides.nth(0)) as sample_motion:
+            summaries.nth(0).focus()
+            summaries.nth(0).press("Enter")
+            opening_start, opening_middle, opening_end = sample_motion()
         assert closed_height <= opening_start < opening_middle < opening_end
         expect(guides.nth(0)).to_have_attribute("open", "")
         expect(guides.nth(0).locator("svg")).to_be_visible()
@@ -2246,18 +2438,9 @@ def test_tunnel_guides_use_native_disclosure_and_vector_cards(
         assert guides.evaluate_all("nodes => nodes.map((node) => node.open)")[:2] == [True, True]
         expect(summaries.nth(1)).to_be_focused()
 
-        summaries.nth(0).click()
-        closing_start = guides.nth(0).evaluate(
-            "details => details.getBoundingClientRect().height"
-        )
-        page.wait_for_timeout(80)
-        closing_middle = guides.nth(0).evaluate(
-            "details => details.getBoundingClientRect().height"
-        )
-        page.wait_for_timeout(500)
-        closing_end = guides.nth(0).evaluate(
-            "details => details.getBoundingClientRect().height"
-        )
+        with _native_tunnel_guide_motion(page, guides.nth(0)) as sample_motion:
+            summaries.nth(0).click()
+            closing_start, closing_middle, closing_end = sample_motion()
         assert closing_start > closing_middle > closing_end
         assert abs(closing_end - closed_height) <= 1
         expect(guides.nth(0)).not_to_have_attribute("open", "")
@@ -2274,6 +2457,58 @@ def test_tunnel_guides_use_native_disclosure_and_vector_cards(
         expect(guides.nth(0)).to_have_attribute("open", "")
         expect(guides.nth(0).locator("svg")).to_be_visible()
         assert not errors
+    finally:
+        context.close()
+
+
+@pytest.mark.parametrize("fault", ["constant", "reverse"])
+def test_native_tunnel_guide_motion_rejects_bad_geometry(
+    disposable_browser, sidebar_server_url, fault
+):
+    context = disposable_browser.new_context(viewport={"width": 390, "height": 900})
+    page = context.new_page()
+    try:
+        page.emulate_media(color_scheme="dark", reduced_motion="no-preference")
+        page.goto(sidebar_server_url + "/agent/tunnel/chatgpt")
+        if "is-sidebar-collapsed" not in page.locator("#app_shell").get_attribute(
+            "class"
+        ):
+            page.locator("#sidebar_toggle").click()
+        selector = '[data-agent-tunnel-guide][data-collapse="agent-tunnel-create"]'
+        guide = page.locator(selector)
+        if fault == "constant":
+            page.add_style_tag(content=f"{selector} {{ height: 200px; }}")
+        else:
+            # Reverse the real native transition's values, preserving all timing.
+            page.add_style_tag(
+                content=f"""
+                {selector}::details-content {{ block-size: 160px; }}
+                {selector}[open]::details-content {{ block-size: 0; }}
+                @starting-style {{
+                    {selector}[open]::details-content {{ block-size: 160px; }}
+                }}
+            """
+            )
+            # Finish the fixture's initial closed-height change before opening it.
+            page.wait_for_function(
+                """selector => getComputedStyle(
+                    document.querySelector(selector), '::details-content'
+                ).blockSize === '160px'""",
+                arg=selector,
+            )
+        closed_height = guide.evaluate(
+            "details => details.getBoundingClientRect().height"
+        )
+        with _native_tunnel_guide_motion(page, guide) as sample_motion:
+            guide.locator("summary").focus()
+            guide.locator("summary").press("Enter")
+            opening_start, opening_middle, opening_end = sample_motion()
+        if fault == "constant":
+            assert opening_start == opening_middle == opening_end
+        else:
+            assert opening_start > opening_middle > opening_end
+        with pytest.raises(AssertionError):
+            assert closed_height <= opening_start < opening_middle < opening_end
     finally:
         context.close()
 
