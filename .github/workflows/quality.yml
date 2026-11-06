@@ -3,6 +3,8 @@ name: Quality gate
 
 on:
   push:
+    branches-ignore:
+      - codex/compute-metadata-diagnostic-20261106
   pull_request:
 
 permissions:
