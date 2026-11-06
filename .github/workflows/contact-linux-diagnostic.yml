@@ -1,4 +1,4 @@
-# Code version: v1.0.0-codex.0
+# Code version: v1.0.1-codex.0
 name: Contact Linux diagnostic
 
 on:
@@ -15,7 +15,6 @@ jobs:
     timeout-minutes: 15
     env:
       TZ: UTC
-      PLAYWRIGHT_BROWSERS_PATH: ${{ runner.temp }}/ms-playwright
       CONTACT_LINUX_DIAGNOSTIC: test-results/contact-linux-diagnostic
     steps:
       - name: Check out exact diagnostic source
@@ -29,8 +28,12 @@ jobs:
       - name: Install original Python dependencies
         run: python -m pip install -r requirements.txt
       - name: Install original Playwright Chromium
+        env:
+          PLAYWRIGHT_BROWSERS_PATH: ${{ runner.temp }}/ms-playwright
         run: python -m playwright install --with-deps chromium
       - name: Run both original failing nodes once
+        env:
+          PLAYWRIGHT_BROWSERS_PATH: ${{ runner.temp }}/ms-playwright
         run: >-
           python -m pytest -vv --tb=long -p no:cacheprovider
           'tests/test_wechat_contact_responsive_e2e.py::test_contact_columns_fit_without_horizontal_scroll_and_keep_centered_numbers[light-1280]'
