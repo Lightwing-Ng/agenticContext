@@ -1,4 +1,4 @@
-# Code version: v1.0.1-codex.0
+# Code version: v1.1.0-codex.0
 name: Compute metadata native diagnosis
 on:
   push:
@@ -20,13 +20,18 @@ jobs:
           python-version: '3.13'
       - name: Install unchanged dependencies
         run: python -m pip install -r requirements.txt
-      - name: Real rename boundary with unchanged source
+      - name: Complete unchanged compute scope with the locked-reader fix
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force test-results/compute-metadata-diagnostic
+          python -m pytest -vv -p no:cacheprovider --junitxml=test-results/compute-metadata-diagnostic/fixed-complete-compute.xml tests/test_compute_jobs.py
+      - name: Real rename boundary with locked-reader source
         if: always()
         run: python scripts/diagnose_compute_metadata.py
       - name: Preserve native evidence
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
-          name: compute-metadata-native-baseline
+          name: compute-metadata-native-fixed
           path: test-results/compute-metadata-diagnostic/
           if-no-files-found: error

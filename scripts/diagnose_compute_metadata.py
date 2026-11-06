@@ -1,8 +1,9 @@
 """Capture one real Windows rename/read boundary without changing production source.
 
-Code version: v1.0.1-codex.0
+Code version: v1.1.0-codex.0
 """
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 import ctypes
 from ctypes import wintypes
 import hashlib
@@ -13,7 +14,7 @@ from pathlib import Path
 import platform
 import sys
 import tempfile
-from threading import Event
+from threading import Event, local
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from app.core.agent import compute_jobs
@@ -29,7 +30,7 @@ kernel.SetFileInformationByHandle.restype = wintypes.BOOL
 kernel.CloseHandle.argtypes = [wintypes.HANDLE]
 kernel.CloseHandle.restype = wintypes.BOOL
 record = {
-    "version": "v1.0.1-codex.0", "head": os.environ["GITHUB_SHA"],
+    "version": "v1.1.0-codex.0", "head": os.environ["GITHUB_SHA"],
     "run": os.environ["GITHUB_RUN_ID"], "attempt": os.environ["GITHUB_RUN_ATTEMPT"],
     "python": sys.version, "platform": platform.platform(), "timezone": os.environ.get("TZ"),
     "pytest": importlib.metadata.version("pytest"),
@@ -43,7 +44,7 @@ with tempfile.TemporaryDirectory(prefix="compute-metadata-native-") as temporary
     manager = compute_jobs.ComputeJobManager(workspace, root / "runtime")
     job_id = "a" * 32
     path = manager._metadata_path(job_id)
-    payload = {"schema_version": 1, "job_id": job_id, "workspace": str(workspace), "workspace_device": manager.workspace_device, "workspace_inode": manager.workspace_inode, "state": "succeeded", "revision": 0}
+    payload = {"schema_version": 1, "job_id": job_id, "workspace": str(workspace), "workspace_device": manager.workspace_device, "workspace_inode": manager.workspace_inode, "state": "running", "pid": os.getpid(), "process_identity": compute_jobs._process_identity(os.getpid()), "updated_at": compute_jobs._utc_now(), "revision": 0}
     compute_jobs._atomic_write_json(path, payload)
     replacement = path.with_name("replacement.json")
     updated = {**payload, "revision": 1}
@@ -70,7 +71,35 @@ with tempfile.TemporaryDirectory(prefix="compute-metadata-native-") as temporary
             finally:
                 assert kernel.CloseHandle(handle)
 
-    with ThreadPoolExecutor(max_workers=1) as executor:
+    reader_context = local()
+    reader_attempted = {label: Event() for label in ("manager", "scan", "worker_ownership")}
+    reader_finished = {label: Event() for label in reader_attempted}
+    original_lock = compute_jobs._metadata_file_lock
+
+    @contextmanager
+    def observed_lock(metadata_path, **kwargs):
+        label = getattr(reader_context, "label", None)
+        if label is not None:
+            reader_attempted[label].set()
+        with original_lock(metadata_path, **kwargs):
+            yield
+
+    compute_jobs._metadata_file_lock = observed_lock
+
+    def protected_read(label):
+        reader_context.label = label
+        try:
+            if label == "manager":
+                return manager._load_metadata(job_id)
+            if label == "scan":
+                record, = manager._all_metadata()
+                return record
+            return compute_jobs._wait_for_worker_ownership(path)
+        finally:
+            reader_finished[label].set()
+            reader_attempted[label].set()
+
+    with ThreadPoolExecutor(max_workers=4) as executor:
         writer = executor.submit(publish_and_hold_rename_handle)
         try:
             assert held.wait(5), "The native writer did not reach its rename boundary."
@@ -78,7 +107,7 @@ with tempfile.TemporaryDirectory(prefix="compute-metadata-native-") as temporary
             assert read_handle == ctypes.c_void_p(-1).value
             record["native_open_winerror"] = ctypes.get_last_error()
             assert record["native_open_winerror"] == 32
-            for name, read in (("crt_read", lambda: path.read_text(encoding="utf-8")), ("manager_load_metadata", lambda: manager._load_metadata(job_id)), ("workspace_scan", manager._all_metadata)):
+            for name, read in (("crt_read", lambda: path.read_text(encoding="utf-8")),):
                 try:
                     read()
                 except (OSError, compute_jobs.ComputeJobError) as error:
@@ -88,14 +117,23 @@ with tempfile.TemporaryDirectory(prefix="compute-metadata-native-") as temporary
                     record["results"].append(item)
                 else:
                     raise AssertionError(f"Unprotected reader {name} unexpectedly crossed the native DELETE handle.")
+            readers = {label: executor.submit(protected_read, label) for label in reader_attempted}
+            for label in readers:
+                assert reader_attempted[label].wait(5)
+                assert not reader_finished[label].is_set(), f"{label} crossed the real native rename boundary."
+            record["all_three_readers_blocked_before_native_handle_close"] = True
         finally:
             release.set()
         writer.result(timeout=5)
+        for label, pending in readers.items():
+            assert pending.result(timeout=5) == updated
+            record["results"].append({"reader": label, "blocked_until_native_handle_closed": True, "complete_revision": 1})
+    compute_jobs._metadata_file_lock = original_lock
     assert manager._load_metadata(job_id) == updated
     assert manager._all_metadata() == [updated]
     assert not replacement.exists()
-    record["after_writer_handle_closed"] = "Both original readers return the complete published revision."
-    record["deterministic_old_source_red"] = True
+    record["after_writer_handle_closed"] = "All three protected readers return the complete published revision."
+    record["deterministic_fixed_source_green"] = True
     record["original_ci_errno13_winerror"] = "Not recorded in the original log; this probe proves the matching source defect only."
-(output / "native-rename-read.json").write_text(json.dumps(record, indent=2) + "\n", encoding="utf-8")
+(output / "native-rename-read-fixed.json").write_text(json.dumps(record, indent=2) + "\n", encoding="utf-8")
 print(json.dumps(record, indent=2))
