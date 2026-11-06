@@ -1,6 +1,6 @@
 # Testing guide
 
-Documentation version: `v1.45.0-codex.0`
+Documentation version: `v1.45.1-codex.0`
 
 ## LLM SQLite persistence checks
 
@@ -281,6 +281,27 @@ legacy SQL writers, read-only/attached database queries, append guards, and stri
 validation. Publication checks replace APFS cloning with a test-only file copy and exercise
 verified rollback evidence, sidecar pin handling, changed-input refusal, and failed-publication
 recovery. They never read production history, hydrate cloud archives, or launch browsers.
+
+Storage-maintenance regressions use disposable SQLite files and synthetic provider metadata:
+
+```bash
+./scripts/test.sh tests/test_compact_wechat_sqlite.py tests/test_publish_wechat_compaction.py tests/test_preserve_wechat_workstations.py tests/test_verify_wechat_onedrive.py tests/test_archive_wechat_rollbacks.py tests/test_wechat_rollback_location.py
+```
+
+They assert source-byte preservation when candidate hard links, repeated source inodes,
+late candidate links, parent traversal, or actual runtime-directory aliases are refused.
+Case checks follow the filesystem's real identity semantics rather than lowercasing paths.
+Phased relocation tests retain prior workstation/receipt mappings and reject conflicting
+relative paths before moving new files. Relocation unit tests replace native rename/durability
+primitives; unsupported-platform apply checks verify that no output is created. Missing
+allocation metadata stays unknown. Separate Windows models exercise the production
+rename and directory-sync branches, exact binary checksums, late collisions, source
+drift, and file-sync failure. Native directory attributes must be checked root-first
+before entering source, destination, public, report, or cache subtrees; incomplete
+enumeration and failed cache metadata queries remain explicitly unverified.
+File Provider success never certifies remote content or
+authorizes local release. Native macOS compression and atomic-swap checks retain their
+explicit filesystem/platform requirements; no Windows execution is inferred from local results.
 
 Private-chat checks require reciprocal verified native owner/peer IDs and retain separate
 sent/received directions, sender labels, sources, gaps, and conflicting bodies. Invalid

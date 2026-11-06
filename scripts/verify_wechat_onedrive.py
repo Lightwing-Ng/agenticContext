@@ -1,6 +1,6 @@
 """Inspect one explicit OneDrive workstation without downloading or evicting payloads.
 
-Code version: v1.3.0-codex.0
+Code version: v1.3.1-codex.0
 """
 
 from __future__ import annotations
@@ -18,7 +18,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from scripts import archive_wechat_rollbacks as archiver
 
 
-VERSION = "v1.3.0-codex.0"
+VERSION = "v1.3.1-codex.0"
 _WINDOWS_CLOUD_FLAGS = 0x1000 | 0x40000 | 0x400000
 _WINDOWS_REPARSE_POINT = 0x400
 PUBLIC_ROOT = Path.home() / "Library/CloudStorage/OneDrive-Personal"
@@ -27,16 +27,18 @@ TRANSACTION_LIMIT = 65_536
 
 
 def _assert_plain_path(path):
+    if ".." in path.parts:
+        raise ValueError("OneDrive paths must not contain parent traversal.")
     for component in reversed((path, *path.parents)):
         try:
             state = component.lstat()
         except FileNotFoundError:
             continue
-        if stat.S_ISLNK(state.st_mode) or (
-            stat.S_ISDIR(state.st_mode) and (
-                getattr(state, "st_flags", 0) & archiver.DATALESS
-                or getattr(state, "st_file_attributes", 0) & (_WINDOWS_CLOUD_FLAGS | _WINDOWS_REPARSE_POINT)
-            )
+        if stat.S_ISLNK(state.st_mode):
+            raise ValueError("OneDrive paths must not contain symbolic links.")
+        if stat.S_ISDIR(state.st_mode) and (
+            getattr(state, "st_flags", 0) & archiver.DATALESS
+            or getattr(state, "st_file_attributes", 0) & (_WINDOWS_CLOUD_FLAGS | _WINDOWS_REPARSE_POINT)
         ):
             raise ValueError(f"An unavailable or reparse directory requires separate review: {component}")
 
@@ -65,10 +67,20 @@ def _same_identity(before, after):
     return all(before.get(key) == after.get(key) for key in ("device", "inode", "bytes", "mtime_ns", "kind"))
 
 
+def _public_relative_path(path):
+    """Validate public ancestry independently of cache inspection availability."""
+    path = Path(path).expanduser().absolute()
+    public = PUBLIC_ROOT.expanduser().absolute()
+    for item in (path, public):
+        _assert_plain_path(item)
+    return path.relative_to(public)
+
+
 def canonical_cache_path(path):
     """Map only the currently verified Personal sync-root prefix, without resolving links."""
-    path = Path(path).absolute()
-    return CACHE_ROOT / path.relative_to(PUBLIC_ROOT)
+    cached = CACHE_ROOT.expanduser().absolute() / _public_relative_path(path)
+    _assert_plain_path(cached)
+    return cached
 
 
 def _cache_metadata(path):
@@ -147,10 +159,10 @@ def _inspect_file(path, before):
         "cloud_preservation_verified": False, "safe_to_release_local_content": False,
     }
     try:
-        row["cache_before"] = _cache_metadata(path)
         if before["kind"] != "file":
             row.update(status="excluded", reason="nonregular_item_requires_review")
             return row
+        row["cache_before"] = _cache_metadata(path)
         reason = _in_progress_reason(path, before)
         if reason:
             row.update(status="excluded_in_progress", reason=reason)
@@ -183,16 +195,18 @@ def _inspect_file(path, before):
     return row
 
 
-def _allocation_summary(metadata):
+def _allocation_summary(metadata, *, inspection_unavailable_items=0):
     files = [value for value in metadata if value.get("kind") == "file"]
     unique = {(value["device"], value["inode"]): value for value in files}
     unknown = sum(value.get("allocated_bytes") is None for value in files)
     return {
         "files": len(files),
         "logical_bytes": sum(value["bytes"] for value in files),
-        "allocated_bytes": None if unknown else sum(value["allocated_bytes"] for value in files),
-        "unique_inode_allocated_bytes": None if unknown else sum(value["allocated_bytes"] for value in unique.values()),
+        "allocated_bytes": None if unknown or inspection_unavailable_items else sum(value["allocated_bytes"] for value in files),
+        "unique_inode_allocated_bytes": None if unknown or inspection_unavailable_items else sum(value["allocated_bytes"] for value in unique.values()),
         "allocation_unknown_files": unknown,
+        "allocation_unavailable_files": unknown,
+        "inspection_unavailable_items": inspection_unavailable_items,
         "dataless_files": sum(value["dataless"] for value in files),
     }
 
@@ -202,7 +216,7 @@ def inspect_workspace(root, report, *, max_workers=4):
     report = Path(report).expanduser().absolute()
     if not 1 <= max_workers <= 4:
         raise ValueError("Use between one and four metadata workers.")
-    canonical_cache_path(root)
+    _public_relative_path(root)
     _assert_plain_path(root)
     _assert_plain_path(report.parent)
     if root.is_symlink() or not root.is_dir():
@@ -223,8 +237,9 @@ def inspect_workspace(root, report, *, max_workers=4):
     in_progress = sum(row["status"] == "excluded_in_progress" for row in records)
     excluded = sum(row["status"].startswith("excluded") for row in records)
     complete = bool(records) and namespace_stable and uploaded == len(records)
+    cache_unavailable = sum("cache_after" not in row for row in records)
     public_allocation = _allocation_summary(after.values())
-    cache_allocation = _allocation_summary(row.get("cache_after", {}) for row in records)
+    cache_allocation = _allocation_summary((row.get("cache_after", {}) for row in records), inspection_unavailable_items=cache_unavailable)
     enumeration_complete = not (errors or final_errors)
     public_allocation["enumeration_complete"] = enumeration_complete
     cache_allocation["enumeration_complete"] = enumeration_complete and not any(
@@ -256,6 +271,7 @@ def inspect_workspace(root, report, *, max_workers=4):
         "canonical_cache_allocation_after": cache_allocation,
         "canonical_cache_missing_files": sum(row.get("cache_after", {}).get("exists") is False for row in records),
         "canonical_cache_unverified_files": sum("cache_after" not in row or bool(row.get("cache_inspection_error")) for row in records),
+        "canonical_cache_unavailable_items": cache_unavailable,
         "canonical_cache_mapping": {"public_prefix": str(PUBLIC_ROOT), "cache_prefix": str(CACHE_ROOT)},
         "namespace": {"stable": namespace_stable, "added": added, "removed": removed, "changed": changed},
         "enumeration_errors": errors + final_errors,
