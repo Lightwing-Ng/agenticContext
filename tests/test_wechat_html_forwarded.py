@@ -1,6 +1,6 @@
 """HTML forwarding uses explicit source trees and preserves literal evidence.
 
-Code version: v1.0.1-codex.0
+Code version: v1.2.1-codex.0
 """
 
 from __future__ import annotations
@@ -18,6 +18,7 @@ import pytest
 from app.core import wechat_forwarded as forwarding
 from app.core.wechat_contacts import canonical_contact_id
 from app.core.wechat_display_names import WechatDisplayNames, display_names_path
+from app.web.presentation import format_wechat_source_clock
 
 
 OWNER = "wxid_html_forward_owner"
@@ -452,6 +453,7 @@ class _RenderedElements(HTMLParser):
         self.embedded = 0
         self.active_media = []
         self.open_details = 0
+        self.kind_badges = 0
         self.text = []
 
     def handle_starttag(self, tag, attrs):
@@ -459,6 +461,7 @@ class _RenderedElements(HTMLParser):
         self.forwarded += tag == "details" and "data-wechat-forwarded" in attributes
         self.embedded += "data-wechat-embedded-row" in attributes
         self.open_details += tag == "details" and "open" in attributes
+        self.kind_badges += "wechat-kind-badge" in attributes.get("class", "").split()
         if tag in {"img", "script", "video", "audio", "iframe", "object"}:
             self.active_media.append(tag)
 
@@ -472,6 +475,7 @@ def test_existing_message_macro_renders_safe_collapsed_children_exactly_once():
         loader=FileSystemLoader(Path(__file__).parents[1] / "app/web/templates"),
         autoescape=select_autoescape(("html", "xml")),
     )
+    environment.filters["wechat_source_clock"] = format_wechat_source_clock
     template = environment.get_template("_wechat_browser.html")
     module = template.make_module(
         {"text_page": SimpleNamespace(messaging={}, session_detail=False, sessions=())}
@@ -504,7 +508,10 @@ def test_existing_message_macro_renders_safe_collapsed_children_exactly_once():
     assert document.embedded == 3
     assert document.open_details == 0
     assert document.active_media == []
+    assert text.count("Chat history") == 1
     assert text.count(PRIMARY) == 1
+    assert "wechat-history-source-text" in rendered
+    assert 'aria-label="Chat history messages"' in rendered
     assert [text.count(body) for body in (FIRST_TEXT, SECOND_TEXT, THIRD_TEXT)] == [
         1,
         1,
@@ -512,3 +519,154 @@ def test_existing_message_macro_renders_safe_collapsed_children_exactly_once():
     ]
     assert "[Forwarded text:" not in text
     assert "Retained complete raw source text" not in text
+
+
+@pytest.mark.parametrize("literal", ["Forwarded conversation", "Chat history"])
+def test_real_source_text_is_visible_even_when_it_matches_a_generated_label(literal):
+    record = _project()
+    record["source_title"] = literal
+    environment = Environment(
+        loader=FileSystemLoader(Path(__file__).parents[1] / "app/web/templates"),
+        autoescape=select_autoescape(("html", "xml")),
+    )
+    environment.filters["wechat_source_clock"] = format_wechat_source_clock
+    module = environment.get_template("_wechat_browser.html").make_module(
+        {"text_page": SimpleNamespace(messaging={}, session_detail=False, sessions=())}
+    )
+    rendered = str(module.forwarded_conversation(record, PARENT))
+    document = _RenderedElements()
+    document.feed(rendered)
+    text = "".join(document.text)
+    assert text.count(literal) == (2 if literal == "Chat history" else 1)
+    assert text.count("Chat history") == (2 if literal == "Chat history" else 1)
+    assert PRIMARY not in text
+    assert "wechat-history-source-text" in rendered
+    assert document.forwarded == 1
+    assert document.open_details == 0
+
+
+def _message_macro_module():
+    environment = Environment(
+        loader=FileSystemLoader(Path(__file__).parents[1] / "app/web/templates"),
+        autoescape=select_autoescape(("html", "xml")),
+    )
+    environment.filters["wechat_source_clock"] = format_wechat_source_clock
+    return environment.get_template("_wechat_browser.html").make_module(
+        {"text_page": SimpleNamespace(messaging={}, session_detail=False, sessions=())}
+    )
+
+
+def _macro_message(record=None, *, text=""):
+    return SimpleNamespace(
+        stable_id=PARENT,
+        content_text=text,
+        author_label="Outer forwarding person",
+        last_seen_at="2021-08-05T21:42:49",
+        messaging={
+            "display_text": text,
+            "direction": "received",
+            "sender_id": "outer.alias",
+            "timestamp_label": "5 Aug 2021 21:42:49",
+            "time_basis": "Source clock; timezone unknown",
+            "source_file": "Synthetic export.zip",
+            "peer_id": "123@chatroom",
+            "account_id": OWNER,
+            "provenance": {},
+            "quality_flags": (),
+            "system_notices": (),
+            "forwarded_record": record,
+        },
+    )
+
+
+@pytest.mark.parametrize("placement", ["native", "html", "nested", "quoted"])
+@pytest.mark.parametrize("title", ["群聊的聊天记录", "Group Chat History"])
+def test_generic_group_forwarding_title_reuses_badge_without_rewriting_source(
+    placement,
+    title,
+):
+    if placement == "native":
+        record = forwarding.project_native_forwarded(
+            {
+                "message_type": 49,
+                "text_extraction_kind": "forwarded_text",
+                "appmsg_subtype": 19,
+                "forwarded_record_title": title,
+                "text_components": [
+                    {
+                        "kind": "forwarded_text",
+                        "text": "Original native statement",
+                        "source_sender_label": "Original native sender",
+                    }
+                ],
+            },
+            parent_id=PARENT,
+            account_id=OWNER,
+        )
+        assert record is not None and "source_title" not in record
+    elif placement == "nested":
+        record = _project(
+            _evidence(
+                children=[
+                    _component(
+                        text=title,
+                        text_kind="rendered_app_text",
+                        forwarded_components=[_component(2)],
+                    )
+                ]
+            )
+        )
+    else:
+        record = _project(_evidence(primary=title))
+        assert record["source_title"] == title
+    parent = _macro_message(record)
+    if placement == "quoted":
+        parent.messaging.update(
+            display_text="Literal reply",
+            forwarded_record=None,
+            quoted_reply={"forwarded_record": record},
+        )
+    before = deepcopy(parent)
+    rendered = str(_message_macro_module().message_row(parent))
+    document = _RenderedElements()
+    document.feed(rendered)
+    text = "".join(document.text)
+    assert document.kind_badges == 1
+    assert text.count("Group chat") == 1
+    assert title not in text
+    assert document.forwarded == (2 if placement == "nested" else 1)
+    assert document.open_details == 0
+    assert document.active_media == []
+    assert parent == before
+
+
+@pytest.mark.parametrize(
+    "title",
+    [
+        "自定义：群聊的聊天记录",
+        "群聊的聊天记录（精选）",
+        "Custom: Group Chat History",
+        "Group Chat History (selected)",
+    ],
+)
+def test_custom_forwarding_titles_containing_generic_phrase_remain_literal(title):
+    record = _project(_evidence(primary=title))
+    before = deepcopy(record)
+    rendered = str(_message_macro_module().forwarded_conversation(record, PARENT))
+    document = _RenderedElements()
+    document.feed(rendered)
+    assert document.kind_badges == 0
+    assert "".join(document.text).count(title) == 1
+    assert record == before
+
+
+@pytest.mark.parametrize("title", ["群聊的聊天记录", "Group Chat History"])
+def test_ordinary_message_equal_to_generic_forwarding_title_remains_literal(title):
+    parent = _macro_message(text=title)
+    before = deepcopy(parent)
+    rendered = str(_message_macro_module().message_row(parent))
+    document = _RenderedElements()
+    document.feed(rendered)
+    assert document.kind_badges == document.forwarded == 0
+    assert "".join(document.text).count(title) == 1
+    assert parent == before

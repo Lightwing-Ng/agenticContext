@@ -1,5 +1,6 @@
-"""Activity disclosure and status glyph regressions. Code version: v1.1.1-codex.0."""
+"""Activity disclosure and status glyph regressions. Code version: v1.2.0-codex.0."""
 
+import json
 import pytest
 from playwright.sync_api import expect
 
@@ -267,20 +268,33 @@ def test_running_status_markers_share_breathing_contract(
     page.route("**/api/agent/sources**", lambda route: route.fulfill(json=fixtures._chatgpt_catalog_sessions()))
     try:
         page.goto(f"{sidebar_server_url}/agent/edge/chatgpt")
-        status = page.locator("[data-agent-response-status-spinner]")
-        activity = page.locator('#agent_activity_list [data-status="running"] .cache-phase-live-marker')
+        status_selector = "[data-agent-response-status-spinner].cache-phase-live-marker"
+        activity_selector = '#agent_activity_list [data-status="running"] .cache-phase-live-marker'
+        status = page.locator(status_selector)
+        activity = page.locator(activity_selector)
         expect(status).to_be_visible()
         expect(activity).to_be_visible()
-        contracts = [status, activity]
-        for marker in contracts:
-            contract = marker.evaluate(
-                """e => {
+        for selector in (status_selector, activity_selector):
+            contract = page.wait_for_function(
+                """selector => {
+                    const e = document.querySelector(selector);
+                    if (!e) return false;
+                    const box = e.getBoundingClientRect();
+                    if (box.width <= 0 || box.height <= 0
+                        || getComputedStyle(e).visibility !== 'visible') return false;
+                    if (e.getAnimations().some(animation =>
+                        animation instanceof CSSTransition
+                        && (animation.pending || animation.playState === 'running')
+                    )) return false;
                     const root = getComputedStyle(document.documentElement);
                     const core = getComputedStyle(e);
                     const outer = getComputedStyle(e, '::before');
                     const inner = getComputedStyle(e, '::after');
                     const px = value => Number.parseFloat(value);
                     return {
+                        marker: selector,
+                        className: e.className,
+                        parentStatus: e.closest('[data-status]')?.dataset.status || '',
                         coreSize: px(core.width),
                         duration: outer.animationDuration,
                         innerDelay: inner.animationDelay,
@@ -300,8 +314,12 @@ def test_running_status_markers_share_breathing_contract(
                         outerOpacity: Number.parseFloat(outer.opacity),
                         ringBorderWidth: px(outer.borderTopWidth),
                     };
-                }"""
-            )
+                }""",
+                arg=selector,
+                timeout=5_000,
+            ).json_value()
+            if contract["coreSize"] != 6:
+                print("AGENT_MARKER_SNAPSHOT=" + json.dumps(contract), flush=True)
             assert contract["coreSize"] == pytest.approx(6)
             assert contract["innerDiameter"] == pytest.approx(16)
             assert contract["innerMinimumDiameter"] == pytest.approx(6)

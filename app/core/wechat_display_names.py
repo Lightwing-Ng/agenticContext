@@ -1,6 +1,6 @@
 """Project local viewing names without changing WeChat identity or source evidence.
 
-Code version: v1.0.1-codex.0
+Code version: v1.6.1-codex.0
 """
 
 from __future__ import annotations
@@ -11,12 +11,14 @@ from pathlib import Path
 import re
 import stat
 
-from .wechat_contacts import canonical_contact_id
+from .wechat_contacts import canonical_contact_id, classify_wechat_identifier
 
 
 MAX_PREFERENCES_BYTES = 64 * 1024
 MAX_DISPLAY_NAME_BYTES = 512
+MAX_HIDDEN_ACCOUNT_SOURCES = 128
 _CONTACT_ID = re.compile(r"wechat:contact:[0-9a-f]{64}")
+_SOURCE_ID = re.compile(r"[A-Za-z0-9_-]{1,100}")
 
 
 def display_names_path(local_store_root: Path | str) -> Path:
@@ -37,11 +39,16 @@ def _unique_object(pairs):
     return result
 
 
-def _read_names(path: Path) -> dict[str, str]:
+def _read_preferences(path: Path) -> dict:
     try:
         if path.parent.is_symlink() or path.parent.parent.is_symlink():
             return {}
-        if path.is_symlink() or not stat.S_ISREG(path.stat().st_mode):
+        state = path.stat()
+        if (
+            path.is_symlink()
+            or not stat.S_ISREG(state.st_mode)
+            or getattr(state, "st_flags", 0) & 0x40000000
+        ):
             return {}
         with path.open("rb") as stream:
             raw = stream.read(MAX_PREFERENCES_BYTES + 1)
@@ -71,7 +78,7 @@ def _read_names(path: Path) -> dict[str, str]:
                 )
             ):
                 return {}
-        return names
+        return preferences
     except (OSError, ValueError, TypeError, UnicodeError, RecursionError):
         return {}
 
@@ -80,7 +87,48 @@ class WechatDisplayNames:
     """Read the small private preference file once for each page projection."""
 
     def __init__(self, local_store_root: Path | str):
-        self.names = _read_names(display_names_path(local_store_root))
+        preferences = _read_preferences(display_names_path(local_store_root))
+        self.names = preferences.get("contacts", {})
+        hidden = preferences.get("hidden_account_sources", [])
+        self.hidden_account_sources = (
+            frozenset(hidden)
+            if isinstance(hidden, list)
+            and len(hidden) <= MAX_HIDDEN_ACCOUNT_SOURCES
+            and all(
+                isinstance(identifier, str) and _SOURCE_ID.fullmatch(identifier)
+                for identifier in hidden
+            )
+            else frozenset()
+        )
+
+    def account_option_hidden(self, row: dict) -> bool:
+        """Hide exact source partitions only from account navigation options."""
+        partition = row.get("partition_id", row.get("id"))
+        return isinstance(partition, str) and partition in self.hidden_account_sources
+
+    def project_accounts(self, account_rows):
+        """Share account labels and proven owner grouping across local navigation."""
+        projected = tuple(
+            {
+                **row,
+                "viewer_name": self.account_label(row, verified_accounts=account_rows),
+            }
+            for row in account_rows
+        )
+        options = []
+        positions = {}
+        for row in projected:
+            if self.account_option_hidden(row):
+                continue
+            key = row["key"]
+            if not self.account_option_owner(row, verified_accounts=account_rows):
+                options.append(row)
+            elif key not in positions:
+                positions[key] = len(options)
+                options.append(row)
+            elif self.account_owner(row):
+                options[positions[key]] = row
+        return projected, tuple(options)
 
     def contact_name(self, contact: dict) -> str:
         identifier = contact.get("id")
@@ -93,24 +141,101 @@ class WechatDisplayNames:
             return ""
         return self.names.get(identifier, "")
 
-    def account_label(self, row: dict) -> str:
+    def account_owner(self, row: dict, *, verified_accounts=()) -> str:
+        """Prove an exact native owner independently of viewing-name preferences."""
         owner = row.get("account_id")
         account_key = row.get("account_key", row.get("key"))
         partition = row.get("partition_id", row.get("id"))
-        # Reproduce WeChat's native directory locator for archive compatibility.
-        # Canonical contact identities use SHA-256 independently of this locator.
+        if not isinstance(owner, str) or not owner or account_key != f"account:{owner}":
+            return ""
         if (
-            not isinstance(owner, str)
-            or not owner
-            or account_key != f"account:{owner}"
-            or partition
-            != "ios-" + hashlib.md5(owner.encode(), usedforsecurity=False).hexdigest()
+            row.get("identity_status") == "Corroborated export ID"
+            and isinstance(partition, str)
+            and re.fullmatch(r"[A-Za-z0-9_-]{1,100}", partition)
+            and not partition.startswith("ios-")
+        ):
+            if not isinstance(verified_accounts, (tuple, list)):
+                return ""
+            for candidate in verified_accounts:
+                if (
+                    not isinstance(candidate, dict)
+                    or candidate.get("account_id") != owner
+                ):
+                    continue
+                # The default call accepts only the original verified iOS gate.
+                if self.account_owner(candidate) == owner:
+                    return owner
+            return ""
+        if (
+            partition != "ios-" + hashlib.md5(owner.encode(), usedforsecurity=False).hexdigest()
             or row.get("identity_status") != "Verified archive ID"
         ):
             return ""
         try:
-            identifier = canonical_contact_id(owner, authority="native_account_owner")
+            canonical_contact_id(owner, authority="native_account_owner")
         except ValueError:
             return ""
+        return owner
+
+    def account_option_owner(self, row: dict, *, verified_accounts=()) -> str:
+        """Group proven export owners without granting native-only viewing aliases."""
+        native_owner = self.account_owner(row, verified_accounts=verified_accounts)
+        if native_owner:
+            return native_owner
+        owner = row.get("account_id")
+        key = row.get("account_key", row.get("key"))
+        partition = row.get("partition_id", row.get("id"))
+        if (
+            not isinstance(owner, str)
+            or key != f"account:{owner}"
+            or row.get("identity_status") != "Corroborated export ID"
+            or not isinstance(partition, str)
+            or re.fullmatch(r"[A-Za-z0-9_-]{1,100}", partition) is None
+            or partition.startswith("ios-")
+            or classify_wechat_identifier(owner)["kind"]
+            not in {"wechat_account", "wechat_identity"}
+        ):
+            return ""
+        try:
+            canonical_contact_id(owner, authority="corroborated_export_username")
+        except ValueError:
+            return ""
+        return owner
+
+    def account_label(self, row: dict, *, verified_accounts=()) -> str:
+        owner = self.account_owner(row, verified_accounts=verified_accounts)
+        if not owner:
+            return ""
+        identifier = canonical_contact_id(owner, authority="native_account_owner")
         name = self.names.get(identifier, "")
         return f"{name} · {owner[-6:]}" if name else ""
+
+    def owner_message_name(self, contact, context, *, verified_accounts=()) -> str:
+        """Reuse a native owner's account alias without rewriting source labels."""
+        owner = self.account_owner(context)
+        if (
+            not owner
+            or context.get("direction") != "sent"
+            or context.get("sender_id") != owner
+            or contact.get("platform") != "wechat"
+            or contact.get("identity_status") != "verified"
+            or contact.get("id")
+            != canonical_contact_id(owner, authority="native_account_owner")
+            or not isinstance(verified_accounts, (tuple, list))
+        ):
+            return ""
+        for account in verified_accounts:
+            if (
+                not isinstance(account, dict)
+                or account.get("partition_id", account.get("id"))
+                != context.get("partition_id", context.get("id"))
+                or self.account_owner(account) != owner
+            ):
+                continue
+            label = account.get("name")
+            suffix = " · " + owner[-6:]
+            if not isinstance(label, str) or not label.endswith(suffix):
+                return ""
+            name = label.removesuffix(suffix)
+            return name if name and name != owner else ""
+        return ""

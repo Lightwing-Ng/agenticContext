@@ -1,4 +1,4 @@
-"""Container-sized cached session column contracts. Code version: v1.0.1-codex.0."""
+"""Container-sized cached session column contracts. Code version: v1.0.3-codex.0."""
 
 from collections.abc import Iterator
 from threading import Thread
@@ -119,6 +119,21 @@ def _session_table_geometry(page: Page) -> dict:
 
 
 def _assert_session_columns(page: Page, *, zhihu: bool) -> dict:
+    # ResizeObserver may need multiple frames after container-query breakpoints.
+    page.wait_for_function("""() => {
+        const shell = document.querySelector('.browser-session-index-shell');
+        const header = shell?.querySelector('[data-table-header]');
+        const body = shell?.querySelector('[data-table-body]');
+        if (!header || !body || !header.rows.length || !body.rows.length) return false;
+        const bounds = node => node.getBoundingClientRect();
+        const aligned = (left, right) => Math.abs(left.left - right.left) <= 1
+            && Math.abs(left.width - right.width) <= 1;
+        if (!aligned(bounds(header), bounds(body))) return false;
+        const headings = [...header.rows[0].cells];
+        const cells = [...body.rows[0].cells];
+        return headings.length === cells.length
+            && headings.every((heading, index) => aligned(bounds(heading), bounds(cells[index])));
+    }""")
     geometry = _session_table_geometry(page)
     container_width = geometry["body"]["width"]
     if container_width > 800:
@@ -177,6 +192,7 @@ def test_session_columns_fill_container_and_preserve_navigation(
     page.on("pageerror", lambda error: errors.append(str(error)))
     try:
         page.goto(f"{session_column_browser_server_url}/browser?view=text&source={source}&session_view=1")
+        page.evaluate("document.fonts.ready")
         shell = page.locator(".browser-session-index-shell")
         expect(shell).to_be_visible()
         geometry = _assert_session_columns(page, zhihu=source == "zhihu")
@@ -199,8 +215,8 @@ def test_session_columns_fill_container_and_preserve_navigation(
             page.keyboard.press("Escape")
             expect(page.locator("#browser_header_source_filter_options")).to_be_hidden()
             trigger.click()
-            page.locator("#browser_header_source_filter_options").get_by_role("option", name="Claude", exact=True).click()
-            expect(page.locator(".browser-session-source-mark").first).to_have_attribute("aria-label", "Claude")
+            page.locator("#browser_header_source_filter_options").get_by_role("option", name="Claude Chat", exact=True).click()
+            expect(page.locator(".browser-session-source-mark").first).to_have_attribute("aria-label", "Claude Chat")
             _assert_session_columns(page, zhihu=False)
         updated_header = page.locator(".browser-session-col-updated")
         sort_link = updated_header.locator(".browser-session-sort-link")

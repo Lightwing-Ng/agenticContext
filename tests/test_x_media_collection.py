@@ -1,6 +1,6 @@
 """Verify X photo metadata remains bound to primary liked posts."""
 
-# Code version: v1.0.0-codex.0
+# Code version: v1.0.1-codex.0
 
 from __future__ import annotations
 
@@ -52,7 +52,7 @@ def test_rendered_media_callback_deduplicates_and_rejects_uncollected_posts() ->
     ]]
 
 
-def test_safari_entry_forwards_media_callback() -> None:
+def test_safari_entry_forwards_media_callback(macos_host) -> None:
     callback = MagicMock()
     with patch("app.core.scraper.detect_safari_x_account_handle", return_value="liker"), patch(
         "app.core.scraper.collect_liked_tweet_urls_via_safari", return_value=["https://x.com/poster/status/123"]

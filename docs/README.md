@@ -20,6 +20,7 @@ the checkout and environment observed at that time; they do not establish curren
 | Preserve OpenClaw history and review removal readiness | [OpenClaw migration](OPENCLAW_MIGRATION.md) |
 | Import Gemini Takeout and protect recovered history | [Gemini import guide](GEMINI_TAKEOUT_IMPORT.md) |
 | Agent execution and browser boundaries | [Computer Use Agent](COMPUTER_USE_AGENT.md) |
+| Connect and control a USB iPhone locally or through ChatGPT Tunnel | [iPhone control](IPHONE.md) |
 | ChatGPT Agent Cloudflare on macOS Edge | [ChatGPT Agent Cloudflare lessons](CHATGPT_AGENT_CLOUDFLARE.md) |
 | Site tools and automated verification | [Agent Optimization](AGENT_OPTIMIZATION.md) |
 | UI authority and sibling synchronization | [Style reference](STYLE_REFERENCE.md) and [UI workflow](SHARED_UI_WORKFLOW.md) |

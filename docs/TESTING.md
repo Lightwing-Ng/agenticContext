@@ -1,8 +1,33 @@
 # Testing guide
 
-Documentation version: `v1.30.0-codex.0`
+Documentation version: `v1.43.0-codex.0`
 
 ## Supported commands
+
+CI runs eight deterministic file shards on each existing Linux and Windows platform.
+The partition balances end-to-end browser files and other files separately by source
+size, adding a fixed 64 KiB planning allowance per browser file for its disposable
+browser/server fixture setup. Source size alone put one browser file in one shard
+and 28 in another; remote Linux and Windows jobs reached their existing time limits.
+The allowance accounts for repeated setup work rather than estimating seconds.
+Every discovered test file belongs to exactly one shard. Each shard retains the
+ordinary static checks, default `not live` marker, and browser setup. The paired
+`AGENTIC_CONTEXT_TEST_SHARD` (1 through 8) and
+`AGENTIC_CONTEXT_TEST_SHARD_COUNT=8` variables enable this CI-only mode and permit
+partial coverage below 55%; incomplete shard settings or additional test filters fail.
+Without these variables, the launchers still run the complete suite with the existing
+55% branch-coverage threshold.
+
+The required Linux and Windows checks are the final aggregate jobs. Each requires all
+eight successful shard jobs and exactly eight artifacts bound to the current commit,
+run, attempt, platform, file inventory, selected files, and coverage hashes. Raw branch
+coverage uses relative application paths and is combined before enforcing the same
+55% global threshold. Missing, stale, duplicate, altered, or non-branch artifacts fail
+the aggregate; shard percentages are never averaged. Job timeouts, test markers,
+platform coverage, and coverage requirements are unchanged. One unusually large test
+module remains indivisible, so capacity improvements still require live CI evidence.
+Re-run the complete workflow when retrying: artifacts are named by run attempt, and
+successful shards from an earlier attempt cannot fill gaps in a newer attempt.
 
 Install the project dependencies with the supported Python 3.13 or newer workflow:
 
@@ -69,6 +94,84 @@ providers, stored Parquet bytes, and original Markdown exports.
 The default marker expression is `not live`. Run an intentionally manual live check only with an
 explicit override, for example `AGENTIC_CONTEXT_TEST_MARK_EXPRESSION=live ./scripts/test.sh`.
 
+ChatGPT media pagination checks in `tests/test_chatgpt_media_partial_index.py`
+verify the first-party `25`/`20` page sizes and processing of verified candidates
+after a later HTTP 500, without launching legacy session scans or reporting complete
+discovery. Temporary catalogs prove preservation of existing image bytes and new-file
+readback. Stop and unrelated-error cases remain distinct. These offline fakes do not
+establish that ChatGPT's live pagination or image transport has recovered.
+`tests/test_safari_project_redirect.py` covers the observed bare-project to
+`/project` landing redirect in both directions, ready-state navigation, and rejection
+of changed authorities, projects, slugs, conversation paths, and noncanonical aliases.
+It never opens Safari or a live provider page.
+
+`tests/test_chatgpt_history_merge.py` and `tests/test_chatgpt_history_preservation.py`
+cover append-only reconciliation, deterministic conflicting-body variants, source
+identity preservation, idempotence, and invalid-guard failures. Guarded normal sync
+must retain every existing row even when a later provider response omits it or changes
+its body. These isolated fixtures never read the production archive or open a browser.
+
+`tests/test_chatgpt_voice_history.py` verifies the narrow exception for completed,
+typed outbound voice transcripts whose provider node has `end_turn=false`. Hidden
+nodes, tool recipients, internal channels, incomplete audio, and ordinary unfinished
+text remain excluded. Voice stages keep separate source identities even when an
+earlier transcript is a prefix of the final reply.
+
+`tests/test_chatgpt_display.py` and `tests/test_chatgpt_display_web.py` cover the
+display-only adapter for observed ChatGPT component markup and empty citation
+pointers. Known component rows become Markdown tables, diagram text remains
+readable, and unsupported structures keep inert fenced source. Inline, fenced,
+and indented code stay literal. Route checks preserve user messages, other
+providers, stored Parquet bytes, and original Markdown exports.
+
+Microsoft Copilot's focused offline checks are `tests/test_copilot_history.py`,
+`tests/test_copilot_catalog.py`, `tests/test_copilot_catalog_transport.py`,
+`tests/test_copilot_sync_state.py`, `tests/test_copilot_history_store.py`,
+`tests/test_copilot_history_service.py`, `tests/test_copilot_legacy_catalog.py`,
+`tests/test_copilot_legacy_recovery.py`, and
+the `test_copilot_*web*` and `test_copilot_*e2e*` modules. They use isolated stores,
+semantic page fakes, and disposable browser fixtures. They never open authenticated
+Safari, Chrome, or Edge sessions. A separate manual Safari check must establish
+current provider selectors, current-catalog cursor exhaustion, task-window cleanup,
+and persisted readback before claiming live collection. An empty cursor proves only
+that catalog's endpoint; a separate legacy Copilot or Bing surface needs its own
+source-specific acceptance. Fixtures that traverse hundreds
+of synthetic sessions prove the pagination contract, not a real account's coverage.
+For a real account, retain the supplied entry query and compare discovered sessions,
+processed sessions, failures, manifest flags, and archive readback. Reload tests must
+keep legacy or interrupted caches partial and suppress an unverified 100% indicator.
+
+The v1.43.1 real check on 21 Oct 2026 followed recovery of a user-acknowledged closed
+task window: its journal was backed up, and recovery verified the old owner was dead
+while holding the global Safari lock. Normal `Start` then traversed two current
+catalog pages, deduplicated 17 sessions, and read two sessions with four messages.
+An explicit operator `Stop` ended the check. The 17-session, 74-message archive hash
+remained unchanged; this is a successful lifecycle and current-catalog check, not a
+completed backup of the user's reported hundreds of sessions.
+
+The preserved official exports in
+`local_store/recovery/copilot-official-exports-20261021T052937Z` contain 74 activity
+rows and zero Windows-apps rows. The first export's 16 distinct `Conversation`
+labels are titles with reuse, so tests must not treat them as stable conversation
+IDs or infer a session total from their cardinality. No export supplied additional
+message-body coverage for hundreds of sessions. The actual legacy source is the
+existing macOS Edge sidebar. Its 357 visible titles and 19 verified HTTP catalog
+responses are preserved in recovery; the latter contain 377 physical records and
+357 distinct native IDs. Tests verify exact response hashes, gzip decoding, strict
+catalog fields, duplicate identity preservation, typed Parquet readback, and invalid
+catalog handling. A complete current-web sync must remain partial across repeat
+runs and reload whenever this legacy evidence remains unverified. Existing legacy
+message rows must not prevent collection of available current-web sessions.
+Catalog entries never become synthetic message rows. The one nonempty retained
+history response belongs to entry 1; eleven empty responses, including entries 18,
+200, and 357, do not establish deletion. Full older-body recovery remains unfinished.
+
+The transport follow-up must test merged route `store` and successful query
+`storePatch` context for exactly `eligibility`, `hostContext`, and `sessionID`, with
+the frontend's `X-Client-Eligibility` and `x-host-context` headers. Fixtures must
+exclude authentication-token or cookie reads. Passing those offline tests cannot
+substitute for fresh authenticated acceptance of the header/context addition.
+
 On Windows:
 
 ```powershell
@@ -104,6 +207,122 @@ and preservation of existing message evidence during additive publication. Real 
 when `compression.zstd` is available; Python 3.13 still exercises the explicit unavailable-backend
 contract. These checks do not read production backups, cloud exports, media, or the local index,
 and passing them does not establish complete recovery of a particular backup.
+
+WeChat disclosure motion checks use a synthetic archive and disposable browser profiles:
+
+```bash
+./scripts/test.sh tests/test_wechat_disclosure_e2e.py tests/test_wechat_contact_disclosure_e2e.py tests/test_wechat_browser_e2e.py tests/test_browser_chat_effects_e2e.py
+```
+
+They verify measured width/height spring motion and opening overshoot, interrupted reversal,
+keyboard activation, arrow removal, shadow alignment, final geometry cleanup, Reduced Motion
+including a midflight preference change, and disclosure without ScrollTimeline support.
+The desktop/narrow Light/Dark checks never read the production archive or authenticated profiles.
+Contact-source disclosures reuse the same spring with height/body motion only. Their checks cover
+stable table columns, native keyboard activation, continuous reversal, Reduced Motion, restored
+interaction state, and idempotent initialization after asynchronous content replacement.
+
+Shared conversation-storage checks use isolated synthetic accounts with partial overlap:
+
+```bash
+./scripts/test.sh tests/test_wechat_shared_storage.py tests/test_wechat_shared_storage_publish.py
+```
+
+They verify unchanged logical rows and account counts, complementary gaps, exact-byte body
+sharing, search suffixes, conflicting bodies, independent directions, late imports, replay,
+legacy SQL writers, read-only/attached database queries, append guards, and strict MCP format
+validation. Publication checks replace APFS cloning with a test-only file copy and exercise
+verified rollback evidence, sidecar pin handling, changed-input refusal, and failed-publication
+recovery. They never read production history, hydrate cloud archives, or launch browsers.
+
+Private-chat checks require reciprocal verified native owner/peer IDs and retain separate
+sent/received directions, sender labels, sources, gaps, and conflicting bodies. Invalid
+one-sided, extra-account, mixed-kind, self-chat, and spoofed identity scopes fail before mutation.
+Batch cases prove cross-pair and existing-group-pool reuse with exact marginal byte accounting,
+one staging/integrity pass, zero-cost replay, overlap rejection, and all-or-nothing failure.
+
+WeChat contact checks use synthetic message and contact sidecars:
+
+```bash
+./scripts/test.sh tests/test_wechat_contacts.py tests/test_wechat_contact_browser.py tests/test_wechat_contact_template.py tests/test_wechat_provenance.py
+```
+
+They cover exact native identity, OpenIM realm separation, account/room/snapshot-specific remarks,
+complete observation pagination, unidentified-speaker isolation, and per-message body/time/record
+fingerprint checks. These tests do not open real backups, cloud exports, or the production index.
+
+Payment extraction and presentation use synthetic source envelopes in
+`tests/test_wechat_payments.py`, `tests/test_wechat_payment_presentation.py`, and
+`tests/test_wechat_payment_presentation_e2e.py`. Coverage includes ordinary, forwarded,
+and quoted Type 49 cards, exact source-text validation, CNY/HKD and unknown/conflicting
+currency, the observed regional subtype-2001 transfer tuple, separate owner accounts,
+literal escaping, unchanged raw CSV/Markdown/database bytes, and four standard currency
+glyphs with neutral fallbacks. Disposable Light/Dark browsers at desktop/narrow widths
+verify the existing sender/timestamp and message layout without active payment or media links.
+`tests/test_wechat_payment_copy.py` covers the keyed locale catalog, exact field-scoped
+Simplified/Traditional provider aliases and parameterized notifications. Integration and
+browser cases verify shared ordinary/forwarded/quoted localization, literal memo/greeting
+preservation, semantic language fragments, unchanged account partitions and raw exports,
+and rejection of payment-looking ordinary prose or mismatched source metadata.
+
+Contact analysis adds verified cross-account aggregation and same-tab navigation checks:
+
+`tests/test_wechat_source_precedence.py` and
+`tests/test_wechat_global_native_preference.py` cover the shared native-over-HTML
+preference across contact and conversation views, preferred/default exports and
+explicit source occurrences. Cases include exact same-second device permutations,
+independent intervals after an ordering anomaly, conflicting server events,
+ambiguous same-second duplicates, unverified owners, HTML-only messages and a
+complete v1.14 cache replay without an author rescan. Raw source bytes and every
+retained reference remain unchanged.
+
+```bash
+./scripts/test.sh tests/test_wechat_contact_analysis.py tests/test_wechat_contact_analysis_routes.py tests/test_wechat_contact_analysis_e2e.py
+```
+
+These cover scoped identifiers, namesake exclusion, exact message proofs, unknown timestamps,
+source-page boundaries and ties, journal rejection, cache invalidation, and immutable source bytes.
+Desktop/narrow Light/Dark cases exercise mouse and keyboard contact links, the standard table,
+search, and browser Back restoration of URL, scroll, disclosures, focus, and unrelated history state.
+Existing source-disclosure tests activate the summary through its native keyboard boundary;
+clicking a verified speaker name now intentionally navigates to Contact analysis.
+
+Responsive contact-table checks use long synthetic statements and source labels:
+
+```bash
+./scripts/test.sh tests/test_wechat_contact_responsive_e2e.py
+```
+
+Desktop, 831px, 700px, and 390px Light/Dark cases verify that all five columns fit
+without horizontal scrolling, long text wraps without truncation, and the No. heading
+and values remain centered. They measure body/header alignment after resizing and
+require the exact 10/20/40/15/15% allocation. Early and
+late pages cover both short and five-digit source-occurrence numbers.
+Explicit traditional-scrollbar cases reserve a real 15px gutter and verify that
+the detached header still matches the body's narrower column grid.
+The exact two-row last page additionally checks 80,501 and 80,502 with the reported
+timestamps at 855px and 831px. These checks measure rendered text-line counts and
+intrinsic text fit, not just centered bounding boxes, to reject wrapped values.
+
+Contact conversation-kind badge checks compare rendered contact-table badges with
+the existing chat-history badge at 823px and 390px in Light/Dark. They cover the
+shared material, font, spacing, and label semantics, plus narrow-column wrapping
+without collision with the source account. Both pages load the same badge asset.
+
+```bash
+./scripts/test.sh tests/test_wechat_contact_kind_badge_e2e.py
+```
+
+Stable contact-loading checks hold a synthetic index pending across real JSON polls:
+
+```bash
+./scripts/test.sh tests/test_wechat_contact_loading_e2e.py tests/test_wechat_contact_analysis_routes.py
+```
+
+They verify an initially open shared modal, one document/history entry, stable centered geometry,
+the canonical inline SVG under normal/reduced motion, a single result update, browser Back
+cancellation, stale-response rejection, error recovery, and search-draft/focus preservation after
+dismissal. The shared modal's default hidden state and escaped optional copy remain covered.
 
 Run the isolated local-compute benchmark:
 
@@ -163,11 +382,38 @@ node --test tests/test_beta_engines.mjs
 These commands remain offline. They do not establish that a signed-in Chrome or Edge profile can
 currently complete Zhihu's live provider flow.
 
+On macOS, run the complete offline iPhone contract, including disposable-browser cases, with:
+
+```bash
+./scripts/test.sh tests/test_iphone_*.py
+```
+
+For a focused page/service/Tunnel check or the browser layer alone:
+
+```bash
+./scripts/test.sh tests/test_iphone_routes.py tests/test_iphone_service.py tests/test_iphone_tunnel.py tests/test_iphone_tunnel_service.py
+./scripts/test.sh tests/test_iphone_e2e.py
+```
+
+The runtime tests use temporary private state, fake WDA HTTP servers, and mocked subprocess
+boundaries. They cover transport retries, uncertain-action refusal, setup ownership, preview
+pause/recovery, and controller behavior. The browser cases mock every iPhone API response and
+keep the isolated service's external operations disabled. They verify navigation, setup gating,
+screen coordinates, typing drafts, narrow layouts, and explicit Tunnel opt-in. Unix runtime
+modules skip on hosts without `fcntl`; page/service tests still cover the unsupported-platform
+response without loading those modules.
+
+These checks cannot prove Apple signing, USB pairing, Developer Mode, WDA installation, real
+phone readiness, or a live ChatGPT phone call. Verify those separately using the explicit local
+setup and readiness steps in [iPhone control](IPHONE.md), with an attached unlocked device and
+the user's own signing account. Do not turn an offline fixture into a live device test.
+
 Run the Secure MCP Tunnel contract independently with:
 
 ```bash
 ./scripts/test.sh \
   tests/test_tunnel_mcp.py \
+  tests/test_iphone_tunnel.py \
   tests/test_tunnel_checks.py \
   tests/test_tunnel_runtime.py \
   tests/test_tunnel_credentials.py \
@@ -176,6 +422,13 @@ Run the Secure MCP Tunnel contract independently with:
   tests/test_gemini_tunnel.py \
   tests/test_tunnel_workflow_e2e.py
 ```
+
+The iPhone Tunnel tests inject an offline phone service and verify explicit local opt-in,
+external-operation and platform gates, ChatGPT-only discovery, native screenshot image blocks,
+closed phone schemas, provider revocation before admission, local revocation before dispatch,
+private activity records, and unchanged project-tool boundaries. They do not connect a phone,
+install WDA, or start the Tunnel. Real phone readiness and live ChatGPT calls require separate
+manual verification after local setup and explicit user enablement.
 
 Host-parity tests cover both operating systems from either host. Simulated Windows tests model the
 protected DACL, the WinINet proxy setting, and handle-held orphan confirmation, including ACL
@@ -699,6 +952,41 @@ quality mode. Run the setup wrapper with the same interpreter used for tests. If
 lacks dependencies, the POSIX resolver tries unversioned platform installations; set
 `AGENTIC_CONTEXT_PYTHON` only when a specific prepared Python 3.13 or newer executable is required.
 A resolver pass does not establish compatibility of every future dependency release.
+
+Pinned native packet clocks are covered by `tests/test_wechat_forwarded_clocks.py`,
+`tests/test_wechat_forwarded_clock_integration.py`, and
+`tests/test_wechat_forwarded_clock_exports.py`:
+
+```bash
+./scripts/test.sh tests/test_wechat_forwarded_clocks.py tests/test_wechat_forwarded_clock_integration.py tests/test_wechat_forwarded_clock_exports.py
+```
+
+These synthetic checks cover exact complete-packet child IDs, authors and bodies;
+independent receiving accounts; verified direct participant pairs; strict ordinal
+IDs; short and single-author opaque-ID packets; explicit nontext resource gaps;
+missing HTML times; naive native clocks; contradictory clocks; and source mutation.
+Indexed catalog cases check sole SQLite precedence over legacy JSON, per-target
+failure isolation, archive-identity pins, bounded reads, and assessment-receipt gates
+for strong packets crossing receiving context. A changed or invalid catalog must
+not revive a legacy JSON link while the SQLite authority still exists.
+
+Integration cases verify reversible contact-cache upgrades, contact CSV, and
+completion trees whose positions differ from the source packet. Session export
+cases exercise actual CSV and Markdown download routes, exact parent-body and
+delivery-time preservation, full packet-child output, nested paths, preview
+isolation, unknown child times, original-clock disclosure, and evidence withdrawal.
+The session CSV schema remains `Time`, `Speaker ID`, `Statement`; child rows follow
+their source parent rather than claiming a new globally sorted conversation.
+Restored child times must never replace parent times or literal HTML source clocks,
+and a naive child time must never acquire a guessed timezone.
+
+The full census and assessment workflow is documented in
+[Operations](OPERATIONS.md#recover-html-forwarded-child-clocks). Discovery hints are
+not sufficient validation: assessment must compare all valid corresponding iPad
+copies, retain explicit unresolved outcomes, and publish only against the same
+archive identity. Production assessment counts measure source observations, not
+deduplicated utterances or a test-suite pass count. A full scan or source publication
+is an explicit operator action, never part of the ordinary synthetic test suite.
 
 Dated browser, platform, and CI observations are preserved in [TEST_HISTORY.md](TEST_HISTORY.md).
 Do not reuse those counts or version-specific commands as evidence for a new checkout.

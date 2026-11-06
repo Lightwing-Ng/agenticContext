@@ -1,5 +1,5 @@
 # agenticContext Windows test entrypoint.
-# Code version: v1.2.0-codex.1
+# Code version: v1.3.0-codex.0
 
 $ErrorActionPreference = "Stop"
 $ProjectRoot = Split-Path -Parent $PSScriptRoot
@@ -22,7 +22,11 @@ $TestMarkExpression = if ($env:AGENTIC_CONTEXT_TEST_MARK_EXPRESSION) {
 Push-Location $ProjectRoot
 try {
     $env:PYTHONDONTWRITEBYTECODE = "1"
-    & $Python @PythonArgs -m pytest -q -p no:cacheprovider -m $TestMarkExpression @args
+    if ($null -ne $env:AGENTIC_CONTEXT_TEST_SHARD -or $null -ne $env:AGENTIC_CONTEXT_TEST_SHARD_COUNT) {
+        & $Python @PythonArgs scripts/quality_shards.py run -- -q -p no:cacheprovider -m $TestMarkExpression @args
+    } else {
+        & $Python @PythonArgs -m pytest -q -p no:cacheprovider -m $TestMarkExpression @args
+    }
     exit $LASTEXITCODE
 } finally {
     Pop-Location

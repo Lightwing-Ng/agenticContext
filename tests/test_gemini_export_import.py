@@ -1,11 +1,13 @@
 """Synthetic source, preservation, and crash-recovery tests for Takeout imports."""
 
-# Code version: v1.0.0-codex.0
+# Code version: v1.2.1-codex.0
 
 from __future__ import annotations
 
 from html import escape
+import errno
 import json
+import os
 from pathlib import Path
 
 import pyarrow.parquet as pq
@@ -14,6 +16,11 @@ import pytest
 from app.core import gemini_export_import as importer
 from app.core.gemini_downloader import GeminiConversationLink, GeminiHistoryStore, gemini_history_path
 from app.core.job_lock import CacheTaskLock, cache_task_resource_lock_path
+from app.core.owner_only_files import (
+    OwnerOnlyFileError,
+    owner_only_directory_problem,
+    owner_only_problem,
+)
 from app.core.resource_persistence import GEMINI_HISTORY_SCHEMA, write_parquet_rows_atomic
 
 
@@ -168,9 +175,21 @@ def test_full_source_bundle_is_preserved_without_executing_uploads(tmp_path):
     bundle = Path(result["bundle"])
     for name in ("MyActivity.html", "upload.py", "unreferenced.bin"):
         assert (bundle / "source" / name).read_bytes() == (source / name).read_bytes()
-    catalog = json.loads((bundle / "events.json").read_text())
+    catalog = json.loads((bundle / "events.json").read_text(encoding="utf-8"))
     assert catalog["events"][0]["raw_html_sha256"] == importer._sha(catalog["events"][0]["raw_html"].encode())
-    assert (bundle.stat().st_mode & 0o077) == 0
+    assert owner_only_directory_problem(bundle) == ""
+    for path in bundle.rglob("*"):
+        if path.is_dir():
+            assert owner_only_directory_problem(path) == ""
+            if os.name == "posix":
+                assert path.stat().st_mode & 0o777 == 0o700
+        else:
+            assert owner_only_problem(path) == ""
+            if os.name == "posix":
+                assert path.stat().st_mode & 0o777 == 0o600
+    assert owner_only_problem(gemini_history_path(tmp_path / "store")) == ""
+    if os.name == "posix":
+        assert bundle.stat().st_mode & 0o777 == 0o700
 
 
 def test_other_provider_resource_lock_refuses_publication(tmp_path):
@@ -242,7 +261,7 @@ def test_crash_after_history_replace_is_idempotently_reconciled(tmp_path, monkey
     assert replay.summary["already_imported"]
     assert importer.apply_import(replay)["added_rows"] == 0
     assert gemini_history_path(root).read_bytes() == original
-    assert json.loads(next((root / "llm" / "gemini" / "imports").glob("*/receipt.json")).read_text())["state"] == "committed"
+    assert json.loads(next((root / "llm" / "gemini" / "imports").glob("*/receipt.json")).read_text(encoding="utf-8"))["state"] == "committed"
 
 
 def test_prepared_candidate_is_verified_and_resumed_after_precommit_failure(tmp_path, monkeypatch):
@@ -413,3 +432,129 @@ def test_ambiguous_dst_clock_is_not_guessed(tmp_path):
     source = _source(tmp_path, _card(date="Nov 1, 2026, 1:30:00 AM CST"))
     with pytest.raises(importer.TakeoutImportError, match="Ambiguous or nonexistent"):
         importer.parse_takeout(source, timezone="America/New_York")
+
+
+def test_sync_file_uses_a_windows_syncable_handle_without_changing_backup_bytes(tmp_path, monkeypatch):
+    backup = tmp_path / "history-before.parquet"
+    original = b"exact backup bytes\x00\xff"
+    backup.write_bytes(original)
+    open_file = Path.open
+    fsync = importer.os.fsync
+    handles = []
+    directories = []
+
+    def tracked_open(path, *args, **kwargs):
+        handle = open_file(path, *args, **kwargs)
+        if path == backup:
+            handles.append(handle)
+        return handle
+
+    def windows_fsync(descriptor):
+        owned = next(handle for handle in handles if not handle.closed and handle.fileno() == descriptor)
+        if not owned.writable():
+            raise OSError(errno.EBADF, "Windows cannot fsync this read-only file descriptor")
+        return fsync(descriptor)
+
+    def sync_directory(path):
+        assert all(handle.closed for handle in handles)
+        directories.append(path)
+
+    monkeypatch.setattr(Path, "open", tracked_open)
+    monkeypatch.setattr(importer.os, "fsync", windows_fsync)
+    monkeypatch.setattr(importer, "_sync_directory", sync_directory)
+    importer._sync_file(backup)
+    assert handles and all(handle.closed for handle in handles)
+    assert directories == [backup.parent]
+    assert backup.read_bytes() == original
+
+
+def test_backup_fsync_failure_propagates_without_publishing_or_changing_source(tmp_path, monkeypatch):
+    source = _source(tmp_path, _card(reply="<p>Supplemental answer</p>"))
+    root = tmp_path / "store"
+    _seed(root)
+    history = gemini_history_path(root)
+    before = history.read_bytes()
+    source_before = {path.relative_to(source): path.read_bytes() for path in source.rglob("*") if path.is_file()}
+    plan = _plan(source, root)
+    open_file = Path.open
+    fsync = importer.os.fsync
+    handles = []
+
+    def tracked_open(path, *args, **kwargs):
+        handle = open_file(path, *args, **kwargs)
+        if path.name == "history-before.parquet":
+            handles.append(handle)
+        return handle
+
+    def failed_backup_fsync(descriptor):
+        if any(not handle.closed and handle.fileno() == descriptor for handle in handles):
+            raise OSError(errno.EIO, "Synthetic backup sync failure")
+        return fsync(descriptor)
+
+    monkeypatch.setattr(Path, "open", tracked_open)
+    monkeypatch.setattr(importer.os, "fsync", failed_backup_fsync)
+    with pytest.raises(OSError, match="Synthetic backup sync failure"):
+        importer.apply_import(plan)
+    assert handles and all(handle.closed for handle in handles)
+    assert history.read_bytes() == before
+    bundle = history.parent / "imports" / f"takeout-{plan.catalog['source_digest']}"
+    assert (bundle / "history-before.parquet").read_bytes() == before
+    assert not (bundle / "receipt.json").exists()
+    assert source_before == {path.relative_to(source): path.read_bytes() for path in source.rglob("*") if path.is_file()}
+
+
+def test_existing_receipt_format_replays_without_rewriting_preserved_metadata(tmp_path):
+    source = _source(tmp_path)
+    root = tmp_path / "store"
+    result = importer.apply_import(_plan(source, root))
+    receipt_path = Path(result["bundle"]) / "receipt.json"
+    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    receipt["version"] = "v1.0.0-codex.0"
+    receipt_path.write_bytes(importer._json_bytes(receipt))
+    before_receipt = receipt_path.read_bytes()
+    before_history = gemini_history_path(root).read_bytes()
+    plan = _plan(source, root)
+    assert plan.summary["already_imported"]
+    assert importer.apply_import(plan)["added_rows"] == 0
+    assert receipt_path.read_bytes() == before_receipt
+    assert gemini_history_path(root).read_bytes() == before_history
+
+
+def test_private_bundle_boundary_is_verified_before_source_bytes_are_copied(tmp_path, monkeypatch):
+    source = _source(tmp_path)
+    root = tmp_path / "store"
+    plan = _plan(source, root)
+    copied = []
+    copy = importer.shutil.copyfileobj
+
+    def checked_copy(incoming, output, *args, **kwargs):
+        target = Path(output.name)
+        assert owner_only_problem(target) == ""
+        assert owner_only_directory_problem(target.parent) == ""
+        copied.append(target)
+        return copy(incoming, output, *args, **kwargs)
+
+    monkeypatch.setattr(importer.shutil, "copyfileobj", checked_copy)
+    result = importer.apply_import(plan)
+    assert copied
+    assert all(owner_only_problem(path) == "" for path in copied)
+    assert owner_only_directory_problem(Path(result["bundle"])) == ""
+
+
+def test_unverifiable_private_bundle_fails_before_private_content_is_written(tmp_path, monkeypatch):
+    source = _source(tmp_path)
+    root = tmp_path / "store"
+    plan = _plan(source, root)
+    source_before = {path.relative_to(source): path.read_bytes() for path in source.rglob("*") if path.is_file()}
+
+    def reject_directory(_path):
+        raise OwnerOnlyFileError("Synthetic native directory boundary failure")
+
+    monkeypatch.setattr(importer, "ensure_owner_only_directory", reject_directory)
+    with pytest.raises(OwnerOnlyFileError, match="Synthetic native directory boundary failure"):
+        importer.apply_import(plan)
+    bundle = gemini_history_path(root).parent / "imports" / f"takeout-{plan.catalog['source_digest']}"
+    assert bundle.is_dir()
+    assert list(bundle.iterdir()) == []
+    assert not gemini_history_path(root).exists()
+    assert source_before == {path.relative_to(source): path.read_bytes() for path in source.rglob("*") if path.is_file()}

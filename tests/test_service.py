@@ -1,6 +1,6 @@
 """Focused regression tests for the cache orchestration service.
 
-Code version: v1.3.2-codex.0
+Code version: v1.4.0-codex.0
 """
 
 from __future__ import annotations
@@ -12,6 +12,7 @@ from unittest.mock import patch
 
 from app.core.config import CrawlConfig, LOCAL_STORE_ROOT
 from app.core.downloader import DownloadResult
+from app.core.safari_automation import SafariBusyError
 from app.core.service import CacheLikesService
 from app.core.state import TaskState
 from app.core.x_text_history import XTextHistoryStore, XTextPost, x_text_history_path
@@ -19,6 +20,97 @@ from app.core.x_text_history import XTextHistoryStore, XTextPost, x_text_history
 
 class CacheLikesServiceTests(unittest.TestCase):
     """Validate the worker handoff and temporary download cap."""
+
+    def test_safari_collection_retries_busy_probe_and_keeps_callbacks(self) -> None:
+        state = TaskState(version="test")
+        service = CacheLikesService(state)
+
+        def text_callback(_posts):
+            pass
+
+        def media_callback(_posts):
+            pass
+
+        with patch(
+            "app.core.service.collect_liked_tweet_urls",
+            side_effect=[SafariBusyError("Safari is busy"), ("liker", ["https://x.com/p/status/1"])],
+        ) as collect, patch.object(service._stop_requested, "wait", return_value=False) as wait:
+            result = service._collect_likes(
+                CrawlConfig(x_browser="safari"),
+                on_text_posts=text_callback,
+                on_media_posts=media_callback,
+            )
+        self.assertEqual(result, ("liker", ["https://x.com/p/status/1"]))
+        self.assertEqual(collect.call_count, 2)
+        self.assertIs(collect.call_args.kwargs["on_text_posts"], text_callback)
+        self.assertIs(collect.call_args.kwargs["on_media_posts"], media_callback)
+        wait.assert_called_once_with(1.0)
+        self.assertIn("Waiting for Safari", state.snapshot()["message"])
+
+    def test_safari_collection_contention_wait_is_bounded(self) -> None:
+        state = TaskState(version="test")
+        service = CacheLikesService(state)
+        elapsed = 0.0
+        error = SafariBusyError("Safari is busy")
+
+        def advance(seconds: float) -> bool:
+            nonlocal elapsed
+            elapsed += seconds
+            return False
+
+        with patch("app.core.service.monotonic", side_effect=lambda: elapsed), patch(
+            "app.core.service.collect_liked_tweet_urls", side_effect=error
+        ) as collect, patch.object(service._stop_requested, "wait", side_effect=advance):
+            with self.assertRaises(SafariBusyError) as caught:
+                service._collect_likes(CrawlConfig(x_browser="safari"), on_text_posts=None)
+        self.assertIs(caught.exception, error)
+        self.assertEqual(elapsed, 60.0)
+        self.assertEqual(collect.call_count, 60)
+        self.assertEqual(len(state.snapshot()["recent_events"]), 1)
+
+    def test_safari_busy_wait_stop_preserves_existing_text(self) -> None:
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            path = x_text_history_path(root)
+            store = XTextHistoryStore(path)
+            store.upsert([XTextPost(url="https://x.com/poster/status/123", content_text="Saved text")])
+            original = path.read_bytes()
+            state = TaskState(version="test")
+            state.reset_for_run()
+            service = CacheLikesService(state)
+
+            def stop_during_wait(_seconds: float) -> bool:
+                self.assertTrue(service.request_stop())
+                return True
+
+            with patch("app.core.service.LOCAL_STORE_ROOT", root), patch(
+                "app.core.service.collect_liked_tweet_urls", side_effect=SafariBusyError("Safari is busy")
+            ) as collect, patch.object(
+                service._stop_requested, "wait", side_effect=stop_during_wait
+            ), patch("app.core.service.download_tweet_media") as download:
+                service._run(CrawlConfig(x_browser="safari"), content_mode="text")
+            self.assertEqual(state.snapshot()["phase"], "stopped")
+            self.assertEqual(state.snapshot()["cached_text_posts"], 1)
+            self.assertIn("1 text posts remain cached", state.snapshot()["message"])
+            self.assertEqual(path.read_bytes(), original)
+            collect.assert_called_once()
+            download.assert_not_called()
+
+    def test_collection_does_not_retry_other_errors_or_non_safari_busy(self) -> None:
+        for browser, error in (
+            ("safari", RuntimeError("Navigation failed")),
+            ("chrome", SafariBusyError("Unexpected Safari failure")),
+        ):
+            with self.subTest(browser=browser):
+                service = CacheLikesService(TaskState(version="test"))
+                with patch(
+                    "app.core.service.collect_liked_tweet_urls", side_effect=error
+                ) as collect, patch.object(service._stop_requested, "wait") as wait:
+                    with self.assertRaises(type(error)) as caught:
+                        service._collect_likes(CrawlConfig(x_browser=browser), on_text_posts=None)
+                self.assertIs(caught.exception, error)
+                collect.assert_called_once()
+                wait.assert_not_called()
 
     def test_run_passes_config_to_downloader(self) -> None:
         state = TaskState(version="test")

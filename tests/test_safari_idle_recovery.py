@@ -1,6 +1,6 @@
 """Fail-closed recovery for verified task-owned Safari idle windows."""
 
-# Code version: v1.1.0-codex.0
+# Code version: v1.1.1-codex.0
 
 from __future__ import annotations
 
@@ -153,7 +153,13 @@ def test_safari_only_exact_readiness_failure_can_retire_an_idle_window(error: st
     create.assert_not_called()
 
 
-def test_safari_verified_inert_ghost_is_protected_before_replacement_document(tmp_path: Path) -> None:
+@pytest.mark.parametrize("error", (
+    "Safari idle task tab did not become addressable.",
+    "Safari automation timed out after 20 seconds.",
+))
+def test_safari_verified_inert_ghost_is_protected_before_replacement_document(
+    tmp_path: Path, error: str,
+) -> None:
     lock_path = tmp_path / "safari-context.lock"
     state_path = tmp_path / "safari-context.lock.state"
     state_path.write_text(json.dumps({
@@ -181,7 +187,7 @@ def test_safari_verified_inert_ghost_is_protected_before_replacement_document(tm
     ), patch("app.core.safari_automation._safari_window_inventory", return_value={123: 4, 456: 0}), patch(
         "app.core.safari_automation._close_safari_window_id", return_value=False
     ) as close, patch("app.core.safari_automation._safari_window_is_inert_ghost", return_value=True), patch.object(
-        context, "_create_tab", side_effect=RuntimeError("Safari idle task tab did not become addressable.")
+        context, "_create_tab", side_effect=RuntimeError(error)
     ), patch.object(context, "_create_window", side_effect=create_document), patch.object(
         context, "_clear_context_lease_state"
     ) as clear, patch.object(SafariPage, "goto"):
@@ -197,6 +203,52 @@ def test_safari_verified_inert_ghost_is_protected_before_replacement_document(tm
 
     close.assert_called_once_with(456, require_empty=True)
     clear.assert_not_called()
+
+
+@pytest.mark.parametrize("change", ("not-inert", "late-tab", "owner", "token", "window", "process"))
+def test_safari_timed_out_idle_tab_keeps_unverified_or_changed_window(change: str) -> None:
+    context = SafariContext("https://chatgpt.com/")
+    context._context_lock_handle = object()
+    context._durable_lease_started = True
+    context._creation_baseline_inventory = {123: 2}
+    context._adopted_window_id = 456
+    context._adopted_window_was_empty = True
+    idle_lease = {
+        "version": SAFARI_CONTEXT_LEASE_VERSION,
+        "state": "idle",
+        "window_id": 456,
+        "owner_pid": 123,
+        "ownership_token": "a" * 32,
+        "baseline_windows": [{"window_id": 123, "tab_count": 2}],
+        "safari_process_identity": "same-process",
+    }
+    changed_lease = dict(idle_lease)
+    if change == "owner":
+        changed_lease["owner_pid"] = 789
+    elif change == "token":
+        changed_lease["ownership_token"] = "b" * 32
+    elif change == "window":
+        changed_lease["window_id"] = 789
+    after_timeout = {123: 2, 456: int(change == "late-tab")}
+    with patch.object(context, "_read_context_lease_state", side_effect=[idle_lease, changed_lease]), patch(
+        "app.core.safari_automation._safari_window_inventory",
+        side_effect=[{123: 2, 456: 0}, after_timeout],
+    ), patch(
+        "app.core.safari_automation._safari_process_identity",
+        return_value="new-process" if change == "process" else "same-process",
+    ), patch(
+        "app.core.safari_automation._safari_window_is_inert_ghost", return_value=change != "not-inert",
+    ), patch.object(
+        context, "_create_tab", side_effect=RuntimeError("Safari automation timed out after 20 seconds."),
+    ), patch("app.core.safari_automation._close_safari_window_id") as close, patch.object(
+        context, "_clear_context_lease_state",
+    ) as clear, patch.object(context, "_create_window") as create, pytest.raises(RuntimeError, match="timed out"):
+        context._create_page("https://chatgpt.com/")
+
+    close.assert_not_called()
+    clear.assert_not_called()
+    create.assert_not_called()
+    assert context.pages == []
 
 
 @pytest.mark.parametrize("inert_ghost", (True, False))

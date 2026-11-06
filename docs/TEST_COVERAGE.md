@@ -1,6 +1,6 @@
 # Test Suite
 
-Test-suite version: `v1.12.0-claude.0`
+Test-suite version: `v1.13.0-codex.0`
 
 The authoritative test workflow, coverage baseline, isolation contract, and CI behavior are
 documented in [TESTING.md](TESTING.md). Use `./scripts/test.sh` and `./scripts/check.sh` on
@@ -16,6 +16,17 @@ This is a behavior map, not a claim of complete coverage or a current test-count
 - `test_documentation.py`: local Markdown navigation, reference links, image paths, repeated
   heading anchors, missing destinations, and portable treatment of shared references.
 - `test_main.py`: application startup.
+- `test_iphone_*.py`: USB runtime schemas, WDA setup/jobs, device locking, preview
+  recovery, app selection, text continuation, and bounded screen operations through
+  fakes. Runtime suites skip when POSIX locking is unavailable; they do not prove
+  real-device signing or pairing.
+- `test_iphone_routes.py`, `test_iphone_service.py`, `test_iphone_tunnel.py`, and
+  `test_iphone_tunnel_service.py`: lazy platform gating, loopback and origin admission,
+  request validation, runtime lifecycle, host-path sanitization, explicit ChatGPT
+  grants, bearer admission, native images, revocation, and local-only recovery hints.
+- `test_iphone_e2e.py`: three-mode navigation, setup feedback, preview orientation,
+  gesture coordinates, typing drafts, explicit Tunnel access, and responsive layout
+  in disposable browsers with every phone request intercepted.
 - `test_core_architecture.py`: dependency direction, not file layout. Web reaches Core only
   through the five domain façades, Core never imports Web, `app/core/workspace/` never imports
   the Agent run loop, and the Tunnel modules reach a project only through `WorkspaceAccess`.

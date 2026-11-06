@@ -1,6 +1,6 @@
 """Route and asset coverage for the formal Zhihu cache source.
 
-Code version: v1.8.0-claude.0
+Code version: v1.8.2-codex.0
 """
 
 from __future__ import annotations
@@ -69,7 +69,10 @@ def test_zhihu_cache_page_uses_edge_login_and_text_first_controls(tmp_path: Path
     assert "Answers available" in body
     assert "Answers queued" not in body
     assert "Answers found" not in body
-    assert 'cache-page.js?v=cache-page-v1.18.0-claude.0' in body
+    script = (REPOSITORY_ROOT / "app/web/static/cache-page.js").read_text(encoding="utf-8")
+    version = re.search(r"Code version: (v[^ ]+)", script)
+    assert version is not None
+    assert f"cache-page.js?v=cache-page-{version.group(1)}" in body
 
 
 def test_zhihu_routes_probe_and_dispatch_the_selected_edge_session(tmp_path: Path) -> None:
@@ -124,7 +127,7 @@ def test_legacy_zhihu_route_and_status_use_the_formal_cache(tmp_path: Path) -> N
     assert redirect_response.headers["Location"].endswith("/cache/zhihu/text/edge?from=legacy")
     assert status["downloaded_posts"] == 0
     assert status["progress_unit"] == "answers"
-    assert status["output_dir"].endswith("/llm/zhihu")
+    assert Path(status["output_dir"]) == tmp_path / "local_store" / "llm" / "zhihu"
 
 
 def test_local_resources_renders_zhihu_rich_text_and_local_image_placeholders(

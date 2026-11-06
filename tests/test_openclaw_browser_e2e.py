@@ -1,6 +1,6 @@
 """Disposable Chromium navigation for provider-separated OpenClaw archives.
 
-Code version: v1.0.1-codex.0
+Code version: v1.0.2-codex.0
 """
 
 from collections.abc import Iterator
@@ -99,7 +99,7 @@ def test_archive_selector_browse_and_reader_remain_separate(
         expect(page.locator("#start_button")).to_have_text("Read archived sessions")
         expect(page.locator("[data-browser-session-panel]")).to_have_count(0)
         page.get_by_role("button", name="Cache source: ChatGPT OpenClaw", exact=True).click()
-        expect(page.get_by_role("option", name="ChatGPT", exact=True)).to_be_visible()
+        expect(page.get_by_role("option", name="ChatGPT Chat", exact=True)).to_be_visible()
         expect(page.get_by_role("option", name="ChatGPT OpenClaw", exact=True)).to_be_visible()
         expect(page.get_by_role("option", name="Doubao OpenClaw", exact=True)).to_have_count(1)
         _assert_no_horizontal_overflow(page)
@@ -126,7 +126,8 @@ def test_archive_selector_browse_and_reader_remain_separate(
         expect(page.locator("[data-browser-session-download-url]")).to_have_count(1)
         _assert_no_horizontal_overflow(page)
         page.screenshot(path=str(SCREENSHOT_ROOT / f"openclaw-synthetic-reader-{width}.png"), full_page=True)
-        page.get_by_role("link", name="Back to all sessions", exact=True).click()
+        with page.expect_navigation(wait_until="domcontentloaded"):
+            page.get_by_role("link", name="Back to all sessions", exact=True).click()
         assert parse_qs(urlsplit(page.url).query)["source"] == ["gemini_openclaw"]
         _set_sidebar(page, opened=True)
         form = page.locator("#browser_filter_form")

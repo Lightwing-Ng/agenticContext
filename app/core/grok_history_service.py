@@ -1,6 +1,6 @@
 """Background service for Grok session history sync.
 
-Code version: v1.1.0-claude.0
+Code version: v1.1.1-codex.0
 """
 
 from __future__ import annotations
@@ -104,10 +104,15 @@ class GrokHistoryService(CooperativeCacheWorker):
                     f"Grok history sync stopped. Cached {result['messages']:,} messages."
                 )
                 return
-            if result["failed"]:
+            if result["failed"] or result.get("incomplete"):
+                detail = (
+                    "Session discovery did not reach catalog exhaustion; retry the remaining pages."
+                    if result.get("incomplete")
+                    else f"{result['failed']:,} sessions failed."
+                )
                 self._state.finish_error(
                     "Grok history sync is incomplete. Cached history was preserved; "
-                    f"{result['failed']:,} sessions failed."
+                    + detail
                 )
                 return
             completion_message = (

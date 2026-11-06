@@ -1,6 +1,6 @@
 # AGENTS.md
 
-Code policy version: v1.4.0-agent-contract.0
+Code policy version: v1.4.1-agent-contract.0
 
 This file defines mandatory collaboration rules for all coding agents in this repository (Claude, Codex, Antigravity, Trae, and future agents).
 
@@ -91,6 +91,17 @@ This file defines mandatory collaboration rules for all coding agents in this re
   set `AGENTIC_CONTEXT_PYTHON` to override with any interpreter meeting the minimum version.
 - On macOS, treat `python3` as the valid Python alias. On Windows, prefer the `py` launcher and do
   not assume `python3` is available.
+- Store WeChat extraction, reconciliation, and recovery workstations in
+  `/Users/lightwing/Library/CloudStorage/OneDrive-Personal/WeChat Text Archive/Workstations/`.
+  Do not create these workstations in `/Users/lightwing/Backups` or put raw archives in
+  `local_store/messaging/wechat`.
+- After workstation work completes, verify every preserved file has uploaded before using
+  OneDrive Files On-Demand to release its local content. A moved folder, sync badge, or successful
+  unpin command does not prove cloud preservation or local space release. Verify the public
+  placeholders and the canonical OneDrive cache allocation separately before reporting reclaimed
+  disk space. Keep immutable evidence unchanged and record reversible path mappings when relocation
+  or filename encoding is needed.
+  The application's active `local_store` databases remain runtime data and are not workstations.
 
 ## 9) Handoff Requirements
 - Summarize what changed and why.

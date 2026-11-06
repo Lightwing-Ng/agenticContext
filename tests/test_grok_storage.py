@@ -1,11 +1,13 @@
 """Tests for Grok naming, validation, and durable work-queue state.
 
-Code version: v1.1.0-codex.1
+Code version: v1.2.0-codex.0
 """
 
 from __future__ import annotations
 
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
+
+import pytest
 
 from app.core.grok_downloader import (
     GrokMediaCandidate,
@@ -50,6 +52,14 @@ def test_grok_filename_and_content_helpers_normalize_untrusted_inputs() -> None:
     assert infer_extension("https://example.test/file.mov", "", "video") == ".mov"
     assert compute_sha256(b"content") == "ed7002b439e9ac845f22357d822bac1444730fbdb6016d3ec9432297b9ec9f73"
     assert normalize_catalog_timestamp("2026-07-29T08:00:00+08:00") == "2026-07-29T00:00:00Z"
+
+
+@pytest.mark.parametrize("host_path", [PurePosixPath, PureWindowsPath])
+def test_remote_asset_identity_is_independent_of_host_path_rules(monkeypatch, host_path) -> None:
+    monkeypatch.setattr("app.core.grok_downloader.Path", host_path)
+    assert normalize_asset_name(r"folder\photo.jpg") == "folder-photo"
+    assert normalize_asset_name("folder/photo.jpg") == "photo"
+    assert normalize_asset_name("photo.jpg?download=1") == "photo"
 
 
 def test_media_validation_uses_signatures_not_only_extensions(tmp_path: Path) -> None:

@@ -1,6 +1,6 @@
 """Tests for browser-independent X parsing and session helpers.
 
-Code version: v1.14.2-codex.0
+Code version: v1.14.5-codex.0
 """
 
 from __future__ import annotations
@@ -20,6 +20,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from app.core.owner_only_files import owner_only_problem, owner_only_directory_problem
 from app.core.browser_sessions import (
     CHROMIUM_WINDOW_MODE_TASK_STAGE,
     _CdpAttachCleanupNoiseFilter,
@@ -44,6 +45,7 @@ from app.core.browser_sessions import (
     sync_playwright_or_error,
 )
 from app.core.config import CrawlConfig
+from app.core.safari_automation import SafariBusyError
 from app.core.scraper import (
     build_likes_request_template,
     build_x_likes_url,
@@ -265,6 +267,26 @@ def test_safari_housekeeping_failure_does_not_report_x_as_signed_out(macos_host)
     assert result["message"] == (
         "Could not verify the account: RuntimeError: "
         "Safari housekeeping failed for 1 window(s)."
+    )
+    assert "busy" not in result
+    assert "retry_after_seconds" not in result
+
+
+def test_safari_probe_lock_contention_requests_retry_without_signout(macos_host) -> None:
+    with patch(
+        "app.core.browser_sessions._probe_safari_x_session",
+        side_effect=SafariBusyError("Safari is busy with another active browser task."),
+    ):
+        result = probe_browser_session("x", "safari", CrawlConfig())
+
+    assert result["logged_in"] is None
+    assert result["can_download"] is False
+    assert result["account_name"] == ""
+    assert result["busy"] is True
+    assert result["retry_after_seconds"] == 2
+    assert result["message"] == (
+        "Safari is finishing another browser check. "
+        "This account check will retry automatically."
     )
 
 
@@ -1215,6 +1237,9 @@ def test_cdp_attach_lock_covers_the_complete_caller_context(
         channel="msedge",
     )
     monkeypatch.setattr("app.core.browser_sessions.is_windows_host", lambda: True)
+    monkeypatch.setattr("app.core.browser_sessions.is_macos_host", lambda: False)
+    monkeypatch.setattr("app.core.agent_debug_browser.is_windows_host", lambda: True)
+    monkeypatch.setattr("app.core.agent_debug_browser.is_macos_host", lambda: False)
     monkeypatch.setattr(
         "app.core.agent_debug_browser.debug_browser_profile_initialized",
         lambda browser_id: browser_id == "edge",
@@ -1300,6 +1325,9 @@ def test_cdp_attach_failure_releases_the_debug_browser_lock(
         channel="msedge",
     )
     monkeypatch.setattr("app.core.browser_sessions.is_windows_host", lambda: True)
+    monkeypatch.setattr("app.core.browser_sessions.is_macos_host", lambda: False)
+    monkeypatch.setattr("app.core.agent_debug_browser.is_windows_host", lambda: True)
+    monkeypatch.setattr("app.core.agent_debug_browser.is_macos_host", lambda: False)
     monkeypatch.setattr(
         "app.core.agent_debug_browser.debug_browser_profile_initialized",
         lambda browser_id: browser_id == "edge",
@@ -1646,6 +1674,9 @@ def test_launch_chromium_context_restarts_initialized_debug_browser_before_clone
     playwright = SimpleNamespace(chromium=SimpleNamespace(connect_over_cdp=connect))
 
     monkeypatch.setattr("app.core.browser_sessions.is_windows_host", lambda: True)
+    monkeypatch.setattr("app.core.browser_sessions.is_macos_host", lambda: False)
+    monkeypatch.setattr("app.core.agent_debug_browser.is_windows_host", lambda: True)
+    monkeypatch.setattr("app.core.agent_debug_browser.is_macos_host", lambda: False)
     monkeypatch.setattr(
         "app.core.agent_debug_browser.debug_browser_profile_initialized",
         lambda browser_id: browser_id == "edge",
@@ -2546,6 +2577,9 @@ def test_macos_edge_debug_browser_uses_only_the_private_project_profile(
     executable.write_bytes(b"")
     monkeypatch.setattr(adb, "is_windows_host", lambda: False)
     monkeypatch.setattr(adb, "is_macos_host", lambda: True)
+    # A fake macOS launch must not inherit Windows subprocess creation flags.
+    monkeypatch.setattr(adb.subprocess, "CREATE_NEW_PROCESS_GROUP", 0, raising=False)
+    monkeypatch.setattr(adb.subprocess, "DETACHED_PROCESS", 0, raising=False)
     captured = {}
 
     def popen(command, **kwargs):
@@ -2565,8 +2599,11 @@ def test_macos_edge_debug_browser_uses_only_the_private_project_profile(
     assert "--password-store=basic" not in command
     assert not any("Library/Application Support/Microsoft Edge" in item for item in command)
     assert captured["kwargs"]["start_new_session"] is True
-    assert (profile_root.stat().st_mode & 0o777) == 0o700
-    assert ((profile_root / "edge").stat().st_mode & 0o777) == 0o700
+    assert owner_only_directory_problem(profile_root) == ""
+    assert owner_only_directory_problem(profile_root / "edge") == ""
+    if os.name == "posix":
+        assert (profile_root.stat().st_mode & 0o777) == 0o700
+        assert ((profile_root / "edge").stat().st_mode & 0o777) == 0o700
 
 
 def test_ensure_debug_browser_supports_macos_edge_with_an_injected_profile_root(
@@ -2614,7 +2651,9 @@ def test_ensure_debug_browser_supports_macos_edge_with_an_injected_profile_root(
     assert launched == [("edge", "/Edge", 0, profile_root)]
     assert recorded == [("edge", identity, profile_root)]
     assert (profile_root / "edge" / ".launch.lock").exists()
-    assert ((profile_root / "edge" / ".launch.lock").stat().st_mode & 0o777) == 0o600
+    assert owner_only_problem(profile_root / "edge" / ".launch.lock") == ""
+    if os.name == "posix":
+        assert ((profile_root / "edge" / ".launch.lock").stat().st_mode & 0o777) == 0o600
 
 
 def test_concurrent_macos_edge_ensure_calls_launch_one_project_process(
@@ -3164,3 +3203,19 @@ def test_safari_grok_probe_marks_verified_session_ready_to_download(macos_host) 
     assert result["account_name"] == "Demo (@demo_x)"
     assert result["message"] == "Safari is ready to sync Grok."
     assert result["account_name"] not in result["message"]
+
+
+
+def test_debug_profile_acl_failure_blocks_browser_launch_before_private_content(tmp_path, monkeypatch):
+    import app.core.agent_debug_browser as adb
+
+    profile = tmp_path / "private-profile"
+    def denied(path):
+        assert list(path.iterdir()) == []
+        raise OSError("Injected native profile ACL failure")
+
+    monkeypatch.setattr(adb, "ensure_owner_only_directory", denied)
+    monkeypatch.setattr(adb.subprocess, "Popen", lambda *args, **kwargs: pytest.fail("Browser launched before private boundary"))
+    with pytest.raises(OSError, match="native profile ACL failure"):
+        adb._launch_debug_browser("edge", "unused-browser", 0, profile)
+    assert list(profile.rglob("*")) == []

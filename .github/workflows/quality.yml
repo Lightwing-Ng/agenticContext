@@ -1,4 +1,4 @@
-# Code version: v1.5.0-codex.1
+# Code version: v1.7.1-codex.0
 name: Quality gate
 
 on:
@@ -13,12 +13,18 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  check:
-    name: Python, JavaScript, and test checks
+  check-shards:
+    name: Linux quality shard ${{ matrix.shard }}/8
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4, 5, 6, 7, 8]
     env:
       TZ: UTC
+      AGENTIC_CONTEXT_TEST_SHARD: ${{ matrix.shard }}
+      AGENTIC_CONTEXT_TEST_SHARD_COUNT: '8'
 
     steps:
       - name: Check out repository
@@ -37,6 +43,15 @@ jobs:
       - name: Audit Python dependencies
         run: python -m pip_audit -r requirements.txt
 
+      - name: Prefer the canonical Ubuntu package mirror
+        run: |
+          # Slow Azure archive transfers can consume the unchanged job budget.
+          for source in /etc/apt/apt-mirrors.txt /etc/apt/sources.list /etc/apt/sources.list.d/ubuntu.sources; do
+            if [ -f "$source" ]; then
+              sudo sed -E -i 's|https?://azure\.archive\.ubuntu\.com/ubuntu|https://archive.ubuntu.com/ubuntu|g' "$source"
+            fi
+          done
+
       - name: Install Playwright Chromium
         run: python -m playwright install --with-deps chromium
 
@@ -52,16 +67,22 @@ jobs:
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
-          name: python-coverage
-          path: test-results/coverage.json
-          if-no-files-found: warn
+          name: python-coverage-linux-attempt-${{ github.run_attempt }}-shard-${{ matrix.shard }}
+          path: test-results/quality-shard-${{ matrix.shard }}/
+          if-no-files-found: error
 
-  check-windows:
-    name: Windows quality gate
+  check-windows-shards:
+    name: Windows quality shard ${{ matrix.shard }}/8
     runs-on: windows-latest
     timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4, 5, 6, 7, 8]
     env:
       TZ: UTC
+      AGENTIC_CONTEXT_TEST_SHARD: ${{ matrix.shard }}
+      AGENTIC_CONTEXT_TEST_SHARD_COUNT: '8'
 
     steps:
       - name: Check out repository
@@ -105,6 +126,94 @@ jobs:
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
-          name: python-coverage-windows
+          name: python-coverage-windows-attempt-${{ github.run_attempt }}-shard-${{ matrix.shard }}
+          path: test-results/quality-shard-${{ matrix.shard }}/
+          if-no-files-found: error
+
+  check:
+    name: Python, JavaScript, and test checks
+    if: always()
+    needs: check-shards
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      TZ: UTC
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Set up Python 3.13
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7
+        with:
+          python-version: '3.13'
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+      - name: Require every Linux shard
+        run: test "${{ needs.check-shards.result }}" = success
+
+      - name: Install Python dependencies
+        run: python -m pip install -r requirements.txt
+
+      - name: Download every Linux coverage artifact
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: python-coverage-linux-attempt-${{ github.run_attempt }}-shard-*
+          path: test-results/shards
+
+      - name: Verify complete branch coverage
+        run: python scripts/quality_shards.py aggregate --artifacts test-results/shards --minimum 55 --shard-status "${{ needs.check-shards.result }}"
+
+      - name: Upload combined coverage
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: python-coverage-attempt-${{ github.run_attempt }}
+          path: test-results/coverage.json
+          if-no-files-found: warn
+
+  check-windows:
+    name: Windows quality gate
+    if: always()
+    needs: check-windows-shards
+    runs-on: windows-latest
+    timeout-minutes: 20
+    env:
+      TZ: UTC
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Set up Python 3.13
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7
+        with:
+          python-version: '3.13'
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+      - name: Require every Windows shard
+        shell: pwsh
+        run: |
+          if ("${{ needs.check-windows-shards.result }}" -ne "success") {
+            throw "Every Windows quality shard must succeed."
+          }
+
+      - name: Install Python dependencies
+        run: python -m pip install -r requirements.txt
+
+      - name: Download every Windows coverage artifact
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: python-coverage-windows-attempt-${{ github.run_attempt }}-shard-*
+          path: test-results/shards
+
+      - name: Verify complete branch coverage
+        run: python scripts/quality_shards.py aggregate --artifacts test-results/shards --minimum 55 --shard-status "${{ needs.check-windows-shards.result }}"
+
+      - name: Upload combined coverage
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: python-coverage-windows-attempt-${{ github.run_attempt }}
           path: test-results/coverage.json
           if-no-files-found: warn

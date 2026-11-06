@@ -16,7 +16,7 @@ Cache does, without attaching to the project browser. The project-profile
 launcher opens a separate Edge instance without activating the daily browser
 and leaves that window open for later reattach.
 
-Code version: v1.24.9-codex.0
+Code version: v1.24.10-codex.0
 """
 
 from __future__ import annotations
@@ -37,6 +37,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from .owner_only_files import ensure_owner_only, ensure_owner_only_directory
 from .config import LOCAL_STORE_ROOT, is_macos_host, is_windows_host
 from .platform_lock import lock_file, unlock_file
 
@@ -794,8 +795,7 @@ def _prepare_private_profile_directory(
             raise RuntimeError(
                 f"The project debug {browser_id} profile is owned by another user."
             )
-        if os.name != "nt":
-            directory.chmod(0o700)
+        ensure_owner_only_directory(directory)
     return profile_dir
 
 
@@ -820,7 +820,7 @@ def _debug_browser_startup_lock(
             )
         handle = lock_path.open("a+", encoding="utf-8")
         try:
-            lock_path.chmod(0o600)
+            ensure_owner_only(lock_path)
             lock_file(handle)
             try:
                 yield

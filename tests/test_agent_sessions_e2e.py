@@ -1,12 +1,14 @@
-"""Session switching, capacity, and selected controls. Code version: v1.37.0-claude.0."""
+"""Session switching, capacity, and selected controls. Code version: v1.37.5-codex.0."""
 
+import json
 import re
+from contextlib import contextmanager
 from copy import deepcopy
 from threading import Thread
 from urllib.parse import parse_qs, urlsplit
 
 import pytest
-from playwright.sync_api import expect
+from playwright.sync_api import Error as PlaywrightError, expect
 from werkzeug.serving import make_server
 
 from tests import test_sidebar_e2e as fixtures
@@ -15,6 +17,24 @@ from app.web.presentation import render_agent_response
 
 disposable_browser = fixtures.disposable_browser
 sidebar_server_url = fixtures.sidebar_server_url
+
+
+@pytest.fixture
+def macos_agent_settings(tmp_path, macos_host, monkeypatch):
+    from app.core.computer_use_agent import ComputerUseSettings, save_computer_use_settings
+
+    # The dataclass host default is fixed at import, so seed this Mac-only fixture explicitly.
+    save_computer_use_settings(
+        ComputerUseSettings(operating_system="macos"),
+        settings_path=tmp_path / "settings" / "computer-use-agent.json",
+    )
+    monkeypatch.setattr(fixtures, "detect_host_operating_system", lambda: "macos")
+
+
+@pytest.fixture
+def macos_agent_selection_server_url(macos_agent_settings, request):
+    """Seed Mac settings before the generic server fixture creates its app."""
+    return request.getfixturevalue("agent_selection_server_url")
 
 
 @pytest.fixture()
@@ -1370,6 +1390,7 @@ def test_tunnel_project_folder_picker_selects_or_registers_chosen_roots(
     requests = []
     reject_next = {"value": False}
     register_requests = []
+    accept_registration = {"value": False}
     native_next = {"path": str(alpha_root)}
     native_requests = []
 
@@ -1406,6 +1427,23 @@ def test_tunnel_project_folder_picker_selects_or_registers_chosen_roots(
 
     def fulfill_register(route):
         register_requests.append(route.request.post_data_json)
+        if accept_registration["value"]:
+            added = {
+                **alpha,
+                "id": "added",
+                "identity": "added00000000000",
+                "root": str(unregistered_root),
+            }
+            status["project_context"] = {
+                **status["project_context"],
+                "revision": 4,
+                "current": added,
+                "selected_project_ids": ["alpha", "beta", "added"],
+                "projects": [alpha, beta, added],
+            }
+            status["status_observed_at"] = 4
+            route.fulfill(json=deepcopy(status))
+            return
         route.fulfill(
             status=409,
             json={"error": "Registration was declined for this test."},
@@ -1434,7 +1472,13 @@ def test_tunnel_project_folder_picker_selects_or_registers_chosen_roots(
         assert radius >= box["width"] / 2 - 1
 
         project_path = page.locator("#agent_tunnel_project_path")
+        prompt = page.locator("[data-agent-tunnel-kickoff]")
+        _assert_exact_project_kickoff(prompt, "alpha", alpha["identity"], 1)
+        task = "Preserve this task while I choose a folder."
+        prompt.fill(prompt.input_value().replace("[describe your task].", task))
         project_path.fill(str(unregistered_root))
+        page.locator('[data-agent-connection-mode][value="tunnel"]').dispatch_event("change")
+        expect(project_path).to_have_value(str(unregistered_root))
         project_path.dispatch_event("change")
         expect(page.locator("[data-agent-tunnel-project-status]")).to_contain_text(
             "Registration was declined"
@@ -1521,6 +1565,36 @@ def test_tunnel_project_folder_picker_selects_or_registers_chosen_roots(
             "selected_project_ids": ["alpha", "beta"],
             "expected_revision": 3,
         }
+        assert prompt.input_value().endswith("\n\nTask:\n" + task)
+
+        if width < 900:
+            page.locator("#sidebar_toggle").click()
+        page.locator(
+            "[data-agent-tunnel-kickoff-project-field] .browser-filter-select-trigger"
+        ).click()
+        page.locator(
+            '[data-agent-tunnel-kickoff-project-field] '
+            '[data-browser-filter-select-option="beta"]'
+        ).click()
+        _assert_exact_project_kickoff(prompt, "beta", beta["identity"], 3)
+        if width < 900:
+            page.locator("#sidebar_toggle").click()
+        prior_requests = len(requests)
+        native_next["path"] = str(alpha_root)
+        picker.click()
+        _assert_exact_project_kickoff(prompt, "alpha", alpha["identity"], 3)
+        assert len(requests) == prior_requests
+
+        accept_registration["value"] = True
+        native_next["path"] = str(unregistered_root)
+        picker.click()
+        expect(project_path).to_have_value(str(unregistered_root))
+        _assert_exact_project_kickoff(prompt, "added", "added00000000000", 4)
+        assert register_requests[-1] == {
+            "path": str(unregistered_root),
+            "expected_revision": 3,
+        }
+        assert prompt.input_value().endswith("\n\nTask:\n" + task)
         assert page.evaluate("() => document.documentElement.scrollWidth") <= width
     finally:
         context.close()
@@ -3619,7 +3693,7 @@ def test_grok_composer_snapshot_uses_one_rendered_provider_scoped_surface(
 )
 def test_safari_selection_persists_for_source_only_providers_without_edge_fallback(
     disposable_browser,
-    agent_selection_server_url,
+    macos_agent_selection_server_url,
     viewport,
 ):
     context = disposable_browser.new_context(viewport=viewport)
@@ -3733,7 +3807,7 @@ def test_safari_selection_persists_for_source_only_providers_without_edge_fallba
             expect(shell).to_have_class(re.compile(r"\bis-sidebar-collapsed\b"))
 
     try:
-        page.goto(f"{agent_selection_server_url}/agent/edge/chatgpt")
+        page.goto(f"{macos_agent_selection_server_url}/agent/edge/chatgpt")
         ensure_sidebar_open()
         page.get_by_role("button", name="Web service: ChatGPT", exact=True).click()
         page.get_by_role("option", name="Grok", exact=True).click()
@@ -3766,7 +3840,7 @@ def test_safari_selection_persists_for_source_only_providers_without_edge_fallba
             "path": "/agent/safari/grok",
             "routeWrites": ["/agent/edge/grok", "/agent/safari/grok"],
         }
-        expect(page).to_have_url(f"{agent_selection_server_url}/agent/safari/grok")
+        expect(page).to_have_url(f"{macos_agent_selection_server_url}/agent/safari/grok")
         expect(
             page.locator('#agent_runtime_form input[name="platform"]')
         ).to_have_value("grok")
@@ -3803,11 +3877,11 @@ def test_safari_selection_persists_for_source_only_providers_without_edge_fallba
         expect(page.get_by_role("button", name="Web service: Grok", exact=True)).to_be_visible()
         expect(page.get_by_role("button", name="Browser: Safari", exact=True)).to_be_visible()
         expect(page.get_by_role("button", name="Model: Auto", exact=True)).to_be_visible()
-        page.goto(f"{agent_selection_server_url}/agent", wait_until="domcontentloaded")
+        page.goto(f"{macos_agent_selection_server_url}/agent", wait_until="domcontentloaded")
         ensure_sidebar_open()
-        expect(page).to_have_url(f"{agent_selection_server_url}/agent/tunnel/grok")
+        expect(page).to_have_url(f"{macos_agent_selection_server_url}/agent/tunnel/grok")
         page.locator('label[for="agent_connection_browser"]').click()
-        expect(page).to_have_url(f"{agent_selection_server_url}/agent/safari/grok")
+        expect(page).to_have_url(f"{macos_agent_selection_server_url}/agent/safari/grok")
 
         page.wait_for_function(
             "() => document.querySelector('[data-role=browser-session-account]')?.textContent === 'Signed in'"
@@ -3832,7 +3906,7 @@ def test_safari_selection_persists_for_source_only_providers_without_edge_fallba
         assert reloaded_payload["preference_revision"] > saved_payload[
             "preference_revision"
         ]
-        expect(page).to_have_url(f"{agent_selection_server_url}/agent/safari/gemini")
+        expect(page).to_have_url(f"{macos_agent_selection_server_url}/agent/safari/gemini")
         expect(page.get_by_role("button", name="Browser: Safari", exact=True)).to_be_visible()
         expect(page.locator("#agent_ask_button")).to_be_disabled()
         expect(page.locator(".agent-execution-session-title")).to_have_text(
@@ -3857,7 +3931,7 @@ def test_safari_selection_persists_for_source_only_providers_without_edge_fallba
             and response.request.post_data_json.get("browser") == "safari"
         ):
             page.get_by_role("option", name="Claude", exact=True).click()
-        expect(page).to_have_url(f"{agent_selection_server_url}/agent/safari/claude")
+        expect(page).to_have_url(f"{macos_agent_selection_server_url}/agent/safari/claude")
         expect(page.get_by_role("button", name="Browser: Safari", exact=True)).to_be_visible()
         expect(page.locator("#agent_ask_button")).to_be_enabled()
         expect(page.locator(".agent-execution-session-title")).to_have_text(
@@ -3879,7 +3953,7 @@ def test_safari_selection_persists_for_source_only_providers_without_edge_fallba
             and response.request.post_data_json.get("browser") == "safari"
         ):
             page.get_by_role("option", name="ChatGPT", exact=True).click()
-        expect(page).to_have_url(f"{agent_selection_server_url}/agent/safari/chatgpt")
+        expect(page).to_have_url(f"{macos_agent_selection_server_url}/agent/safari/chatgpt")
         expect(page.locator("#agent_ask_button")).to_be_enabled()
         expect(page.locator(".agent-execution-session-title")).to_have_text(
             "ChatGPT Safari recent session"
@@ -4224,7 +4298,7 @@ def test_agent_preference_save_retries_an_unchanged_failed_payload(
 
 def test_agent_preference_save_newer_selection_supersedes_failed_payload(
     disposable_browser,
-    agent_selection_server_url,
+    macos_agent_selection_server_url,
 ):
     context = disposable_browser.new_context(viewport={"width": 1_160, "height": 900})
     page = context.new_page()
@@ -4282,7 +4356,7 @@ def test_agent_preference_save_newer_selection_supersedes_failed_payload(
     )
     page.route("**/api/agent/preferences", fulfill_preference)
     try:
-        page.goto(f"{agent_selection_server_url}/agent/edge/chatgpt")
+        page.goto(f"{macos_agent_selection_server_url}/agent/edge/chatgpt")
         with page.expect_response(
             lambda response: response.url.endswith("/api/agent/preferences")
             and response.request.method == "POST"
@@ -4309,7 +4383,7 @@ def test_agent_preference_save_newer_selection_supersedes_failed_payload(
 
 def test_agent_preference_outbox_restores_selection_and_replays_on_first_reload(
     disposable_browser,
-    agent_selection_server_url,
+    macos_agent_selection_server_url,
 ):
     context = disposable_browser.new_context(viewport={"width": 1_160, "height": 900})
     page = context.new_page()
@@ -4360,7 +4434,7 @@ def test_agent_preference_outbox_restores_selection_and_replays_on_first_reload(
         ),
     )
     try:
-        page.goto(f"{agent_selection_server_url}/agent/edge/chatgpt")
+        page.goto(f"{macos_agent_selection_server_url}/agent/edge/chatgpt")
         payload = page.evaluate(
             """() => {
                 const payload = {
@@ -6170,7 +6244,7 @@ def test_route_switch_isolates_worker_and_obeys_global_admission(disposable_brow
 
 @pytest.mark.parametrize("width", [1138, 390])
 def test_tunnel_page_does_not_launch_browser_reads_for_restored_session(
-    disposable_browser, sidebar_server_url, width,
+    disposable_browser, agent_selection_server_url, width,
 ):
     """A restored Browser task must not make the Tunnel page open Edge."""
     context = disposable_browser.new_context(viewport={"width": width, "height": 959})
@@ -6211,7 +6285,7 @@ def test_tunnel_page_does_not_launch_browser_reads_for_restored_session(
         page.route(f"**{path}?*", reject_browser_read)
 
     try:
-        page.goto(f"{sidebar_server_url}/agent/tunnel/chatgpt")
+        page.goto(f"{agent_selection_server_url}/agent/tunnel/chatgpt")
         expect(page.locator("#agent_connection_tunnel")).to_be_checked()
         expect(page.locator(".agent-page")).to_have_attribute(
             "data-agent-run-id", "restored-browser-task"
@@ -6400,6 +6474,103 @@ def test_restored_session_loads_bound_history_and_ignores_late_reply(
         context.close()
 
 
+@contextmanager
+def _observe_draft_sidebar_failure(page):
+    """Expose bounded control state only when the original draft interaction fails."""
+    page.add_init_script(
+        """(() => {
+            const events = [];
+            const controller = new AbortController();
+            window.__cachelikesDraftSidebarTrace = {events, controller};
+            const sidebarState = () => {
+                const shell = document.querySelector('#app_shell');
+                return {
+                    expanded: document.querySelector('#sidebar_toggle')?.getAttribute('aria-expanded'),
+                    open: Boolean(shell?.classList.contains('is-sidebar-open')),
+                    opening: Boolean(shell?.classList.contains('is-sidebar-opening')),
+                    closing: Boolean(shell?.classList.contains('is-sidebar-closing')),
+                    animating: Boolean(shell?.classList.contains('is-sidebar-animating')),
+                };
+            };
+            for (const kind of ['pointerdown', 'pointerup', 'click']) {
+                document.addEventListener(kind, event => {
+                    if (events.length >= 40 || !(event.target instanceof Element)) return;
+                    const control = event.target.closest(
+                        '#sidebar_toggle, #sidebar_backdrop, [data-agent-combobox-trigger], [data-agent-combobox-option]',
+                    );
+                    if (!control) return;
+                    let target = '';
+                    if (control.id === 'sidebar_toggle') target = 'sidebar-toggle';
+                    else if (control.id === 'sidebar_backdrop') target = 'sidebar-backdrop';
+                    else {
+                        const choice = control.closest('.agent-platform-combobox') ? 'platform'
+                            : control.closest('.agent-browser-combobox') ? 'browser' : '';
+                        if (!choice) return;
+                        target = `${choice}-${control.hasAttribute('data-agent-combobox-trigger') ? 'trigger' : 'option'}`;
+                    }
+                    events.push({kind, target, atMs: Math.round(performance.now()), ...sidebarState()});
+                }, {capture: true, signal: controller.signal});
+            }
+        })();"""
+    )
+    try:
+        yield
+    except (AssertionError, PlaywrightError):
+        try:
+            diagnostic = page.evaluate(
+                """() => {
+                    const read = selector => {
+                        const node = document.querySelector(selector);
+                        if (!node) return {present: false};
+                        const rect = node.getBoundingClientRect();
+                        const style = getComputedStyle(node);
+                        return {
+                            present: true, hidden: node.hidden, inert: node.inert,
+                            ariaHidden: node.getAttribute('aria-hidden'),
+                            expanded: node.getAttribute('aria-expanded'),
+                            rect: Object.fromEntries(['x', 'y', 'width', 'height'].map(
+                                name => [name, Math.round(rect[name] * 100) / 100],
+                            )),
+                            style: Object.fromEntries([
+                                'display', 'visibility', 'opacity', 'pointerEvents', 'transform',
+                                'transitionProperty', 'transitionDuration',
+                            ].map(name => [name, style[name].slice(0, 120)])),
+                        };
+                    };
+                    const shell = document.querySelector('#app_shell');
+                    const path = location.pathname;
+                    return {
+                        routePath: /^\\/agent\\/(?:edge|chrome|safari|tunnel)\\/(?:chatgpt|gemini|grok|claude)$/.test(path)
+                            ? path : 'other',
+                        readyState: document.readyState,
+                        motion: Object.fromEntries([
+                            'is-sidebar-open', 'is-sidebar-collapsed', 'is-sidebar-opening',
+                            'is-sidebar-closing', 'is-sidebar-animating',
+                        ].map(name => [name, Boolean(shell?.classList.contains(name))])),
+                        controls: {
+                            toggle: read('#sidebar_toggle'), backdrop: read('#sidebar_backdrop'),
+                            sidebar: read('.sidebar'),
+                            platform: read('.agent-platform-combobox [data-agent-combobox-trigger]'),
+                            browser: read('.agent-browser-combobox [data-agent-combobox-trigger]'),
+                        },
+                        events: window.__cachelikesDraftSidebarTrace?.events || [],
+                    };
+                }"""
+            )
+            print("Draft sidebar failure diagnostic: " + json.dumps(diagnostic, sort_keys=True))
+        except Exception as diagnostic_error:
+            print("Draft sidebar failure diagnostic: " + json.dumps({
+                "capture_error_type": type(diagnostic_error).__name__,
+            }))
+        raise
+    finally:
+        if not page.is_closed():
+            try:
+                page.evaluate("window.__cachelikesDraftSidebarTrace?.controller.abort()")
+            except PlaywrightError:
+                pass
+
+
 @pytest.mark.parametrize("choice,target", [("platform", "grok"), ("browser", "chrome")])
 @pytest.mark.parametrize("width", [1161, 390])
 def test_new_session_drafts_are_isolated_by_route(
@@ -6418,27 +6589,28 @@ def test_new_session_drafts_are_isolated_by_route(
     }))
     page.route("**/api/agent/sources**", lambda route: route.fulfill(json=catalog))
     try:
-        page.goto(f"{sidebar_server_url}/agent/edge/chatgpt")
-        prompt = page.locator("#agent_prompt_input")
-        prompt.fill("Draft for Edge ChatGPT")
-        if width < 900:
-            page.locator("#sidebar_toggle").click()
-        trigger = page.locator(f'.agent-{choice}-combobox [data-agent-combobox-trigger]')
-        trigger.click()
-        page.locator(f'.agent-{choice}-combobox [data-agent-combobox-option="{target}"]').click()
-        expect(prompt).to_have_value("")
-        if width < 900:
-            page.locator("#sidebar_toggle").click()
-        prompt.fill("Draft for the other route")
-        if width < 900:
-            page.locator("#sidebar_toggle").click()
-        trigger.click()
-        original = "chatgpt" if choice == "platform" else "edge"
-        page.locator(f'.agent-{choice}-combobox [data-agent-combobox-option="{original}"]').click()
-        expect(prompt).to_have_value("Draft for Edge ChatGPT")
-        trigger.click()
-        page.locator(f'.agent-{choice}-combobox [data-agent-combobox-option="{target}"]').click()
-        expect(prompt).to_have_value("Draft for the other route")
+        with _observe_draft_sidebar_failure(page):
+            page.goto(f"{sidebar_server_url}/agent/edge/chatgpt")
+            prompt = page.locator("#agent_prompt_input")
+            prompt.fill("Draft for Edge ChatGPT")
+            if width < 900:
+                page.locator("#sidebar_toggle").click()
+            trigger = page.locator(f'.agent-{choice}-combobox [data-agent-combobox-trigger]')
+            trigger.click()
+            page.locator(f'.agent-{choice}-combobox [data-agent-combobox-option="{target}"]').click()
+            expect(prompt).to_have_value("")
+            if width < 900:
+                page.locator("#sidebar_toggle").click()
+            prompt.fill("Draft for the other route")
+            if width < 900:
+                page.locator("#sidebar_toggle").click()
+            trigger.click()
+            original = "chatgpt" if choice == "platform" else "edge"
+            page.locator(f'.agent-{choice}-combobox [data-agent-combobox-option="{original}"]').click()
+            expect(prompt).to_have_value("Draft for Edge ChatGPT")
+            trigger.click()
+            page.locator(f'.agent-{choice}-combobox [data-agent-combobox-option="{target}"]').click()
+            expect(prompt).to_have_value("Draft for the other route")
     finally:
         context.close()
 

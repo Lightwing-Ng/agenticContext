@@ -1,15 +1,17 @@
 """Browser and transport boundary for authenticated source sessions."""
 
-# Code version: v1.1.0-codex.1
+# Code version: v1.2.0-codex.0
 
 from .x_session import X_READY_SELECTORS, detect_account_handle, extract_account_handle_from_urlish
 
 _SESSION_EXPORTS = frozenset(
     {
         "BrowserDescriptor",
+        "agent_uses_daily_edge_profile",
         "browser_descriptors",
         "build_browser_options",
         "open_zhihu_browser_for_login",
+        "open_copilot_browser_for_login",
         "probe_browser_session",
     }
 )
@@ -26,10 +28,12 @@ def __getattr__(name: str):
 __all__ = [
     "BrowserDescriptor",
     "X_READY_SELECTORS",
+    "agent_uses_daily_edge_profile",
     "browser_descriptors",
     "build_browser_options",
     "detect_account_handle",
     "extract_account_handle_from_urlish",
     "open_zhihu_browser_for_login",
+    "open_copilot_browser_for_login",
     "probe_browser_session",
 ]

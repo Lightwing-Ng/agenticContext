@@ -1,4 +1,4 @@
-<!-- Code version: v1.42.2-codex.0 -->
+<!-- Code version: v1.42.4-codex.0 -->
 <!doctype html>
 <html lang="en-US">
 <head>
@@ -11,7 +11,7 @@
     <link rel="stylesheet" href="{{ url_for('static', filename='style.css', v=version ~ '-style-v2.157.0-codex.0') }}">
     {% include "_cache_activity_assets.html" %}
     <script src="{{ url_for('static', filename='responsive.js', v='responsive-v1.0.0-codex.1') }}"></script>
-    <script defer src="{{ url_for('static', filename='waiting-modal.js', v='waiting-modal-v1.1.0-codex.1') }}"></script>
+    <script defer src="{{ url_for('static', filename='waiting-modal.js', v='waiting-modal-v1.2.0-codex.0') }}"></script>
     <script defer src="{{ url_for('static', filename='numeric-input-format.js', v='numeric-input-format-v1.1.0-codex.1') }}"></script>
     <script defer src="{{ url_for('static', filename='settings-navigation.js', v='settings-navigation-v1.2.0-codex.1') }}"></script>
     <script defer src="{{ url_for('static', filename='settings-directory-picker.js', v='settings-directory-picker-v2.2.1-codex.0') }}"></script>
@@ -164,14 +164,31 @@
                                     <p>Configure browser history scans and local coding-session imports.</p>
                                 </div>
                                 <div class="settings-category-fields">
-                                    <h4>ChatGPT · Text</h4>
+                                    <h4>ChatGPT Chat · Text</h4>
                                     {{ render_number_field("Startup timeout (s)", "chatgpt_text_startup_timeout_seconds", saved_config.chatgpt_text_startup_timeout_seconds, "decimal", "1", "1", "600") }}
                                     {{ render_number_field("Wait between sessions (s)", "cache_scan_wait_chatgpt_text", saved_config.cache_scan_wait("chatgpt", "text"), "decimal", "0.1", "0", "60") }}
-                                    <h4>ChatGPT · Media</h4>
+                                    <h4>ChatGPT Chat · Media</h4>
                                     {{ render_number_field("Startup timeout (s)", "chatgpt_startup_timeout_seconds", saved_config.chatgpt_startup_timeout_seconds, "decimal", "1", "1", "600") }}
                                     {{ render_number_field("Scan wait (s)", "chatgpt_scan_wait_seconds", saved_config.chatgpt_scan_wait_seconds, "decimal", "0.1", "0.1", "5") }}
                                     <h4>Claude Chat · Text</h4>
                                     {{ render_number_field("Wait between sessions (s)", "cache_scan_wait_claude_text", saved_config.cache_scan_wait("claude", "text"), "decimal", "0.1", "0", "60") }}
+                                    <h4>Codex · Local</h4>
+                                    <label class="field compact-config-field">
+                                        <span>Local session folder</span>
+                                        <span class="settings-directory-control">
+                                            <input class="text-input-control settings-directory-input path-display-input" type="text"
+                                                id="codex_directory" name="codex_directory"
+                                                value="{{ saved_config.codex_directory }}" spellcheck="false" autocomplete="off">
+                                            <button type="button" class="secondary-button settings-directory-choose-button"
+                                                data-settings-directory-picker data-directory-field="codex_directory"
+                                                data-directory-input="codex_directory" data-directory-label="Codex session folder"
+                                                aria-label="Choose Codex session folder" title="Choose Codex session folder">
+                                                <span class="icon settings-directory-choose-icon" aria-hidden="true"></span>
+                                            </button>
+                                        </span>
+                                        <span class="settings-directory-status" data-directory-picker-status aria-live="polite" hidden></span>
+                                    </label>
+                                    <p class="settings-field-help">Use the Claude app folder for Desktop Code sessions, or <code>~/.claude</code> for all local Code sessions.</p>
                                     <h4>Claude Code · Local</h4>
                                     <label class="field compact-config-field">
                                         <span>Local session folder</span>
@@ -477,7 +494,7 @@
 
 {% include "_waiting_modal.html" %}
 {% include "_settings_directory_browser.html" %}
-<script src="{{ url_for('static', filename='sidebar.js', v='sidebar-v1.30.0-codex.0') }}"></script>
+<script src="{{ url_for('static', filename='sidebar.js', v='sidebar-v1.31.0-codex.0') }}"></script>
 <script src="{{ url_for('static', filename='shadow-backup-settings.js', v='shadow-backup-settings-v1.3.0-codex.2') }}"></script>
 </body>
 </html>

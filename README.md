@@ -1,12 +1,14 @@
 # agenticContext
 
-Documentation version: `v1.35.0-codex.0`
+Documentation version: `v1.37.0-codex.0`
 
 agenticContext is a local Flask web console for preserving and using AI context
 across conversations, media, prompts, projects, and browser agents. It caches
 media from the currently signed-in X account's Likes timeline, Grok's Files
 library, and configured ChatGPT projects or sessions. Its formal text caches also
-cover ChatGPT, Gemini, Grok, Claude, and Zhihu. It stores media and text
+cover ChatGPT Chat, Gemini, Grok, Claude Chat, and Zhihu. Separate local
+Claude Code and Codex sources preserve app and CLI conversations through
+`Read local sessions`; source transcripts stay read only. It stores media and text
 history locally and provides a browser for reviewing, deleting, and restoring
 resources.
 
@@ -17,9 +19,10 @@ OpenClaw is removed. See [OpenClaw preservation](docs/OPENCLAW_MIGRATION.md).
 Local resources also includes a text-only WeChat archive with account-scoped search,
 private/group/unclassified conversations, and provenance-preserving text export.
 Contact identities keep source-specific names separate; native text reconciliation preserves
-existing messages and unresolved evidence. Unconfirmed account sources stay independent.
-Compressed text may require an unavailable application dictionary, so a retained archive does
-not imply complete decoding or a restorable iPhone backup.
+existing messages and unresolved evidence. Unconfirmed account sources stay independent, including
+overlapping exports. Human messages use their own presentation and private SQLite index, separate
+from LLM histories. Compressed text may require an unavailable application dictionary, so a retained
+archive does not imply complete decoding or a restorable iPhone backup.
 See [WeChat archive import](docs/CACHE_HANDOFF.md#wechat-text-archives).
 
 Its Agent workspace uses the selected authenticated Web session for ChatGPT, Gemini, Grok, or Claude.
@@ -48,6 +51,12 @@ continues only while the parsed material evidence state is changing. Stable disa
 wall-clock or durable-record safety boundaries, or an unavailable provider produces a visible
 incomplete result. The current Web page sends no turn count. Agreement is not proof of truth.
 See [Jury](docs/JURY.md) for the workflow, persistence, and verification contract.
+
+The iPhone mode connects a USB iPhone through WebDriverAgent. It provides local setup,
+a live screen, manual phone controls, an optional ChatGPT Tunnel grant, and a standalone
+MCP server. Full Xcode and device signing are required on macOS; the iPhone surface is
+unavailable on Windows without affecting the other workspaces. See
+[iPhone control](docs/IPHONE.md) for first connection and day-to-day use.
 
 Top-level application pages also publish a conservative OpenAI Site tools (WebMCP) adapter for
 Agent Optimization. It exposes bounded capability discovery, current-page metadata, and allowlisted
@@ -117,6 +126,10 @@ Then start the app from the built-in Terminal on macOS:
 ```bash
 ./scripts/run_app.sh
 ```
+
+For an iCloud-backed checkout, keep the code, static assets, launch scripts, and selected
+Python environment downloaded locally. Cached media may remain cloud-only and must not
+block application startup. See [cloud storage and startup](docs/OPERATIONS.md#cloud-storage-and-startup).
 
 On Windows, run the PowerShell entrypoint instead:
 
@@ -196,6 +209,7 @@ Start with the [documentation index](docs/README.md) to distinguish current cont
 - [Beta experiments](docs/BETA.md)
 - [Static-file numbered-copy housekeeping](docs/STATIC_FILE_HOUSEKEEPING.md)
 - [Third-party notices](docs/THIRD_PARTY_NOTICES.md)
+- [iPhone connection and control](docs/IPHONE.md)
 - [Engineering and test contract](docs/AGENTS.md)
 - [Test coverage map](docs/TEST_COVERAGE.md)
 

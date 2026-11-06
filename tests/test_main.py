@@ -1,6 +1,6 @@
 """Focused regression tests for the application entrypoint.
 
-Code version: v1.5.0-codex.0
+Code version: v1.5.3-codex.0
 """
 
 from __future__ import annotations
@@ -22,9 +22,41 @@ import main
 class MainEntrypointTests(unittest.TestCase):
     """Validate runtime-agnostic startup and the normal Flask configuration."""
 
-    def test_serving_child_starts_flask_in_debug_mode(self) -> None:
+    def test_runtime_shutdown_cancels_contact_work_before_browser_cleanup(self) -> None:
+        """A reloader must release executor work before Python joins its threads."""
+        events = []
+        contact_analysis = types.SimpleNamespace(
+            cancel_contact_analysis_jobs=lambda: events.append("contact"),
+        )
+        app = types.SimpleNamespace(
+            extensions={"runtime_shutdown": lambda: events.append("browser")},
+        )
+
+        with patch.dict(
+            sys.modules, {"app.core.wechat_contact_analysis": contact_analysis},
+        ):
+            main._stop_runtime_services(app)
+
+        self.assertEqual(events, ["contact", "browser"])
+
+    def test_contact_cancellation_failure_still_cleans_browser_owners(self) -> None:
+        """A derived-cache failure cannot skip authenticated browser cleanup."""
+        cancel = Mock(side_effect=RuntimeError("Derived worker unavailable"))
+        runtime_shutdown = Mock()
+        app = types.SimpleNamespace(extensions={"runtime_shutdown": runtime_shutdown})
+        contact_analysis = types.SimpleNamespace(cancel_contact_analysis_jobs=cancel)
+
+        with patch.dict(
+            sys.modules, {"app.core.wechat_contact_analysis": contact_analysis},
+        ), self.assertLogs(main.LOGGER, level="ERROR"):
+            main._stop_runtime_services(app)
+
+        cancel.assert_called_once_with()
+        runtime_shutdown.assert_called_once_with()
+
+    def test_serving_child_keeps_reload_without_exposing_a_debugger(self) -> None:
         """The reloader's serving child builds the app once and enables hot reload."""
-        for host, interactive_debugger in (("0.0.0.0", False), ("127.0.0.1", True)):
+        for host in ("0.0.0.0", "127.0.0.1"):
             with self.subTest(host=host):
                 configure_logging = Mock()
                 create_app = Mock()
@@ -53,10 +85,11 @@ class MainEntrypointTests(unittest.TestCase):
                 options = app.run.call_args.kwargs
                 self.assertEqual(
                     (options["host"], options["port"], options["debug"], options["threaded"]),
-                    (host, 8666, True, True),
+                    (host, 8666, False, True),
                 )
-                # The LAN session gate must stay in front of the interactive debugger.
-                self.assertIs(options["use_debugger"], interactive_debugger)
+                self.assertIs(options["use_debugger"], False)
+                self.assertIs(options["use_reloader"], True)
+                self.assertIs(app.jinja_env.auto_reload, True)
                 project_root = Path(main.__file__).resolve().parent
                 for directory in ("tests", "local_store"):
                     self.assertIn(str(project_root / directory / "*"), options["exclude_patterns"])
@@ -361,6 +394,38 @@ while True:
             main.main()
 
         start_web_console.assert_called_once_with()
+
+    def test_main_configures_local_bytecode_before_importing_the_application(self) -> None:
+        """A cloud-backed checkout must not be the first bytecode read location."""
+        with TemporaryDirectory() as temporary_directory:
+            local_home = Path(temporary_directory)
+            observed = []
+            with (
+                patch.object(main.sys, "platform", "darwin"),
+                patch.object(main.sys, "pycache_prefix", None),
+                patch.object(main.Path, "home", return_value=local_home),
+                patch.object(
+                    main, "_start_web_console",
+                    side_effect=lambda: observed.append(main.sys.pycache_prefix),
+                ),
+            ):
+                main.main()
+
+            self.assertEqual(observed, [str(local_home / "Library/Caches/agenticContext/pycache")])
+
+    def test_main_preserves_an_explicit_bytecode_cache_location(self) -> None:
+        """Honor an existing PYTHONPYCACHEPREFIX instead of replacing user policy."""
+        observed = []
+        with (
+            patch.object(main.sys, "pycache_prefix", "/chosen/cache"),
+            patch.object(
+                main, "_start_web_console",
+                side_effect=lambda: observed.append(main.sys.pycache_prefix),
+            ),
+        ):
+            main.main()
+
+        self.assertEqual(observed, ["/chosen/cache"])
 
 
 if __name__ == "__main__":

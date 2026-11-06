@@ -1,8 +1,164 @@
 # Operations guide
 
-Documentation version: `v1.43.3-codex.0`
+Documentation version: `v1.53.3-codex.0`
+
+## iPhone
+
+Open Agent > iPhone on the USB-connected Mac. Follow [iPhone control](IPHONE.md) for
+Xcode and signing prerequisites, the seven setup steps, preview controls, and MCP use.
+The local ChatGPT Tunnel phone switch is off by default and resets after an application
+restart. It grants phone tools independently of project file access; turning it off blocks
+new calls, while an already admitted operation may finish. Setup and recovery remain local.
+The Gemini Tunnel and browser Agent do not acquire phone tools.
+
+The default state directory is `~/.local/share/iphone-use`, outside the checkout. Keep its
+configuration, owned WDA jobs, and signed builds when updating the application. The page
+and standalone `scripts/iphone_mcp.sh` server share its operation lock. Normal app shutdown
+closes only its preview/client and leaves the owned WDA start job available for reuse.
 
 ## Launch
+
+### Refresh an existing native resource catalog
+
+After the primary WeChat archive changes, use
+`app.core.wechat_resource_catalog_refresh.stage_resource_catalog_refresh()` with the local
+store root and a new candidate path in an authorized workstation. The function validates the
+existing catalog's source receipts against the current primary and removes only proven
+duplicate observations. It streams large scopes through temporary SQLite tables and reports
+checked events, retained kinds, exclusions, and unchanged input identities. It never reads
+media payloads or downloads preserved native databases.
+
+The candidate is not automatically published. Keep a verified recoverable copy of the current
+`resource_references.sqlite3`, confirm the primary and catalog identities still match the
+candidate report, check candidate integrity and source counts, then publish with an atomic
+replacement. Retain the report and rollback mapping. Do not merely edit the history pin or
+overwrite the original catalog before validation. Keep the original chat archive unchanged.
+This operation revalidates existing metadata; it does not establish full device-backup coverage.
+
+### Optional WeChat conversation body sharing
+
+Inspect independently verified native conversations in the same group or the two reciprocal
+sides of a private chat without modifying the archive:
+
+```bash
+python3 scripts/compact_wechat_group_storage.py --local-store /path/to/local_store \
+  --conversation wechat:FIRST_CONVERSATION_ID --conversation wechat:SECOND_CONVERSATION_ID
+```
+
+Discover all unambiguous private chats between verified native account owners and inspect them
+as one batch instead:
+
+```bash
+python3 scripts/compact_wechat_group_storage.py --local-store /path/to/local_store --all-private-chats
+```
+
+The legacy script filename remains supported for both conversation kinds. Private discovery
+uses exact account/peer IDs, never names; one-sided and ambiguous pairs stay untouched.
+The batch shares one backup, staging clone, and integrity check across all eligible pairs.
+
+Add `--apply --backup-directory /path/to/new/rollback-directory` to publish an APFS-staged
+snapshot after exact rollback-copy hashes and logical-row equality pass. The backup directory
+must be new and on the same APFS volume. Preserve the receipt and rollback databases. Run this
+explicitly again after later imports to share eligible new bodies; passive reads never compact.
+Both accounts retain their own counts and every unique or conflicting record. Identical text
+does not merge message events, source evidence, timestamps, or account direction.
+
+`incremental_payload_bytes_saved` measures the actual added body/search-prefix reduction,
+including reuse of an existing group pool. Its before/after values count selected physical
+inline bytes and the complete pool. Legacy `payload_bytes_saved` is a theoretical comparison,
+so do not sum it across repeated runs. The report also records database-file byte changes and
+allocation separately from reclaimed disk blocks. SQLite can reuse
+released pages; no VACUUM, backup deletion, media hydration, or cloud-space release occurs.
+Cloud-only or already stale resource/media indexes are retained unchanged and reported as such.
+Previously valid local pins are rebound only after the logical archive is verified unchanged.
+
+Implementation: [shared storage](../app/core/wechat_shared_storage.py),
+[publication](../app/core/wechat_shared_storage_publish.py), and
+[CLI](../scripts/compact_wechat_group_storage.py). Compatibility updates cover
+[native restore](../app/core/wechat_native_restore.py),
+[export import](../app/core/wechat_export_merge.py), and
+[MCP reads](../app/core/wechat_mcp_archive.py). Isolated coverage lives in
+[storage tests](../tests/test_wechat_shared_storage.py) and
+[publication tests](../tests/test_wechat_shared_storage_publish.py); the matching contracts
+are in [Architecture](ARCHITECTURE.md#wechat-human-message-archives) and
+[Testing](TESTING.md).
+
+### Recover HTML forwarded child clocks
+
+Use [the recovery CLI](../scripts/recover_wechat_forwarded_clocks.py) with a stable,
+locally available archive and fresh inventory/assessment paths. The default command
+scans source provenance once, then assesses every HTML packet with unavailable
+text-child clocks. It writes only derived inventory and proof metadata; it does not
+publish runtime links or rewrite message bodies, contacts, media, or source clocks:
+
+```bash
+python3 scripts/recover_wechat_forwarded_clocks.py --local-store local_store \
+  --inventory local_store/messaging/wechat/forwarded-clock-inventory-new.sqlite3 \
+  --assessment local_store/messaging/wechat/forwarded-clock-assessment-new.sqlite3
+```
+
+Review the assessment's `assessments`, `native_validation`, and `info` tables before
+publishing. A matching signature alone is insufficient: exact ordered child IDs,
+authors, bodies, source identity, and packet rendering must pass validation, and
+all valid iPad copies must agree on child clocks. Unknown native times contribute
+no invented time; conflicting explicit clocks prevent automatic recovery.
+Strong opaque-ID packets may cross receiving context under the complete agreement
+receipt. Short or single-author packets retain receiving-context checks, and
+ordinal-only IDs require the same independently verified parent event. Nested or
+unsupported structures that cannot meet those proof rules remain unresolved.
+
+Publish the completed assessment with the same paths and `--apply`:
+
+```bash
+python3 scripts/recover_wechat_forwarded_clocks.py --local-store local_store \
+  --inventory local_store/messaging/wechat/forwarded-clock-inventory-new.sqlite3 \
+  --assessment local_store/messaging/wechat/forwarded-clock-assessment-new.sqlite3 \
+  --apply
+```
+
+Existing inventory and assessment files are reused rather than silently rescanned.
+Use new paths after an archive publication; assessment and apply reject a changed
+source identity. Apply stages and atomically replaces `forwarded_clock_links.sqlite3`,
+records the assessment receipt path and SHA-256, checks catalog integrity, and reads
+back every published target and recovered-child count. Preserve the assessment as
+the candidate-agreement receipt. The SQLite catalog takes sole precedence over
+`forwarded_clock_links.json`; deleting it re-enables legacy JSON lookup, so deletion
+is not equivalent to withdrawing its links.
+
+Conversation cards read the published pointers directly. Contact cache fingerprints
+include the catalog digest; compatible caches revalidate their accepted references,
+including restoring unknown child times after link withdrawal. Contact CSV uses the
+same reference projection. Session CSV retains the original parent row and places
+the proved packet's children immediately after it, preserving the three-column
+schema and exact bodies. Markdown retains the parent source text and adds child
+times, source clocks, and recovery proofs. Unlinked records keep their existing
+export shape. Unknown children remain blank or `Unknown time`; naive clocks never
+acquire an inferred timezone, and parent delivery times never become child times.
+Session downloads stop if their pinned evidence changes during export.
+
+The completed assessment on 4 Nov 2026 is
+`local_store/messaging/wechat/forwarded-clock-assessment-4Nov2026-refresh2.sqlite3`:
+
+| Measure | Source observations |
+| --- | ---: |
+| Retained HTML forwarding packets | 9,145 |
+| Retained iPad forwarding packets | 11,162 |
+| HTML packets with unavailable text-child times | 251 |
+| Unavailable text-bearing children assessed | 3,226 |
+| Packets with verified recovery | 190 |
+| Child times recovered | 2,681 |
+| Packets retained as unresolved | 61 |
+| Child times retained as unknown | 545 |
+
+No actual native-clock disagreement was found in that assessment. These are source
+observations, not unique utterances: repeated packets across accounts or forwards
+remain independently addressable. The 2,681 recovered children include the earlier
+65-child recovery and must not be added to it again. These dated counts describe
+that immutable assessment, not the result of a future archive import.
+The refresh2 receipt followed a change to the archive's ctime identity field. A new
+full inventory, assessment, and publication reproduced the same counts before
+contact caches were rebuilt against the current identity; old proofs were not
+accepted by merely replacing their fingerprints.
 
 Prepare the supported local runtime:
 
@@ -47,10 +203,38 @@ On Windows:
 .\scripts\run_app.ps1
 ```
 
+### Cloud storage and startup
+
+On macOS, use Finder's `Keep Downloaded` for `app/` (including templates, static assets,
+and fonts), `scripts/`, `main.py`, `requirements.txt`, and the selected project-local Python
+environment, if any. These are runtime prerequisites and must remain available offline.
+Keep required settings and the small prompt/deletion metadata catalogs local as well.
+Media payloads under `local_store/` may remain cloud-only; do not pin the entire project
+merely to make the console start.
+
+Before importing the application, `main.py` redirects Python bytecode to the host's local
+cache directory (`~/Library/Caches/agenticContext/pycache` on macOS). Old cloud-only
+`__pycache__/` files cannot block imports even when their `.py` sources are already local.
+An explicit `PYTHONPYCACHEPREFIX` is preserved. The cache is disposable; source and media
+files remain in their existing locations.
+
+Application construction starts cache tasks with empty in-memory snapshots. Each source
+reads its saved inventory when its own page or status is requested. Passive Grok inventory
+reads never rebuild a missing catalog, validate image headers, hash media, or rewrite the
+catalog. Missing inventory falls back to file-name/type/size counts, explicitly awaiting
+integrity and unique-total verification; it never treats cloud placeholders as absent.
+The next explicit media sync retains the existing repair and validation pipeline.
+
+A listening port alone does not prove readiness: the reload supervisor owns its socket
+before the serving child finishes construction. Check an HTTP response from `/` and
+`/api/cache/activity`. If file reads stall and `ls -lO` shows `dataless`, restore the runtime
+prerequisites in Finder rather than downloading the entire media archive or resetting it.
+
 ### Debug mode and hot reload
 
-`main.py` starts Flask with `debug=True`. Template edits apply on the next request, static files
-are read from disk, and a saved change to `main.py`, `app/`, or an installed dependency restarts
+`main.py` keeps Flask debug mode and Werkzeug's interactive debugger disabled. Explicit template
+auto-reload and file watching remain enabled: template edits apply on the next request, static
+files are read from disk, and a saved change to `main.py`, `app/`, or an installed dependency restarts
 the serving process automatically. Edits under `tests/`, `scripts/`, `local_store/`, and `logs/`
 never restart it.
 
@@ -61,13 +245,23 @@ Tunnel. Requests that arrive during a restart wait in the socket backlog.
 - A Python reload is a real process restart. The shared runtime shutdown callback runs first, so
   active cache tasks, Agent sessions, Jury runs, and Tunnel calls end. Do not save Python edits
   while a browser-owning job is active.
+- Background WeChat contact indexing cancels cooperatively during host shutdown, including long
+  SQLite scans and queued builds. An interrupted build discards only its unpublished temporary
+  index; the last published index and original chat records remain intact. Opening the contact
+  after reload can resume a needed rebuild.
 - In-memory state resets on every reload: LAN sessions, Tunnel authorization grants, and queued
   work. The session secret is regenerated unless `AGENTIC_CONTEXT_SESSION_SECRET` is set.
-- A change that fails to import stops the service. Fix the error and start the launcher again.
+- A child startup or import failure keeps the supervisor alive. It returns plain HTTP 503 while
+  waiting for a Python source change under `main.py` or `app/`, then retries the child on the same
+  listening socket. Adding, removing, or replacing a source file can trigger recovery; unchanged
+  broken code never causes a restart loop. Runtime data, tests, tools, and linked directories are
+  excluded from this recovery watcher. Tracebacks stay in Terminal rather than the 503 response.
+- A supervisor-code change takes effect on the next complete launcher start; ordinary child hot
+  reload cannot replace the already-running parent process.
 - Stop the service with Ctrl+C in its terminal, or send `SIGTERM` to the supervisor. Either way the
   supervisor waits for the child to finish browser cleanup before exiting.
-- Werkzeug's interactive debugger is enabled only on a loopback bind (`127.0.0.1`). With LAN
-  access enabled, errors return a plain 500 response and the traceback stays in the log.
+- Werkzeug's interactive debugger stays disabled on both loopback and LAN binds. Unexpected
+  HTTP errors return a plain response; private traceback diagnostics stay in the server log.
 - Set `DEBUG = False` in `main.py` to return to a single process without automatic restarts.
 
 On macOS, the launcher prefers `python3` from `PATH`, then tries unversioned platform Python
@@ -130,8 +324,13 @@ one-time local configuration step, not an ongoing dependency on its source tree 
 When LAN access is enabled, every application route requires that signed session; static assets
 and the unlock flow are the only pre-authentication exceptions. Unsafe private-network requests
 also require a matching same-origin `Origin` header, and repeated failed unlocks are throttled per
-client. Public, cross-site, host-rebinding, and malformed-host requests are rejected. Keep the
-console on a trusted local network and do not expose it through router port forwarding or a
+client. Cross-site requests are rejected except for explicit, user-activated top-level page
+navigation: GET with `Sec-Fetch-Mode: navigate`, `Sec-Fetch-Dest: document`, and
+`Sec-Fetch-User: ?1`. This permits external links and their document redirects without admitting
+cross-site API or MCP reads, embedded resources, writes, mismatched Origins, or unauthenticated
+LAN sessions. Responses vary by these Fetch Metadata headers so caches retain the request
+boundary. Public, host-rebinding, and malformed-host requests remain rejected. Keep the console
+on a trusted local network and do not expose it through router port forwarding or a
 general-purpose public proxy. The only supported exception is the dedicated Gemini hostname in
 [GEMINI_TUNNEL_SETUP.md](GEMINI_TUNNEL_SETUP.md): the application recognizes that exact Host and
 admits only its OAuth metadata/endpoints and `/mcp/gemini`; every console path remains closed.
@@ -140,6 +339,19 @@ admits only its OAuth metadata/endpoints and `/mcp/gemini`; every console path r
 
 - X caching begins from the currently signed-in Likes page in a supported host browser.
 - Grok and ChatGPT syncing use their existing authenticated browser sessions.
+- Microsoft Copilot Text uses the already authenticated `https://copilot.com/chat`
+  session. Select Safari on macOS or an existing Chrome/Edge session. It reads the
+  all-chats loader, authenticated continuation pages, and rendered transcripts
+  without sending prompts. Preserve a supplied entry URL in `copilot_entry_url`,
+  including its query: Microsoft's entry parameters can affect merged-history access.
+  An explicitly empty continuation cursor proves exhaustion of the current catalog,
+  not every legacy Copilot or Bing history surface. A short sidebar list does not
+  prove catalog exhaustion. Legacy caches remain `Partial` until completion evidence
+  has been persisted in `llm/copilot/sync-state.parquet`. A busy Safari
+  task queues through the shared coordinator. Verification or sign-in pages stop
+  collection; no automatic login repair is attempted. Review the independent
+  `llm/copilot/history.parquet` cache through Local resources.
+
 - Opening or restoring a blank Jury page, choosing another browser, changing a juror or model,
   and choosing `New session` do not launch a browser clone. `Check accounts` is the explicit
   readiness probe; Start performs the required server-side recheck before it sends a prompt.
@@ -269,6 +481,84 @@ admits only its OAuth metadata/endpoints and `/mcp/gemini`; every console path r
   process-local, not a durable orphan-process tracker across service restarts.
 - Do not add or repeatedly troubleshoot login flows as part of normal runtime operation. The
   application assumes an existing signed-in session.
+
+### Copilot acceptance status, 21 Oct 2026
+
+The earlier interrupted-window ownership failure has been recovered. The user
+confirmed that its task window had been closed; the journal was preserved in
+`local_store/recovery/copilot-safari-acknowledged-20261021T052346Z/ownership-before-recovery.json`.
+Recovery held the global Safari lock and verified the former owner process was dead
+before clearing stale ownership. A normal real `Start` on v1.43.1 then succeeded.
+Host locking and that stale window are not the current coverage blocker.
+
+The real current-catalog read traversed two pages to an empty cursor and deduplicated
+17 sessions. The operator requested `Stop` after two sessions and four messages;
+no completed backup of hundreds of sessions is claimed. The existing 17-session,
+74-message archive retains SHA-256
+`f352eb310dfc8fc0a4edd17b6a2bf0e67e831821f8f0b643940cda00ec83fb6e`.
+
+The official exports are preserved under
+`local_store/recovery/copilot-official-exports-20261021T052937Z`, with an integrity
+manifest. The Copilot activity export has 74 data rows and 16 distinct conversation
+titles; repeated titles are not stable session identities. The Windows-apps activity
+export has zero data rows. Preserve the originals and backup bytes, and do not merge
+or deduplicate sessions by title.
+
+The older records have now been located in the existing macOS Edge Copilot sidebar.
+Native accessibility inspection exposed an inner document at
+`copilot.microsoft.com/chats/<short-id>` and 357 visible conversation links under
+`Our conversations together`. Preserve the current signed-in sidebar: the ordinary
+webpage does not expose the same history. The raw directory backup is
+`local_store/recovery/edge-copilot-sidebar-20261021T054515Z/visible-history-catalog.json`,
+42,468 bytes, SHA-256
+`7eed63e2de8f6230c5fc638a52fd656568106d33e3cec47ff54bec07f1f51d3f`.
+It explicitly records `discovery_complete=false`. It contains titles, ordinals, and
+initial accessibility indexes, not message bodies or verified provider identities.
+The indexes must be refreshed after UI changes. Raising the native window allowed
+entry 1 to load its two-message transcript; its copied original assistant Markdown
+is preserved as `recent-assistant-original.md` in the same recovery folder. Entries
+18, 200, and 357 changed the conversation path but showed only the composer after
+settling, with no body or error. Their scoped AX snapshots are preserved. This does
+not prove deletion. Do not report directory preservation
+as a transcript cache or a completed backup of 357 sessions. Body extraction and
+verified exhaustion of this source remain unresolved.
+
+Microsoft's [historical Bing export announcement](https://blogs.bing.com/search/2023/5/Bing-Preview-Release-Notes-Chat-History,-Charts,-Export,-and-more/)
+documents conversation export and answer export. The current conversation menu has
+no export action. The verified `Settings > Privacy > Export or delete history`
+path opens `https://account.microsoft.com/privacy/copilot`. After user sign-in,
+`Copilot apps > Export all activity history` produced the same 74-row, 96,622-byte CSV
+and SHA-256 as the preserved original. Its title values match only entries 1 through
+17; the repeated title at positions 10 and 14 cannot establish identity. No title
+from entries 18 through 357 appears in that export. Microsoft's [macOS Edge shortcuts](https://support.microsoft.com/en-us/edge/keyboard-shortcuts-in-microsoft-edge)
+define Command+S and Command+P for the current tab; neither establishes that sidebar
+message bodies will be saved. Do not refresh or replace the sidebar merely to test
+an unverified export path. Keep browser access within the granted target and origin;
+a top-tab capability does not authorize cross-origin sidepane inspection.
+
+The current-web catalog and official CSV exports do not establish coverage of this
+separately observed sidebar directory.
+The subsequent ordinary HTTP cache investigation preserved 19 native catalog
+responses, 377 physical records, and 357 distinct provider IDs under
+`local_store/recovery/edge-copilot-http-cache-20261021T061142Z`. Raw gzip, decoded JSON,
+hash manifests, and a merged versioned catalog remain available. Two AX titles have
+no exact cached-title match; do not reconcile them by similarity. Directory
+`updatedAt` values describe metadata, not message dates. Native conversation URLs
+are derived from the observed route and are labeled accordingly. A null cursor in
+one cached response does not prove the complete live pagination chain.
+The typed canonical directory is `local_store/llm/copilot/legacy-catalog.parquet`.
+Application v1.43.2 uses it to keep current-web sync and reload Partial until legacy
+coverage can be verified; it does not add title-only messages or stop collection of
+available current-web messages. The existing 17-session, 74-message archive is
+unchanged. Only one retained native history response is nonempty, for entry 1.
+Eleven empty responses include sampled entries 18, 200, and 357; preserve their bytes
+without interpreting emptiness as deletion.
+Microsoft's [official migration guidance](https://support.microsoft.com/en-us/microsoft-365-copilot/troubleshoot-content-copilot-app)
+describes possibilities rather than this account's cause; do not infer deletion.
+The follow-up request-context alignment for `eligibility`, `hostContext`, and
+`sessionID`, including `X-Client-Eligibility` and `x-host-context`, also awaits real
+acceptance. It must consume only merged first-party route `store` and successful
+query `storePatch` values, and must not read authentication tokens or cookies.
 
 ## Computer Use Agent
 
@@ -429,14 +719,18 @@ One-time setup:
    unavailable entries. Checking or unchecking changes discovery preference without revoking a
    registered project's authority. In Step 4, use the inline project selector beside the task
    heading to choose one checked, available registered project for the precise
-   kickoff prompt. The current id and revision change only after the service accepts the choice.
+   kickoff prompt. This inline choice changes only the local prompt target; it does not change
+   the service's current project. Background status updates preserve a valid local choice.
    A missing or unavailable current project requires another explicit choice; it does not silently
    redirect an existing task. Registry permissions remain unchanged.
 6. The circular `Add project folder` action keeps the host-native folder chooser. On macOS it
    starts at the account's `Path.home() / "Desktop"` when available, otherwise at that account's
    home directory; the start folder itself grants no authority. Choosing an existing registered
    root makes it current. Choosing a new nonoverlapping root registers it as writable and makes it
-   current. An invalid or cancelled choice leaves the current project and permissions unchanged.
+   current. Once the service confirms the folder choice, the kickoff prompt adopts that project
+   and its identity while retaining the task text. Choosing the already-current folder also
+   returns the prompt to that project. An invalid or cancelled choice leaves the current project
+   and permissions unchanged.
    Project updates and MCP registry reads share an owner-only file lock. If a registration
    cannot save the current selection, its mapping is rolled back before a tool can resolve it.
 
@@ -528,7 +822,7 @@ Runtime behavior:
   visible as registered but unavailable and cannot be selected or opened; it does not suppress
   other usable projects. If that root later appears, discovery binds its native filesystem
   identity before any tool call can proceed.
-- The public catalog is exactly: `current_project`; `project_overview` (writability, root and nested
+- The project-tool catalog is exactly: `current_project`; `project_overview` (writability, root and nested
   instruction files of that project only, bounded Git status); `list_files`; `search_files`;
   `read_files` (1-8 files or ranges with SHA-256, truncation, and the next line and optional
   character offset to request);
@@ -539,7 +833,32 @@ Runtime behavior:
   optional bounded patch); and `review_changes` (bodycheck, the final gate). Arguments are
   validated against published closed schemas, so unknown fields fail. Removed compatibility names
   such as `read_file`, `replace_in_file`, `create_file`, `call_runtime_tool`, `list_projects`,
-  `git_log`, and `git_diff_hunks` are not dispatchable.
+  `git_log`, and `git_diff_hunks` are not dispatchable. ChatGPT can additionally discover the
+  fifteen phone tools only while the local [iPhone Tunnel grant](IPHONE.md#chatgpt-tunnel)
+  is enabled. ChatGPT also receives four read-only WeChat archive tools
+  (`wechat_archive_status`, `wechat_find_contacts`, `wechat_search_messages`, and
+  `wechat_get_message_context`). They read only the configured `local_store/messaging/wechat`
+  archive, accept no filesystem path, and do not modify it. Gemini retains only the project tools.
+  A source change to those tools is loaded only when the serving process restarts. Then refresh
+  ChatGPT's stored catalog (Settings → Apps → AgenticContext → Refresh/Scan Tools) before calling them.
+  The archive interface reports its own version (`v1.1.0-codex.0`). Status coverage uses
+  published history conversation summaries and indexed endpoint metadata, retaining the source
+  timestamps, time bases, and endpoint quality flags. It distinguishes undated conversations and
+  explicitly excludes optional resource/media overlays from those coverage counts; it does not
+  invent unknown-time message or anomaly totals.
+  Persistent history, contact, resource, and reference-index connections remain URI read-only.
+  Validated timeline projections use connection-local memory tables before `query_only` is enabled.
+  Context first locates the target's conversation, validates only that scope, and seeks chronological
+  neighbors with a stable message-ID tie break. Unknown-time records remain a separate trailing
+  range. SQL connections have a ten-second execution budget; interrupted work returns
+  `query_timeout`, never an empty success. Scoped media proof limits return `index_incomplete`
+  rather than silently omitting unverified events.
+  Sender resolution keeps each reference's own ID and original, untruncated proof internally.
+  Embedded HTML authors require the existing source/member/avatar proof; a native-looking sender
+  hint alone remains unresolved. Contact IDs identify platform accounts, not assumed real-world
+  people. Queries revalidate their publications, including reference-index identity and journals,
+  before returning. Missing or stale derived contact indexes are explicit errors and are never
+  built by these read-only tools.
 - Batch reads distinguish `all_succeeded`, `partial`, and `all_failed`; a top-level success never
   hides an item failure. Their combined model-facing file content is bounded, and a single long
   line can be continued with the returned `next_start_line` and `next_start_character`. Every
@@ -580,9 +899,11 @@ Runtime behavior:
   `runtime`, `runtime_name`, `execution_mode`, `runtime_gateway`, `adaptive_runtime`, or
   `full_operator_runtime`. Transport-added routing metadata is ignored before closed-schema
   validation and cannot select a project or action; every other undeclared argument is rejected.
-- The Python tool catalog is process-static, so `initialize` and `server/discover` advertise
-  `tools.listChanged=false` and no list-changed notification is ever sent. Each layer refreshes
-  only its own state:
+- The project-tool definitions and dispatcher are static within one Python process. The
+  optional iPhone catalog follows its current local grant on every discovery and call.
+  `initialize` and `server/discover` advertise `tools.listChanged=false`; no list-changed
+  notification is sent, so clients must explicitly refresh after changing that grant.
+  Each layer refreshes only its own state:
   - Restarting the AgenticContext service (Python process) is the only step that loads a changed
     `TUNNEL_TOOLS` or dispatcher; `tools/list` and `tools/call` both read that one table.
   - A `tunnel-client` reconnect (a Step 2 credential save, or the automatic restart) renews forwarding and the
@@ -590,10 +911,14 @@ Runtime behavior:
   - An MCP client reconnect (`initialize` again) receives the running process's catalog, but a
     client may keep its cached tool snapshot.
   - ChatGPT Settings → Apps → AgenticContext → Refresh/Scan Tools replaces ChatGPT's stored
-    snapshot. After a catalog change, restart the service first, then refresh the app.
-- Every tool call is logged as
+    snapshot. For a source-code catalog change, load the new service code first, then refresh
+    the app. Toggling the local iPhone grant requires only a catalog refresh; restarting the
+    service clears that grant, so enable it again locally before refreshing phone tools.
+- Project tool calls are logged as
   `Tunnel tool <name> provider=<provider> ok=<bool> duration=<s> project=<id> target=<path or command>` in the
   application log, so a ChatGPT session can be audited after a restart.
+  Phone calls use `Tunnel iPhone tool <name> provider=<provider> ok=<bool> duration=<s>`.
+  Their activity records omit arguments, entered text, observed phone content, and image data.
 - The status card exposes one `Tokens:` row. For ChatGPT Tunnel, its value accumulates estimated
   MCP request/response tool-text tokens across normal app server restarts. Only aggregate counts
   are saved in owner-only atomic JSON under the Tunnel runtime root. Independent service
@@ -650,10 +975,12 @@ Daily two-page workflow:
 4. After changes, read back hashes or inspect changes, run an approved synchronous or durable
    check, and call `review_changes`. A successful check from older workspace content is rejected.
 5. Ordinary project switching or transport recovery needs no plugin recreation. Adoption after a
-   source or tool-catalog change has three distinct stages: files updated on disk; the
+   source-code or tool-definition change has three distinct stages: files updated on disk; the
    AgenticContext Python service restarted and serving that code; and ChatGPT's cached app catalog
    refreshed through Settings → Apps → AgenticContext → Refresh/Scan Tools. A Tunnel reconnect
    updates forwarding only. Confirm each stage separately, then start a new ChatGPT conversation.
+   A local iPhone grant change needs a fresh tool catalog without a service restart. After an
+   actual service restart, enable that grant again before refreshing phone tools.
 
 Maintaining the client when OpenAI changes it:
 
@@ -956,6 +1283,23 @@ you intend to discard that cache. Do not use reset operations as a routine troub
   archive until a later explicit run succeeds.
 - Cache inconsistency: use the local-media browser to inspect the affected source before choosing a
   source-specific reset. Avoid deleting catalog or manifest files by hand.
+
+## Public errors and security review
+
+HTTP routes return operation-specific public errors and retain documented validation messages
+through closed application-owned allowlists. Arbitrary exception text, traceback strings, OS paths,
+and provider diagnostics stay in server logs. Status adapters sanitize explicit diagnostic fields
+without recursively modifying user prompts, assistant responses, or tool content. The shared boundary
+is `app/web/public_errors.py`; adding a public error requires fixed actionable copy and a regression
+that injects a private diagnostic into the affected route.
+
+WeChat's native account and conversation directory names require their externally defined MD5
+locator format. These locators do not authenticate a user, protect credentials, or provide content
+integrity; exact source identities and separate SHA-256 evidence checks remain required. Reviewed
+CodeQL false positives retain per-alert rationale and the reviewed commit on GitHub. Intentional
+complete-directory selection and fixed same-origin legacy redirects likewise need individual flow
+review. This classification never excludes a query, disables scanning, or excuses an arbitrary
+exception string in a public response.
 
 ## Safe development checks
 

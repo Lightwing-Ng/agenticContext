@@ -1,4 +1,4 @@
-<!-- Code version: v1.16.4-codex.0 -->
+<!-- Code version: v1.16.7-codex.0 -->
 <!doctype html>
 <html lang="en-US">
 <head>
@@ -18,6 +18,7 @@
     <script defer src="{{ url_for('static', filename='pagination-motion.js', v='pagination-motion-v1.1.0-codex.1') }}"></script>
     <script defer src="{{ url_for('static', filename='settings-style-tokens.js', v='settings-style-tokens-v1.3.0-codex.1') }}"></script>
     <script defer src="{{ url_for('static', filename='settings-navigation.js', v='settings-navigation-v1.2.0-codex.1') }}"></script>
+    <script defer src="{{ url_for('static', filename='waiting-modal.js', v='waiting-modal-v1.2.0-codex.0') }}"></script>
 </head>
 <body>
 {% include "_sidebar_bootstrap.html" %}
@@ -496,6 +497,7 @@
     {% include "_sidebar_dock.html" %}
     {% include "_cache_activity.html" %}
 </main>
-<script src="{{ url_for('static', filename='sidebar.js', v='sidebar-v1.30.0-codex.0') }}"></script>
+{% include "_waiting_modal.html" %}
+<script src="{{ url_for('static', filename='sidebar.js', v='sidebar-v1.31.0-codex.0') }}"></script>
 </body>
 </html>

@@ -1,4 +1,4 @@
-"""Concurrent session admission and independent lifecycle checks. Code version: v1.6.5-codex.1."""
+"""Concurrent session admission and independent lifecycle checks. Code version: v1.6.7-codex.0."""
 
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
@@ -805,11 +805,35 @@ def test_stale_compute_job_is_reconciled_before_writer_admission(
         "app.core.agent.compute_jobs._process_identity",
         lambda _pid: "",
     )
+    absent_probes = []
+    marker_scans = []
+
+    def absent_worker(pid, signal):
+        assert pid == metadata["pid"] and signal == 0
+        absent_probes.append(pid)
+        raise ProcessLookupError("Synthetic worker has exited")
+
+    def no_job_descendants(job_id, **_options):
+        assert job_id == metadata["job_id"]
+        marker_scans.append(job_id)
+        return {}
+
+    def absent_windows_worker(pid):
+        assert pid == metadata["pid"]
+        absent_probes.append(pid)
+        return False
+
+    monkeypatch.setattr(compute_jobs.os, "kill", absent_worker)
+    monkeypatch.setattr(compute_jobs, "_scan_posix_job_marker_processes", no_job_descendants)
+    monkeypatch.setattr(compute_jobs, "_windows_worker_may_be_alive", absent_windows_worker)
 
     writer = start(pool, workspace, "writer-after-stale-job")
     wait_until(lambda: "writer-after-stale-job" in entered)
     assert pool.get(writer).snapshot()["running"] is True
     assert json.loads(metadata_path.read_text(encoding="utf-8"))["state"] == "interrupted"
+    assert absent_probes and set(absent_probes) == {metadata["pid"]}
+    if os.name == "posix":
+        assert marker_scans and set(marker_scans) == {metadata["job_id"]}
 
 
 def test_stale_compute_job_without_containment_provenance_fails_closed(

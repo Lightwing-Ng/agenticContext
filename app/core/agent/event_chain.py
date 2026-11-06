@@ -1,6 +1,6 @@
 """Durable, bounded event chains for one Web Agent run.
 
-Code version: v1.4.1-codex.1
+Code version: v1.4.2-codex.0
 """
 
 from __future__ import annotations
@@ -16,6 +16,7 @@ from typing import Any, Callable
 import uuid
 
 from ..state import utc_now
+from ..owner_only_files import ensure_owner_only, ensure_owner_only_directory
 
 
 EVENT_CHAIN_VERSION = "1.0.0"
@@ -407,12 +408,13 @@ class AgentEventChain:
                     ):
                         raise OSError("event directory is not a regular directory")
             event_directory.mkdir(parents=True, exist_ok=True)
-            self.runtime_root.chmod(0o700)
-            event_directory.chmod(0o700)
+            ensure_owner_only_directory(self.runtime_root)
+            ensure_owner_only_directory(event_directory)
             flags = os.O_WRONLY | os.O_CREAT | os.O_APPEND
             flags |= getattr(os, "O_NOFOLLOW", 0)
             descriptor = os.open(self._path, flags, 0o600)
             try:
+                ensure_owner_only(self._path)
                 with os.fdopen(descriptor, "a", encoding="utf-8") as handle:
                     descriptor = -1
                     handle.write(json.dumps(event.as_dict(), ensure_ascii=False) + "\n")
@@ -421,7 +423,7 @@ class AgentEventChain:
             finally:
                 if descriptor >= 0:
                     os.close(descriptor)
-            os.chmod(self._path, 0o600)
+            ensure_owner_only(self._path)
             if os.name == "posix":
                 directory_fd = os.open(
                     event_directory,

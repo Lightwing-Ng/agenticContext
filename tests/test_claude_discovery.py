@@ -1,6 +1,6 @@
 """Exercise asynchronous Claude Chats discovery without a live browser."""
 
-# Code version: v1.0.0-codex.0
+# Code version: v1.0.1-codex.0
 
 from unittest.mock import patch
 
@@ -37,7 +37,7 @@ class _LoadingChatsPage:
                 for index in range(count)
             ]
         if "scrollHeight" in script:
-            return {"moved": False, "scrollTop": 0, "scrollHeight": 400}
+            return {"moved": False, "scrollTop": 0, "scrollHeight": 400, "atEnd": True}
         if "document.body" in script:
             return "Chats"
         return None
@@ -79,10 +79,11 @@ def test_discovery_deadline_includes_slow_browser_inspection() -> None:
     page = _SlowPage()
     with patch("app.core.claude_history.goto_with_retry"), patch(
         "app.core.claude_history.monotonic", side_effect=lambda: page.elapsed_ms / 1_000,
-    ), patch("app.core.claude_history.CLAUDE_READY_TIMEOUT_SECONDS", 1):
-        conversations = discover_claude_conversations(page)
+    ), patch("app.core.claude_history.CLAUDE_READY_TIMEOUT_SECONDS", 1), pytest.raises(
+        RuntimeError, match="discovery is incomplete",
+    ):
+        discover_claude_conversations(page)
 
-    assert conversations == []
     assert page.elapsed_ms == 2_000
     assert page.dom_reads == 0
 

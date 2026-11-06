@@ -1,6 +1,6 @@
 """Computer-use Agent boundary for access, source discovery, and execution."""
 
-# Code version: v1.17.0-codex.1
+# Code version: v1.18.1-codex.0
 
 from typing import TYPE_CHECKING
 
@@ -59,6 +59,7 @@ from ..tunnel_projects import (
     default_tunnel_projects_path,
     default_tunnel_selection_path,
     project_availability,
+    project_transaction_lock,
     resolve_current_project,
     selected_projects,
 )
@@ -105,6 +106,9 @@ _BROWSER_TRANSPORT_EXPORTS = frozenset(
 )
 _SESSION_POOL_EXPORTS = frozenset({"AgentSessionPool"})
 _TUNNEL_MCP_EXPORTS = frozenset({"McpAdmissionRevoked", "TunnelMcpService"})
+_IPHONE_EXPORTS = frozenset(
+    {"IPhoneOperationError", "IPhoneService", "IPhoneUnavailableError"}
+)
 
 if TYPE_CHECKING:
     from ..computer_use_agent import (
@@ -122,6 +126,11 @@ if TYPE_CHECKING:
     from ..tunnel_mcp import McpAdmissionRevoked, TunnelMcpService
     from ..jury import JuryService
     from ..jury_browser import JURY_MODEL_OPTIONS_BY_PROVIDER
+    from ..iphone.service import (
+        IPhoneOperationError,
+        IPhoneService,
+        IPhoneUnavailableError,
+    )
 
 
 def __getattr__(name: str):
@@ -136,6 +145,13 @@ def __getattr__(name: str):
 
         globals()[name] = JuryService
         return JuryService
+    if name in _IPHONE_EXPORTS:
+        # The service module is stdlib-only; it loads the macOS runtime on first use.
+        from ..iphone import service as iphone_service
+
+        value = getattr(iphone_service, name)
+        globals()[name] = value
+        return value
     if name in _BROWSER_TRANSPORT_EXPORTS:
         from . import browser_transport
 
@@ -178,6 +194,9 @@ __all__ = [
     "GeminiOAuthError",
     "GeminiTunnelConfig",
     "GeminiTunnelConfigError",
+    "IPhoneOperationError",
+    "IPhoneService",
+    "IPhoneUnavailableError",
     "JURY_MODEL_OPTIONS_BY_PROVIDER",
     "JuryService",
     "MCP_SCOPE",
@@ -237,6 +256,7 @@ __all__ = [
     "protected_resource_metadata",
     "protected_resource_metadata_url",
     "project_availability",
+    "project_transaction_lock",
     "render_final_agent_action",
     "resolve_current_project",
     "selected_projects",

@@ -1,6 +1,6 @@
 # Architecture guide
 
-Documentation version: `v1.57.0-codex.0`
+Documentation version: `v1.75.3-codex.0`
 
 ## Runtime flow
 
@@ -8,7 +8,7 @@ Documentation version: `v1.57.0-codex.0`
 scripts/run_app.sh or scripts/run_app.ps1
   -> Python 3.13 or newer runtime resolution
   -> main.py (reload supervisor: owns the listening socket, restarts the serving child)
-  -> main.py (serving child, Flask debug mode)
+  -> main.py (serving child, optional template auto-reload, HTTP debugger disabled)
   -> structured logging setup
   -> app.web.app.create_app()
   -> Flask routes and static UI
@@ -26,7 +26,7 @@ registers the local-media browser, and serves the Flask routes.
 
 ## Core package boundary
 
-The application layer imports `app.core` through five domain façades instead of reaching into
+The application layer imports `app.core` through domain façades instead of reaching into
 every implementation module:
 
 - `app/core/foundation/`: runtime configuration, logging, version, and task state.
@@ -40,7 +40,10 @@ every implementation module:
 - `app/core/providers/`: X, Gemini, Grok, and ChatGPT workflows.
 - `app/core/agent/`: Agent access control, source discovery, the platform catalog, the local
   action protocol, context-package assembly, browser launch transport, and Computer Use
-  orchestration.
+  orchestration. It also exports the lazy iPhone service used by the Web layer.
+- `app/core/iphone/`: the adapted iPhone Use runtime, WDA setup and USB lifecycle, device
+  controller, preview, and stdio MCP server. `service.py` is the application adapter; its import
+  and construction do not initialize the macOS runtime or contact a device.
 - `app/core/workspace/`: the shared safety boundary for one selected project root - path
   admission, symbolic-link and file-identity checks, read receipts and expired-write refusal,
   the approved-command allow-list, bounded process output, and workspace evidence.
@@ -102,12 +105,52 @@ subset of the façades; the regression no longer freezes one module's exact faç
   stop signaling. Each source registers one worker per content mode.
 - `app/core/grok_history.py` and `app/core/grok_history_service.py`: authenticated Grok Text
   API traversal, normalized message persistence, and the independent Grok Text worker.
+- `app/core/copilot_history.py`, `copilot_history_store.py`, `copilot_sync_state.py`,
+  and `copilot_history_service.py`: authenticated Microsoft Copilot all-chats
+  cursor traversal, ordered rendered transcript capture, isolated atomic Parquet persistence, and
+  the text-only worker. Safari uses the existing exclusive browser lease. Unknown
+  source times stay empty; failed, interrupted, or shorter captures cannot replace
+  a prior session. An empty provider `syncState` establishes exhaustion of the
+  current catalog; it cannot establish coverage of separate legacy Copilot or Bing
+  history surfaces. Successful synchronization also requires every discovered
+  session to be processed without failure.
+  A separate `llm/copilot/sync-state.parquet` manifest keeps this evidence across
+  restarts, without inferring completeness from the archive size. Missing legacy
+  evidence remains unverified. Local resources consumes `llm/copilot/history.parquet`
+  through the common history reader. The v1.43.1 real acceptance traversed two
+  current-catalog pages containing 17 unique sessions, read two sessions with four
+  messages, and was deliberately stopped. The durable 17-session, 74-message archive
+  stayed unchanged. The additional source is the existing macOS Edge sidebar at
+  `copilot.microsoft.com/chats/<short-id>`. Its 357 visible titles were preserved.
+  Nineteen verified native HTTP catalog responses then supplied 377 physical records
+  and 357 distinct provider IDs. `copilot_legacy_catalog.py` preserves these in a
+  separate typed `llm/copilot/legacy-catalog.parquet`, including original observations
+  and response hashes. Its metadata timestamps are not message dates; derived
+  conversation URLs are explicitly labeled. Cached response enumeration does not
+  prove current cursor exhaustion. Application v1.43.2 reads this evidence on sync
+  and hydration: current-web collection continues, but it cannot claim full history
+  while legacy coverage is unverified. An invalid saved catalog also remains partial.
+  `copilot_legacy_recovery.py` provides an explicit, default-preview importer for
+  validated native copied transcripts; it never manufactures messages from titles.
+  No legacy message rows have been imported. The only retained nonempty native
+  history response contains two messages for sidebar entry 1; eleven empty history
+  responses are preserved as observations, not proof of deletion.
+  A transport follow-up aligns only `eligibility`, `hostContext`, and
+  `sessionID` from merged route `store` and successful query `storePatch` values with
+  the observed frontend headers, including exact `X-Client-Eligibility` and
+  `x-host-context` names. It reads no authentication tokens or cookies; real
+  acceptance of that addition is pending. See [Cache handoff](CACHE_HANDOFF.md#live-acceptance-and-unresolved-legacy-coverage-21-oct-2026)
+  for the evidence and preserved official exports.
 - `app/core/zhihu_answers.py`: strict Zhihu profile normalization, authenticated same-origin API
   traversal, answer normalization, stable-snapshot verification, and the bounded newest-answer
   read shared by the formal cache.
 - `app/core/zhihu_history.py` and `app/core/zhihu_history_service.py`: signed-in vote-up activity
   traversal, optional complete or newest-answer answerer collection, cumulative formal text-history
   persistence, and the ordinary Zhihu Cache worker.
+- `app/core/codex_history.py` and `app/core/codex_history_service.py`: read-only local
+  Codex transcript import and its independent text-only Cache worker. Explicit user
+  and assistant message records are cumulatively merged into `llm/codex/history.parquet`;
+  webpage ChatGPT history, browser sessions, and source transcripts remain separate.
 - `app/core/scraper.py` and `app/core/browser_sessions.py`: X timeline discovery and browser
   session probing for Chrome, Edge, and Safari.
 - `app/core/macos_applescript.py`: one lazy, process-local AppleScript worker shared by Safari
@@ -121,6 +164,10 @@ subset of the façades; the regression no longer freezes one module's exact faç
 - `app/core/downloader.py`, `app/core/grok_downloader.py`, and
   `app/core/chatgpt_downloader.py`: source-specific cache acquisition, recovery state, and
   content validation.
+- `app/core/chatgpt_history_merge.py`: pure preservation merges used by an explicitly
+  guarded ChatGPT recovery store. Existing rows remain unchanged; conflicting bodies
+  receive deterministic local variant keys. The adjacent `history-preservation.json`
+  enables this mode, blocks title replacement, and fails closed on invalid guard data.
 - `app/core/chatgpt_agent_sources.py`: authenticated browser-mediated catalogs of the 20 most
   recent root ChatGPT sessions, projects, and project sessions for the Agent sidebar. Its Agent
   bootstrap combines ChatGPT readiness and root-catalog collection in one owned Chromium or Safari
@@ -175,8 +222,8 @@ subset of the façades; the regression no longer freezes one module's exact faç
   application-wide request hooks and security headers, coordinates one idempotent shutdown, and
   registers the route blueprints. It contains no domain request handling.
 - `app/web/agent_routes.py`, `tunnel_routes.py`, `jury_routes.py`, `cache_routes.py`,
-  `local_resource_routes.py`, and `settings_routes.py`: one blueprint per surface. Each receives a
-  small typed context of the collaborators it actually uses.
+  `iphone_routes.py`, `local_resource_routes.py`, and `settings_routes.py`: one blueprint per
+  surface. Each receives a small typed context of the collaborators it actually uses.
 - `app/web/presentation.py`: pure transformations from stored data into what a template or JSON
   response shows. `app/web/form_config.py` parses the shared configuration form, and
   `app/web/config_store.py` holds the one mutable crawl configuration the route modules share.
@@ -185,6 +232,22 @@ subset of the façades; the regression no longer freezes one module's exact faç
 Web routes may orchestrate core services and present serialized state. Core modules must not
 depend on templates or browser DOM details. Source-specific automation belongs at a browser or
 transport boundary, while durable cache and state rules stay in core modules.
+
+## iPhone runtime
+
+The `/iphone` page is the third Agent mode. `iphone_routes.py` requires the existing Agent
+request gate, a loopback request, and enabled external operations before any device access.
+`create_app()` injects one idle `IPhoneService` into that blueprint and the ChatGPT Tunnel.
+The service constructs the vendored macOS runtime only on an admitted device call; merely
+rendering the page or discovering the conditional Tunnel catalog does not probe a phone.
+
+`app/core/iphone/` owns the WDA HTTP client, observation and action controller, preview, app
+discovery, and explicit setup jobs. The local page and standalone stdio MCP server share the
+private state directory and cross-process `operation.lock`; a Tunnel call uses the same service
+and lock. Web application shutdown closes its owned preview/client without stopping an owned WDA
+start job that another client may reuse. The Tunnel grant is process-local and resets on restart.
+See [iPhone control](IPHONE.md) for setup and [the Tunnel extension](#secure-mcp-tunnel-coding-backend)
+for the separate phone and project authority boundaries.
 
 ## Browser Jury
 
@@ -299,6 +362,30 @@ removed compatibility names are neither advertised nor callable. Every call is v
 its published closed schema before dispatch (`validate_closed_schema` in the capability
 registry), so an undeclared or mistyped field fails instead of being ignored.
 
+On macOS the local `/iphone` page can explicitly enable fifteen additional `pua_` tools for
+ChatGPT. `TunnelMcpService` receives the same lazy `IPhoneService` used by that page. Its catalog
+and instructions are queried without constructing a phone runtime or probing hardware. The grant
+is off by default, lasts only for the current application process, and is checked together with
+the external-operations switch on every catalog read and every call. Gemini never receives this
+extension. Reconnect or refresh the ChatGPT tool catalog after changing the local switch; an older
+cached catalog cannot bypass the execution-time grant check.
+
+The phone is a separate host capability: enabling it neither selects a project nor grants file
+access, and existing project identities, write grants, and controller checks remain unchanged.
+Phone arguments follow the original closed iPhone schema and do not accept project or runtime
+selectors. Calls first pass the existing ChatGPT bearer admission and then the local iPhone grant;
+the shared runtime serializes phone actions through its existing `operation.lock`. Revocation
+blocks subsequent admissions; an already admitted action may finish. Setup, signing, download,
+build, start, and stop remain on the local page: `pua_setup` and `pua_doctor` are absent from this
+catalog, and Tunnel READY forces `recover=false`. Callers verify READY before operating the phone
+and use the local page for runtime recovery.
+
+The service returns native MCP text and image blocks after removing host image paths. Screenshots
+are not serialized into text or duplicated as structured output. Tunnel activity records the phone
+tool, provider, timing, and success while keeping app queries, typed text, observations, and image
+bytes out of activity targets and application logs. Text-token accounting uses the text blocks;
+it does not estimate image tokens. Offline coverage is in `tests/test_iphone_tunnel.py`.
+
 Authority boundary. `app/core/tunnel_projects.py` owns the project registry, which is the maximum
 set of local projects and permissions available to either Tunnel provider. A project is an
 identity (`[A-Za-z][A-Za-z0-9._-]{0,63}`, matched exactly) mapped to one canonical root and an
@@ -343,10 +430,13 @@ its identity; every subsequent project-scoped tool requires both that id and the
 made later therefore cannot
 silently redirect an existing task, while an explicit request may still consult another registered
 read-only reference project. The ChatGPT onboarding prompt remains one precise template for the
-project chosen in the inline selector: its id, identity, and selection revision change only after
-the server confirms the current-project choice, while the editable task body is retained. During
-that switch, the prompt structure remains visible and its copy/open actions stay disabled until
-the confirmed prompt is ready. A
+project chosen in the inline selector. That selector changes the local kickoff target without
+changing the server's current project. An explicit folder selection or registration retargets
+the kickoff prompt only after the server confirms the current project, identity, and selection
+revision; choosing the already-current folder also retargets a different local kickoff choice.
+Background polls preserve a valid local target, and every retarget retains the editable task
+body. During a server-side switch, the prompt structure remains visible and its copy/open
+actions stay disabled until the confirmed prompt is ready. A
 read-only project rejects every mutating tool before the filesystem is touched, and its workspace
 access is also created read-only. Model paths must be project-relative; absolute and `~` paths are
 refused before resolution, and the workspace confinement, symlink, ignored-directory, and
@@ -426,11 +516,13 @@ projects do not block each other. Read-only filesystem/Git observation and durab
 not wait behind a long synchronous check; their filesystem results still carry hashes and explicit
 partial-failure state instead of implying a stable snapshot.
 
-The catalog is static for one Python process. The server therefore advertises
-`tools.listChanged=false`; a source-level catalog change becomes live only after the
-AgenticContext service reloads that module. A Tunnel reconnect is transport lifecycle only.
-Transport-added routing metadata is ignored before closed-schema validation and can never select
-the project or action; every other undeclared argument is rejected.
+The coding catalog is static for one Python process. The optional iPhone catalog follows
+the explicit local grant described above. The server advertises `tools.listChanged=false`,
+so clients must request the catalog again after a grant change. Source-level catalog changes
+become live only after the AgenticContext service reloads that module; a Tunnel reconnect is
+transport lifecycle only. For coding tools, transport-added routing metadata is ignored before
+closed-schema validation and can never select the project or action; every other undeclared
+argument is rejected. Phone tools validate their original closed schemas.
 Clients that cache discovered tools must fetch a fresh `tools/list` after reconnecting to the
 reloaded server; ChatGPT exposes that rescan through the app Refresh/Scan Tools action.
 WebCodex Desktop, a DMG application, GUI helper processes, and desktop IPC are not on this
@@ -756,26 +848,9 @@ removed from the current index as a separate, verified source-scoped correction.
 The existing `query_chat_history` entrypoint dispatches WeChat to `wechat_history_browser.py`.
 That adapter reuses the shared page/session/message contracts with optional messaging context.
 Queries enforce account and conversation-type scope for both details and exports, and paginate
-directly in read-only SQLite. Passive page reads never import archives or enumerate media.
+directly in read-only SQLite. Passive page reads never import archives or download media.
 The Web layer continues to use the storage facade. Its Local resources source registry includes
 WeChat without adding a Cache execution page or media/prompt source.
-
-`wechat_contacts.py` supplies a standard contact object through the separate, read-only
-`contacts.sqlite3` sidecar. Canonical keys hash the exact native internal username, namespace,
-and realm. OpenIM requires its application realm; unqualified observations remain source-scoped.
-A contact denotes a WeChat identity, not an inferred real-world person. Account owners and
-speakers share this identity vocabulary without merging source-account partitions. Nicknames,
-public aliases, account-specific remarks, and room display names remain observations with source,
-snapshot, owner, and room scope. The original message author label stays unchanged; representative
-names do not establish historical name-validity periods.
-
-Sender bindings require native identifier evidence. Ambiguous export identifiers, database-local
-numeric IDs, MD5 location hashes, and exporter placeholders are not global contact keys. Missing
-identity produces a message-specific provisional object. Optional per-message corroboration
-requires exact source/message scope, body SHA-256, timestamp, and original record ID. Conflicting
-or stale evidence leaves the utterance unresolved without assigning an unknown export owner.
-Page reads batch contact lookup and bound displayed observations; `query_observations` paginates
-the complete name history. Identity enrichment does not rewrite messages.
 
 `wechat_wcdb.py` decodes explicitly selected text cells with strict UTF-8, compression-marker,
 frame, and output-size validation. Plaintext works on the supported Python baseline; compressed
@@ -802,22 +877,292 @@ semantics remain explicit, and unique original-message totals are not inferred f
 Neither these primitives nor a text archive establish complete decoding, recovery of absent
 records, or Finder-restorable backup completeness.
 
+`wechat_payments.py` retains bounded native payment-card copy and projects its type and
+currency without asserting settlement, claim state, balances, or undocumented numeric units.
+Ordinary, forwarded, and quoted payment envelopes share schema 1 display fields and exact
+generated-text validation. Forwarded and quoted payments remain Type 49 references rather than
+acquiring a plain-text Type 1 identity. Only explicit payment fields establish CNY or HKD;
+bare yen/dollar symbols, missing currency, and conflicting markers remain unknown. A complete
+regional provider tuple can identify a transfer carried under legacy subtype 2001 without
+rewriting its stored red-packet-family schema or exported prefix. The payment-copy adapter
+verifies the exact retained text before resolving known provider fields through the keyed
+`ui_i18n.py` locale catalog. Simplified and Traditional Chinese provider labels share the
+English UI copy; ordinary, forwarded, and quoted cards use the same adapter. Only complete,
+field-scoped provider templates are localized. Amounts and participant names remain literal
+parameters, and unknown currency is not reclassified. Memo and greeting fields remain literal,
+including the greeting appended to a recognized notification. Translated provider duplicates
+collapse without merging messages or discarding distinct freeform fields. The presentation
+prefix follows the verified kind, including the regional transfer correction. Native sender,
+time and IDs, independent account partitions, source observations, and raw exports remain.
+
+Payment cards reuse the existing message and resource-row layout. The four currency-specific
+glyphs are byte-identical Worthward SVGs; unknown currency uses neutral transfer/gift glyphs.
+Cards expose no payment links, claim buttons, file access, or media downloads. Completeness
+receipts count payment-message observations separately from financial transactions and distinguish
+decoded payment coverage from still-compressed source frames of unknown subtype.
+
+`wechat_shared_storage.py` provides optional exact-body interning for independently verified
+native accounts in the same group or a reciprocal private conversation. Private scopes require
+exactly two distinct verified owners, each recorded as the other conversation's native peer;
+one-sided, self-chat, unclassified, and mixed-kind scopes are rejected. The original 14-column
+`messages` interface becomes a
+strictly validated SQL view over `message_storage` and immutable `shared_message_bodies`.
+Every account observation retains its original ID, conversation, order, direction, sender,
+timestamp, provenance, and quality flags. Identical body bytes and their casefolded search
+prefix are stored once; account-specific search suffixes remain separate. Equal bodies do not
+establish the same sending event. Different bodies, clocks, and missing records remain intact;
+neither account is presumed to contain the other. Non-prefix search material stays inline.
+Logical inserts remain inline until the next explicit compaction; updates detach only the
+changed observation. Native/export append guards protect both physical tables and the logical
+interface. Scoped logical row digests must remain equal before publication.
+
+Disjoint scopes can share one staged publication. Batch validation rejects overlapping
+conversation IDs before mutation, and a savepoint rolls every scope back together. Accounting
+compares the selected physical inline text/search suffix bytes and the global pool before and
+after, charging newly pooled bodies once. `incremental_payload_bytes_saved` is the actual
+payload reduction for this run; legacy `payload_bytes_saved` remains a theoretical within-scope
+comparison and must not be added across runs. Existing group-pool reuse by private records is
+included without counting the previous group savings again.
+
+`wechat_shared_storage_publish.py` stages same-volume APFS clones, verifies exact rollback
+database hashes, rejects active journals or changed inputs, and publishes only after integrity
+and logical-content checks. Already-current local resource/media pins may be rebound to the
+identical logical history; stale, linked, or cloud-only indexes are preserved without upgrading
+their status. Rollback copies and receipts are retained. Payload-byte reductions exclude
+SQLite overhead, rollback retention, filesystem allocation, and any eventual VACUUM. No
+filesystem space is reported reclaimed by this operation. Receipts separately record logical
+file-size and allocated-byte observations; APFS clone block sharing prevents their sum from
+proving a net volume-space benefit while rollback copies remain.
+
+`wechat_contacts.py` supplies a standard contact object for every utterance through the separate,
+read-only `contacts.sqlite3` sidecar. Canonical keys hash the exact native internal username,
+namespace, and realm. OpenIM requires its application realm; unqualified observations remain
+source-scoped. A contact denotes a WeChat identity, not an inferred real-world person. Account
+owners and speakers share this identity vocabulary without merging the source-account partitions.
+Nicknames, public aliases, account-specific remarks, and room display names remain versioned
+observations with source, snapshot, owner, and room scope. The original message author label stays
+unchanged. Representative global names do not establish a historical name-validity period.
+
+`wechat_display_names.py` projects local viewing names from verified canonical contacts.
+Its default account gate requires the exact native owner key, iOS partition hash,
+and verified archive status. A corroborated export inherits the same viewing name
+only when its exact owner/key matches an independently accepted native account row
+in the current result. A nickname or source label never establishes that link.
+Owner proof is independent of a local naming preference. The page adapter exposes
+one dropdown option per proven canonical account key, preferring the native row
+and its original label when no local alias exists. It retains every source row in `messaging.accounts`
+for provenance and source counts. List and detail labels share the projection;
+source labels, preferences, account identifiers, message keys, and database bytes
+remain unchanged.
+
+Account-option grouping also accepts independently corroborated export owners without
+an iOS anchor. That narrow gate requires the exact full owner/key, an explicitly
+corroborated status, and a valid non-iOS source partition and account identifier.
+It does not authorize a local viewing alias or upgrade the export to native evidence.
+The native source remains the preferred representative; equal-proof exports retain
+their stable source ordering. The source-separated account rows and every complementary
+message remain available through the shared account filter. Labels, suffixes, or raw
+text length never establish identity or justify discarding a source.
+The Account sources metric counts the selected account's retained source partitions,
+not its single dropdown option, so a primary export and completion remain two sources.
+
+The private schema-1 `messaging/wechat/display_names.json` preference also accepts
+`hidden_account_sources`, an optional list of exact source partition IDs. This
+affects only the account dropdown projection; it never creates an ingestion exclusion
+or changes records, account identities, source counts, search, or exports. Invalid
+visibility lists fail open without discarding valid viewing names. An old link to
+a hidden source retains one selected, hidden, enabled native option so subsequent
+form submissions preserve the source filter. The shared select adapter forwards
+that hidden state to its menu and excludes it from keyboard candidates. A visible
+source with the same proven account key remains selectable. Removing the preference
+restores navigation without reimporting any data.
+
+Sender bindings require native identifier evidence. Ambiguous export identifiers, database-local
+numeric IDs, MD5 location hashes, and exporter placeholders are not global contact keys. Missing
+identity produces a message-specific provisional object rather than one shared unknown person.
+Optional per-message corroboration requires exact source/message scope, body SHA-256, timestamp,
+and original record ID. Conflicting or stale evidence leaves the utterance unresolved. These
+bindings identify a speaker without assigning an unknown export owner's account. Page reads batch
+contact lookup, reuse neutral profiles, and bound displayed observations; `query_observations`
+paginates the complete name history. Neither browsing nor identity enrichment rewrites messages.
+
+Verified speaker names link to `/browser/wechat/contacts/<contact_id>` in the same tab.
+`wechat_contact_analysis.py` aggregates only occurrences accepted by the existing sender
+resolver, including scoped native/export identifiers and exact per-message proofs. Names alone
+never establish a match. System notices and resource placeholders are excluded. Account keys,
+conversations, original author labels, and source locators remain independent; overlapping
+exports remain separate occurrences rather than being deduplicated by text.
+
+Default conversation and contact views prefer a proven iPhone or iPad observation
+over its matching HTML observation. `wechat_source_precedence.py` shares the
+source-order rule between both projections: distinct, uniquely matched messages
+inside one exact source second may have different device order. A cross-second
+order inversion starts a separately verified run instead of rejecting every match
+in the conversation. Each run retains its existing minimum corroborating anchors,
+verified account, peer, author, exact body, clock, native event and ambiguity gates.
+HTML-only messages and unresolved conflicts remain visible. No local message ID,
+display name or text match alone establishes event identity.
+
+Contact index v1.15 pins the shared precedence rule; conversation proof v1.6 pins
+the same dependency. Previously complete v1.14 contact references can be replayed
+without rescanning authors or discarding existing reviewed and forwarded links.
+This applies to every contact and conversation using the shared projections,
+including their default exports and source-message navigation. Source occurrences
+remain available explicitly; neither raw archive rows nor original provenance is
+deleted by the display preference.
+
+An explicit same-person declaration in private `contact_merges.json` can aggregate
+multiple verified platform contacts into one selected contact-analysis page. The
+declaration records its user-confirmed authority, target, member contact IDs, and
+confirmation receipt. It never rewrites native contacts, sender bindings, source
+accounts, or message bodies. Native contact caches remain independent; a separate
+person cache unions their reference metadata and existing evidence-backed statement
+groups. Equal names, matching text, and unknown clocks do not establish additional
+identity or event equivalence. The optional `wechat_contact_forwarded_copies.py`
+operation groups text copies only when explicitly invoked for a reversible display
+projection. Canonical contact-index construction does not invoke it; cache replay
+restores its journal before rechecking strict packet, original-event, and reviewed
+source proofs. The declaration digest and source revision pin that
+cache, pagination, search, and CSV export. Old member-page links redirect to the
+selected target while retaining the local conversation return destination.
+
+Native quote references retain both observed author/chat field arrangements as
+candidate hints. A room-valued `source_sender_id` with a native `source_chat_id`
+can describe the replying author rather than the quoted author. Contact analysis
+therefore requires a unique original server ID in the same verified source scope,
+matching original text and a valid preceding native clock, before counting that
+quote as a person's statement. The check also applies when the quote already has
+a clock. Missing originals, ambiguous matches, and bounded recovery leave the
+quotation in its source conversation but exclude its unverified personal claim.
+Recovery budgets are independent per source conversation. Nested references use
+their enclosing source conversation, never the receiving room. Source fields and
+source clocks remain unchanged, and derived exclusions retain reversible reference
+metadata. Contact indexes pin the embedded-parser and recovery versions; compatible
+cache upgrades preserve accepted source references while rechecking quoted authors.
+`test_wechat_contact_quote_roles.py`, `test_wechat_contact_quote_role_integration.py`,
+and `test_wechat_group_quote_attribution.py` cover this boundary, including immutable
+evidence, cache migration, and independent conversation budgets.
+
+`wechat_forwarded_clock_batch.py` inventories retained HTML and iPad forwarding
+packets, assesses every HTML packet with unavailable text-child times, and records
+an explicit recovered or unresolved outcome. Discovery signatures contain ordered
+child IDs, native authors, and exact body hashes; they are candidate hints, never
+identity authority. Assessment validates source accounts, snapshots, native record
+IDs, locators, packet rendering, and every corresponding text leaf. Explicit
+nontext resource positions can explain gaps between HTML and native text positions.
+All valid native copies must agree on child clocks before one native pointer is
+selected. A missing timezone cannot reconcile contradictory explicit instants.
+
+`wechat_forwarded_clocks.py` resolves the resulting body-free pointers from
+`messaging/wechat/forwarded_clock_links.sqlite3`. Once present, this catalog is the
+sole runtime authority, including when it is invalid or empty; the legacy JSON
+registry is considered only when the SQLite catalog is absent. Publication binds
+the complete assessment receipt's SHA-256 and the archive file identity. Runtime
+revalidates the archive identity and exact pinned HTML/native bytes. Complete
+opaque-ID packets with at least three text leaves and two authors can cross
+receiving accounts, rooms, or delivery times under that assessment proof. Shorter
+or single-author packets require matching verified receiving context; direct
+threads require the same verified participant pair. Decimal ordinal child IDs
+require the same receiving event, at least three text leaves, and multiple authors.
+These rules recover child clocks without asserting a shared parent delivery event
+or inventing the original conversation. Unsupported structures remain unresolved.
+
+Only unavailable HTML child clocks use a native child's own valid clock, preserving
+its known offset or unknown timezone. Parent clocks, literal HTML source clocks,
+bodies, and source identities remain unchanged. Conversation cards, contact sorting,
+contact CSV, session CSV, and Markdown expose the same recovered child time.
+Session exports retain the original parent and attach the proved packet's source
+children; CSV keeps its three columns and Markdown discloses recovery provenance.
+Derived contact proofs retain native pointers and source hashes. Compatible cache
+upgrades revalidate links, and withdrawing a link restores the original unavailable
+HTML child time. A new archive publication requires a new inventory and assessment;
+stale, conflicting, or unsupported evidence never supplies a parent-time fallback.
+See [Operations](OPERATIONS.md#recover-html-forwarded-child-clocks) for the CLI workflow.
+
+The first request queues one bounded background build. Its private `contact_activity/` SQLite
+cache stores message IDs and ordering/source metadata, not another copy of chat text. Warm
+pagination fetches only the selected primary-key messages, and search stays within those
+verified IDs. History/contact file identities pin the cache, input journal sidecars fail closed,
+and atomic publication rejects changed inputs. A source link resolves the message's actual
+timeline page before returning to its original account and conversation.
+
+Pending contact pages render the shared waiting modal open in the initial HTML. They do not
+send an HTTP Refresh header. `wechat-contact-analysis.js` keeps one modal token and polls the
+same URL with `Accept: application/json`; pending replies contain status only. Ready/error
+replies reuse `_wechat_contact_analysis_content.html`, and the client replaces that content once
+after checking the request generation and exact contact scope. Shared numeric, table, and
+pagination adapters settle the result before the modal closes. Page exit aborts requests and
+ends the waiting state; late JSON responses cannot overwrite a later page. Dismissed waiting
+notifications retain unsubmitted search text, selection, focus, and scroll across completion.
+
+The analysis view reuses the standard shell, metrics, search, select, pagination, and fixed-header
+table. `wechat-contact-navigation.js` merges a scoped return checkpoint into the existing browser
+history entry. Back navigation restores the exact URL, nested chat scroll position, open source
+disclosures, and focus without creating a new tab or merging unrelated history state.
+
 `_wechat_browser.html` and `browser-messaging.css` reuse the existing table, select, card,
 collapse, theme, and pagination primitives. Sent/received messages branch by direction, group
 messages retain speaker identities, and uncertain direction/type stays explicit. Text is escaped
 plain text. Source details preserve account, archive, peer/sender IDs, original locators, clock
 limitations, and message IDs. Unknown export clocks never acquire an invented timezone.
 
-`wechat_forwarded.py` projects source-verified HTML component trees into a closed-by-default
-forwarded transcript. Contact lookup verifies the exact published source snapshot and member
-receipt before trusting an embedded identity binding. Both MesLocalID declarations, the raw and
-resolved trees, the recursive stored envelope, and the primary-text SHA-256 must agree; mixed
-native fields or inconsistent evidence keep the original literal presentation. Embedded messages
-reuse standard Contact objects and private viewing names without creating independent archive
-rows or merging source accounts. Original authors, component order, and source clocks remain
-separate from the outer forwarder and forwarding time. Missing clocks stay unavailable, and
-export clocks never acquire an inferred timezone. The projection reads no media and changes
-neither stored messages nor text exports.
+HTML forwarded components also reuse the existing default-closed transcript and message-row
+macros. `wechat_forwarded.py` accepts only the existing resolver's exact source-proof result,
+matching raw/projected component trees, the MesLocalID namespace, and the persisted recursive
+export envelope with its primary-text SHA-256. Mixed native declarations and inconsistent
+content remain literal. Source labels, individual HTML clocks, verified contact objects, and
+recorded component order survive the projection; unknown clocks remain unknown. Presentation
+paths identify embedded rows without inventing canonical messages or an unavailable immediate
+forwarding hierarchy. The original parent text, provenance, account partition, search, counts,
+and exports remain authoritative and unchanged.
+
+The optional `resource_references.sqlite3` sidecar adds native image, video, voice, sticker,
+file, and unresolved app-message occurrences without rewriting the text archive. Its messages
+and conversations follow the same indexed column contracts. Read-only timeline views combine
+both stores before searching, counting, sorting, paginating, or exporting. Account partitions
+remain authoritative, including resource-only conversations and unresolved native table-hash
+buckets. The sidecar pins the text archive's file identity and partition fingerprint; a changed
+archive requires an explicit rebuild, with a visible stale-index notice rather than a silent
+claim that resources are absent.
+
+An explicit `stage_resource_catalog_refresh()` can instead reprove an existing resident
+catalog against the current archive without reopening native databases or media. It streams
+exact preserved database receipts and local event signatures, including corroborating source
+observations, through a disk-backed anchor table. Events already present in the primary are
+excluded; conflicting evidence rejects the candidate. Resource-only conversations retain their
+verified account and peer scope. The candidate remains unpublished until an operator preserves
+the previous catalog, verifies input identities and integrity, and atomically replaces it.
+This refresh covers the existing catalog, not previously unindexed device backups. Native
+server ID `"0"` means unavailable; it never establishes an event match on its own.
+
+Session notices use the selected conversation's verified source scope. An HTML session does
+not inherit an unrelated native catalog failure, while its own media-index failures remain
+visible. Native sessions and global views retain applicable resource-index warnings. This
+presentation scope does not change the source dependencies used by export or navigation.
+
+`wechat_resource_index.py` reads preserved native message and file-metadata databases, never
+the media payload files. Main text records and their corroborating source observations are
+excluded from placeholder output. File classification needs a known app subtype or coherent
+FileBrowse metadata, not merely native message type 49. Unavailable compressed metadata stays
+an `App message`; its filename, sender, and file kind are not invented. Input file identities
+are checked before atomic publication, and the private sidecar uses owner-only permissions.
+Rebuild it explicitly with:
+
+```bash
+python3 scripts/index_wechat_resources.py /path/to/preserved/snapshot \
+  --local-store local_store --report /path/to/resource-index-report.json
+```
+
+`wechat_mac_resources.py` matches exact native account usernames to modern Mac account
+directories, or the legacy native MD5 directory locator. Display names never establish a
+mapping. Resolution uses bounded, account-scoped filesystem metadata only: exact checksum-name
+locations, explicitly weaker unique filename/size candidates, relevant conversation/month
+folders, or a missing state. Symlink escapes and cloud-only entries are rejected without
+hydration. Unknown files retain SVG placeholders. The loopback-only Finder POST accepts a
+stored reference ID, reloads the pinned source scope, and resolves the destination again;
+browser-provided paths are ignored. It reuses the existing native file-manager adapters and
+the application's shared cross-origin request guard. Resolved Mac paths stay out of HTML
+and JSON responses. No Mac database decryption or media decoding is performed.
 
 ### ChatGPT image cache
 
@@ -1088,13 +1433,24 @@ Doctor. The service never replays a local Action or continues automatically.
 | `local_store/messaging/wechat/history.sqlite3` | Source-separated, text-only human-message index; no media payloads | Ignored |
 | `local_store/messaging/wechat/contacts.sqlite3` | Native contact identities, scoped name observations, and pinned speaker corroboration | Ignored |
 | `local_store/llm/zhihu/history.parquet` | Formal Zhihu answer text, rich-text source, and source links indexed by Local resources | Ignored |
+| `local_store/messaging/wechat/history.sqlite3` | Source-separated, text-only human-message index; no media payloads | Ignored |
+| `local_store/messaging/wechat/resource_references.sqlite3` | Additive media/file reference metadata, source locators, and pinned archive identity; no payload copies | Ignored |
+| `local_store/messaging/wechat/contacts.sqlite3` | Native contact identities, scoped name observations, and pinned speaker corroboration | Ignored |
 | `logs/` | Local structured JSON-line logs | Ignored except `.gitkeep` |
 | Platform-native agenticContext settings path (`~/Library/Application Support/agenticContext/...` on macOS; `%APPDATA%\agenticContext\...` on Windows) | Device-local configuration | Outside the repository |
+| `~/.local/share/iphone-use/` or an explicitly selected private iPhone state directory | WDA source/builds, USB dependencies, signing configuration, job logs, screenshots, and the shared operation lock | Outside Git checkouts; preserve across application updates |
 | `app/`, `tests/`, `docs/`, `scripts/` | Versioned source, contracts, and checks | Committed |
 
 `AGENTIC_CONTEXT_RUNTIME_ROOT` and `AGENTIC_CONTEXT_SETTINGS_PATH` are the current runtime-injection inputs. The runtime root owns `local_store/`. The legacy `CACHELIKES_RUNTIME_ROOT` and `CACHELIKES_SETTINGS_PATH` aliases remain accepted for existing launchers and test environments.
 Production startup leaves them unset. Pytest sets both before imports so tests cannot resolve the
 user-owned locations above.
+
+The iPhone runtime separately resolves an explicit state directory, then `IPHONE_USE_STATE_DIR`,
+then legacy `WDA_STATE_DIR`. With no override, it reuses `~/.local/share/iphone-use-wda/` only
+when that directory contains `config.json` and the new default is absent. The Web factory's
+explicit `computer_use_runtime_root` maps iPhone state to its `iphone/` child for isolated
+applications. Tests pass temporary state and mocked transports; they must not initialize the
+default device runtime or read its production state.
 
 ## Cross-workflow and safety invariants
 

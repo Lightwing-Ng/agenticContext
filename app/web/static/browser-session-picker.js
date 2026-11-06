@@ -1,4 +1,4 @@
-/* Code version: v1.9.1-codex.0 */
+/* Code version: v1.10.1-codex.0 */
 
 (() => {
     function closeOtherMenus(activePanel) {
@@ -103,18 +103,23 @@
 
         function syncCacheBrowserUrl(browserId) {
             const page = document.querySelector("[data-cache-page]");
-            if (!page || !page.querySelector("[data-cache-content-mode]") || !browserId) return;
+            if (!page || page.dataset.cacheLocal === "true" || !browserId) return;
             const source = page.dataset.cacheSource || "";
             const modeFromUrl = window.location.pathname.match(/^\/cache\/[^/]+\/(text|media)\//);
-            const mode = modeFromUrl ? modeFromUrl[1] : (
+            const requestedMode = modeFromUrl ? modeFromUrl[1] : (
                 page.dataset.cachePageContentMode === "media" ? "media" : "text"
             );
-            if (!source) return;
+            const supportedModes = (page.dataset.cacheContentModes || "text,media").split(",")
+                .filter((value) => value === "text" || value === "media");
+            const mode = supportedModes.includes(requestedMode) ? requestedMode : (supportedModes[0] || "text");
+            if (!/^[a-z][a-z0-9_]*$/.test(source) || !["safari", "edge", "chrome"].includes(browserId)) return;
+            const sourceSegment = encodeURIComponent(source);
+            const browserSegment = encodeURIComponent(browserId);
             page.querySelectorAll("[data-cache-content-mode-option]").forEach((option) => {
                 const optionMode = option.dataset.cacheContentModeOption === "media" ? "media" : "text";
-                option.setAttribute("href", `/cache/${source}/${optionMode}/${browserId}`);
+                option.setAttribute("href", `/cache/${sourceSegment}/${optionMode}/${browserSegment}`);
             });
-            const nextPath = `/cache/${source}/${mode}/${browserId}`;
+            const nextPath = `/cache/${sourceSegment}/${mode}/${browserSegment}`;
             if (window.location.pathname === nextPath) {
                 page.dataset.cacheBrowser = browserId;
                 return;

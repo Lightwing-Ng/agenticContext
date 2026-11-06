@@ -1,6 +1,6 @@
 """Configuration helpers."""
 
-# Code version: v1.24.0-codex.0
+# Code version: v1.26.0-codex.0
 
 from __future__ import annotations
 
@@ -10,6 +10,7 @@ import os
 import sys
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
+from urllib.parse import urlsplit, urlunsplit
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -120,6 +121,7 @@ DEFAULT_CHROME_USER_DATA_DIR = default_chrome_user_data_dir()
 # Safari is opt-in: its authenticated Apple Events path owns a real Safari
 # window, while Edge provides the non-disruptive default on macOS and Windows.
 DEFAULT_GEMINI_BROWSER = "edge"
+DEFAULT_COPILOT_ENTRY_URL = "https://copilot.com/chat"
 DEFAULT_CHROME_PROFILE_DIRECTORY = "Default"
 DEFAULT_SHADOW_BACKUP_DESTINATION = (
     Path.home() / "AICaches"
@@ -141,6 +143,27 @@ MIN_CHATGPT_STARTUP_TIMEOUT_SECONDS = 1.0
 MAX_CHATGPT_STARTUP_TIMEOUT_SECONDS = 600.0
 MIN_CHATGPT_SCAN_WAIT_SECONDS = 0.1
 MAX_CHATGPT_SCAN_WAIT_SECONDS = 5.0
+
+
+def normalize_copilot_entry_url(value: object) -> str:
+    """Preserve trusted Copilot entry queries while rejecting alternate destinations."""
+    candidate = str(value or "").strip()
+    if not candidate or any(ord(character) < 33 or ord(character) == 127 for character in candidate):
+        return DEFAULT_COPILOT_ENTRY_URL
+    try:
+        parsed = urlsplit(candidate)
+        hostname = (parsed.hostname or "").lower()
+        if (
+            parsed.scheme != "https"
+            or hostname not in {"copilot.com", "www.copilot.com"}
+            or parsed.netloc.lower() != hostname
+            or parsed.path != "/chat"
+            or "#" in candidate
+        ):
+            return DEFAULT_COPILOT_ENTRY_URL
+    except ValueError:
+        return DEFAULT_COPILOT_ENTRY_URL
+    return urlunsplit(("https", hostname, "/chat", parsed.query, ""))
 
 
 def normalize_download_workers(value: object, fallback: int = DEFAULT_DOWNLOAD_WORKERS) -> int:
@@ -235,6 +258,11 @@ def default_claude_code_directory() -> Path:
     return Path.home() / ".claude"
 
 
+def default_codex_directory() -> Path:
+    """Read local Codex transcripts from the configured Codex home."""
+    return Path(os.environ.get("CODEX_HOME") or Path.home() / ".codex").expanduser()
+
+
 def default_grok_build_directory() -> Path:
     """Read local Grok Build sessions from the configured Grok home."""
     return Path(os.environ.get("GROK_HOME") or Path.home() / ".grok").expanduser()
@@ -254,9 +282,12 @@ class CrawlConfig:
     grok_browser: str = "edge"
     grok_build_directory: Path = field(default_factory=default_grok_build_directory)
     chatgpt_browser: str = "edge"
+    copilot_browser: str = field(default_factory=lambda: "safari" if is_macos_host() else "chrome")
+    copilot_entry_url: str = DEFAULT_COPILOT_ENTRY_URL
     gemini_browser: str = DEFAULT_GEMINI_BROWSER
     claude_browser: str = "edge"
     claude_code_directory: Path = field(default_factory=default_claude_code_directory)
+    codex_directory: Path = field(default_factory=default_codex_directory)
     zhihu_browser: str = "edge"
     gemini_max_conversations: int = DEFAULT_GEMINI_MAX_CONVERSATIONS
     gemini_scroll_pause_seconds: float = DEFAULT_GEMINI_SCROLL_PAUSE_SECONDS
@@ -279,7 +310,9 @@ class CrawlConfig:
     def __post_init__(self) -> None:
         """Normalize concurrency even when a caller constructs config directly."""
         self.download_workers = normalize_download_workers(self.download_workers)
+        self.copilot_entry_url = normalize_copilot_entry_url(self.copilot_entry_url)
         self.claude_code_directory = Path(self.claude_code_directory).expanduser()
+        self.codex_directory = Path(self.codex_directory).expanduser()
         self.grok_build_directory = Path(self.grok_build_directory).expanduser()
 
     def cache_scan_wait(self, provider: str, mode: str) -> float:
@@ -350,6 +383,13 @@ def load_saved_config(settings_path: Path | None = None) -> CrawlConfig:
             payload.get("chatgpt_browser", defaults.chatgpt_browser),
             defaults.chatgpt_browser,
         ),
+        copilot_browser=normalize_host_browser(
+            payload.get("copilot_browser", defaults.copilot_browser),
+            defaults.copilot_browser,
+        ),
+        copilot_entry_url=normalize_copilot_entry_url(
+            payload.get("copilot_entry_url", defaults.copilot_entry_url)
+        ),
         gemini_browser=normalize_host_browser(
             payload.get("gemini_browser", defaults.gemini_browser),
             defaults.gemini_browser,
@@ -361,6 +401,10 @@ def load_saved_config(settings_path: Path | None = None) -> CrawlConfig:
         claude_code_directory=Path(
             str(payload.get("claude_code_directory") or defaults.claude_code_directory).strip()
             or str(defaults.claude_code_directory)
+        ).expanduser(),
+        codex_directory=Path(
+            str(payload.get("codex_directory") or defaults.codex_directory).strip()
+            or str(defaults.codex_directory)
         ).expanduser(),
         zhihu_browser=normalize_host_browser(
             payload.get("zhihu_browser", defaults.zhihu_browser),
@@ -453,9 +497,12 @@ def save_config(config: CrawlConfig, settings_path: Path | None = None) -> None:
     payload["grok_browser"] = config.grok_browser
     payload["grok_build_directory"] = str(config.grok_build_directory)
     payload["chatgpt_browser"] = config.chatgpt_browser
+    payload["copilot_browser"] = config.copilot_browser
+    payload["copilot_entry_url"] = normalize_copilot_entry_url(config.copilot_entry_url)
     payload["gemini_browser"] = config.gemini_browser
     payload["claude_browser"] = config.claude_browser
     payload["claude_code_directory"] = str(config.claude_code_directory)
+    payload["codex_directory"] = str(config.codex_directory)
     payload["zhihu_browser"] = config.zhihu_browser
     payload["chatgpt_project_url"] = config.chatgpt_project_url
     payload["chatgpt_project_name"] = config.chatgpt_project_name

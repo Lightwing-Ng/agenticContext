@@ -1,6 +1,6 @@
 """Download media from tweet URLs with yt-dlp."""
 
-# Code version: v1.11.0-codex.0
+# Code version: v1.11.1-codex.0
 
 from __future__ import annotations
 
@@ -68,6 +68,11 @@ TRANSIENT_ERROR_MARKERS = (
     "proxyerror(",
     "tunnel connection failed",
     "service unavailable",
+)
+RETRY_ONLY_ERROR_MARKERS = (
+    "the downloaded file is empty",
+    "unexpected_eof_while_reading",
+    "eof occurred in violation of protocol",
 )
 CONFLICT_ERROR_MARKERS = (
     "file exists",
@@ -425,7 +430,10 @@ def run_yt_dlp_with_retries(
         stderr = result.stderr or ""
         combined = "\n".join(part for part in (stdout.strip(), stderr.strip()) if part).strip()
 
-        if result.returncode == 0 or not is_transient_retryable_output(combined) or attempt >= DOWNLOAD_RETRY_ATTEMPTS:
+        retryable = is_transient_retryable_output(combined) or any(
+            marker in combined.lower() for marker in RETRY_ONLY_ERROR_MARKERS
+        )
+        if result.returncode == 0 or not retryable or attempt >= DOWNLOAD_RETRY_ATTEMPTS:
             return subprocess.CompletedProcess(
                 command,
                 result.returncode,

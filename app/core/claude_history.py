@@ -1,6 +1,6 @@
 """Browser-rendered Claude history collection and local persistence.
 
-Code version: v1.4.0-claude.0
+Code version: v1.4.1-codex.0
 """
 
 from __future__ import annotations
@@ -79,6 +79,14 @@ class ClaudeConversationLink:
     url: str
     title: str
     updated_at: str = ""
+
+
+class ClaudeConversationDiscoveryIncompleteError(RuntimeError):
+    """Retain verified rendered sessions without claiming complete Chats traversal."""
+
+    def __init__(self, message: str, conversations: list[ClaudeConversationLink]) -> None:
+        super().__init__(message)
+        self.conversations = conversations
 
 
 @dataclass(frozen=True, slots=True)
@@ -161,7 +169,8 @@ def _discover_claude_links_from_dom(page: Any) -> list[ClaudeConversationLink]:
                 || ''
             ).replace(/\s+/g, ' ').trim();
             const rows = [];
-            for (const element of document.querySelectorAll('a[href], [role="link"]')) {
+            const main = document.querySelector('main');
+            for (const element of main?.querySelectorAll('a[href], [role="link"]') || []) {
                 const rawHref = element.href || element.getAttribute('href') || '';
                 let url;
                 try { url = new URL(rawHref, location.href); } catch (_) { continue; }
@@ -203,28 +212,41 @@ def _discover_claude_links_from_dom(page: Any) -> list[ClaudeConversationLink]:
     return links
 
 
-def _scroll_claude_navigation(page: Any) -> dict[str, Any]:
+def _scroll_claude_navigation(
+    page: Any, *, to_top: bool = False, advance: bool = True,
+) -> dict[str, Any]:
     """Scroll the rendered conversation list without touching the message page."""
 
     result = page.evaluate(
-        r"""() => {
-            const candidates = [...document.querySelectorAll('*')].filter((element) => {
-                const style = getComputedStyle(element);
-                return element.scrollHeight > element.clientHeight + 4
-                    && (style.overflowY === 'auto' || style.overflowY === 'scroll');
-            });
-            const target = candidates.find((element) =>
-                element.querySelector?.('a[href*="/chat/"], a[href*="/project/"]')
-            ) || document.scrollingElement || document.documentElement;
+        r"""({toTop, advance}) => {
+            const main = document.querySelector('main');
+            const anchor = main?.querySelector(
+                'a[href*="/chat/"], a[href*="/project/"], a[href*="/c/"], a[href*="?chat="]'
+            ) || main;
+            let target;
+            for (let current = anchor; current; current = current.parentElement) {
+                const style = getComputedStyle(current);
+                if (current.scrollHeight > current.clientHeight + 4
+                    && (style.overflowY === 'auto' || style.overflowY === 'scroll')) {
+                    target = current;
+                    break;
+                }
+            }
+            target ||= document.scrollingElement || document.documentElement;
             const before = target.scrollTop;
-            target.scrollTop = Math.min(target.scrollHeight, before + Math.max(480, target.clientHeight * 0.85));
+            if (toTop) target.scrollTop = 0;
+            else if (advance) {
+                target.scrollTop = Math.min(target.scrollHeight, before + Math.max(480, target.clientHeight * 0.85));
+            }
             target.dispatchEvent(new Event('scroll', {bubbles: true}));
             return {
                 moved: target.scrollTop !== before,
                 scrollTop: target.scrollTop,
                 scrollHeight: target.scrollHeight,
+                atEnd: target.scrollTop + target.clientHeight >= target.scrollHeight - 4,
             };
-        }"""
+        }""",
+        {"toTop": to_top, "advance": advance},
     )
     return dict(result) if isinstance(result, dict) else {}
 
@@ -285,6 +307,14 @@ def discover_claude_conversations(
     previous_signature: tuple[int, int, int] | None = None
     stable_checks = 0
     scroll_rounds = 0
+    scroll_initialized = False
+
+    def incomplete(reason: str) -> ClaudeConversationDiscoveryIncompleteError:
+        return ClaudeConversationDiscoveryIncompleteError(
+            f"Claude Chats discovery is incomplete. {reason} Existing cached history was preserved.",
+            list(collected.values()),
+        )
+
     while monotonic() < deadline:
         if stop_requested():
             break
@@ -292,14 +322,17 @@ def discover_claude_conversations(
         if stop_requested() or monotonic() >= deadline:
             break
         if not loading:
+            if not scroll_initialized:
+                _scroll_claude_navigation(page, to_top=True, advance=False)
+                scroll_initialized = True
             for link in _discover_claude_links_from_dom(page):
                 collected.setdefault(link.url, link)
             if stop_requested() or monotonic() >= deadline:
                 break
             if collected:
-                if scroll_rounds >= CLAUDE_DISCOVERY_ROUND_LIMIT:
-                    return list(collected.values())
-                scroll_state = _scroll_claude_navigation(page)
+                scroll_state = _scroll_claude_navigation(
+                    page, advance=scroll_rounds < CLAUDE_DISCOVERY_ROUND_LIMIT,
+                )
                 if stop_requested() or monotonic() >= deadline:
                     break
                 signature = (
@@ -307,9 +340,12 @@ def discover_claude_conversations(
                     int(scroll_state.get("scrollTop") or 0),
                     int(scroll_state.get("scrollHeight") or 0),
                 )
+                at_end = scroll_state.get("atEnd") is True
+                if scroll_rounds >= CLAUDE_DISCOVERY_ROUND_LIMIT and not at_end:
+                    raise incomplete("The scroll limit was reached before the main session list ended.")
                 stable_checks = (
                     stable_checks + 1
-                    if signature == previous_signature and not scroll_state.get("moved")
+                    if at_end and signature == previous_signature and not scroll_state.get("moved")
                     else 0
                 )
                 if stable_checks >= CLAUDE_DISCOVERY_STABLE_CHECKS:
@@ -325,8 +361,8 @@ def discover_claude_conversations(
             wait=lambda seconds: page.wait_for_timeout(seconds * 1_000),
         ):
             break
-    if collected and not stop_requested():
-        raise RuntimeError("Claude Chats did not finish loading a stable session list before the discovery timeout.")
+    if not stop_requested():
+        raise incomplete("The discovery timeout elapsed before the main session list stabilized at its end.")
     return list(collected.values())
 
 
@@ -917,13 +953,19 @@ def sync_claude_history(
     unchanged_sessions = 0
     failed_sessions = 0
     stopped = False
+    discovery_incomplete = False
     with _open_claude_history_page(descriptor) as page:
         recorder = ClaudeConversationPayloadRecorder(page)
         goto_with_retry(page, CLAUDE_HOME_URL, attempts=3, timeout_ms=90_000)
         _wait_for_claude_ready(page)
-        conversations = discover_claude_conversations(page, should_stop=should_stop)
+        try:
+            conversations = discover_claude_conversations(page, should_stop=should_stop)
+        except ClaudeConversationDiscoveryIncompleteError as exc:
+            discovery_incomplete = True
+            conversations = exc.conversations
+            state.append_event(f"{exc} Caching {len(conversations):,} verified sessions.")
         stopped = should_stop()
-        if not conversations and not stopped:
+        if not conversations and not stopped and not discovery_incomplete:
             raise RuntimeError(
                 "Claude history discovery returned no rendered sessions. "
                 "The authenticated Chats page may not have loaded."
@@ -933,7 +975,7 @@ def sync_claude_history(
                 phase="downloading",
                 discovered_tweets=len(conversations),
                 queued_tweets=len(conversations),
-                discovery_complete=True,
+                discovery_complete=not discovery_incomplete,
                 message=f"Found {len(conversations):,} Claude sessions; loading rendered messages...",
             )
             state.append_event(f"Found {len(conversations):,} Claude sessions in {descriptor.label}.")
@@ -1014,7 +1056,7 @@ def sync_claude_history(
 
         stopped = stopped or should_stop()
 
-    phase = "stopped" if stopped else ("failed" if failed_sessions else "completed")
+    phase = "stopped" if stopped else ("failed" if failed_sessions or discovery_incomplete else "completed")
     message = (
         f"{'Stopped' if stopped else 'Finished'} Claude history sync after "
         f"{processed_sessions:,}/{len(conversations):,} sessions; found {discovered_messages:,} messages, "
@@ -1033,6 +1075,7 @@ def sync_claude_history(
         downloaded_images=0,
         skipped_tweets=unchanged_sessions,
         failed_tweets=failed_sessions,
+        discovery_complete=not stopped and not discovery_incomplete,
         message=message,
     )
     state.append_event(message)
@@ -1044,4 +1087,5 @@ def sync_claude_history(
         "unchanged_messages": unchanged_messages,
         "failed": failed_sessions,
         "stopped": stopped,
+        "incomplete": discovery_incomplete,
     }

@@ -1,6 +1,6 @@
 """Tunnel MCP adapter and /mcp route tests.
 
-Code version: v2.14.2-codex.0
+Code version: v2.14.5-codex.0
 """
 
 from __future__ import annotations
@@ -62,7 +62,12 @@ EXPECTED_TOOLS = [
     "stop_check",
     "show_changes",
     "review_changes",
+    "wechat_archive_status",
+    "wechat_find_contacts",
+    "wechat_search_messages",
+    "wechat_get_message_context",
 ]
+WECHAT_TOOLS = EXPECTED_TOOLS[-4:]
 _REQUEST_SEQUENCE = count(1)
 
 
@@ -91,7 +96,7 @@ def workspace(tmp_path: Path) -> Path:
     project = tmp_path / "project"
     project.mkdir()
     (project / "AGENTS.md").write_text("# Rules\n")
-    (project / "app.py").write_text('print("hi")\n')
+    (project / "app.py").write_bytes(b'print("hi")\n')
     return project
 
 
@@ -214,8 +219,13 @@ def test_provider_ingresses_share_tools_but_keep_activity_attribution(
 ) -> None:
     chatgpt_tools = provider_rpc(service, "chatgpt", "tools/list")["result"]["tools"]
     gemini_tools = provider_rpc(service, "gemini", "tools/list")["result"]["tools"]
-    assert gemini_tools == chatgpt_tools
-    assert [tool["name"] for tool in gemini_tools] == EXPECTED_TOOLS
+    assert [tool["name"] for tool in chatgpt_tools] == EXPECTED_TOOLS
+    assert [tool["name"] for tool in gemini_tools] == [
+        name for name in EXPECTED_TOOLS if name not in WECHAT_TOOLS
+    ]
+    assert gemini_tools == [
+        tool for tool in chatgpt_tools if tool["name"] not in WECHAT_TOOLS
+    ]
     assert all("provider" not in tool["inputSchema"]["properties"] for tool in gemini_tools)
 
     provider_rpc(
@@ -362,10 +372,14 @@ def test_tool_list_is_closed_and_project_scoped() -> None:
         schema = tool["inputSchema"]
         assert "action" not in schema.get("properties", {})
         assert schema["additionalProperties"] is False
-        if name == "current_project":
+        if name == "current_project" or name in WECHAT_TOOLS:
             assert "project" not in schema.get("properties", {})
+            assert "path" not in schema.get("properties", {})
         else:
             assert schema["required"][0] == "project", name
+    for name in WECHAT_TOOLS:
+        assert tools[name]["annotations"]["readOnlyHint"] is True
+        assert tools[name]["annotations"]["destructiveHint"] is False
     assert tools["delete_file"]["inputSchema"]["required"] == [
         "project",
         "project_identity",
@@ -433,6 +447,7 @@ def test_every_listed_tool_is_dispatchable_by_its_published_schema(
 def test_every_listed_tool_accepts_a_behavior_valid_call(
     service: TunnelMcpService,
     repo: Path,
+    tmp_path: Path,
 ) -> None:
     (repo / "temporary.txt").write_text("temporary\n")
     results: dict[str, dict] = {
@@ -484,6 +499,26 @@ def test_every_listed_tool_accepts_a_behavior_valid_call(
     results["stop_check"] = call(service, "stop_check", {"job_id": job_id})
     results["show_changes"] = call(service, "show_changes", {"include_patch": True})
     results["review_changes"] = call(service, "review_changes")
+    from tests.test_wechat_mcp_archive import build_wechat_store
+
+    store = build_wechat_store(tmp_path / "wechat-store")
+    service._local_store_root = store["root"]
+    results["wechat_archive_status"] = call(service, "wechat_archive_status", project=None)
+    results["wechat_find_contacts"] = call(
+        service, "wechat_find_contacts", {"query": "Ada"}, project=None
+    )
+    results["wechat_search_messages"] = call(
+        service,
+        "wechat_search_messages",
+        {"contact_id": store["ada_id"], "page_size": 1},
+        project=None,
+    )
+    results["wechat_get_message_context"] = call(
+        service,
+        "wechat_get_message_context",
+        {"message_id": store["message_ids"]["two"]},
+        project=None,
+    )
 
     assert set(results) == set(EXPECTED_TOOLS)
     assert all(not result["isError"] for result in results.values()), results
@@ -846,8 +881,8 @@ def test_apply_edits_rolls_back_a_second_file_that_failed_after_publication(
 ) -> None:
     first = workspace / "first.txt"
     second = workspace / "second.txt"
-    first.write_text("first-before\n", encoding="utf-8")
-    second.write_text("second-before\n", encoding="utf-8")
+    first.write_bytes(b"first-before\n")
+    second.write_bytes(b"second-before\n")
     access = service._workspace_for(registry.resolve("main"))
     original_snapshot = access._current_file_sha256
     replacement_sha = hashlib.sha256(b"second-after\n").hexdigest()
@@ -939,8 +974,8 @@ def test_apply_edits_reports_a_recovery_write_failure_as_not_concurrent(
 ) -> None:
     first = workspace / "first.txt"
     second = workspace / "second.txt"
-    first.write_text("first-before\n", encoding="utf-8")
-    second.write_text("second-before\n", encoding="utf-8")
+    first.write_bytes(b"first-before\n")
+    second.write_bytes(b"second-before\n")
     access = service._workspace_for(registry.resolve("main"))
     original_replace = access._replace_text_file
 
@@ -985,7 +1020,7 @@ def test_path_guarded_recovery_cleanup_removes_the_verified_copy_once(
     access = service._workspace_for(registry.resolve("main"))
     recovery = ".app.py.agent-backup-test.tmp"
     recovery_path = workspace / recovery
-    recovery_path.write_text('print("hi")\n', encoding="utf-8")
+    recovery_path.write_bytes(b'print("hi")\n')
     monkeypatch.setattr("app.core.workspace.controller._ANCHORED_MUTATION_SUPPORTED", False)
 
     removed = access._discard_recovery_file(
@@ -2956,6 +2991,122 @@ def test_registry_cache_invalidates_equal_size_replacement_with_preserved_mtime(
     assert current.identity != previous.identity
 
 
+@pytest.mark.parametrize("query_failure", [False, True])
+@pytest.mark.parametrize("freeze_native_clock", [False, True])
+def test_windows_registry_change_time_invalidates_cached_authority_with_frozen_stat_fields(
+    tmp_path, monkeypatch, query_failure, freeze_native_clock,
+):
+    from types import SimpleNamespace
+    from app.core import tunnel_projects
+
+    first, second = tmp_path / "first-root", tmp_path / "other-root"
+    first.mkdir()
+    second.mkdir()
+    registry_path = tmp_path / "projects.json"
+    registry = write_registry(registry_path, [{"id": "work", "root": str(first), "writable": True}])
+    original_stat = Path.stat
+    frozen = registry_path.stat()
+    change = [100]
+
+    def unchanged_stat(path, *args, **kwargs):
+        metadata = original_stat(path, *args, **kwargs)
+        if path != registry_path:
+            return metadata
+        return SimpleNamespace(**{
+            field: getattr(frozen, field)
+            for field in ("st_dev", "st_ino", "st_mtime_ns", "st_ctime_ns", "st_size", "st_mode")
+        })
+
+    def native_change(path):
+        assert path == registry_path
+        if query_failure and change[0] == 200:
+            raise OSError("Synthetic native registry metadata query failure")
+        return 100 if freeze_native_clock else change[0]
+
+    windows_os = SimpleNamespace(**{**vars(os), "name": "nt"})
+    monkeypatch.setattr(tunnel_projects, "os", windows_os)
+    monkeypatch.setattr(tunnel_projects, "file_change_time", native_change)
+    monkeypatch.setattr(Path, "stat", unchanged_stat)
+    previous = registry.resolve("work")
+    replacement = json.dumps({"schema_version": 1, "projects": [{"id": "work", "root": str(second), "writable": True}]}).encode()
+    assert len(replacement) == frozen.st_size
+    registry_path.write_bytes(replacement)
+    change[0] = 200
+
+    if query_failure:
+        with pytest.raises(tunnel_projects.ProjectRegistryError, match="change metadata cannot be verified"):
+            registry.resolve("work")
+    else:
+        current = registry.resolve("work")
+        assert current.root == second.resolve()
+        assert current.identity != previous.identity
+    assert registry_path.read_bytes() == replacement
+
+
+def test_registry_cache_reuses_parsing_only_for_the_same_raw_bytes(tmp_path, monkeypatch):
+    from app.core import tunnel_projects
+
+    root = tmp_path / "project"
+    root.mkdir()
+    registry = write_registry(tmp_path / "projects.json", [{"id": "work", "root": str(root)}])
+    parse = tunnel_projects.parse_project_registry
+    parsed = []
+
+    def count_parse(payload):
+        parsed.append(payload)
+        return parse(payload)
+
+    monkeypatch.setattr(tunnel_projects, "parse_project_registry", count_parse)
+    assert registry.resolve("work").root == root.resolve()
+    assert registry.resolve("work").root == root.resolve()
+    assert len(parsed) == 1
+
+
+def test_registry_byte_budget_applies_even_when_cached_stat_reports_a_small_file(tmp_path, monkeypatch):
+    from app.core import tunnel_projects
+
+    root = tmp_path / "project"
+    root.mkdir()
+    path = tmp_path / "projects.json"
+    registry = write_registry(path, [{"id": "work", "root": str(root)}])
+    assert registry.resolve("work").root == root.resolve()
+    frozen = path.stat()
+    original_stat, original_open = Path.stat, Path.open
+    oversized = b" " * (tunnel_projects.MAX_REGISTRY_BYTES + 1)
+    path.write_bytes(oversized)
+    reads = []
+
+    def frozen_stat(candidate, *args, **kwargs):
+        return frozen if candidate == path else original_stat(candidate, *args, **kwargs)
+
+    class BoundedReader:
+        def __init__(self, handle):
+            self.handle = handle
+
+        def __enter__(self):
+            self.handle.__enter__()
+            return self
+
+        def __exit__(self, *args):
+            return self.handle.__exit__(*args)
+
+        def read(self, size=-1):
+            reads.append(size)
+            return self.handle.read(size)
+
+    def track_open(candidate, *args, **kwargs):
+        handle = original_open(candidate, *args, **kwargs)
+        return BoundedReader(handle) if candidate == path else handle
+
+    monkeypatch.setattr(Path, "stat", frozen_stat)
+    monkeypatch.setattr(Path, "open", track_open)
+    with pytest.raises(tunnel_projects.ProjectRegistryError, match="too large"):
+        registry.resolve("work")
+    assert reads == [tunnel_projects.MAX_REGISTRY_BYTES + 1]
+    with original_open(path, "rb") as source:
+        assert source.read() == oversized
+
+
 def test_queued_mutation_rechecks_registry_authority_after_project_lock(
     service: TunnelMcpService,
     registry: ProjectRegistry,
@@ -3399,26 +3550,40 @@ def test_git_summaries_withhold_sensitive_paths_with_adversarial_names(
     service: TunnelMcpService,
     repo: Path,
 ) -> None:
-    status_parent = repo / "arrow -> parent\n"
-    patch_parent = repo / 'quote" parent'
-    status_parent.mkdir()
-    patch_parent.mkdir()
-    status_secret = status_parent / ".env"
-    patch_secret = patch_parent / ".env"
-    status_secret.write_text("status before\n")
-    patch_secret.write_text("patch before\n")
-    (repo / "rename source.txt").write_text("rename before\n")
-    (repo / "visible old.txt").write_text("visible rename\n")
-    (repo / " visible edge.txt").write_text("edge before\n")
-    commit_all(repo, "Adversarial Git path fixture")
+    # These are valid Git names but cannot be materialized on Windows. Only this
+    # synthetic repository's index accepts them; the working tree stays portable.
+    git(repo, "config", "core.protectNTFS", "false")
 
-    status_secret.write_text("status secret after\n")
+    def stage_virtual(path, payload, *, mode="100644"):
+        blob = subprocess.run(
+            ["git", "hash-object", "-w", "--stdin"], cwd=repo,
+            input=payload, capture_output=True, check=True,
+        ).stdout.decode("ascii").strip()
+        git(repo, "update-index", "--add", "--cacheinfo", f"{mode},{blob},{path}")
+        git(repo, "update-index", "--skip-worktree", "--", path)
+
+    status_secret = "arrow -> parent\n/.env"
+    patch_secret = 'quote" parent/.env'
+    (repo / "rename source.txt").write_bytes(b"rename before\n")
+    (repo / "visible old.txt").write_bytes(b"visible rename\n")
+    (repo / " visible edge.txt").write_bytes(b"edge before\n")
+    git(repo, "add", "--", "rename source.txt", "visible old.txt", " visible edge.txt")
+    stage_virtual(status_secret, b"status before\n")
+    stage_virtual(patch_secret, b"patch before\n")
+    git(repo, "commit", "-qm", "Adversarial Git path fixture")
+
+    stage_virtual(status_secret, b"status secret after\n")
     (repo / " visible edge.txt").write_text("edge after\n")
-    git(repo, "update-index", "--chmod=+x", "--", 'quote" parent/.env')
-    renamed_secret = repo / "rename -> parent" / ".env"
-    renamed_secret.parent.mkdir()
-    git(repo, "mv", "--", "rename source.txt", "rename -> parent/.env")
-    git(repo, "mv", "--", "visible old.txt", "visible -> new.txt")
+    stage_virtual(patch_secret, b"patch before\n", mode="100755")
+    stage_virtual("rename -> parent/.env", (repo / "rename source.txt").read_bytes())
+    stage_virtual("visible -> new.txt", (repo / "visible old.txt").read_bytes())
+    git(repo, "update-index", "--force-remove", "--", "rename source.txt", "visible old.txt")
+    (repo / "rename source.txt").unlink()
+    (repo / "visible old.txt").unlink()
+    physical_names = {path.name for path in repo.iterdir()}
+    assert not physical_names & {"arrow -> parent\n", 'quote" parent', "rename -> parent", "visible -> new.txt"}
+    index_names = git(repo, "ls-files", "-z").split("\0")
+    assert {status_secret, patch_secret, "rename -> parent/.env", "visible -> new.txt"}.issubset(index_names)
 
     overview = content(call(service, "project_overview"))
     unstaged = content(call(service, "show_changes", {"include_patch": True}))
@@ -3488,12 +3653,76 @@ def test_project_reads_and_git_observation_are_lock_free(
     service: TunnelMcpService,
     registry: ProjectRegistry,
     workspace: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     git(workspace, "init", "-q")
     commit_all(workspace)
     main = registry.resolve("main")
     lock = service._project_lock(main)
     results: dict[str, dict] = {}
+    causes: list[dict[str, Any]] = []
+    stage_functions = {
+        "app.core.tunnel_mcp": {
+            "_run_tool", "_revalidate_project", "_binding", "_workspace_for",
+            "_execute_action", "_tool_read_files",
+        },
+        "app.core.tunnel_projects": {
+            "project_transaction_lock", "projects", "resolve",
+            "_root_filesystem_identity", "project_availability",
+        },
+        "app.core.platform_lock": {"lock_file", "unlock_file"},
+        "app.core.owner_only_files": {
+            "ensure_owner_only", "owner_only_problem", "_apply_boundary",
+            "_windows_problem", "current_user_sid", "set_protected_dacl", "dacl_text",
+        },
+        "app.core.workspace.paths": {
+            "_open_windows_directory_identity", "_windows_directory_identity",
+        },
+        "app.core.workspace.controller": {"__init__", "_verify_root_identity"},
+        "app.core.windows_file_metadata": {"file_change_time"},
+    }
+    original_run_tool = service._run_tool
+
+    def observed_run_tool(tool, arguments):
+        try:
+            return original_run_tool(tool, arguments)
+        except OSError as exc:
+            try:
+                stages = []
+                traceback = exc.__traceback__
+                while traceback is not None and len(stages) < 12:
+                    frame = traceback.tb_frame
+                    module = frame.f_globals.get("__name__")
+                    function = frame.f_code.co_name
+                    if function in stage_functions.get(module, ()):
+                        stages.append({
+                            "module": module,
+                            "function": function,
+                            "line": traceback.tb_lineno,
+                        })
+                    traceback = traceback.tb_next
+                error_type = type(exc).__name__
+                causes.append({
+                    "tool": tool.name if tool.name in {"read_files", "show_changes"} else "other",
+                    "project": (
+                        arguments.get("project")
+                        if arguments.get("project") in {"main", "ref"} else "other"
+                    ),
+                    "type": error_type if error_type in {
+                        "PermissionError", "FileNotFoundError", "NotADirectoryError",
+                        "IsADirectoryError", "BlockingIOError", "OwnerOnlyFileError",
+                    } else "OSError",
+                    "errno": exc.errno if type(exc.errno) is int else None,
+                    "winerror": (
+                        exc.winerror if type(getattr(exc, "winerror", None)) is int else None
+                    ),
+                    "stages": stages,
+                })
+            except Exception:
+                pass
+            raise
+
+    monkeypatch.setattr(service, "_run_tool", observed_run_tool)
 
     def run(name: str, tool: str, arguments: dict, project: str) -> None:
         results[name] = call(service, tool, arguments, project=project)
@@ -3515,6 +3744,24 @@ def test_project_reads_and_git_observation_are_lock_free(
         other.join(timeout=10)
         observation.join(timeout=10)
         reader.join(timeout=10)
+        if any(result.get("isError") for result in results.values()):
+            summaries = {}
+            for name in ("ref", "changes", "main"):
+                result = results.get(name, {})
+                structured = result.get("structuredContent", {})
+                code = structured.get("code")
+                summaries[name] = {
+                    "isError": result.get("isError"),
+                    "ok": structured.get("ok"),
+                    "code": (
+                        code if isinstance(code, str) and re.fullmatch(r"[a-z_]{1,64}", code)
+                        else "other"
+                    ),
+                }
+            print("Tunnel lock-free failure diagnostic: " + json.dumps({
+                "results": summaries,
+                "causes": causes[:3],
+            }, sort_keys=True))
         assert results["ref"]["isError"] is False
         assert results["changes"]["isError"] is False
         assert results["main"]["isError"] is False

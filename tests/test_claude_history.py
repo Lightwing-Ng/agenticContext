@@ -1,6 +1,6 @@
 """Focused tests for browser-rendered Claude history caching.
 
-Code version: v1.3.0-claude.0
+Code version: v1.3.1-codex.0
 """
 
 from pathlib import Path
@@ -147,7 +147,7 @@ def test_claude_safari_sync_caches_rendered_text_in_owned_context(
             if "a[href], [role=\"link\"]" in script:
                 return [{"href": "https://claude.ai/chat/chat-1", "title": "Rendered chat"}]
             if "scrollHeight" in script:
-                return {"moved": False, "scrollTop": 0, "scrollHeight": 0}
+                return {"moved": False, "scrollTop": 0, "scrollHeight": 0, "atEnd": True}
             if "user-message" in script:
                 return _RenderedClaudePage().evaluate(script)
             return None

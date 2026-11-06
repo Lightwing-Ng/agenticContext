@@ -1,6 +1,6 @@
 """Owner-only secret-file boundary on POSIX and Windows, and its Tunnel consumers.
 
-Code version: v1.0.0-claude.0
+Code version: v1.2.1-codex.0
 """
 
 from __future__ import annotations
@@ -19,6 +19,8 @@ from app.core.computer_use_agent import ComputerUseSettings
 from app.core.owner_only_files import (
     OwnerOnlyFileError,
     ensure_owner_only,
+    ensure_owner_only_directory,
+    owner_only_directory_problem,
     owner_only_problem,
     write_owner_only_text,
 )
@@ -36,6 +38,113 @@ windows_only = pytest.mark.skipif(os.name != "nt", reason="native Windows DACL b
 USER_SID = "S-1-5-21-1000-2000-3000-1001"
 OWNER_ONLY_DACL = f"D:PAI(A;;FA;;;{USER_SID})"
 INHERITED_DACL = f"D:AI(A;ID;FA;;;{USER_SID})(A;ID;FA;;;SY)(A;ID;FA;;;BA)"
+
+
+def test_owner_only_directory_uses_the_native_boundary(tmp_path: Path) -> None:
+    directory = tmp_path / "private"
+    directory.mkdir()
+
+    ensure_owner_only_directory(directory)
+
+    assert owner_only_directory_problem(directory) == ""
+    if os.name == "posix":
+        assert stat.S_IMODE(directory.stat().st_mode) == 0o700
+    else:
+        security = owner_only_files._windows_security()
+        flags, aces = owner_only_files._parse_dacl(security.dacl_text(str(directory)))
+        sid = security.current_user_sid()
+        expected = owner_only_files._parse_dacl(security.canonical_dacl(f"D:P(A;OICI;FA;;;{sid})"))
+        assert "P" in flags
+        assert aces == expected[1]
+
+
+def test_private_parent_keeps_existing_and_new_children_accessible(tmp_path: Path) -> None:
+    runtime = tmp_path / "runtime"
+    locks = runtime / "compute-job-locks"
+    locks.mkdir(parents=True)
+    existing = locks / "existing.lock"
+    existing.write_bytes(b"existing synthetic lock")
+
+    ensure_owner_only_directory(runtime)
+    created = runtime / "new-child"
+    created.mkdir()
+    added = created / "new.lock"
+    added.write_bytes(b"new synthetic lock")
+    ensure_owner_only_directory(runtime)
+
+    assert set(runtime.iterdir()) == {locks, created}
+    assert list(locks.iterdir()) == [existing]
+    assert list(created.iterdir()) == [added]
+    assert existing.read_bytes() == b"existing synthetic lock"
+    assert added.read_bytes() == b"new synthetic lock"
+    if os.name == "nt":
+        security = owner_only_files._windows_security()
+        sid = security.current_user_sid()
+        expected = owner_only_files._parse_dacl(security.canonical_dacl(f"D:P(A;;FA;;;{sid})"))
+        expected_kind, _flags, expected_rights, expected_object, expected_inherited, expected_sid = expected[1][0][1:-1].split(";")
+        for path in (locks, created, existing, added):
+            _flags, aces = owner_only_files._parse_dacl(security.dacl_text(str(path)))
+            assert len(aces) == 1
+            kind, flags, rights, object_type, inherited_type, principal = aces[0][1:-1].split(";")
+            assert (kind, rights, object_type, inherited_type, principal) == (
+                expected_kind, expected_rights, expected_object, expected_inherited, expected_sid
+            )
+            assert {flags[index:index + 2] for index in range(0, len(flags), 2)} == (
+                {"OI", "CI", "ID"} if path.is_dir() else {"ID"}
+            )
+        # Individual private files still require their own protected, exact DACL.
+        assert owner_only_problem(added) == "its Windows DACL still inherits parent permissions"
+    ensure_owner_only(added)
+    ensure_owner_only_directory(created)
+    assert owner_only_problem(added) == ""
+    assert owner_only_directory_problem(created) == ""
+
+
+def test_directory_boundary_rejects_a_regular_file(tmp_path: Path) -> None:
+    path = tmp_path / "file"
+    path.write_bytes(b"preserved")
+    with pytest.raises(OwnerOnlyFileError, match="not a regular directory"):
+        ensure_owner_only_directory(path)
+    assert path.read_bytes() == b"preserved"
+
+
+def test_file_boundary_rejects_multiple_hard_links(tmp_path: Path) -> None:
+    path = tmp_path / "file"
+    path.write_bytes(b"preserved")
+    linked = tmp_path / "linked"
+    os.link(path, linked)
+    before = path.stat()
+    with pytest.raises(OwnerOnlyFileError, match="multiple hard links"):
+        ensure_owner_only(path)
+    assert owner_only_problem(path) == "it has multiple hard links"
+    assert linked.read_bytes() == b"preserved"
+    assert path.stat().st_mode == before.st_mode
+
+
+def test_mutable_canonical_aliases_keep_the_native_owner_only_boundary(tmp_path: Path) -> None:
+    path = tmp_path / "history.sqlite3"
+    path.write_bytes(b"preserved canonical bytes")
+    if os.name == "posix":
+        path.chmod(0o644)
+    linked = tmp_path / "initial-publication.tmp"
+    os.link(path, linked)
+
+    ensure_owner_only(path, allow_hard_links=True)
+
+    assert path.samefile(linked)
+    assert path.read_bytes() == linked.read_bytes() == b"preserved canonical bytes"
+    assert owner_only_problem(path, allow_hard_links=True) == ""
+    assert owner_only_problem(linked, allow_hard_links=True) == ""
+    assert owner_only_problem(path) == "it has multiple hard links"
+    if os.name == "posix":
+        assert stat.S_IMODE(path.stat().st_mode) == 0o600
+
+
+@pytest.mark.parametrize("allow_hard_links", [False, True])
+def test_alias_option_never_allows_a_nonregular_file(tmp_path: Path, allow_hard_links: bool) -> None:
+    with pytest.raises(OwnerOnlyFileError, match="not a regular file"):
+        ensure_owner_only(tmp_path, allow_hard_links=allow_hard_links)
+    assert owner_only_problem(tmp_path, allow_hard_links=allow_hard_links) == "it is not a regular file"
 
 
 @pytest.fixture
@@ -135,25 +244,38 @@ def test_failed_verification_writes_no_secret_and_keeps_the_old_file(
 class FakeWindowsSecurity:
     """Model NTFS: a DACL belongs to the file object, so rename keeps it."""
 
-    def __init__(self, *, fail_set: bool = False, applied_dacl: str = OWNER_ONLY_DACL) -> None:
+    def __init__(self, *, fail_set: bool = False, applied_dacl: str | None = None) -> None:
         self.fail_set = fail_set
         self.applied_dacl = applied_dacl
         self.protected: set[int] = set()
+        self.dacls: dict[int, str] = {}
         self.sizes_when_protected: list[int] = []
 
     def canonical_dacl(self, sddl: str) -> str:
-        assert sddl == f"D:P(A;;FA;;;{USER_SID})"
+        assert sddl in {f"D:P(A;;FA;;;{USER_SID})", f"D:P(A;OICI;FA;;;{USER_SID})"}
         return sddl
 
     def set_protected_dacl(self, path: str, sddl: str) -> None:
         if self.fail_set:
             raise OwnerOnlyFileError("SetNamedSecurityInfoW failed with Windows error 5.")
-        assert sddl == f"D:P(A;;FA;;;{USER_SID})"
+        assert sddl in {f"D:P(A;;FA;;;{USER_SID})", f"D:P(A;OICI;FA;;;{USER_SID})"}
         self.sizes_when_protected.append(os.stat(path).st_size)
         self.protected.add(os.stat(path).st_ino)
+        self.dacls[os.stat(path).st_ino] = self.applied_dacl or sddl
 
     def dacl_text(self, path: str) -> str:
-        return self.applied_dacl if os.stat(path).st_ino in self.protected else INHERITED_DACL
+        current = Path(path)
+        if current.stat().st_ino in self.dacls:
+            return self.dacls[current.stat().st_ino]
+        for parent in current.parents:
+            policy = self.dacls.get(parent.stat().st_ino)
+            if policy is not None:
+                inherit = "CI" if current.is_dir() else "OI"
+                if inherit not in policy:
+                    return "D:"
+                flags = "OICIID" if current.is_dir() else "ID"
+                return f"D:AI(A;{flags};FA;;;{USER_SID})"
+        return INHERITED_DACL
 
     def current_user_sid(self) -> str:
         return USER_SID
@@ -226,6 +348,86 @@ def test_windows_ensure_repairs_a_legacy_inherited_file(
     assert security.sizes_when_protected == [len("secret")]
 
 
+def test_windows_directory_policy_propagates_only_current_user_access(
+    tmp_path: Path, simulated_windows
+) -> None:
+    security = simulated_windows(FakeWindowsSecurity())
+    runtime = tmp_path / "runtime"
+    locks = runtime / "compute-job-locks"
+    locks.mkdir(parents=True)
+    existing = locks / "existing.lock"
+    existing.write_bytes(b"existing synthetic lock")
+
+    ensure_owner_only_directory(runtime)
+    created = runtime / "new-child"
+    created.mkdir()
+    added = created / "new.lock"
+    added.write_bytes(b"new synthetic lock")
+    ensure_owner_only_directory(runtime)
+
+    assert security.dacl_text(str(runtime)) == f"D:P(A;OICI;FA;;;{USER_SID})"
+    for path in (locks, created):
+        assert security.dacl_text(str(path)) == f"D:AI(A;OICIID;FA;;;{USER_SID})"
+        assert list(path.iterdir())
+    for path in (existing, added):
+        assert security.dacl_text(str(path)) == f"D:AI(A;ID;FA;;;{USER_SID})"
+        assert path.read_bytes()
+    ensure_owner_only(added)
+    assert security.dacl_text(str(added)) == f"D:P(A;;FA;;;{USER_SID})"
+    assert owner_only_problem(added) == ""
+
+
+def test_windows_directory_refuses_a_noninheritable_file_policy(
+    tmp_path: Path, simulated_windows
+) -> None:
+    simulated_windows(FakeWindowsSecurity(applied_dacl=OWNER_ONLY_DACL))
+    directory = tmp_path / "private"
+    directory.mkdir()
+
+    with pytest.raises(OwnerOnlyFileError):
+        ensure_owner_only_directory(directory)
+
+    assert owner_only_directory_problem(directory)
+
+
+def test_windows_mutable_aliases_are_narrowed_and_verified_as_one_file(
+    tmp_path: Path, simulated_windows
+) -> None:
+    security = simulated_windows(FakeWindowsSecurity())
+    path = tmp_path / "history.sqlite3"
+    path.write_bytes(b"preserved canonical bytes")
+    linked = tmp_path / "initial-publication.tmp"
+    os.link(path, linked)
+    assert owner_only_problem(path, allow_hard_links=True) == "its Windows DACL still inherits parent permissions"
+
+    ensure_owner_only(path, allow_hard_links=True)
+
+    assert security.sizes_when_protected == [len(b"preserved canonical bytes")]
+    assert owner_only_problem(path, allow_hard_links=True) == ""
+    assert owner_only_problem(linked, allow_hard_links=True) == ""
+    assert path.samefile(linked)
+    assert linked.read_bytes() == b"preserved canonical bytes"
+    with pytest.raises(OwnerOnlyFileError, match="multiple hard links"):
+        ensure_owner_only(path)
+
+
+@pytest.mark.parametrize("fail_set", [True, False])
+def test_windows_mutable_alias_option_never_bypasses_dacl_failure(
+    tmp_path: Path, simulated_windows, fail_set: bool
+) -> None:
+    simulated_windows(FakeWindowsSecurity(fail_set=fail_set, applied_dacl=INHERITED_DACL))
+    path = tmp_path / "history.sqlite3"
+    path.write_bytes(b"preserved canonical bytes")
+    linked = tmp_path / "initial-publication.tmp"
+    os.link(path, linked)
+
+    with pytest.raises(OwnerOnlyFileError):
+        ensure_owner_only(path, allow_hard_links=True)
+
+    assert owner_only_problem(path, allow_hard_links=True)
+    assert path.read_bytes() == linked.read_bytes() == b"preserved canonical bytes"
+
+
 @windows_only
 def test_native_windows_dacl_is_protected_and_owner_only(tmp_path: Path) -> None:
     security = owner_only_files._windows_security()
@@ -239,6 +441,7 @@ def test_native_windows_dacl_is_protected_and_owner_only(tmp_path: Path) -> None
 
     assert target.read_text(encoding="utf-8") == "sk-proj-secret"
     assert owner_only_problem(target) == ""
+
     flags, aces = owner_only_files._parse_dacl(security.dacl_text(str(target)))
     assert "P" in flags
     expected = owner_only_files._parse_dacl(security.canonical_dacl(f"D:P(A;;FA;;;{sid})"))
@@ -247,6 +450,21 @@ def test_native_windows_dacl_is_protected_and_owner_only(tmp_path: Path) -> None
     assert owner_only_problem(plain) != ""
     ensure_owner_only(plain)
     assert owner_only_problem(plain) == ""
+
+
+@pytest.mark.parametrize("fail_set", [True, False])
+def test_windows_directory_failure_is_not_reported_private(
+    tmp_path, simulated_windows, fail_set,
+) -> None:
+    directory = tmp_path / "private"
+    directory.mkdir()
+    simulated_windows(FakeWindowsSecurity(fail_set=fail_set, applied_dacl=INHERITED_DACL))
+
+    with pytest.raises(OwnerOnlyFileError):
+        ensure_owner_only_directory(directory)
+
+    assert owner_only_directory_problem(directory)
+    assert list(directory.iterdir()) == []
 
 
 @pytest.fixture

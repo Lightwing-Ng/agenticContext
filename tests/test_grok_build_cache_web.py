@@ -56,7 +56,7 @@ def test_directory_picker_and_settings_accept_code_source(client, tmp_path):
     assert 'name="grok_build_directory"' in html
 
 
-@pytest.mark.parametrize("source", ["claude", "claude_code", "chatgpt", "grok", "gemini", "x", "zhihu"])
+@pytest.mark.parametrize("source", ["claude", "claude_code", "codex", "chatgpt", "grok", "gemini", "x", "zhihu"])
 def test_existing_sources_offer_separate_chat_and_code(client, source):
     html = client.get(f"/cache/{source}").get_data(as_text=True)
     assert 'data-cache-source-switcher-option="grok"' in html

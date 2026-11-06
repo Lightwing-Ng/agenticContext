@@ -1,6 +1,6 @@
 """Service orchestration and Flask contract tests.
 
-Code version: v1.8.15-codex.0
+Code version: v1.8.17-codex.0
 """
 
 from __future__ import annotations
@@ -25,9 +25,17 @@ NEW_BLUEPRINT_ENDPOINTS = frozenset(
     {
         "cache.api_cache_activity",
         "cache.refresh_browser_zhihu_answerer",
+        "local_resources.wechat_contact_analysis",
+        "local_resources.wechat_contact_csv",
+        "local_resources.wechat_message_source",
+        "local_resources.reveal_wechat_resource",
+        "local_resources.browser_wechat_session_csv",
         "local_resources.remove_browser_prompt",
         "local_resources.restore_browser_prompt",
+        "settings.choose_native_tunnel_directory_route",
         "tunnel.api_project",
+        "tunnel.api_project_register",
+        "tunnel.api_project_unregister",
         "tunnel.api_gemini_config",
         "tunnel.api_gemini_copy_value",
         "tunnel.api_gemini_authorization",
@@ -191,7 +199,7 @@ def test_web_pages_and_status_apis_are_available(client) -> None:
     for path, expected_text in (
             ("/cache/x", b"Execution overview"),
             ("/cache/grok", b"Grok Chat library overview"),
-            ("/cache/chatgpt", b"ChatGPT cache overview"),
+            ("/cache/chatgpt", b"ChatGPT Chat cache overview"),
             ("/cache/gemini", b"Gemini cache overview"),
             ("/cache/claude", b"Claude Chat cache overview"),
         ("/settings", b"Configuration center"),

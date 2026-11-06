@@ -1,10 +1,12 @@
 """Behavioral checks for the POSIX test and quality entrypoints.
 
-Code version: v1.3.2-codex.1
+Code version: v1.3.4-codex.0
 """
 
+from importlib.metadata import version
 import os
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import sys
@@ -14,6 +16,21 @@ import pytest
 
 pytestmark = pytest.mark.skipif(os.name == "nt", reason="Exercises POSIX executable scripts.")
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+
+
+@pytest.mark.parametrize("entrypoint", ["check.sh", "check.ps1"])
+def test_quality_gate_runs_every_javascript_test_module(entrypoint):
+    """New JavaScript test modules must enter both platform quality gates."""
+    expected = {
+        path.relative_to(PROJECT_ROOT).as_posix()
+        for path in (PROJECT_ROOT / "tests").glob("test_*.mjs")
+    }
+    source = (PROJECT_ROOT / "scripts" / entrypoint).read_text(encoding="utf-8")
+    command = next(line for line in source.splitlines() if "node --test " in line)
+    selected = re.findall(r"tests/test_[^\s]+\.mjs", command)
+    assert expected
+    assert set(selected) == expected
+    assert len(selected) == len(set(selected))
 
 
 def _environment():
@@ -62,7 +79,7 @@ def test_requirements_checker_rejects_an_installed_version_outside_the_constrain
         timeout=10,
     )
     assert result.returncode == 1
-    assert "pytest 9.0.3 does not satisfy <1" in result.stderr
+    assert f"pytest {version('pytest')} does not satisfy <1" in result.stderr
 
     requirements.write_text("pytest>=9,<10\n", encoding="utf-8")
     result = subprocess.run(

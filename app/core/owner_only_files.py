@@ -1,11 +1,13 @@
 """Owner-only secret files with one access boundary on POSIX and Windows.
 
-Code version: v1.0.0-claude.0
+Code version: v1.2.1-codex.0
 
 POSIX hosts express the boundary as a regular file with mode ``0600`` owned by
 the effective user. Windows honors only the read-only bit from a POSIX mode, so
 the same boundary is a protected DACL with exactly one ACE that grants the
 current user full control and inherits nothing from the parent directory.
+Directory grants also propagate that same current-user-only access to children;
+regular files keep their separate protected, noninheritable boundary.
 
 Secret bytes are written only after the boundary is applied and verified on the
 new file. Any failure removes the partial file and raises ``OwnerOnlyFileError``
@@ -260,12 +262,13 @@ def _windows_security() -> Any:
     return _WindowsSecurity()
 
 
-@lru_cache(maxsize=1)
-def _windows_owner_sddl() -> str:
+@lru_cache(maxsize=2)
+def _windows_owner_sddl(*, directory: bool = False) -> str:
     sid = _windows_security().current_user_sid()
     if not sid.startswith("S-1-"):
         raise OwnerOnlyFileError("The current Windows user SID could not be read.")
-    return f"D:P(A;;FA;;;{sid})"
+    inheritance = "OICI" if directory else ""
+    return f"D:P(A;{inheritance};FA;;;{sid})"
 
 
 def _parse_dacl(text: str) -> tuple[str, tuple[str, ...]] | None:
@@ -275,9 +278,9 @@ def _parse_dacl(text: str) -> tuple[str, tuple[str, ...]] | None:
     return match.group("flags"), tuple(re.findall(r"\([^)]*\)", match.group("aces")))
 
 
-def _windows_problem(path: Path) -> str:
+def _windows_problem(path: Path, *, directory: bool = False) -> str:
     security = _windows_security()
-    expected = _parse_dacl(security.canonical_dacl(_windows_owner_sddl()))
+    expected = _parse_dacl(security.canonical_dacl(_windows_owner_sddl(directory=directory)))
     actual = _parse_dacl(security.dacl_text(str(path)))
     if expected is None or actual is None:
         return "its Windows DACL could not be parsed"
@@ -289,14 +292,16 @@ def _windows_problem(path: Path) -> str:
     return ""
 
 
-def owner_only_problem(path: Path) -> str:
-    """Return why ``path`` is outside the owner-only boundary, or an empty string."""
+def owner_only_problem(path: Path, *, allow_hard_links: bool = False) -> str:
+    """Verify owner-only access, rejecting aliases unless explicitly permitted."""
     try:
         metadata = path.lstat()
     except OSError as exc:
         return f"it cannot be inspected ({exc.__class__.__name__})"
     if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode):
         return "it is not a regular file"
+    if not allow_hard_links and metadata.st_nlink != 1:
+        return "it has multiple hard links"
     if IS_WINDOWS:
         try:
             return _windows_problem(path)
@@ -319,15 +324,59 @@ def _apply_boundary(path: Path, descriptor: int | None = None) -> None:
         os.chmod(path, 0o600)
 
 
-def ensure_owner_only(path: Path) -> None:
-    """Narrow an existing regular file to the owner-only boundary and verify it."""
+def ensure_owner_only(path: Path, *, allow_hard_links: bool = False) -> None:
+    """Narrow a regular file; mutable canonical stores may explicitly allow aliases."""
     metadata = path.lstat()
     if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode):
         raise OwnerOnlyFileError(f"{path.name} is not a regular file.")
-    if not owner_only_problem(path):
+    if not allow_hard_links and metadata.st_nlink != 1:
+        raise OwnerOnlyFileError(f"{path.name} has multiple hard links.")
+    if not owner_only_problem(path, allow_hard_links=allow_hard_links):
         return
     _apply_boundary(path)
-    problem = owner_only_problem(path)
+    problem = owner_only_problem(path, allow_hard_links=allow_hard_links)
+    if problem:
+        raise OwnerOnlyFileError(f"{path.name} is not owner-only: {problem}.")
+
+
+def owner_only_directory_problem(path: Path) -> str:
+    """Verify a real directory's POSIX mode or native protected Windows DACL."""
+    try:
+        metadata = path.lstat()
+    except OSError as exc:
+        return f"it cannot be inspected ({exc.__class__.__name__})"
+    if (
+        stat.S_ISLNK(metadata.st_mode)
+        or not stat.S_ISDIR(metadata.st_mode)
+        or getattr(metadata, "st_file_attributes", 0) & 0x400
+    ):
+        return "it is not a regular directory"
+    if IS_WINDOWS:
+        try:
+            return _windows_problem(path, directory=True)
+        except OSError as exc:
+            return f"its Windows DACL could not be verified ({exc})"
+    if metadata.st_uid != os.geteuid():
+        return "it is owned by another user"
+    if stat.S_IMODE(metadata.st_mode) != 0o700:
+        return "its mode is not 0700"
+    return ""
+
+
+def ensure_owner_only_directory(path: Path) -> None:
+    """Narrow an existing real directory before any private child is created."""
+    metadata = path.lstat()
+    if (
+        stat.S_ISLNK(metadata.st_mode)
+        or not stat.S_ISDIR(metadata.st_mode)
+        or getattr(metadata, "st_file_attributes", 0) & 0x400
+    ):
+        raise OwnerOnlyFileError(f"{path.name} is not a regular directory.")
+    if IS_WINDOWS:
+        _windows_security().set_protected_dacl(str(path), _windows_owner_sddl(directory=True))
+    else:
+        path.chmod(0o700)
+    problem = owner_only_directory_problem(path)
     if problem:
         raise OwnerOnlyFileError(f"{path.name} is not owner-only: {problem}.")
 
@@ -375,6 +424,8 @@ __all__ = [
     "IS_WINDOWS",
     "OwnerOnlyFileError",
     "ensure_owner_only",
+    "ensure_owner_only_directory",
+    "owner_only_directory_problem",
     "owner_only_problem",
     "write_owner_only_text",
 ]

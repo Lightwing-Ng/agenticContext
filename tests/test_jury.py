@@ -1,6 +1,6 @@
 """Jury deliberation boundaries with deterministic, browser-free jurors.
 
-Code version: v1.8.1-codex.1
+Code version: v1.8.3-codex.0
 """
 
 from __future__ import annotations
@@ -231,6 +231,8 @@ def test_safari_jury_shares_one_context_and_freezes_each_sequential_round(
 ):
     from app.core import jury_browser, safari_automation
 
+    monkeypatch.setattr(jury_module, "is_macos_host", lambda: True)
+    monkeypatch.setattr(jury_browser, "is_macos_host", lambda: True)
     events = []
     owner_threads = []
     fail_grok = [False]
@@ -374,12 +376,22 @@ def test_safari_jury_shares_one_context_and_freezes_each_sequential_round(
     assert not any("edge" in event for event in events)
 
 
+def test_safari_provider_rejects_non_macos_before_transport(monkeypatch):
+    from app.core import jury_browser
+
+    monkeypatch.setattr(jury_browser, "is_macos_host", lambda: False)
+    with pytest.raises(ValueError, match="Safari Jury sessions require macOS"):
+        jury_browser._validate_provider(ComputerUseSettings(browser="safari"), "chatgpt")
+
+
 def test_safari_account_check_uses_one_context_three_tabs_and_keeps_collecting(
     tmp_path,
     monkeypatch,
+    macos_host,
 ):
     from app.core import jury_browser, safari_automation
 
+    monkeypatch.setattr(jury_browser, "is_macos_host", lambda: True)
     events = []
     contexts = []
 
@@ -438,7 +450,7 @@ def test_safari_account_check_uses_one_context_three_tabs_and_keeps_collecting(
         lambda *_args, **_kwargs: pytest.fail("Safari Jury must not fall back to Edge."),
     )
     service = JuryService(
-        lambda: ComputerUseSettings(browser="edge"),
+        lambda: ComputerUseSettings(browser="edge", operating_system="macos"),
         CrawlConfig,
         tmp_path / "safari-check",
     )

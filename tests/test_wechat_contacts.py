@@ -1,14 +1,18 @@
 """Canonical contact identity and scoped name evidence regression checks.
 
-Code version: v1.1.2-codex.0
+Code version: v1.2.1-codex.0
 """
 
+from contextlib import closing
+from copy import deepcopy
+import hashlib
 import json
 import sqlite3
 
 import pytest
 
 from app.core.wechat_contacts import (
+    FORWARDED_BINDING_AUTHORITY,
     MESSAGE_BINDING_AUTHORITY,
     MAX_OBSERVATIONS,
     WechatContactRepository,
@@ -20,6 +24,379 @@ from app.core.wechat_contacts import (
     provisional_contact_id,
     source_contact_id,
 )
+
+
+@pytest.fixture
+def forwarded_html_store(registry):
+    return _make_forwarded_html_store(registry)
+
+
+def _make_forwarded_html_store(registry):
+    from app.core.wechat_archive import wechat_archive_path
+    from app.core.wechat_export_merge import merge_wechat_export, _json, _identifier
+
+    sha = hashlib.sha256(b"Synthetic reviewed HTML archive").hexdigest()
+    source_id = "html-" + sha[:24]
+    member = {
+        "member_path": "Export/Room.html",
+        "sha256": hashlib.sha256(b"synthetic member").hexdigest(),
+        "size": 1000,
+        "crc32": "12345678",
+        "zip_filename": "Export/Room.html",
+        "header_offset": 0,
+        "compressed_size": 200,
+        "filename_utf8_recovered": False,
+    }
+    base_locator = {
+        "member_path": member["member_path"],
+        "page": 0,
+        "message_ordinal": 1,
+        "page_message_ordinal": 1,
+    }
+    locator = {
+        **base_locator,
+        "archive_sha256": sha,
+        "member": member,
+        "export_msgid": "42",
+        "export_msgid_namespace": "MesLocalID",
+        "export_msgtype": "49",
+    }
+    child = {
+        "export_msgid": "42_component",
+        "type": "",
+        "ordinal": 2,
+        "component_ordinal": 1,
+        "sender_export_id": "",
+        "sender_native_id": "wxid_forwarded",
+        "sender_label": "Original room-specific author",
+        "avatar_path": "Room_files/Portrait/wxid_forwarded.jpg",
+        "raw_timestamp": "2021-08-08 12:34:56",
+        "text": "Original child text",
+        "text_kind": "forwarded_rendered_text",
+        "source_locator": {
+            **base_locator,
+            "message_ordinal": 2,
+            "page_message_ordinal": 2,
+        },
+        "flags": ["original_nested_parent_unknown"],
+        "text_completion_parent_context": {"immediate_parent_known": False},
+        "forwarded_components": [],
+    }
+    source = {
+        "source_id": source_id,
+        "source_sha256": sha,
+        "source_file": "Synthetic.zip",
+        "source_label": "HTML export",
+        "source_account_id": "wxid_owner_a",
+        "owner_verified": True,
+        "owner_evidence": {
+            "native_username": "wxid_owner_a",
+            "native_contact_id": canonical_contact_id(
+                "wxid_owner_a", authority="native_account_owner"
+            ),
+        },
+        "selected_text_members": [member],
+        "source_conversation_catalog": [
+            {
+                "member_path": member["member_path"],
+                "index_avatar_native_id": "room-synthetic@chatroom",
+                "conversation_kind": "group",
+                "declared_async_counts": {"data_path": "Room_files/Data"},
+            }
+        ],
+    }
+    record_id = hashlib.sha256(
+        ("html-text-v1\0" + sha + "\0" + _json(locator)).encode()
+    ).hexdigest()
+    text = "Forward history\n\n[Forwarded text: Original room-specific author | 2021-08-08 12:34:56]\nOriginal child text"
+    record = {
+        "extraction_record_id": record_id,
+        "conversation_key": "room-synthetic@chatroom",
+        "peer_id": "room-synthetic@chatroom",
+        "title": "Synthetic room",
+        "kind": "group",
+        "sender_id": "owner-alias",
+        "sender_label": "Original parent",
+        "direction": "received",
+        "text": text,
+        "sent_at_raw": "2021-08-08 13:00:00",
+        "provenance": {
+            "locator": locator,
+            "forwarded_components": [child],
+            "text_extraction_kind": "rendered_app_text",
+        },
+        "flags": [],
+    }
+    merge_wechat_export(registry, source=source, records=[record], snapshot_id=sha)
+    message_id = _identifier(source_id, record_id)
+    path = wechat_archive_path(registry)
+    with closing(sqlite3.connect(path)) as connection, connection:
+        row = connection.execute(
+            "SELECT conversation_id,timestamp_value FROM messages WHERE id=?",
+            (message_id,),
+        ).fetchone()
+    request = {
+        "id": message_id,
+        "source_id": source_id,
+        "source_snapshot_id": sha,
+        "conversation_id": row[0],
+        "account_id": "wxid_owner_a",
+        "peer_id": "room-synthetic@chatroom",
+        "conversation_kind": "group",
+        "sender_id": "owner-alias",
+        "sender_label": "Original parent",
+        "text_sha256": hashlib.sha256(text.encode()).hexdigest(),
+        "timestamp_value": row[1],
+        "source_record_id": record_id,
+        "source_locator": locator,
+        "forwarded_components": [child],
+        "is_system": False,
+    }
+    return {"store": registry, "request": request, "source": source, "history": path}
+
+
+def _forwarded_result(fixture, request=None):
+    request = request or fixture["request"]
+    return WechatContactRepository(fixture["store"]).resolve_forwarded_components(
+        [request]
+    )[request["id"]]
+
+
+def test_published_forwarded_avatar_resolves_missing_registry_identity_without_writes(
+    forwarded_html_store,
+):
+    fixture = forwarded_html_store
+    history_before = fixture["history"].read_bytes()
+    contacts_path = contact_registry_path(fixture["store"])
+    contacts_before = contacts_path.read_bytes()
+    original_request = deepcopy(fixture["request"])
+    first = _forwarded_result(fixture)
+    second = _forwarded_result(fixture)
+    component = first["components"][0]
+    contact = component["contact"]
+    assert first["status"] == "source_proof_verified"
+    assert contact == second["components"][0]["contact"]
+    assert contact["id"] == canonical_contact_id(
+        "wxid_forwarded", authority="native_message_sender"
+    )
+    assert contact["identity_status"] == "verified"
+    assert contact["registry_persisted"] is False
+    assert contact["resolution_reason"] == FORWARDED_BINDING_AUTHORITY
+    assert contact["evidence"][0]["authority"] == FORWARDED_BINDING_AUTHORITY
+    assert (
+        contact["source_display_name"]
+        == original_request["forwarded_components"][0]["sender_label"]
+    )
+    assert component["text_completion_parent_context"] == {
+        "immediate_parent_known": False
+    }
+    assert component["flags"] == ["original_nested_parent_unknown"]
+    assert fixture["request"] == original_request
+    assert fixture["history"].read_bytes() == history_before
+    assert contacts_path.read_bytes() == contacts_before
+
+
+def test_forwarded_native_identity_reuses_registry_profile_and_source_name(
+    forwarded_html_store,
+):
+    fixture = forwarded_html_store
+    with sqlite3.connect(contact_registry_path(fixture["store"])) as connection:
+        canonical = insert_contact(connection, "wxid_forwarded")
+        observe(connection, canonical, "nickname", "Existing canonical nickname")
+    result = _forwarded_result(fixture)["components"][0]["contact"]
+    assert result["id"] == canonical
+    assert result["registry_persisted"] is True
+    assert result["display_name"] == "Existing canonical nickname"
+    assert result["source_display_name"] == "Original room-specific author"
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("id", "0" * 64),
+        ("source_id", "other-html-source"),
+        ("account_id", "wxid_other_owner"),
+        ("peer_id", "other@chatroom"),
+        ("conversation_id", "wechat:other"),
+        ("conversation_kind", "direct"),
+        ("source_snapshot_id", "0" * 64),
+        ("source_record_id", "forged-record"),
+        ("timestamp_value", "2020-01-01T00:00:00"),
+        ("text_sha256", "0" * 64),
+        ("is_system", True),
+    ],
+)
+def test_forwarded_proof_rejects_parent_scope_or_body_grafting(
+    forwarded_html_store, field, value
+):
+    fixture = forwarded_html_store
+    request = deepcopy(fixture["request"])
+    request[field] = value
+    result = _forwarded_result(fixture, request)
+    assert result["components"][0]["contact"]["identity_status"] == "unresolved"
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("sender_native_id", "wxid_forged"),
+        ("avatar_path", "Room_files/Portrait/wxid_forged.jpg"),
+        ("raw_timestamp", "2020-01-01 00:00:00"),
+        ("sender_label", "A matching label cannot authorize a different identity"),
+    ],
+)
+def test_forwarded_caller_tree_cannot_replace_persisted_component(
+    forwarded_html_store, field, value
+):
+    request = deepcopy(forwarded_html_store["request"])
+    request["forwarded_components"][0][field] = value
+    assert (
+        _forwarded_result(forwarded_html_store, request)["components"][0]["contact"][
+            "identity_status"
+        ]
+        == "unresolved"
+    )
+
+
+def _persist_forwarded_tree(fixture, request):
+    with sqlite3.connect(fixture["history"]) as connection:
+        raw = json.loads(
+            connection.execute(
+                "SELECT provenance FROM messages WHERE id=?", (request["id"],)
+            ).fetchone()[0]
+        )
+        raw["forwarded_components"] = request["forwarded_components"]
+        connection.execute(
+            "UPDATE messages SET provenance=? WHERE id=?",
+            (json.dumps(raw), request["id"]),
+        )
+
+
+@pytest.mark.parametrize(
+    "native,avatar,kind",
+    [
+        (
+            "wxid_forwarded",
+            "https://invalid.example/Portrait/wxid_forwarded.jpg",
+            "forwarded_rendered_text",
+        ),
+        (
+            "wxid_forwarded",
+            "Other_files/Portrait/wxid_forwarded.jpg",
+            "forwarded_rendered_text",
+        ),
+        (
+            "wxid_forwarded",
+            "Room_files/Portrait/wxid_other.jpg",
+            "forwarded_rendered_text",
+        ),
+        (
+            "person@openim",
+            "Room_files/Portrait/person@openim.jpg",
+            "forwarded_rendered_text",
+        ),
+        (
+            "wxid_unknwn_1",
+            "Room_files/Portrait/wxid_unknwn_1.jpg",
+            "forwarded_rendered_text",
+        ),
+        ("wxid_forwarded", "Room_files/Portrait/wxid_forwarded.jpg", "system_text"),
+    ],
+)
+def test_persisted_native_hint_needs_safe_matching_avatar_and_supported_identity(
+    forwarded_html_store, native, avatar, kind
+):
+    request = deepcopy(forwarded_html_store["request"])
+    request["forwarded_components"][0].update(
+        sender_native_id=native, avatar_path=avatar, text_kind=kind
+    )
+    _persist_forwarded_tree(forwarded_html_store, request)
+    contact = _forwarded_result(forwarded_html_store, request)["components"][0][
+        "contact"
+    ]
+    assert contact["identity_status"] in {"unresolved", "system"}
+    assert contact["resolution_reason"] != FORWARDED_BINDING_AUTHORITY
+
+
+@pytest.mark.parametrize(
+    "change",
+    ["owner", "verified", "archive", "member_sha", "catalog_peer", "partition_account"],
+)
+def test_forwarded_proof_rejects_inconsistent_published_source_metadata(
+    forwarded_html_store, change
+):
+    fixture = forwarded_html_store
+    with sqlite3.connect(fixture["history"]) as connection:
+        raw = json.loads(
+            connection.execute(
+                "SELECT metadata FROM source_snapshots LIMIT 1"
+            ).fetchone()[0]
+        )
+        if change == "owner":
+            raw["source_account_id"] = "wxid_wrong"
+        elif change == "verified":
+            raw["owner_verified"] = False
+        elif change == "archive":
+            raw["source_sha256"] = "0" * 64
+        elif change == "member_sha":
+            raw["selected_text_members"][0]["sha256"] = "0" * 64
+        elif change == "catalog_peer":
+            raw["source_conversation_catalog"][0]["index_avatar_native_id"] = (
+                "other@chatroom"
+            )
+        elif change == "partition_account":
+            connection.execute("UPDATE partitions SET account_key='account:wrong'")
+        connection.execute("UPDATE source_snapshots SET metadata=?", (json.dumps(raw),))
+    assert (
+        _forwarded_result(fixture)["components"][0]["contact"]["identity_status"]
+        == "unresolved"
+    )
+
+
+def test_forwarded_resource_limit_fails_closed_without_affecting_parent_text(
+    forwarded_html_store, monkeypatch
+):
+    from app.core import wechat_contacts
+
+    fixture = forwarded_html_store
+    monkeypatch.setattr(wechat_contacts, "MAX_FORWARDED_COMPONENTS", 0)
+    assert _forwarded_result(fixture) == {
+        "components": [],
+        "status": "component_resource_limit",
+    }
+    assert (
+        fixture["request"]["forwarded_components"][0]["text"] == "Original child text"
+    )
+
+
+def test_typed_system_flags_cannot_be_forged_as_numeric_values(forwarded_html_store):
+    request = deepcopy(forwarded_html_store["request"])
+    request["forwarded_components"][0]["is_system"] = True
+    _persist_forwarded_tree(forwarded_html_store, request)
+    request["forwarded_components"][0]["is_system"] = 1
+    assert (
+        _forwarded_result(forwarded_html_store, request)["components"][0]["contact"][
+            "identity_status"
+        ]
+        == "unresolved"
+    )
+
+
+@pytest.mark.parametrize(
+    "field,value", [("realm", "other-app"), ("namespace", "openim")]
+)
+def test_forwarded_wechat_proof_cannot_claim_another_realm(
+    forwarded_html_store, field, value
+):
+    request = deepcopy(forwarded_html_store["request"])
+    request["forwarded_components"][0][field] = value
+    _persist_forwarded_tree(forwarded_html_store, request)
+    assert (
+        _forwarded_result(forwarded_html_store, request)["components"][0]["contact"][
+            "identity_status"
+        ]
+        == "unresolved"
+    )
 
 
 @pytest.fixture

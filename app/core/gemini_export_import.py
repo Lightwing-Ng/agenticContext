@@ -4,7 +4,7 @@ Run with ``python -m app.core.gemini_export_import SOURCE --timezone AREA/CITY``
 The default is a read-only preview; ``--apply`` explicitly publishes the plan.
 """
 
-# Code version: v1.0.0-codex.0
+# Code version: v1.0.2-codex.0
 
 from __future__ import annotations
 
@@ -30,6 +30,7 @@ import pyarrow.parquet as pq
 from .config import LOCAL_STORE_ROOT
 from .gemini_downloader import gemini_history_path, normalize_gemini_conversation_url
 from .job_lock import CACHE_TASK_LOCK_NAME, CacheMaintenanceLock, CacheTaskLock
+from .owner_only_files import ensure_owner_only, ensure_owner_only_directory
 from .resource_persistence import (
     GEMINI_HISTORY_SCHEMA,
     GEMINI_HISTORY_SCHEMA_VERSION,
@@ -37,6 +38,7 @@ from .resource_persistence import (
 )
 
 
+# Publication receipts keep their format version across implementation-only repairs.
 VERSION = "v1.0.0-codex.0"
 _VOID = {"area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "param", "source", "track", "wbr"}
 _DATE = re.compile(
@@ -79,7 +81,8 @@ def _sync_directory(path: Path) -> None:
 
 
 def _sync_file(path: Path) -> None:
-    with path.open("rb") as handle:
+    # Windows requires write access for fsync; r+b leaves the retained bytes intact.
+    with path.open("r+b") as handle:
         os.fsync(handle.fileno())
     _sync_directory(path.parent)
 
@@ -89,6 +92,7 @@ def _atomic_json(path: Path, value: object) -> None:
     temporary = Path(name)
     try:
         with os.fdopen(descriptor, "wb") as handle:
+            ensure_owner_only(temporary)
             handle.write(_json_bytes(value))
             handle.flush()
             os.fsync(handle.fileno())
@@ -323,10 +327,12 @@ def parse_takeout(source: Path | str, *, timezone: str) -> dict:
 def _baseline(path: Path) -> list[dict]:
     if not path.exists():
         return []
-    table = pq.read_table(path)
-    if not table.schema.equals(GEMINI_HISTORY_SCHEMA, check_metadata=False):
-        raise TakeoutImportError("Existing Gemini history has an unsupported schema.")
-    rows = table.to_pylist()
+    with path.open("rb") as handle:
+        with pq.ParquetFile(handle) as reader:
+            table = reader.read()
+            if not table.schema.equals(GEMINI_HISTORY_SCHEMA, check_metadata=False):
+                raise TakeoutImportError("Existing Gemini history has an unsupported schema.")
+            rows = table.to_pylist()
     keys = set()
     positions = defaultdict(list)
     for row in rows:
@@ -558,19 +564,24 @@ def apply_import(plan: ImportPlan) -> dict:
         if receipt_path.exists():
             raise TakeoutImportError("An import receipt appeared after preview; make a new plan.")
         bundle.mkdir(parents=True, exist_ok=True, mode=0o700)
-        os.chmod(bundle, 0o700)
+        ensure_owner_only_directory(bundle)
         raw_root = bundle / "source"
         raw_root.mkdir(mode=0o700, exist_ok=True)
+        ensure_owner_only_directory(raw_root)
         source_dir = plan.source if plan.source.is_dir() else plan.source.parent
         for item in files:
             destination = raw_root / item["path"]
             _reject_symlink_ancestors(destination)
-            destination.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+            source_parent = raw_root
+            for part in destination.parent.relative_to(raw_root).parts:
+                source_parent /= part
+                source_parent.mkdir(exist_ok=True, mode=0o700)
+                ensure_owner_only_directory(source_parent)
             if destination.exists() and _file_sha(destination) != item["sha256"]:
                 raise TakeoutImportError("An existing source bundle has conflicting bytes.")
             if not destination.exists():
                 with destination.open("xb") as output:
-                    os.chmod(destination, 0o600)
+                    ensure_owner_only(destination)
                     with (source_dir / item["path"]).open("rb") as incoming:
                         shutil.copyfileobj(incoming, output)
                     output.flush()
@@ -585,14 +596,16 @@ def apply_import(plan: ImportPlan) -> dict:
             if backup.exists() and _file_sha(backup) != plan.baseline_sha256:
                 raise TakeoutImportError("An existing backup has conflicting bytes.")
             if not backup.exists():
-                shutil.copyfile(history, backup)
-                os.chmod(backup, 0o600)
+                with backup.open("xb") as output:
+                    ensure_owner_only(backup)
+                    with history.open("rb") as incoming:
+                        shutil.copyfileobj(incoming, output)
                 _sync_file(backup)
             if _file_sha(backup) != plan.baseline_sha256 or _baseline(backup) != _baseline(history):
                 raise TakeoutImportError("History backup verification failed.")
         candidate = bundle / "history-candidate.parquet"
         write_parquet_rows_atomic(candidate, plan.rows, GEMINI_HISTORY_SCHEMA)
-        os.chmod(candidate, 0o600)
+        ensure_owner_only(candidate)
         if _baseline(candidate) != plan.rows:
             raise TakeoutImportError("Typed candidate readback differs from the plan.")
         _sync_file(candidate)

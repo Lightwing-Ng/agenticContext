@@ -1,10 +1,11 @@
-/* Code version: v1.14.0-claude.0 */
+/* Code version: v1.14.1-codex.0 */
 
 (() => {
     const SESSION_CACHE_PREFIX = "cachelikes:browser-session:v8:";
     const SESSION_CACHE_TTL_MS = 300_000;
     const SESSION_STALE_MAX_AGE_MS = 1_800_000;
     const SESSION_REQUEST_TIMEOUT_MS = 240_000;
+    const SESSION_BUSY_RETRY_LIMIT = 30;
     const BOOTSTRAPPED_AGENT_PLATFORMS = new Set(["chatgpt", "gemini", "grok", "claude"]);
     const statusRequests = new Map();
 
@@ -31,6 +32,11 @@
     }
 
     function browserStatusCanUseClientCache(payload) {
+        if (payload?.busy) return false;
+        if (
+            payload?.logged_in === null
+            && payload.message === "Could not verify the account: RuntimeError: Safari is busy with another active browser task. Try again after it finishes."
+        ) return false;
         const freshness = payload?.browser_session_freshness;
         if (!freshness || typeof freshness !== "object") return true;
         const kind = String(freshness.kind || "").trim().toLowerCase();
@@ -152,6 +158,7 @@
         let lastPayload = null;
         let statusRequestRevision = 0;
         let loginRequestRevision = 0;
+        let busyRetryTimer = null;
 
         if (!platform || !statusCard || !statusAccount || !statusCheckmark) return null;
 
@@ -174,6 +181,9 @@
             }
             if (payload?.queue_available) {
                 return "Not checked";
+            }
+            if (payload?.busy) {
+                return "Waiting for Safari";
             }
             if (payload?.can_download) {
                 return accountName && !genericNames.has(accountName.toLowerCase())
@@ -224,6 +234,7 @@
         function setLoginAction(payload, browserId) {
             if (!loginButton) return;
             const shouldShow = Boolean(payload)
+                && !payload.busy
                 && payload.logged_in === false
                 && Boolean(browserId)
                 && Boolean(platform);
@@ -310,6 +321,7 @@
             // The browser is busy with another cache task: the account cannot be checked
             // now, but Start stays available because the task waits in the queue.
             const canQueue = !isReady && Boolean(payload.queue_available);
+            const waitingForBrowser = !isReady && Boolean(payload.busy) && !canQueue;
             root.classList.toggle("is-browser-ready", isReady);
             statusAccount.textContent = accountValue(payload);
             if (statusMessage) {
@@ -317,12 +329,43 @@
                 statusMessage.hidden = ((hideReadyMessage || statusCard.classList.contains("browser-session-status-card-compact")) && isReady) || !payload.message;
             }
             if (statusSpinner) statusSpinner.hidden = true;
-            if (canQueue) hideStatusCheckmark();
+            if (canQueue || waitingForBrowser) hideStatusCheckmark();
             else showStatusCheckmark(isReady ? "ready" : "error");
             setStartButtonReady(isReady || canQueue);
             setLoginAction(payload, browserId);
             if (recheckButton) recheckButton.hidden = isReady;
             notify(payload, browserId, "ready");
+        }
+
+        function cancelBusyRetry() {
+            if (busyRetryTimer !== null) window.clearTimeout(busyRetryTimer);
+            busyRetryTimer = null;
+        }
+
+        function retryBusyStatus(payload, browserId, requestPlatform, requestRevision, attempt) {
+            if (!payload.busy || payload.queue_available || payload.human_verification) return;
+            const retrySeconds = Number(payload.retry_after_seconds);
+            if (!Number.isFinite(retrySeconds) || retrySeconds <= 0) return;
+            if (attempt >= SESSION_BUSY_RETRY_LIMIT) {
+                if (statusMessage) {
+                    statusMessage.textContent = "Safari is still busy. Choose Recheck when it is free.";
+                    statusMessage.hidden = false;
+                }
+                return;
+            }
+            statusCard.setAttribute("aria-busy", "true");
+            if (statusSpinner) statusSpinner.hidden = false;
+            busyRetryTimer = window.setTimeout(() => {
+                busyRetryTimer = null;
+                if (
+                    root.isConnected
+                    && activeBrowser === browserId
+                    && platform === requestPlatform
+                    && requestRevision === statusRequestRevision
+                ) {
+                    void load(browserId, {force: true, busyRetryAttempt: attempt + 1});
+                }
+            }, Math.min(5, Math.max(1, retrySeconds)) * 1_000);
         }
 
         function setLoadingState(browserId) {
@@ -353,6 +396,7 @@
         }
 
         function clearStatus() {
+            cancelBusyRetry();
             statusCard.hidden = true;
             statusCard.removeAttribute("aria-busy");
             root.classList.remove("is-browser-status-loading", "is-browser-status-refreshing", "is-browser-ready");
@@ -368,6 +412,7 @@
         }
 
         async function load(browserId, options = {}) {
+            cancelBusyRetry();
             activeBrowser = browserId || "";
             if (!activeBrowser) {
                 clearStatus();
@@ -419,7 +464,7 @@
                     || requestRevision !== statusRequestRevision
                 ) return;
                 // A busy browser says nothing about the account, so the last check stays cached.
-                if (!payload.queue_available) {
+                if (!payload.busy && !payload.queue_available) {
                     if (browserStatusCanUseClientCache(payload)) {
                         writeSessionValue(cacheKey, JSON.stringify({
                             cached_at: browserStatusCacheTimestamp(payload),
@@ -430,6 +475,10 @@
                     }
                 }
                 setStatus(payload, browserId);
+                retryBusyStatus(
+                    payload, browserId, requestPlatform, requestRevision,
+                    Number(options.busyRetryAttempt) || 0,
+                );
                 if (payload.human_verification) return;
             } catch (error) {
                 if (

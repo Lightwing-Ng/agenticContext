@@ -1,6 +1,6 @@
 """Focused regression tests for persisted crawler settings.
 
-Code version: v1.5.1-codex.1
+Code version: v1.5.2-codex.0
 """
 
 from __future__ import annotations
@@ -71,7 +71,11 @@ class ConfigPersistenceTests(unittest.TestCase):
         self.assertEqual(loaded.chatgpt_project_url, "")
 
     def test_save_and_load_config_round_trip(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir:
+        with (
+            patch("app.core.config.is_macos_host", return_value=True),
+            patch("app.core.config.is_windows_host", return_value=False),
+            tempfile.TemporaryDirectory() as temp_dir,
+        ):
             settings_path = Path(temp_dir) / "settings.json"
             config = CrawlConfig(
                 headless=True,

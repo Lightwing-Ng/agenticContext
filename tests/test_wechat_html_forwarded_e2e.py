@@ -1,13 +1,15 @@
 """Published HTML forwarding reuses the collapsed transcript and message rows.
 
-Code version: v1.0.4-codex.0
+Code version: v1.3.1-codex.0
 """
 
 from __future__ import annotations
 
 from copy import deepcopy
+from contextlib import closing
 import hashlib
 import json
+import re
 import sqlite3
 from threading import Thread
 from types import SimpleNamespace
@@ -29,12 +31,12 @@ from app.core.wechat_display_names import display_names_path
 from app.web.app import create_app
 from app.web.config_store import SavedConfigStore
 from tests import test_sidebar_e2e
-from tests.wechat_forwarded_fixtures import make_forwarded_html_store
+from tests.test_wechat_contacts import _make_forwarded_html_store, insert_contact
 
 
 disposable_browser = test_sidebar_e2e.disposable_browser
 VIEWER_NAME = "Canonical original participant"
-TITLE = "Forward history"
+TITLE = "群聊的聊天记录"
 TEXTS = (
     "Recovered card <img src=https://invalid.example/track> remains literal.\n"
     + "https://example.invalid/"
@@ -60,9 +62,11 @@ def html_forwarded_server(tmp_path_factory):
     store = sandbox / "store"
     registry = contact_registry_path(store)
     registry.parent.mkdir(parents=True)
-    with sqlite3.connect(registry) as connection:
+    with closing(sqlite3.connect(registry)) as connection, connection:
         initialize_contact_registry(connection)
-    fixture = make_forwarded_html_store(store)
+        for username in ("wxid_forwarded", "wxid_other_forwarded"):
+            insert_contact(connection, username)
+    fixture = _make_forwarded_html_store(store)
     history = fixture["history"]
     request = deepcopy(fixture["request"])
     original = request["forwarded_components"][0]
@@ -101,7 +105,7 @@ def html_forwarded_server(tmp_path_factory):
             for child in children
         ]
     )
-    with sqlite3.connect(history) as connection:
+    with closing(sqlite3.connect(history)) as connection, connection:
         provenance = json.loads(
             connection.execute(
                 "SELECT provenance FROM messages WHERE id=?", (request["id"],)
@@ -128,6 +132,7 @@ def html_forwarded_server(tmp_path_factory):
     assert projection["status"] == "source_proof_verified"
     contacts = [child["contact"] for child in projection["components"]]
     assert all(contact["identity_status"] == "verified" for contact in contacts)
+    assert all(contact["registry_persisted"] is True for contact in contacts)
     assert contacts[0]["id"] == contacts[1]["id"] != contacts[2]["id"]
     contact_id = canonical_contact_id(
         "wxid_forwarded", authority="native_message_sender"
@@ -208,7 +213,11 @@ def _open_html_forwarded(page, fixture):
     card = page.locator("#wechat_message_" + fixture.parent_id)
     disclosure = card.locator(":scope > details.wechat-forwarded")
     expect(disclosure).to_have_count(1)
-    expect(disclosure.locator(":scope > summary")).to_have_text(TITLE)
+    expect(disclosure.locator(":scope > summary")).to_have_text("Chat history")
+    caption = card.locator(":scope > .wechat-history-source-text")
+    expect(caption).to_have_text("Group chat")
+    expect(caption).to_have_attribute("lang", "en-US")
+    expect(caption.locator(".wechat-kind-badge")).to_have_text("Group chat")
     return card, disclosure
 
 
@@ -241,9 +250,28 @@ def test_html_forwarded_source_uses_existing_collapsed_transcript(
     try:
         card, disclosure = _open_html_forwarded(page, fixture)
         expect(disclosure).not_to_have_attribute("open", "")
-        expect(disclosure.locator(".wechat-forwarded-glass")).not_to_be_visible()
+        expect(disclosure.locator(".wechat-forwarded-body")).not_to_be_visible()
         expect(page.locator("[data-chat-message-id]")).to_have_count(1)
-        expect(card.locator(":scope > .wechat-message-text")).to_have_count(0)
+        expect(card.locator(":scope > .wechat-message-text")).to_have_text("Group chat")
+        badge_geometry = card.evaluate("""card => {
+            const caption = card.querySelector(':scope > .wechat-history-source-text');
+            const badge = caption.querySelector('.wechat-kind-badge');
+            const reference = document.querySelector('.wechat-conversation-labels .wechat-kind-badge');
+            const properties = ['backgroundColor', 'color', 'borderRadius', 'fontSize', 'fontWeight'];
+            const style = getComputedStyle(badge);
+            const referenceStyle = getComputedStyle(reference);
+            return {
+                style: properties.map(name => style[name]),
+                referenceStyle: properties.map(name => referenceStyle[name]),
+                badgeWidth: badge.getBoundingClientRect().width,
+                captionWidth: caption.getBoundingClientRect().width,
+                fitsText: badge.scrollWidth <= badge.clientWidth,
+            };
+        }""")
+        assert badge_geometry["style"] == badge_geometry["referenceStyle"]
+        assert 0 < badge_geometry["badgeWidth"] < badge_geometry["captionWidth"]
+        assert badge_geometry["fitsText"]
+        assert TITLE not in card.inner_text()
         summary = disclosure.locator(":scope > summary")
         summary.focus()
         summary.press("Enter")
@@ -271,6 +299,12 @@ def test_html_forwarded_source_uses_existing_collapsed_transcript(
         assert set(times.evaluate_all("nodes => nodes.map(node => node.title)")) == {
             "Source clock; timezone unknown"
         }
+        for index in (0, 1):
+            expect(
+                children.nth(index).locator(".wechat-contact-link")
+            ).to_have_attribute(
+                "href", re.compile("/browser/wechat/contacts/" + fixture.contact_id)
+            )
         geometry = disclosure.evaluate(
             """details => {
                 const rows = [...details.querySelectorAll('[data-wechat-embedded-row]')];
@@ -283,26 +317,82 @@ def test_html_forwarded_source_uses_existing_collapsed_transcript(
                         speakerSize: getComputedStyle(article.querySelector('.wechat-speaker')).fontSize,
                         bodySize: getComputedStyle(article.querySelector('.wechat-message-text')).fontSize};
                 });
-                const style = getComputedStyle(details.querySelector('.wechat-forwarded-glass'));
+                const style = getComputedStyle(details.querySelector('.wechat-forwarded-body'));
                 const port = document.querySelector('[data-chat-scrollport]');
-                const sourceHeaders = [details.closest('.wechat-message-row'), ...rows].map(row => {
-                    const summary = row.querySelector(':scope > article > .wechat-provenance > summary');
-                    const speaker = summary.querySelector('.wechat-speaker').getBoundingClientRect();
-                    const clock = row.querySelector(':scope > time').getBoundingClientRect();
-                    return {chevronDisplay: getComputedStyle(summary, '::after').display,
-                        clockOverlapsSpeaker: clock.left < speaker.right && clock.right > speaker.left
-                            && clock.top < speaker.bottom && clock.bottom > speaker.top};
-                });
-                return {clocks, sourceHeaders, radius: style.borderRadius,
+                return {clocks, radius: style.borderRadius,
+                    background: style.backgroundColor, border: style.borderTopWidth,
+                    shadow: style.boxShadow,
+                    physicalSurface: details.querySelector(':scope > .wechat-forwarded-body').hasAttribute('data-chat-physical-surface'),
+                    referenceRight: details.closest('.wechat-message-row').querySelector(':scope > time').getBoundingClientRect().right,
                     blur: style.backdropFilter || style.webkitBackdropFilter,
                     documentOverflow: document.documentElement.scrollWidth - innerWidth,
                     listOverflow: port.scrollWidth - port.clientWidth};
             }"""
         )
-        assert all(header["chevronDisplay"] == "none" for header in geometry["sourceHeaders"])
-        assert not any(header["clockOverlapsSpeaker"] for header in geometry["sourceHeaders"])
-        assert geometry["radius"] == "10px"
-        assert "blur(" in geometry["blur"]
+        assert geometry["radius"] == "0px"
+        assert geometry["background"] == "rgba(0, 0, 0, 0)"
+        assert geometry["border"] == "0px"
+        assert geometry["shadow"] == geometry["blur"] == "none"
+        assert not geometry["physicalSurface"]
+        assert all(
+            abs(clock["right"] - geometry["referenceRight"]) <= 1
+            for clock in geometry["clocks"]
+        )
+        if geometry["documentOverflow"] != 0 or geometry["listOverflow"] != 0:
+            presented = page.evaluate("""() => {
+                const port = document.querySelector('[data-chat-scrollport]');
+                const details = port?.querySelector('details[data-wechat-forwarded]');
+                const root = details?.closest('.wechat-message');
+                const describe = node => {
+                    if (!node) return null;
+                    const box = node.getBoundingClientRect();
+                    const style = getComputedStyle(node);
+                    return {tag: node.tagName, id: node.id.slice(0, 120),
+                        classes: String(node.className).slice(0, 180),
+                        rect: {left: box.left, right: box.right, top: box.top,
+                            bottom: box.bottom, width: box.width, height: box.height},
+                        client: [node.clientWidth, node.clientHeight],
+                        scroll: [node.scrollWidth, node.scrollHeight],
+                        style: Object.fromEntries([
+                            'display', 'visibility', 'position', 'width', 'minWidth',
+                            'maxWidth', 'boxSizing', 'whiteSpace', 'overflowWrap',
+                            'overflowX', 'overflowY', 'marginInlineStart',
+                            'marginInlineEnd', 'transform', 'transition',
+                        ].map(name => [name, style[name]]))};
+                };
+                const offenders = (scope, edge) => scope
+                    ? [...scope.querySelectorAll('*')]
+                        .filter(node => node.getBoundingClientRect().right > edge + 1)
+                        .sort((a, b) => b.getBoundingClientRect().right
+                            - a.getBoundingClientRect().right)
+                        .slice(0, 8).map(describe)
+                    : [];
+                return {phase: 'after-failed-overflow-measurement',
+                    viewport: [innerWidth, innerHeight], deviceScale: devicePixelRatio,
+                    documentState: document.readyState, fonts: document.fonts.status,
+                    sidebarExpanded: document.querySelector('#sidebar_toggle')?.getAttribute('aria-expanded'),
+                    document: {clientWidth: document.documentElement.clientWidth,
+                        scrollWidth: document.documentElement.scrollWidth},
+                    port: describe(port), root: describe(root),
+                    documentOffenders: offenders(document.documentElement, innerWidth),
+                    listOffenders: offenders(port, port?.getBoundingClientRect().right ?? innerWidth),
+                    finiteAnimations: document.getAnimations().filter(animation =>
+                        Number.isFinite(animation.effect?.getTiming().iterations)
+                        && (animation.pending || animation.playState === 'running')
+                    ).slice(0, 12).map(animation => ({
+                        type: animation.constructor.name, property: animation.transitionProperty || '',
+                        state: animation.playState, pending: animation.pending,
+                        currentTime: animation.currentTime,
+                        duration: animation.effect.getTiming().duration,
+                        target: describe(animation.effect.target),
+                    }))};
+            }""")
+            print("Synthetic forwarded overflow: " + json.dumps({
+                "measuredDocumentOverflow": geometry["documentOverflow"],
+                "measuredListOverflow": geometry["listOverflow"],
+                "measuredClockRail": geometry["referenceRight"],
+                "measuredClocks": geometry["clocks"], "presented": presented,
+            }, separators=(",", ":")))
         assert geometry["documentOverflow"] == geometry["listOverflow"] == 0
         assert max(clock["topError"] for clock in geometry["clocks"]) <= 1
         assert (
@@ -318,7 +408,7 @@ def test_html_forwarded_source_uses_existing_collapsed_transcript(
         page.screenshot(path=tmp_path / f"html-forwarded-{width}-{color_scheme}.png")
         summary.press("Space")
         expect(disclosure).not_to_have_attribute("open", "")
-        expect(disclosure.locator(".wechat-forwarded-glass")).not_to_be_visible()
+        expect(disclosure.locator(".wechat-forwarded-body")).not_to_be_visible()
         assert not errors
         _assert_preserved(fixture)
     finally:
@@ -333,9 +423,9 @@ def test_html_forwarded_details_remain_usable_without_javascript(
     page = context.new_page()
     try:
         _, disclosure = _open_html_forwarded(page, fixture)
-        expect(disclosure.locator(".wechat-forwarded-glass")).not_to_be_visible()
+        expect(disclosure.locator(".wechat-forwarded-body")).not_to_be_visible()
         disclosure.locator(":scope > summary").press("Enter")
-        expect(disclosure.locator(".wechat-forwarded-glass")).to_be_visible()
+        expect(disclosure.locator(".wechat-forwarded-body")).to_be_visible()
         children = disclosure.locator("[data-wechat-embedded-row]")
         expect(children).to_have_count(3)
         assert children.locator(".wechat-message-text").all_text_contents() == list(

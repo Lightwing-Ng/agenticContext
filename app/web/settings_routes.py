@@ -6,7 +6,7 @@ in ``app.web.form_config``; this module owns validation of what a submitted form
 for Agent settings, shadow backup, and local directories.
 """
 
-# Code version: v1.6.0-codex.0
+# Code version: v1.6.1-codex.0
 
 from __future__ import annotations
 
@@ -36,17 +36,16 @@ from app.core.foundation import (
     APP_VERSION,
     DEFAULT_HOST,
     DEFAULT_PORT,
-    get_log_file_path,
-)
-from app.core.native_directory_picker import (
     NativeDirectoryPickerError,
     choose_native_directory,
+    get_log_file_path,
 )
 from app.core.storage import (
     SettingsDirectoryBrowserError,
     ShadowBackupError,
     browse_settings_directory,
 )
+from app.web.public_errors import public_diagnostic_payload, public_exception_message
 from app.web.config_store import SavedConfigStore
 from app.web.form_config import parse_form_config
 from app.web.presentation import validate_local_directory_path
@@ -55,6 +54,23 @@ from app.web.token_registry import build_style_token_component_rows
 
 SETTINGS_BLUEPRINT_NAME = "settings"
 _native_picker_lock = Lock()
+_DIRECTORY_PUBLIC_ERRORS = (
+    "The directory path must be absolute.",
+    "Permission denied for this directory.",
+    "The directory no longer exists.",
+    "The path is not a directory.",
+    "No readable parent directory is available.",
+)
+_NATIVE_PICKER_PUBLIC_ERRORS = (
+    "The system folder picker could not open.",
+    "The system folder picker failed to open.",
+)
+_SHADOW_BACKUP_PUBLIC_ERRORS = (
+    "Enable shadow cloud backup before starting a sync.",
+    "A shadow cloud backup is already running.",
+    "A cache task is active. Start the shadow cloud backup after it finishes.",
+)
+
 
 
 @dataclass(frozen=True, slots=True)
@@ -87,7 +103,11 @@ def register_settings_routes(app: Flask, context: SettingsRouteContext) -> None:
             saved_config=context.config_store.config,
             log_file_path=str(get_log_file_path()),
             local_store_root=str(context.media_catalog.local_store_root),
-            shadow_backup_snapshot=context.shadow_backup_service.snapshot(),
+            shadow_backup_snapshot=public_diagnostic_payload(
+                context.shadow_backup_service.snapshot(),
+                fallback="Shadow cloud backup could not complete. Please try again.",
+                allowed=_SHADOW_BACKUP_PUBLIC_ERRORS, operation="read shadow backup status",
+            ),
             agent_settings=context.computer_use_settings.settings,
             agent_runtime_snapshot=context.computer_use_settings.snapshot(),
         )
@@ -153,12 +173,21 @@ def register_settings_routes(app: Flask, context: SettingsRouteContext) -> None:
         try:
             context.shadow_backup_service.start(context.config_store.config)
         except ShadowBackupError as exc:
-            context.shadow_backup_service.record_start_error(exc)
+            context.shadow_backup_service.record_start_error(ShadowBackupError(
+                public_exception_message(
+                    exc, fallback="Shadow cloud backup could not start. Please try again.",
+                    allowed=_SHADOW_BACKUP_PUBLIC_ERRORS, operation="start shadow backup",
+                )
+            ))
         return redirect(url_for(f"{SETTINGS_BLUEPRINT_NAME}.settings", _anchor="settings-cloud"))
 
     @blueprint.get("/api/settings/shadow-backup/status")
     def api_shadow_backup_status():
-        return jsonify(context.shadow_backup_service.snapshot())
+        return jsonify(public_diagnostic_payload(
+            context.shadow_backup_service.snapshot(),
+            fallback="Shadow cloud backup could not complete. Please try again.",
+            allowed=_SHADOW_BACKUP_PUBLIC_ERRORS, operation="read shadow backup status",
+        ))
 
     @blueprint.post("/api/settings/shadow-backup/destination")
     def choose_shadow_backup_destination_route():
@@ -186,6 +215,7 @@ def register_settings_routes(app: Flask, context: SettingsRouteContext) -> None:
         directory_options = {
             "grok_build_directory": context.config_store.config.grok_build_directory,
             "claude_code_directory": context.config_store.config.claude_code_directory,
+            "codex_directory": context.config_store.config.codex_directory,
             "chrome_user_data_dir": context.config_store.config.chrome_user_data_dir,
             "shadow_backup_destination": context.config_store.config.shadow_backup_destination,
             "agent_allowed_root": Path(context.computer_use_settings.settings.workspace_path),
@@ -208,7 +238,10 @@ def register_settings_routes(app: Flask, context: SettingsRouteContext) -> None:
                 recover_invalid=payload.get("recover_invalid") is True,
             )
         except SettingsDirectoryBrowserError as exc:
-            return jsonify({"error": str(exc)}), 400
+            return jsonify({"error": public_exception_message(
+                exc, fallback="This directory could not be opened. Choose another directory.",
+                allowed=_DIRECTORY_PUBLIC_ERRORS, operation="browse Settings directory",
+            )}), 400
 
         body = {
             "current_path": str(listing.path),
@@ -261,7 +294,10 @@ def register_settings_routes(app: Flask, context: SettingsRouteContext) -> None:
                 "Choose a registered Tunnel project folder",
             )
         except NativeDirectoryPickerError as exc:
-            return jsonify({"error": str(exc)}), 503
+            return jsonify({"error": public_exception_message(
+                exc, fallback="The system folder picker could not open. Please try again.",
+                allowed=_NATIVE_PICKER_PUBLIC_ERRORS, operation="open system folder picker",
+            )}), 503
         finally:
             _native_picker_lock.release()
         return jsonify({"cancelled": selected is None, "path": str(selected) if selected else ""})

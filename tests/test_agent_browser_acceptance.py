@@ -1,14 +1,16 @@
 """Security and lifecycle tests for local browser acceptance.
 
-Code version: v1.1.0-codex.1
+Code version: v1.1.2-codex.0
 """
 
 from __future__ import annotations
 
 from contextlib import contextmanager
+import json
 from pathlib import Path
 import socket
 from threading import current_thread
+import time
 
 import pytest
 
@@ -55,8 +57,78 @@ def test_browser_acceptance_activity_detail_is_specific_and_bounded() -> None:
 
 def test_workspace_controller_executes_browser_acceptance_inside_active_playwright(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     playwright_sync = pytest.importorskip("playwright.sync_api")
+    from playwright.sync_api._generated import Tracing
+
+    from app.core import browser_sessions
+    from app.core.agent import browser_acceptance
+    from app.core.workspace import controller as controller_module
+
+    stages: list[dict[str, object]] = []
+
+    def timed_stage(stage, operation, *args, **kwargs):
+        if current_thread().name != "agent-browser-acceptance":
+            return operation(*args, **kwargs)
+        stage_started = time.monotonic()
+        raised = True
+        try:
+            value = operation(*args, **kwargs)
+            raised = False
+            return value
+        finally:
+            try:
+                if len(stages) < 48:
+                    stages.append({
+                        "stage": stage,
+                        "started_seconds": round(stage_started - started, 3),
+                        "duration_seconds": round(time.monotonic() - stage_started, 3),
+                        "raised": raised,
+                    })
+            except Exception:
+                pass
+
+    def observe_method(owner, name, stage):
+        original = getattr(owner, name)
+
+        def observed(*args, **kwargs):
+            return timed_stage(stage, original, *args, **kwargs)
+
+        monkeypatch.setattr(owner, name, observed)
+
+    original_playwright_context = browser_sessions.sync_playwright_or_error
+
+    class ObservedPlaywrightContext:
+        def __init__(self, manager):
+            self.manager = manager
+
+        def __enter__(self):
+            return timed_stage("playwright_enter", self.manager.__enter__)
+
+        def __exit__(self, *args):
+            return timed_stage("playwright_exit", self.manager.__exit__, *args)
+
+    def observed_playwright_context():
+        return ObservedPlaywrightContext(original_playwright_context())
+
+    monkeypatch.setattr(browser_sessions, "sync_playwright_or_error", observed_playwright_context)
+    for owner, name, stage in (
+        (browser_acceptance, "_preview_boot_record", "preview_boot"),
+        (controller_module, "_stop_process", "preview_stop"),
+        (playwright_sync.BrowserType, "launch", "browser_launch"),
+        (playwright_sync.Browser, "new_context", "context_new"),
+        (playwright_sync.Browser, "close", "browser_close"),
+        (playwright_sync.BrowserContext, "new_page", "page_new"),
+        (playwright_sync.BrowserContext, "close", "context_close"),
+        (Tracing, "start", "trace_start"),
+        (Tracing, "stop", "trace_stop"),
+        (playwright_sync.Page, "goto", "page_goto"),
+        (playwright_sync.Page, "evaluate", "page_evaluate"),
+        (playwright_sync.Page, "screenshot", "page_screenshot"),
+        (playwright_sync.Locator, "count", "selector_count"),
+    ):
+        observe_method(owner, name, stage)
     workspace = tmp_path / "project"
     workspace.mkdir()
     (workspace / "index.html").write_text(
@@ -70,6 +142,7 @@ def test_workspace_controller_executes_browser_acceptance_inside_active_playwrig
         compute_job_runtime_root=tmp_path / "runtime",
     )
     with playwright_sync.sync_playwright():
+        started = time.monotonic()
         result = controller.execute(
             {
                 "action": "browser_acceptance",
@@ -79,6 +152,46 @@ def test_workspace_controller_executes_browser_acceptance_inside_active_playwrig
                 "expected_selectors": ["main"],
             }
         )
+        elapsed = time.monotonic() - started
+    if not result["ok"]:
+        diagnostics = {
+            "error": str(result.get("error") or "")[:500],
+            "action": result.get("action"),
+            "controller_elapsed_seconds": round(elapsed, 3),
+            "acceptance_result_returned": "viewports" in result,
+            "controller_evidence_checked": "workspace_scan_complete" in result,
+            "stages": stages[:48],
+            **{
+                key: result.get(key)
+                for key in (
+                    "mutated_workspace", "workspace_scan_complete", "verification_current",
+                    "edit_generation", "verification_generation", "workspace_generation",
+                    "verification_workspace_generation", "verification_snapshot_id",
+                )
+            },
+            "viewports": [],
+        }
+        for viewport in result.get("viewports", [])[:2]:
+            diagnostics["viewports"].append({
+                "viewport": {
+                    key: viewport.get("viewport", {}).get(key)
+                    for key in ("name", "width", "height")
+                },
+                "ok": viewport.get("ok"),
+                "http_status": viewport.get("http_status"),
+                "assertions": [
+                    {key: item.get(key) for key in ("kind", "index", "ok")}
+                    for item in viewport.get("assertions", [])[:40]
+                ],
+                **{
+                    key: [
+                        str(value)[:80] if str(value).startswith("sha256:") else "[non-fingerprint omitted]"
+                        for value in viewport.get(key, [])[:20]
+                    ]
+                    for key in ("console_errors", "page_errors", "blocked_requests")
+                },
+            })
+        print("Synthetic browser acceptance failure: " + json.dumps(diagnostics, separators=(",", ":")))
     assert result["ok"] is True
     assert result["action"] == "browser_acceptance"
     assert result["preview"]["port"] != 8666

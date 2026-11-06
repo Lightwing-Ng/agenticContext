@@ -1,6 +1,6 @@
 """Disposable-browser coverage for saving media prompts and managing saved prompt rows.
 
-Code version: v1.0.0-claude.0
+Code version: v1.0.1-codex.0
 """
 
 from __future__ import annotations
@@ -180,6 +180,15 @@ def test_media_prompt_heading_reveals_the_standard_save_action(
 
         # The action is the standard 32px Circular icon button inside the heading row.
         assert "circular-icon-button" in (first_save.get_attribute("class") or "")
+        # Opacity reveals immediately while the hovered card is still translating.
+        page.wait_for_function(
+            """button => !button.closest('.browser-media-card').getAnimations().some(
+                animation => animation.transitionProperty === 'transform'
+                    && animation.playState === 'running',
+            )""",
+            arg=first_save.element_handle(),
+            timeout=5_000,
+        )
         button_box, heading_box = _box(first_save), _box(heading)
         assert (button_box["width"], button_box["height"]) == (32, 32), button_box
         assert heading_box["left"] <= button_box["left"] and button_box["right"] <= heading_box["right"] + 1

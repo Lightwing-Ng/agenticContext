@@ -1,6 +1,6 @@
 """Local media discovery, deletion tombstones, and pagination."""
 
-# Code version: v1.36.0-codex.0
+# Code version: v1.37.3-codex.0
 
 from __future__ import annotations
 
@@ -45,11 +45,11 @@ VIDEO_SUFFIXES = frozenset({".m4v", ".mkv", ".mov", ".mp4", ".webm"})
 MEDIA_SUFFIXES = IMAGE_SUFFIXES | VIDEO_SUFFIXES
 SOURCE_VALUES = frozenset({"all", "x", "grok", "chatgpt", "claude", "gemini"})
 TEXT_SOURCE_VALUES = frozenset(
-    {"all", "x", "chatgpt", "claude", "claude_code", "gemini", "grok", "grok_build", "zhihu", "wechat"}
+    {"all", "x", "chatgpt", "copilot", "codex", "claude", "claude_code", "gemini", "grok", "grok_build", "zhihu", "wechat"}
 ) | frozenset(OPENCLAW_SOURCE_LABELS)
 # Text-only providers have no media cache source. Treat a URL naming one in
 # Media mode as the ChatGPT media view instead of silently showing all media.
-TEXT_ONLY_SOURCE_VALUES = frozenset({"zhihu", "claude_code", "grok_build", "wechat"}) | frozenset(OPENCLAW_SOURCE_LABELS)
+TEXT_ONLY_SOURCE_VALUES = frozenset({"zhihu", "claude_code", "codex", "grok_build", "copilot", "wechat"}) | frozenset(OPENCLAW_SOURCE_LABELS)
 MEDIA_KIND_VALUES = frozenset({"all", "image", "video"})
 SORT_VALUES = frozenset({"newest", "oldest", "name"})
 VIEW_VALUES = frozenset({"media", "text", "prompts"})
@@ -1047,13 +1047,16 @@ def build_local_store_pagination(
         )
 
     if end_page < normalized_total_pages:
-        items.append(
-            LocalMediaPaginationItem(
-                kind="ellipsis",
-                position="trailing",
-                ranges=_build_pagination_ranges(end_page + 1, normalized_total_pages, chunk_size),
+        if end_page + 1 < normalized_total_pages:
+            items.append(
+                LocalMediaPaginationItem(
+                    kind="ellipsis",
+                    position="trailing",
+                    ranges=_build_pagination_ranges(
+                        end_page + 1, normalized_total_pages, chunk_size
+                    ),
+                )
             )
-        )
         items.append(LocalMediaPaginationItem(kind="page", page=normalized_total_pages))
         items.append(LocalMediaPaginationItem(kind="next", page=end_page + 1))
 
@@ -1289,15 +1292,26 @@ class LocalMediaCatalog:
         return self._deletion_catalog.is_excluded(source, resource_key)
 
     @staticmethod
-    def _content_stat_identity(file_info: os.stat_result) -> tuple[int, ...]:
+    def _content_stat_identity(
+        file_info: os.stat_result,
+        media_path: Path,
+        *,
+        descriptor: int | None = None,
+    ) -> tuple[int, ...]:
         """Include replacement and mutation metadata when reusing actual-byte hashes."""
-        return (
+        identity = (
             file_info.st_dev,
             file_info.st_ino,
             file_info.st_size,
             file_info.st_mtime_ns,
-            file_info.st_ctime_ns,
+            getattr(file_info, "st_birthtime_ns", file_info.st_ctime_ns)
+            if os.name == "nt" else file_info.st_ctime_ns,
         )
+        if os.name == "nt":
+            from .windows_file_metadata import file_change_time
+
+            return (*identity, file_change_time(media_path, descriptor=descriptor))
+        return identity
 
     def _content_hash_request(self, item: LocalMediaItem) -> tuple[Path, tuple[int, ...]] | None:
         """Resolve one readable identity without hydrating known cloud placeholders."""
@@ -1310,22 +1324,27 @@ class LocalMediaCatalog:
             return None
         try:
             file_info = media_path.stat()
+            if getattr(file_info, "st_flags", 0) & getattr(stat, "SF_DATALESS", 0):
+                return None
+            identity = self._content_stat_identity(file_info, media_path)
         except OSError:
             return None
-        if getattr(file_info, "st_flags", 0) & getattr(stat, "SF_DATALESS", 0):
-            return None
-        return media_path, self._content_stat_identity(file_info)
+        return media_path, identity
 
     def _read_content_sha256(self, media_path: Path, file_identity: tuple[int, ...]) -> str:
         """Read actual bytes only on a bounded daemon reader, never a request thread."""
         try:
             with media_path.open("rb") as handle:
-                if self._content_stat_identity(os.fstat(handle.fileno())) != file_identity:
+                if self._content_stat_identity(
+                    os.fstat(handle.fileno()), media_path, descriptor=handle.fileno()
+                ) != file_identity:
                     return ""
                 digest = hashlib.file_digest(handle, "sha256").hexdigest()
-                if self._content_stat_identity(os.fstat(handle.fileno())) != file_identity:
+                if self._content_stat_identity(
+                    os.fstat(handle.fileno()), media_path, descriptor=handle.fileno()
+                ) != file_identity:
                     return ""
-            if self._content_stat_identity(media_path.stat()) != file_identity:
+            if self._content_stat_identity(media_path.stat(), media_path) != file_identity:
                 return ""
         except (OSError, ValueError):
             return ""

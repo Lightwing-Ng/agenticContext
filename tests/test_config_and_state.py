@@ -1,6 +1,6 @@
 """Tests for durable settings and thread-safe task state.
 
-Code version: v1.5.0-codex.1
+Code version: v1.6.0-codex.0
 """
 
 from __future__ import annotations
@@ -28,6 +28,7 @@ def test_windows_defaults_use_native_application_data_roots(
     local_app_data = tmp_path / "LocalAppData"
     roaming_app_data = tmp_path / "RoamingAppData"
     monkeypatch.setattr(config, "is_windows_host", lambda: True)
+    monkeypatch.setattr(config, "is_macos_host", lambda: False)
     monkeypatch.setenv("LOCALAPPDATA", str(local_app_data))
     monkeypatch.setenv("APPDATA", str(roaming_app_data))
     monkeypatch.delenv(config.SETTINGS_PATH_ENV, raising=False)
@@ -46,7 +47,7 @@ def test_default_settings_read_legacy_application_data_without_writing_to_it(
     home_dir = tmp_path / "home"
     monkeypatch.setattr(config, "is_macos_host", lambda: True)
     monkeypatch.setattr(config, "is_windows_host", lambda: False)
-    monkeypatch.setenv("HOME", str(home_dir))
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: home_dir))
     monkeypatch.delenv(config.SETTINGS_PATH_ENV, raising=False)
     monkeypatch.delenv(config.LEGACY_SETTINGS_PATH_ENV, raising=False)
 
@@ -58,7 +59,9 @@ def test_default_settings_read_legacy_application_data_without_writing_to_it(
     assert load_saved_config().account_name_override == "legacy"
 
 
-def test_settings_round_trip_and_invalid_payload_fall_back_to_defaults(tmp_path: Path) -> None:
+def test_settings_round_trip_and_invalid_payload_fall_back_to_defaults(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr("app.core.config.is_macos_host", lambda: True)
+    monkeypatch.setattr("app.core.config.is_windows_host", lambda: False)
     settings_path = tmp_path / "settings.json"
     expected = CrawlConfig(
         headless=True,
@@ -83,6 +86,26 @@ def test_settings_round_trip_and_invalid_payload_fall_back_to_defaults(tmp_path:
     assert loaded == expected
     settings_path.write_text("not json", encoding="utf-8")
     assert load_saved_config(settings_path) == CrawlConfig()
+
+
+def test_windows_read_normalizes_safari_without_rewriting_saved_choices(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr("app.core.config.is_macos_host", lambda: False)
+    monkeypatch.setattr("app.core.config.is_windows_host", lambda: True)
+    fields = (
+        "x_browser", "grok_browser", "chatgpt_browser", "copilot_browser",
+        "gemini_browser", "claude_browser", "zhihu_browser",
+    )
+    settings_path = tmp_path / "settings.json"
+    save_config(CrawlConfig(**dict.fromkeys(fields, "safari")), settings_path)
+    saved = settings_path.read_bytes()
+
+    loaded = load_saved_config(settings_path)
+
+    defaults = CrawlConfig()
+    for field in fields:
+        assert getattr(loaded, field) == getattr(defaults, field)
+        assert getattr(loaded, field) != "safari"
+    assert settings_path.read_bytes() == saved
 
 
 def test_settings_clamp_workers_and_normalize_browser_names(tmp_path: Path) -> None:

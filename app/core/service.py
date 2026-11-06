@@ -1,18 +1,21 @@
 """Orchestration service for the cache job."""
 
-# Code version: v1.11.0-claude.0
+# Code version: v1.11.2-codex.0
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 import logging
 from threading import Thread
+from time import monotonic
 
 from .cache_service_support import CooperativeCacheWorker, append_shadow_backup_completion
 from .cache_task_coordinator import CacheTaskCoordinator, CacheTaskIdentity
 from .config import CrawlConfig, LOCAL_STORE_ROOT, X_LOCAL_STORE_DIRNAME
 from .downloader import DownloadResult, LocalTweetCacheIndex, download_tweet_media
 from .job_lock import CacheTaskLock
+from .safari_automation import SafariBusyError, has_safari_cache_acquisition_scope
 from .scraper import collect_liked_tweet_urls, normalize_status_url
 from .shadow_backup import ShadowBackupService
 from .state import TaskState
@@ -23,6 +26,7 @@ logger = logging.getLogger(__name__)
 
 
 X_TEXT_HISTORY_RESOURCE = "x-text-history"
+X_SAFARI_COLLECTION_WAIT_SECONDS = 60.0
 
 
 class CacheLikesService(CooperativeCacheWorker):
@@ -68,6 +72,53 @@ class CacheLikesService(CooperativeCacheWorker):
         return self._request_stop(
             "Emergency stop requested. Waiting for current task to stop."
         )
+
+    def _collect_likes(
+        self,
+        config: CrawlConfig,
+        *,
+        on_text_posts: Callable[[list[XTextPost]], None] | None,
+        on_media_posts: Callable[[list[XMediaPost]], None] | None = None,
+    ) -> tuple[str, list[str]]:
+        """Wait briefly for an account probe to release Safari before collecting."""
+        deadline: float | None = None
+        options = {"on_media_posts": on_media_posts} if on_media_posts is not None else {}
+        if has_safari_cache_acquisition_scope():
+            return collect_liked_tweet_urls(
+                config,
+                self._state,
+                on_text_posts=on_text_posts,
+                should_stop=self._is_stop_requested,
+                **options,
+            )
+        while not self._is_stop_requested():
+            try:
+                return collect_liked_tweet_urls(
+                    config,
+                    self._state,
+                    on_text_posts=on_text_posts,
+                    should_stop=self._is_stop_requested,
+                    **options,
+                )
+            except SafariBusyError:
+                if config.x_browser != "safari":
+                    raise
+                if self._is_stop_requested():
+                    break
+                if deadline is None:
+                    deadline = monotonic() + X_SAFARI_COLLECTION_WAIT_SECONDS
+                    self._state.append_event(
+                        "Waiting for Safari to finish another browser check. "
+                        "X collection retries for up to 60 seconds."
+                    )
+                remaining = deadline - monotonic()
+                if remaining <= 0:
+                    raise
+                if self._stop_requested.wait(min(1.0, remaining)):
+                    break
+                if monotonic() >= deadline:
+                    raise
+        return "", []
 
     def _run(self, config: CrawlConfig, content_mode: str = "media") -> None:
         """Execute the full job pipeline."""
@@ -121,11 +172,9 @@ class CacheLikesService(CooperativeCacheWorker):
             collection_options = {}
             if content_mode == "media" and config.x_browser == "safari":
                 collection_options["on_media_posts"] = remember_media_posts
-            account_handle, tweet_urls = collect_liked_tweet_urls(
+            account_handle, tweet_urls = self._collect_likes(
                 config,
-                self._state,
                 on_text_posts=cache_text_posts if text_store is not None else None,
-                should_stop=self._is_stop_requested,
                 **collection_options,
             )
             tweet_urls = list(dict.fromkeys(normalize_status_url(url) or url for url in tweet_urls))

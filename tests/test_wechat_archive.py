@@ -1,6 +1,6 @@
 """Account boundaries, source integrity, and human-chat rendering stay explicit.
 
-Code version: v1.1.0-codex.0
+Code version: v1.2.0-codex.0
 """
 
 from __future__ import annotations
@@ -11,6 +11,7 @@ import json
 from html import unescape
 from pathlib import Path
 import re
+import sqlite3
 from unittest.mock import patch
 from urllib.parse import parse_qs, urlsplit
 
@@ -319,3 +320,85 @@ def test_local_resources_reuses_filters_escapes_messages_and_exports_origin(impo
     assert "9223372036854775806" in export.get_data(as_text=True)
     assert "Direction: received" in export.get_data(as_text=True)
     assert "Source record:" in export.get_data(as_text=True)
+
+
+@pytest.mark.parametrize(
+    ("kind", "peer", "title", "expected"),
+    [
+        ("direct", "gh_fixture_news", "Daily fixture", "Official account"),
+        ("unclassified", "gh_fixture_news", "Daily fixture", "Official account"),
+        ("group", "gh_fixture_news", "Daily fixture", "Group chat"),
+        ("direct", "wxid_fixture_peer", "Official account", "Private chat"),
+        ("direct", "filehelper", "Official account", "Private chat"),
+        ("unclassified", "wxid_fixture_peer", "Group chat", "Unclassified chat"),
+        ("unclassified", "", "Official account", "Unclassified chat"),
+    ],
+)
+def test_kind_badges_use_native_peers_without_rewriting_source_identity(
+    imported, kind, peer, title, expected
+):
+    """Presentation labels never promote names into identities or change filters."""
+    _, store, _ = imported
+    account = "account:wxid_account_a"
+    original = next(
+        session
+        for session in query_chat_history(
+            store, source="wechat", account=account
+        ).sessions
+        if session.messaging["kind"] == "direct"
+    )
+    database = wechat_archive_path(store)
+    with sqlite3.connect(database) as connection:
+        connection.execute(
+            "UPDATE conversations SET kind=?, peer_id=?, title=? WHERE id=?",
+            (kind, peer, title, original.stable_id),
+        )
+    before = database.read_bytes()
+    page = query_chat_history(store, source="wechat", account=account, chat_kind=kind)
+    session = next(row for row in page.sessions if row.stable_id == original.stable_id)
+    detail = query_chat_history(
+        store,
+        source="wechat",
+        account=account,
+        chat_kind=kind,
+        session=session.stable_id,
+    )
+    for context in (session.messaging, detail.current_session.messaging):
+        assert context["conversation_kind_label"] == expected
+        assert context["kind"] == kind
+        assert context["peer_id"] == peer
+        assert context["account_key"] == account
+        assert context["partition_id"] == original.messaging["partition_id"]
+    assert detail.current_session.stable_id == original.stable_id
+    assert detail.items[0].messaging["provenance"]["server_id"] == "9223372036854775806"
+    with patch(
+        "app.web.app.SavedConfigStore.load",
+        return_value=SavedConfigStore(CrawlConfig()),
+    ):
+        application = create_app(
+            store,
+            computer_use_settings_path=store / "settings/agent.json",
+            computer_use_runtime_root=store / "runtime",
+            agent_external_operations_enabled=False,
+        )
+    application.config.update(TESTING=True)
+    client = application.test_client()
+    query = {"view": "text", "source": "wechat", "account": account, "chat_kind": kind}
+    index = client.get("/browser", query_string=query)
+    assert index.status_code == 200
+    row = re.search(
+        rf'<tr data-chat-session-id="{re.escape(original.stable_id)}"[^>]*>.*?</tr>',
+        index.get_data(as_text=True),
+        re.DOTALL,
+    ).group()
+    assert f'<span class="wechat-kind-badge">{expected}</span>' in row
+    assert f'data-wechat-conversation-kind="{kind}"' in row
+    assert f'data-wechat-account="{account}"' in row
+    rendered = client.get(
+        "/browser", query_string={**query, "session": original.stable_id}
+    )
+    assert rendered.status_code == 200
+    html = rendered.get_data(as_text=True)
+    assert f'<span class="wechat-kind-badge">{expected}</span>' in html
+    assert f'aria-label="{expected} messages"' in html
+    assert database.read_bytes() == before

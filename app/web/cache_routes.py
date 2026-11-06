@@ -11,7 +11,7 @@ The Safari mutual-exclusion check belongs to the Agent surface, so it arrives as
 capability instead of being reimplemented here.
 """
 
-# Code version: v1.7.1-codex.0
+# Code version: v1.8.3-codex.0
 
 from __future__ import annotations
 
@@ -44,6 +44,7 @@ from app.core.foundation import (
     utc_now,
 )
 from app.core.providers import (
+    OPENCLAW_SOURCE_LABELS,
     build_chatgpt_initial_snapshot,
     chatgpt_conversation_id,
     build_grok_initial_snapshot,
@@ -58,7 +59,9 @@ from app.core.storage import (
     local_file_manager_label,
     open_directory_path,
 )
+from app.web.public_errors import public_diagnostic_payload, public_exception_message
 from app.web.cache_sources import (
+    CACHE_SOURCE_VIEWS,
     LLM_CACHE_SOURCE_VIEWS,
     LLM_SWITCHER_SOURCE_VIEWS,
     MEDIA_CACHE_SOURCE_VIEWS,
@@ -77,6 +80,72 @@ CACHE_BLUEPRINT_NAME = "cache"
 # Status and start differ for ChatGPT: its legacy status reports media, its form text.
 STATUS_DEFAULT_CONTENT_MODES = {"x": "media", "grok": "media", "chatgpt": "media"}
 START_DEFAULT_CONTENT_MODES = {"x": "media", "grok": "media"}
+
+# All public contention copy is composed from fixed application registry labels.
+_CACHE_TASK_TITLES = tuple(
+    f"{source.label} · {mode.title()}"
+    for source in CACHE_SOURCE_VIEWS
+    for mode in source.content_modes
+)
+_CACHE_START_PUBLIC_ERRORS = (
+    'A cache job is already running.',
+    'A cache task is already running in another Cache Likes window or browser. Stop it there before starting a new task.',
+    'A Claude Code history import is already running.',
+    'A cache task is already running in another Cache window. Stop it there before importing Claude Code history.',
+    'A Grok history sync is already running.',
+    'A cache task is already running in another Cache Likes window or browser. Stop it there before starting a Grok history sync.',
+    'A Zhihu answer cache is already running.',
+    'A cache task is already running in another window or browser. Stop it there before starting the Zhihu answer cache.',
+    'A Gemini history sync is already running.',
+    'A cache task is already running in another Cache Likes window or browser. Stop it there before starting a Gemini history sync.',
+    'Another Cache window is reading this OpenClaw archive.',
+    'A Grok Build history import is already running.',
+    'A cache task is already running in another Cache window. Stop it there before importing Grok Build history.',
+    'A Grok sync is already running.',
+    'A cache task is already running in another Cache Likes window or browser. Stop it there before starting a Grok sync.',
+    'A Microsoft Copilot history sync is already running.',
+    'A cache task is already running in another Cache window. Stop it there before starting Microsoft Copilot history sync.',
+    'A ChatGPT sync is already running.',
+    'A cache task is already running in another Cache Likes window or browser. Stop it there before starting a ChatGPT sync.',
+    'A Claude history sync is already running.',
+    'A cache task is already running in another Cache Likes window or browser. Stop it there before starting a Claude history sync.',
+    'A Codex history import is already running.',
+    'A cache task is already running in another Cache window. Stop it there before importing Codex history.',
+) + tuple(
+    f"A {label} import is already running." for label in OPENCLAW_SOURCE_LABELS.values()
+) + tuple(
+    f"The {title} cache is already queued." for title in _CACHE_TASK_TITLES
+) + tuple(
+    f"{browser} is busy with the {holder} cache. Start the {title} cache after it finishes."
+    for browser in ("Safari", "Edge", "Chrome")
+    for holder in _CACHE_TASK_TITLES
+    for title in _CACHE_TASK_TITLES
+) + tuple(
+    f"The {holder} cache is still running. Start the {title} cache after it finishes."
+    for holder in _CACHE_TASK_TITLES
+    for title in _CACHE_TASK_TITLES
+) + tuple(
+    f"The shadow cloud backup is running. Start the {title} cache after it finishes."
+    for title in _CACHE_TASK_TITLES
+)
+_ZHIHU_PROFILE_PUBLIC_ERRORS = (
+    "Enter a Zhihu profile answers URL.",
+    "Enter a valid Zhihu profile answers URL.",
+    "Use an https://www.zhihu.com/people/<name>/answers URL.",
+    "Use a Zhihu people profile or its Answers tab URL.",
+    "The Zhihu profile name is not valid.",
+)
+
+# These exact server-owned status messages tell the user how to resume a cache.
+_CACHE_STATUS_PUBLIC_ERRORS = _CACHE_START_PUBLIC_ERRORS + (
+    "Zhihu requires human verification. Open Zhihu in the selected browser, "
+    "complete verification manually, then retry.",
+    "Zhihu requires sign-in or human verification. Open the profile in the selected "
+    "browser, complete verification manually, then retry.",
+    "Zhihu requires sign-in or human verification before its activity history can be read.",
+    "Zhihu did not expose an authenticated account in the selected browser.",
+)
+
 
 
 @dataclass(frozen=True, slots=True)
@@ -102,6 +171,35 @@ class CacheRouteContext:
     reject_active_safari_agent_for_cache: Callable[[str], Any]
     external_agent_operations_enabled: Callable[[], bool]
     reject_external_agent_operation: Callable[[], Any]
+
+
+def _public_cache_snapshot(
+    snapshot: dict[str, Any], *, completed_events: list[str] | None = None,
+) -> dict[str, Any]:
+    """Keep private worker diagnostics out of the public progress/status schema."""
+    fallback = "The cache task reported an error. Please try again."
+    metrics = snapshot.get("performance_metrics", {})
+    if (
+        isinstance(metrics, dict)
+        and metrics.get("status") == "incomplete"
+        and metrics.get("sync_complete") is False
+    ):
+        fallback = (
+            "Full history completeness is no longer verified. "
+            "Run the cache again to verify the archive."
+        )
+    public = public_diagnostic_payload(
+        snapshot, fallback=fallback, allowed=_CACHE_STATUS_PUBLIC_ERRORS,
+        operation="read cache status",
+    )
+    if snapshot.get("last_error") or snapshot.get("phase") == "failed":
+        public["message"] = public.get("last_error") or fallback
+        # A later inventory warning does not erase a completed task's history.
+        # Actual worker-failure events remain in the private runtime/server log.
+        public["recent_events"] = (
+            list(completed_events) if completed_events is not None else [public["message"]]
+        )
+    return public
 
 
 def resolve_cache_runtime(
@@ -136,6 +234,21 @@ def build_reconciled_cache_snapshot(
         source_key,
         content_mode or request.args.get("content_mode"),
     )
+    live = runtime.state.snapshot()
+    if (
+        source_key == "chatgpt"
+        and mode == "media"
+        and live["running"]
+        and live["phase"] != "queued"
+    ):
+        # Polling must remain responsive while a worker is reading the local store.
+        # ChatGPT's hidden text metrics use that mode's own in-memory totals.
+        text_runtime = context.cache_runtimes[source_key].get("text")
+        if text_runtime is not None:
+            text_snapshot = text_runtime.state.snapshot()
+            live["cached_sessions"] = text_snapshot["downloaded_posts"]
+            live["cached_messages"] = text_snapshot["downloaded_tweets"]
+        return _public_cache_snapshot(live)
     hydrated = asdict(runtime.hydrate_snapshot())
     live = runtime.state.snapshot()
     # A mode that has not run, failed, or been reset in this process has no task status
@@ -160,6 +273,16 @@ def build_reconciled_cache_snapshot(
             "started_at": live["started_at"],
             "recent_events": live["recent_events"],
         }
+    elif source_key == "copilot" and not live["running"]:
+        # Coverage must match the archive currently on disk, even after a finished
+        # task. Keep operational history while replacing stale completion proof.
+        snapshot = {
+            **hydrated,
+            "recent_events": live["recent_events"],
+            "task_failures": live["task_failures"],
+            "started_at": live["started_at"] or hydrated["started_at"],
+            "finished_at": live["finished_at"] or hydrated["finished_at"],
+        }
     else:
         snapshot = reconcile_cached_snapshot(live, hydrated)
     if source_key == "chatgpt":
@@ -168,7 +291,14 @@ def build_reconciled_cache_snapshot(
             snapshot["cached_messages"] = hydrated["downloaded_tweets"]
         else:
             snapshot.update(chatgpt_history_counts(context.media_catalog.local_store_root))
-    return snapshot
+    completed_events = (
+        live["recent_events"]
+        if source_key == "copilot"
+        and live["phase"] == "finished"
+        and not live["last_error"]
+        else None
+    )
+    return _public_cache_snapshot(snapshot, completed_events=completed_events)
 
 def build_reconciled_grok_snapshot(context: CacheRouteContext) -> dict[str, Any]:
     """Refresh Grok cache counters from disk without discarding live task status."""
@@ -243,6 +373,8 @@ def cache_source_switcher_path(
         return ""
     view_args = request.view_args or {}
     content_mode = normalize_cache_content_mode(view_args.get("content_mode"))
+    if content_mode not in target_source.content_modes:
+        content_mode = target_source.content_modes[0]
     browser = str(
         view_args.get("browser")
         or getattr(context.config_store.config, target_source.browser_config_field, "")
@@ -312,6 +444,8 @@ def register_cache_routes(app: Flask, context: CacheRouteContext) -> None:
         cache_content_mode = normalize_cache_content_mode(
             content_mode or request.args.get("content_mode")
         )
+        if cache_content_mode not in cache_source.content_modes:
+            cache_content_mode = cache_source.content_modes[0]
         if cache_source.is_local:
             browser_options = []
             selected_browser_id = ""
@@ -361,6 +495,8 @@ def register_cache_routes(app: Flask, context: CacheRouteContext) -> None:
             or request.args.get("content_mode")
             or view_args.get("content_mode")
         )
+        if content_mode not in cache_source.content_modes:
+            content_mode = cache_source.content_modes[0]
         browser = str(
             request.form.get(cache_source.browser_config_field)
             or view_args.get("browser")
@@ -400,7 +536,7 @@ def register_cache_routes(app: Flask, context: CacheRouteContext) -> None:
             cache_source is None
             or source_key not in context.cache_runtimes
             or not cache_source.show_content_mode
-            or content_mode not in {"text", "media"}
+            or content_mode not in cache_source.content_modes
             or not is_supported_cache_browser(browser)
         ):
             abort(404)
@@ -448,7 +584,10 @@ def register_cache_routes(app: Flask, context: CacheRouteContext) -> None:
         try:
             open_directory_path(output_directory)
         except (OSError, ValueError) as exc:
-            return jsonify({"error": f"Unable to open {local_file_manager_label()}: {exc}"}), 409
+            return jsonify({"error": public_exception_message(
+                exc, fallback=f"Unable to open {local_file_manager_label()}. Please try again.",
+                operation="open cache output directory",
+            )}), 409
         return jsonify({"opened": True, "file_manager": local_file_manager_label()})
 
 
@@ -496,11 +635,15 @@ def register_cache_routes(app: Flask, context: CacheRouteContext) -> None:
             else:
                 runtime.service.start(runtime_config, content_mode=content_mode)
         except RuntimeError as exc:
+            message = public_exception_message(
+                exc, fallback="The cache task could not start. Please try again.",
+                allowed=_CACHE_START_PUBLIC_ERRORS, operation="start cache task",
+            )
             if runtime.service.is_running():
-                runtime.state.append_event(str(exc))
-                runtime.state.update(last_error=str(exc))
+                runtime.state.append_event(message)
+                runtime.state.update(last_error=message)
             else:
-                runtime.state.finish_error(str(exc))
+                runtime.state.finish_error(message)
         return redirect(cache_source_url(source_key))
 
     def stop_cache_source_runtime(source_key: str, content_mode: str | None = None):
@@ -689,7 +832,10 @@ def register_cache_routes(app: Flask, context: CacheRouteContext) -> None:
             # The page waits for this refresh, so it fails at once instead of queueing.
             runtime.service.start(session_config, allow_queue=False)
         except RuntimeError as exc:
-            return jsonify({"error": str(exc)}), 409
+            return jsonify({"error": public_exception_message(
+                exc, fallback="The cache refresh could not start. Please try again.",
+                allowed=_CACHE_START_PUBLIC_ERRORS, operation="start targeted cache refresh",
+            )}), 409
         return (
             jsonify(
                 {
@@ -713,7 +859,10 @@ def register_cache_routes(app: Flask, context: CacheRouteContext) -> None:
         try:
             profile = normalize_zhihu_profile_url(payload.get("profile_url"))
         except ValueError as exc:
-            return jsonify({"error": str(exc)}), 400
+            return jsonify({"error": public_exception_message(
+                exc, fallback="Enter a valid Zhihu profile answers URL.",
+                allowed=_ZHIHU_PROFILE_PUBLIC_ERRORS, operation="validate Zhihu profile",
+            )}), 400
 
         config = context.config_store.config
         busy_response = context.reject_active_safari_agent_for_cache(config.zhihu_browser)
@@ -730,7 +879,10 @@ def register_cache_routes(app: Flask, context: CacheRouteContext) -> None:
                 allow_queue=False,
             )
         except RuntimeError as exc:
-            return jsonify({"error": str(exc)}), 409
+            return jsonify({"error": public_exception_message(
+                exc, fallback="The cache refresh could not start. Please try again.",
+                allowed=_CACHE_START_PUBLIC_ERRORS, operation="start targeted cache refresh",
+            )}), 409
         return (
             jsonify(
                 {

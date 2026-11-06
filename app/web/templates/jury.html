@@ -1,4 +1,4 @@
-<!-- Code version: v1.6.4-codex.0 -->
+<!-- Code version: v1.6.7-codex.0 -->
 <!doctype html>
 <html lang="en-US">
 <head>
@@ -16,6 +16,7 @@
     <link rel="stylesheet" href="{{ url_for('static', filename='jury.css', v='jury-v1.2.0-codex.0') }}">
     <script defer src="{{ url_for('static', filename='segmented-control.js', v='segmented-control-v1.0.4-codex.1') }}"></script>
     <script src="{{ url_for('static', filename='responsive.js', v='responsive-v1.0.0-codex.1') }}"></script>
+    <script defer src="{{ url_for('static', filename='waiting-modal.js', v='waiting-modal-v1.2.0-codex.0') }}"></script>
 </head>
 <body>
 {% include "_sidebar_bootstrap.html" %}
@@ -165,7 +166,8 @@
     {% include "_sidebar_dock.html" %}
     {% include "_cache_activity.html" %}
 </main>
-<script src="{{ url_for('static', filename='sidebar.js', v='sidebar-v1.30.0-codex.0') }}"></script>
+{% include "_waiting_modal.html" %}
+<script src="{{ url_for('static', filename='sidebar.js', v='sidebar-v1.31.0-codex.0') }}"></script>
 <script src="{{ url_for('static', filename='select-controller.js', v='select-controller-v1.0.1') }}"></script>
 <script src="{{ url_for('static', filename='vendor/katex/katex.min.js', v='katex-v0.18.7') }}"></script>
 <script src="{{ url_for('static', filename='vendor/katex/contrib/auto-render.min.js', v='katex-v0.18.7') }}"></script>

@@ -1,6 +1,6 @@
 """Durable local compute jobs for approved optimization entrypoints.
 
-Code version: v1.6.2-codex.1
+Code version: v1.6.7-codex.0
 """
 
 from __future__ import annotations
@@ -21,6 +21,8 @@ import sys
 from threading import Event, Lock, Thread
 import time
 from typing import Any, Callable, Iterator
+
+from ..windows_file_metadata import file_change_time
 
 
 APPROVAL_FILENAME = ".agenticContext-compute.json"
@@ -219,6 +221,14 @@ def _stable_regular_file_bytes(
     label: str,
 ) -> tuple[bytes, str]:
     """Read one regular file while proving its path and open handle stayed identical."""
+    def change_token(metadata, *, descriptor=None):
+        if os.name != "nt":
+            return int(metadata.st_ctime_ns)
+        try:
+            return file_change_time(path, descriptor=descriptor)
+        except OSError as exc:
+            raise ComputeJobError(f"{label} change metadata could not be verified safely.") from exc
+
     try:
         before_path = path.lstat()
     except OSError as exc:
@@ -231,13 +241,20 @@ def _stable_regular_file_bytes(
         raise ComputeJobError(f"{label} must be one unlinked regular file.")
     if before_path.st_size > maximum_bytes:
         raise ComputeJobError(f"{label} exceeds the {maximum_bytes:,}-byte limit.")
-    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0)
+    before_path_change = change_token(before_path)
+    flags = (
+        os.O_RDONLY
+        | getattr(os, "O_BINARY", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+        | getattr(os, "O_CLOEXEC", 0)
+    )
     try:
         descriptor = os.open(path, flags)
     except OSError as exc:
         raise ComputeJobError(f"{label} could not be opened safely.") from exc
     try:
         before_handle = os.fstat(descriptor)
+        before_handle_change = change_token(before_handle, descriptor=descriptor)
         content = bytearray()
         while True:
             chunk = os.read(descriptor, 64 * 1024)
@@ -249,10 +266,14 @@ def _stable_regular_file_bytes(
                     f"{label} exceeds the {maximum_bytes:,}-byte limit."
                 )
         after_handle = os.fstat(descriptor)
+        after_handle_change = change_token(after_handle, descriptor=descriptor)
+    except OSError as exc:
+        raise ComputeJobError(f"{label} could not be inspected safely.") from exc
     finally:
         os.close(descriptor)
     try:
         after_path = path.lstat()
+        after_path_change = change_token(after_path)
     except OSError as exc:
         raise ComputeJobError(f"{label} changed while it was being read.") from exc
     identity_fields = (
@@ -265,10 +286,20 @@ def _stable_regular_file_bytes(
         "st_ctime_ns",
     )
     identities = [
-        tuple(int(getattr(metadata, field)) for field in identity_fields)
-        for metadata in (before_path, before_handle, after_handle, after_path)
+        tuple(change if field == "st_ctime_ns" else int(getattr(metadata, field)) for field in identity_fields)
+        for metadata, change in (
+            (before_path, before_path_change), (before_handle, before_handle_change),
+            (after_handle, after_handle_change), (after_path, after_path_change),
+        )
     ]
-    if any(identity != identities[0] for identity in identities[1:]):
+    # Each API's original ctime and explicit birth time must also remain stable;
+    # Windows path ctime and descriptor ctime need not mean the same thing.
+    raw_times_stable = all(
+        getattr(before, field, None) == getattr(after, field, None)
+        for before, after in ((before_path, after_path), (before_handle, after_handle))
+        for field in ("st_ctime_ns", "st_birthtime_ns")
+    )
+    if not raw_times_stable or any(identity != identities[0] for identity in identities[1:]):
         raise ComputeJobError(f"{label} changed while it was being read.")
     payload = bytes(content)
     return payload, hashlib.sha256(payload).hexdigest()
@@ -598,6 +629,35 @@ def _confined_regular_file(workspace: Path, raw_path: str, *, suffix: str) -> Pa
     if not stat.S_ISREG(metadata.st_mode) or resolved.suffix.casefold() != suffix:
         raise ComputeJobError(f"Compute-job path must be a regular {suffix} file.")
     return resolved
+
+
+def _windows_worker_may_be_alive(pid: int) -> bool:
+    """Prove Windows process absence without treating a denied query as absence."""
+    if pid == os.getpid():
+        return True
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+        kernel.OpenProcess.restype = wintypes.HANDLE
+        kernel.GetExitCodeProcess.argtypes = [wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD)]
+        kernel.GetExitCodeProcess.restype = wintypes.BOOL
+        kernel.CloseHandle.argtypes = [wintypes.HANDLE]
+        kernel.CloseHandle.restype = wintypes.BOOL
+        handle = kernel.OpenProcess(0x1000, False, pid)
+        if not handle:
+            return ctypes.get_last_error() != 87
+        try:
+            exit_code = wintypes.DWORD()
+            if not kernel.GetExitCodeProcess(handle, ctypes.byref(exit_code)):
+                return True
+            return exit_code.value == 259
+        finally:
+            kernel.CloseHandle(handle)
+    except (AttributeError, OSError, TypeError, ValueError):
+        return True
 
 
 def _process_identity(pid: int) -> str:
@@ -1629,7 +1689,7 @@ def _reconcile_scanned_compute_job_metadata(
                     "Active compute-job worker liveness could not be verified safely."
                 ) from exc
         elif not definitely_stale and os.name == "nt":
-            definitely_stale = not bool(observed_identity)
+            definitely_stale = not _windows_worker_may_be_alive(pid)
         if not definitely_stale:
             raise ComputeJobError(
                 "Active compute-job worker liveness could not be verified safely."
@@ -2104,7 +2164,10 @@ class ComputeJobManager:
         environment = {
             key: value
             for key, value in os.environ.items()
-            if key in {"PATH", "LANG", "LC_ALL", "LC_CTYPE", "TMPDIR", "SYSTEMROOT", "WINDIR"}
+            if key in {
+                "PATH", "LANG", "LC_ALL", "LC_CTYPE", "TMPDIR", "SYSTEMROOT", "WINDIR",
+                "USERPROFILE", "HOMEDRIVE", "HOMEPATH", "APPDATA", "LOCALAPPDATA", "TEMP", "TMP",
+            }
         }
         package_root = Path(__file__).resolve().parents[3]
         environment["PYTHONPATH"] = str(package_root)
@@ -2502,7 +2565,7 @@ def _wait_for_worker_ownership(metadata_path: Path) -> dict[str, Any] | None:
 
 
 def _approved_child_main(arguments: list[str]) -> int:
-    """Wait for containment publication, then replace this process with approved bytes."""
+    """Wait for containment publication, then launch the approved bytes."""
     if len(arguments) not in {6, 7}:
         return 64
     ready_path = Path(arguments[0]).resolve(strict=False)
@@ -2556,6 +2619,12 @@ def _approved_child_main(arguments: list[str]) -> int:
     environment["AGENTIC_CONTEXT_COMPUTE_JOB_RUNTIME"] = str(job_root)
     os.chdir(source_directory)
     try:
+        if os.name == "nt":
+            # Windows CRT exec exits this registered PID after spawning another.
+            # Keep the bridge alive while its child inherits the same Job Object.
+            return subprocess.run(
+                command, env=environment, check=False, close_fds=True,
+            ).returncode
         os.execve(command[0], command, environment)
     except OSError:
         return 71
