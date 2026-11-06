@@ -1,4 +1,4 @@
-# Code version: v1.0.1-codex.0
+# Code version: v1.0.2-codex.0
 name: Contact Linux diagnostic
 
 on:
@@ -31,13 +31,15 @@ jobs:
         env:
           PLAYWRIGHT_BROWSERS_PATH: ${{ runner.temp }}/ms-playwright
         run: python -m playwright install --with-deps chromium
-      - name: Run both original failing nodes once
+      - name: Run both original nodes and real DOM controls once
         env:
           PLAYWRIGHT_BROWSERS_PATH: ${{ runner.temp }}/ms-playwright
         run: >-
           python -m pytest -vv --tb=long -p no:cacheprovider
           'tests/test_wechat_contact_responsive_e2e.py::test_contact_columns_fit_without_horizontal_scroll_and_keep_centered_numbers[light-1280]'
           'tests/test_wechat_contact_responsive_e2e.py::test_contact_columns_fit_without_horizontal_scroll_and_keep_centered_numbers[dark-1280]'
+          'tests/test_wechat_contact_responsive_e2e.py::test_contact_text_geometry_accepts_legal_hanging_document_space'
+          'tests/test_wechat_contact_responsive_e2e.py::test_contact_text_geometry_rejects_missing_or_overflowing_glyphs'
       - name: Preserve failure-only geometry and original test result
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
