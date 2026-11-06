@@ -1,6 +1,6 @@
 """Contact statements fit their scrollport and keep shared header alignment.
 
-Code version: v1.2.4-codex.0
+Code version: v1.2.5-codex.0
 """
 
 from __future__ import annotations
@@ -237,13 +237,42 @@ def _table_geometry(page):
             const time = cell.querySelector('time');
             return {text: time.textContent.trim(), ...textMetrics(cell, time)};
         });
+        function visibleTextMetrics(cell) {
+            const box = cell.getBoundingClientRect();
+            const walker = document.createTreeWalker(cell, NodeFilter.SHOW_TEXT);
+            const range = document.createRange();
+            const documentWhitespace = new Set([0x20, 0x09, 0x0a, 0x0d]);
+            let node, requiredGlyphCount = 0, missingGlyphCount = 0;
+            let textFits = true;
+            while ((node = walker.nextNode())) {
+                let offset = 0;
+                for (const character of node.data) {
+                    const end = offset + character.length;
+                    // CSS document spaces, tabs, and segment breaks have no visible glyph.
+                    // Other Unicode characters, including NBSP, remain required.
+                    if (!documentWhitespace.has(character.codePointAt(0))) {
+                        requiredGlyphCount += 1;
+                        range.setStart(node, offset);
+                        range.setEnd(node, end);
+                        const rects = [...range.getClientRects()]
+                            .filter(rect => rect.width > 0 && rect.height > 0);
+                        if (!rects.length) missingGlyphCount += 1;
+                        textFits = textFits && rects.length > 0 && rects.every(rect => (
+                            rect.left >= box.left - 1 && rect.right <= box.right + 1
+                        ));
+                    }
+                    offset = end;
+                }
+            }
+            return {textFits, requiredGlyphCount, missingGlyphCount};
+        }
         const longCells = [...body.rows[1].cells].slice(1).map(cell => {
             const range = document.createRange();
             range.selectNodeContents(cell);
             const box = cell.getBoundingClientRect();
             const textBox = range.getBoundingClientRect();
             return {width: box.width, textWidth: textBox.width,
-                textFits: textBox.left >= box.left - 1 && textBox.right <= box.right + 1,
+                ...visibleTextMetrics(cell),
                 lines: range.getClientRects().length, overflowX: getComputedStyle(cell).overflowX,
                 textOverflow: getComputedStyle(cell).textOverflow};
         });
@@ -364,6 +393,86 @@ def test_contact_columns_fit_without_horizontal_scroll_and_keep_centered_numbers
             fixture.history.read_bytes(),
             fixture.registry.read_bytes(),
         )
+    finally:
+        context.close()
+
+
+def _contact_geometry_control_markup(statement):
+    # A separate native DOM uses ch advances to make legal hanging deterministic.
+    # Application typography, source text, and production styles remain unchanged.
+    columns = "".join(
+        f'<col style="width:{width}%">' for width in (10, 20, 40, 15, 15)
+    )
+    header = "<tr>" + "".join("<th>Column</th>" for _ in range(5)) + "</tr>"
+    rows = "".join(
+        f"<tr><td>{number}</td><td><time>7 Aug 2021 18:59:03</time></td>"
+        f'<td><span class="statement">{content}</span></td>'
+        "<td>Conversation</td><td>Account</td></tr>"
+        for number, content in ((1, "Short statement"), (2, statement))
+    )
+    return f"""<!doctype html><style>
+        html {{ font: 16px/20px monospace; }}
+        body {{ margin: 0; }}
+        .wechat-contact-table-shell {{ width: 100ch; }}
+        [data-table-scroll] {{ overflow: auto; }}
+        table {{ width: 100%; table-layout: fixed; border-collapse: collapse; }}
+        td, th {{ padding: 0; border: 0; }}
+        td:first-child {{ text-align: center; }}
+        .statement {{ white-space: pre-wrap; overflow-wrap: anywhere; }}
+    </style><div class="wechat-contact-table-shell">
+        <table data-table-header><colgroup>{columns}</colgroup><thead>{header}</thead></table>
+        <div data-table-scroll><table data-table-body><colgroup>{columns}</colgroup>
+            <tbody>{rows}</tbody></table></div>
+    </div>"""
+
+
+def test_contact_text_geometry_accepts_legal_hanging_document_space(disposable_browser):
+    context = disposable_browser.new_context(viewport={"width": 1280, "height": 800})
+    page = context.new_page()
+    try:
+        page.set_content(_contact_geometry_control_markup("0" * 40 + " " + "0" * 4))
+        measured = _table_geometry(page)
+        statement = measured["longCells"][1]
+        assert statement["textWidth"] > statement["width"] + 1, measured
+        _assert_table_fits(measured)
+        assert statement["requiredGlyphCount"] == 44, measured
+        assert statement["missingGlyphCount"] == 0, measured
+    finally:
+        context.close()
+
+
+@pytest.mark.parametrize(
+    "fault", ["visible_overflow", "hidden_all", "hidden_one", "hidden_nbsp"]
+)
+def test_contact_text_geometry_rejects_missing_or_overflowing_glyphs(
+    disposable_browser, fault
+):
+    statement = "0" * 40 + " " + "0" * 4
+    if fault == "hidden_one":
+        statement = "0" * 39 + '<span style="display:none">0</span> ' + "0" * 4
+    elif fault == "hidden_nbsp":
+        statement = "0" * 40 + '<span style="display:none">\u00a0</span>' + "0" * 4
+    context = disposable_browser.new_context(viewport={"width": 1280, "height": 800})
+    page = context.new_page()
+    try:
+        page.set_content(_contact_geometry_control_markup(statement))
+        content = page.locator("[data-table-body] tbody tr").nth(1).locator(".statement")
+        if fault == "visible_overflow":
+            content.evaluate(
+                "node => { node.style.position = 'relative'; node.style.left = '4px'; }"
+            )
+        elif fault == "hidden_all":
+            content.evaluate("node => { node.style.display = 'none'; }")
+        measured = _table_geometry(page)
+        statement_geometry = measured["longCells"][1]
+        assert statement_geometry["requiredGlyphCount"] > 0, measured
+        assert not statement_geometry["textFits"], measured
+        if fault == "visible_overflow":
+            assert statement_geometry["missingGlyphCount"] == 0, measured
+        else:
+            assert statement_geometry["missingGlyphCount"] > 0, measured
+        with pytest.raises(AssertionError):
+            _assert_table_fits(measured)
     finally:
         context.close()
 
