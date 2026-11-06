@@ -1,6 +1,6 @@
 """Export publication preserves old evidence without reading existing message bodies.
 
-Code version: v1.1.0-codex.0
+Code version: v1.1.1-codex.0
 """
 
 from contextlib import closing
@@ -479,3 +479,30 @@ def test_initial_archive_publication_syncs_a_writable_candidate(tmp_path, monkey
     assert result["changed"]
     assert result["inserted_messages"] == 1
     assert any(mode == "r+b" for mode in modes.values())
+
+
+@pytest.mark.parametrize("existing", [False, True])
+def test_private_boundary_failure_prevents_any_export_publication(
+    tmp_path, monkeypatch, existing,
+):
+    from shutil import copyfile
+
+    from app.core.owner_only_files import OwnerOnlyFileError
+
+    # This synthetic copy isolates private publication from the separately tested
+    # APFS-only production staging contract.
+    monkeypatch.setattr(exports, "_clonefile", copyfile)
+    path = old_archive(tmp_path) if existing else wechat_archive_path(tmp_path)
+    original = path.read_bytes() if existing else None
+
+    def denied(_path):
+        raise OwnerOnlyFileError("Synthetic private boundary failure")
+
+    monkeypatch.setattr(exports, "ensure_owner_only", denied)
+    with pytest.raises(OwnerOnlyFileError, match="Synthetic private boundary failure"):
+        merge(tmp_path)
+    if existing:
+        assert path.read_bytes() == original
+    else:
+        assert not path.exists()
+    assert not list(path.parent.glob(".wechat-export-*"))

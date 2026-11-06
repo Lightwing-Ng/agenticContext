@@ -1,6 +1,6 @@
 """ChatGPT project image cache helpers."""
 
-# Code version: v1.53.0-codex.0
+# Code version: v1.54.0-codex.0
 
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ import os
 import re
 import time
 from collections import deque
-from dataclasses import dataclass, field, replace
+from dataclasses import asdict, dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from queue import Empty
@@ -48,6 +48,7 @@ from .config import (
 )
 from .history_rows import partition_conversation_rows, sort_history_rows
 from .local_media_browser import BrowserDeletionCatalog
+from .media_sqlite import media_store_for
 from .resource_persistence import (
     CHATGPT_CATALOG_FILENAME,
     CHATGPT_CATALOG_SCHEMA,
@@ -873,6 +874,10 @@ class ChatGPTImageCatalog:
         self._in_flight_file_ids: set[str] = set()
         self._unavailable_file_ids: set[str] = set()
         self._visual_metadata_dirty = False
+        self._store = media_store_for(self.catalog_path)
+        self._dirty_file_ids: set[str] = set(self.entries_by_file_id)
+        self._deleted_file_ids: set[str] = set()
+        self._requires_replace = False
 
     @classmethod
     def build(
@@ -885,9 +890,11 @@ class ChatGPTImageCatalog:
         catalog_path = target_dir / CHATGPT_CATALOG_FILENAME
         legacy_catalog_path = target_dir / LEGACY_CHATGPT_CATALOG_FILENAME
         entries: dict[str, ChatGPTCatalogEntry] = {}
-        rows = read_resource_rows(catalog_path)
+        catalog = cls(target_dir)
+        rows = catalog._store.rows()
+        has_typed_source = catalog_path.exists() or catalog_path.with_suffix(".parquet").exists()
         migrated_legacy = False
-        if rows is None and legacy_catalog_path.exists():
+        if not has_typed_source and legacy_catalog_path.exists():
             try:
                 payload = json.loads(legacy_catalog_path.read_text())
             except (OSError, json.JSONDecodeError):
@@ -924,16 +931,21 @@ class ChatGPTImageCatalog:
                 continue
             if entry.file_id and entry.relative_path:
                 entries[entry.file_id] = entry
-        catalog = cls(target_dir, entries)
+        catalog.entries_by_file_id = entries
+        catalog._requires_replace = migrated_legacy or any(
+            not set(CHATGPT_CATALOG_SCHEMA.names).issubset(row) for row in rows or []
+        )
+        if catalog._requires_replace:
+            catalog._dirty_file_ids.update(entries)
         if not repair:
             return catalog
         catalog._normalize_file_extensions()
         catalog.repair_result = catalog.prune_incomplete_entries()
         if migrated_legacy or catalog._visual_metadata_dirty:
-            catalog.save()
+            catalog._flush_pending()
         if migrated_legacy:
             retire_legacy_file(legacy_catalog_path)
-        elif rows is not None:
+        elif has_typed_source:
             retire_legacy_file(legacy_catalog_path)
         return catalog
 
@@ -966,45 +978,87 @@ class ChatGPTImageCatalog:
             except OSError:
                 continue
             entry.relative_path = corrected_path.relative_to(self.target_dir).as_posix()
+            self._mark_entry_dirty(entry.file_id)
             changed = True
 
         if changed:
-            self.save()
+            self._flush_pending()
+
+    @staticmethod
+    def _entry_row(entry: ChatGPTCatalogEntry) -> dict[str, object]:
+        return {"schema_version": CHATGPT_CATALOG_SCHEMA_VERSION, **asdict(entry)}
+
+    def _mark_entry_dirty(self, file_id: str) -> None:
+        self._dirty_file_ids.add(file_id)
+        self._deleted_file_ids.discard(file_id)
+
+    def _mark_entry_deleted(self, file_id: str) -> None:
+        self._dirty_file_ids.discard(file_id)
+        self._deleted_file_ids.add(file_id)
+
+    def _flush_pending(self) -> None:
+        """Commit changed image identities and removals together without a snapshot scan."""
+        with self._lock:
+            if self._requires_replace:
+                self.save()
+                return
+            if not self._dirty_file_ids and not self._deleted_file_ids:
+                return
+            self._store.apply_changes(
+                rows=(
+                    self._entry_row(self.entries_by_file_id[file_id])
+                    for file_id in sorted(self._dirty_file_ids)
+                    if file_id in self.entries_by_file_id
+                ),
+                delete_keys=sorted(self._deleted_file_ids),
+            )
+            self._dirty_file_ids.clear()
+            self._deleted_file_ids.clear()
+            self._visual_metadata_dirty = False
 
     def save(self) -> None:
-        """Write the current catalog to a typed, atomically replaced Parquet file."""
+        """Explicitly replace a complete caller-supplied catalog snapshot.
+
+        Ordinary image and metadata mutations use keyed pending changes instead.
+        This operation preserves the public bulk-seeding and repair interface.
+        """
         with self._lock:
-            write_resource_rows_atomic(
-                self.catalog_path,
-                (
-                    {
-                        "schema_version": CHATGPT_CATALOG_SCHEMA_VERSION,
-                        "file_id": entry.file_id,
-                        "relative_path": entry.relative_path,
-                        "content_sha256": entry.content_sha256,
-                        "content_bytes": entry.content_bytes,
-                        "source_url": entry.source_url,
-                        "conversation_url": entry.conversation_url,
-                        "alt_text": entry.alt_text,
-                        "width": entry.width,
-                        "height": entry.height,
-                        "first_seen_at": entry.first_seen_at,
-                        "last_seen_at": entry.last_seen_at,
-                        "prompt_markdown": entry.prompt_markdown,
-                        "conversation_title": entry.conversation_title,
-                        "created_at": entry.created_at,
-                        "visual_signature": entry.visual_signature,
-                    }
-                    for entry in sorted(self.entries_by_file_id.values(), key=lambda item: item.file_id)
-                ),
-                CHATGPT_CATALOG_SCHEMA,
+            self._store.replace_rows(
+                self._entry_row(entry)
+                for entry in sorted(self.entries_by_file_id.values(), key=lambda item: item.file_id)
             )
+            self._dirty_file_ids.clear()
+            self._deleted_file_ids.clear()
+            self._requires_replace = False
             self._visual_metadata_dirty = False
+
+    def _entry_for_file_id(self, file_id: str) -> ChatGPTCatalogEntry | None:
+        """Resolve a cold image identity through its SQLite primary key."""
+        existing = self.entries_by_file_id.get(file_id)
+        if existing is not None or file_id in self._deleted_file_ids:
+            return existing
+        row = self._store.get(file_id)
+        if row is None:
+            return None
+        values: dict[str, Any] = {
+            name: str(row.get(name) or "")
+            for name in ChatGPTCatalogEntry.__dataclass_fields__
+        }
+        try:
+            for name in ("content_bytes", "width", "height"):
+                values[name] = int(row.get(name) or 0)
+        except (TypeError, ValueError):
+            return None
+        if not values["file_id"] or not values["relative_path"]:
+            return None
+        entry = ChatGPTCatalogEntry(**values)
+        self.entries_by_file_id[file_id] = entry
+        return entry
 
     def complete_entry(self, file_id: str) -> ChatGPTCatalogEntry | None:
         """Return a catalog entry only when its local file is still valid."""
         with self._lock:
-            entry = self.entries_by_file_id.get(file_id)
+            entry = self._entry_for_file_id(file_id)
             if entry is None:
                 return None
             if _is_chatgpt_thumbnail_source_url(entry.source_url):
@@ -1030,6 +1084,7 @@ class ChatGPTImageCatalog:
                     return None
                 entry.visual_signature, entry.width, entry.height = properties
                 self._visual_metadata_dirty = True
+                self._mark_entry_dirty(file_id)
             return entry
 
     def claim_download(self, file_id: str) -> bool:
@@ -1073,7 +1128,7 @@ class ChatGPTImageCatalog:
             }
             merged_candidates: list[ChatGPTImageCandidate] = []
             for candidate in materialized:
-                existing = self.entries_by_file_id.get(candidate.file_id)
+                existing = self._entry_for_file_id(candidate.file_id)
                 if existing is None:
                     merged_candidates.append(candidate)
                     continue
@@ -1101,7 +1156,7 @@ class ChatGPTImageCatalog:
         with self._lock:
             updated_count = 0
             for candidate in candidates:
-                existing = self.entries_by_file_id.get(candidate.file_id)
+                existing = self._entry_for_file_id(candidate.file_id)
                 if existing is None:
                     continue
                 changed = False
@@ -1125,9 +1180,10 @@ class ChatGPTImageCatalog:
                     existing.prompt_markdown = candidate.prompt_markdown
                     changed = True
                 if changed:
+                    self._mark_entry_dirty(candidate.file_id)
                     updated_count += 1
-            if updated_count:
-                self.save()
+            if updated_count or self._dirty_file_ids or self._deleted_file_ids:
+                self._flush_pending()
             return updated_count
 
     def summarize(self, *, validate_files: bool = True) -> int:
@@ -1172,10 +1228,11 @@ class ChatGPTImageCatalog:
                     except OSError:
                         continue
                 self.entries_by_file_id.pop(file_id, None)
+                self._mark_entry_deleted(file_id)
                 removed_file_ids.append(file_id)
 
             if removed_file_ids:
-                self.save()
+                self._flush_pending()
             return ChatGPTCatalogRepairResult(
                 removed_file_ids=tuple(sorted(removed_file_ids)),
                 removed_local_files=removed_local_files,
@@ -1197,7 +1254,7 @@ class ChatGPTImageCatalog:
                 metrics=metrics,
             )
             if changed and not dry_run:
-                self.save()
+                self._flush_pending()
             return result
 
     def register_download(
@@ -1211,7 +1268,7 @@ class ChatGPTImageCatalog:
     ) -> bool:
         """Register one successfully downloaded image and persist immediately."""
         with self._lock:
-            existing = self.entries_by_file_id.get(candidate.file_id)
+            existing = self._entry_for_file_id(candidate.file_id)
             visual_properties = (
                 analyze_image_payload(image_payload)
                 if image_payload is not None
@@ -1241,9 +1298,10 @@ class ChatGPTImageCatalog:
                 created_at=candidate.created_at or (existing.created_at if existing else ""),
                 visual_signature=visual_properties[0] if visual_properties else "",
             )
+            self._mark_entry_dirty(candidate.file_id)
             self._in_flight_file_ids.discard(candidate.file_id)
             self._deduplicate_incoming_entry_unlocked(candidate.file_id)
-            self.save()
+            self._flush_pending()
             return candidate.file_id in self.entries_by_file_id
 
     def _deduplicate_incoming_entry_unlocked(self, file_id: str) -> None:
@@ -1279,6 +1337,7 @@ class ChatGPTImageCatalog:
             except OSError:
                 continue
             self.entries_by_file_id.pop(loser_file_id, None)
+            self._mark_entry_deleted(loser_file_id)
             if loser_file_id == file_id:
                 return
 
@@ -1299,6 +1358,8 @@ class ChatGPTImageCatalog:
         entry.visual_signature = signature
         entry.width = width
         entry.height = height
+        self._mark_entry_dirty(file_id)
+        self._visual_metadata_dirty = True
         return file_id, entry, width, height
 
     def _deduplicate_visual_duplicates_unlocked(
@@ -1372,6 +1433,7 @@ class ChatGPTImageCatalog:
             except OSError:
                 continue
             self.entries_by_file_id.pop(file_id, None)
+            self._mark_entry_deleted(file_id)
             changed = True
 
         return (

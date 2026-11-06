@@ -646,6 +646,8 @@ def _confined_regular_file(workspace: Path, raw_path: str, *, suffix: str) -> Pa
 
 def _windows_worker_may_be_alive(pid: int) -> bool:
     """Prove Windows process absence without treating a denied query as absence."""
+    if pid > 0xFFFFFFFF:
+        return True
     if pid == os.getpid():
         return True
     try:

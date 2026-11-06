@@ -1,6 +1,39 @@
 # Operations guide
 
-Documentation version: `v1.54.3-codex.0`
+Documentation version: `v1.55.3-codex.0`
+
+## Media metadata migration
+
+Preview canonical media metadata without reading cloud-only contents:
+
+```bash
+python3 scripts/migrate_media_sqlite.py --local-store /path/to/local_store \
+  --report /path/to/private/media-preview.json
+```
+
+After the new runtime code is available, apply with a private rollback directory:
+
+```bash
+python3 scripts/migrate_media_sqlite.py --local-store /path/to/local_store \
+  --report /path/to/private/media-migration.json --apply \
+  --backup-directory /path/to/private/media-rollback
+```
+
+The default retains Parquet originals. Explicit `--retire-legacy` is permitted only
+with `--apply`, after exact compressed rollback verification, source-drift checks,
+SQLite integrity checks, and typed row/schema readback. The maintenance gate keeps
+cache jobs out during publication; open source or target handles block migration.
+Do not run an older writer against retained Parquet after adopting its SQLite
+replacement. Preserve both versions if either has independent newer changes.
+
+Only exact canonical names under `local_store/media` and `local_store/x` are
+discovered. LLM roots, numbered copies, browser profiles, media payloads, and recovery
+archives are excluded. Custom external cache roots need a separately reviewed
+inventory; this command does not scan arbitrary settings-selected directories.
+Logical bytes, resident allocation, rollback allocation, and net storage change
+are separate measurements. A format change does not guarantee disk savings.
+
+See [media SQLite storage](MEDIA_SQLITE_STORAGE.md) for benchmarking and rollback.
 
 ## iPhone
 

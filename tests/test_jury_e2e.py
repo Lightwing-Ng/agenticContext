@@ -1,6 +1,6 @@
 """Rendered Jury readiness, review evidence, and one-question session behavior.
 
-Code version: v1.3.10-codex.0
+Code version: v1.3.12-codex.0
 """
 
 from copy import deepcopy
@@ -8,6 +8,8 @@ from pathlib import Path
 import re
 
 import pytest
+from playwright.sync_api import Error as PlaywrightError
+from playwright.sync_api import Page, TimeoutError as PlaywrightTimeoutError
 from playwright.sync_api import expect, sync_playwright
 
 from tests import test_sidebar_e2e as fixtures
@@ -93,19 +95,64 @@ def session_payload(*, running=True, phase="reviewing", providers=("chatgpt", "g
     }
 
 
+def _record_jury_navigation_failure(page, error):
+    if not isinstance(error, PlaywrightTimeoutError) or "Page.goto:" not in str(error):
+        return
+    try:
+        from tests.jury_navigation_diagnostics import record_navigation_failure
+
+        record_navigation_failure(page, error)
+    except Exception as diagnostic_error:
+        error.add_note(f"Jury navigation diagnostics failed: {type(diagnostic_error).__name__}")
+
+
 def open_jury(jury_browser, server_url, width, checks, *, height=900, unavailable=()):
     context = jury_browser.new_context(
         viewport={"width": width, "height": height},
         color_scheme="dark" if width < 600 else "light",
         reduced_motion="reduce",
     )
-    page = context.new_page()
-    page.route("**/api/jury/check", lambda route: account_check(route, checks, unavailable=unavailable))
-    page.route("**/api/jury/sessions**", lambda route: route.fulfill(json={"sessions": []}))
-    page.goto(f"{server_url}/jury/edge")
-    if width <= 900:
-        page.locator("#sidebar_toggle").click()
-    return page, context
+    page = None
+    try:
+        page = context.new_page()
+        page.route("**/api/jury/check", lambda route: account_check(route, checks, unavailable=unavailable))
+        page.route("**/api/jury/sessions**", lambda route: route.fulfill(json={"sessions": []}))
+        page.goto(f"{server_url}/jury/edge")
+        if width <= 900:
+            page.locator("#sidebar_toggle").click()
+        return page, context
+    except Exception as error:
+        if page is not None:
+            _record_jury_navigation_failure(page, error)
+        try:
+            context.close()
+        except Exception as cleanup_error:
+            error.add_note(f"Jury setup context cleanup also failed: {cleanup_error}")
+        raise
+
+
+def test_open_jury_releases_its_context_after_navigation_failure(jury_browser, monkeypatch):
+    original_contexts = tuple(jury_browser.contexts)
+    created_contexts = []
+    failure = PlaywrightTimeoutError("Injected Jury navigation failure")
+
+    def fail_navigation(page, *_args, **_kwargs):
+        created_contexts.append(page.context)
+        raise failure
+
+    monkeypatch.setattr(Page, "goto", fail_navigation)
+    try:
+        with pytest.raises(PlaywrightTimeoutError) as raised:
+            open_jury(jury_browser, "http://127.0.0.1:1", 1_280, [])
+
+        assert raised.value is failure
+        assert len(created_contexts) == 1
+        assert tuple(jury_browser.contexts) == original_contexts
+        with pytest.raises(PlaywrightError, match="closed"):
+            created_contexts[0].new_page()
+    finally:
+        for context in created_contexts:
+            context.close()
 
 
 def test_jury_model_menu_escapes_sidebar_clipping(jury_browser, sidebar_server_url):
@@ -1122,6 +1169,9 @@ def test_new_session_drops_disabled_claude_from_a_legacy_safari_record(
         assert checks[0]["browser"] == "safari"
         assert checks[0]["providers"] == ["chatgpt", "grok", "gemini"]
         assert "claude" not in checks[0]["models"]
+    except PlaywrightTimeoutError as error:
+        _record_jury_navigation_failure(page, error)
+        raise
     finally:
         context.close()
 
@@ -1155,5 +1205,8 @@ def test_jury_restore_is_read_only_and_stop_preserves_discussion(jury_browser, s
         expect(page.locator("[data-jury-check-label]")).to_have_text("Not checked")
         expect(page.locator("[data-jury-ready-check]")).to_be_hidden()
         assert writes == [{"session_id": "jury-one"}]
+    except PlaywrightTimeoutError as error:
+        _record_jury_navigation_failure(page, error)
+        raise
     finally:
         context.close()

@@ -6709,6 +6709,16 @@ def test_restored_session_loads_bound_history_and_ignores_late_reply(
         context.close()
 
 
+def _bounded_draft_sidebar_evaluate(page, expression):
+    # The SDK's evaluate has no transport timeout of its own. Import only
+    # when this observer runs so unrelated collection keeps its original timing.
+    import asyncio
+
+    return page._sync(
+        asyncio.wait_for(page._impl_obj.evaluate(expression), timeout=0.75)
+    )
+
+
 @contextmanager
 def _observe_draft_sidebar_failure(page):
     """Expose bounded control state only when the original draft interaction fails."""
@@ -6752,7 +6762,8 @@ def _observe_draft_sidebar_failure(page):
         yield
     except (AssertionError, PlaywrightError):
         try:
-            diagnostic = page.evaluate(
+            diagnostic = _bounded_draft_sidebar_evaluate(
+                page,
                 """() => {
                     const read = selector => {
                         const node = document.querySelector(selector);
@@ -6801,8 +6812,10 @@ def _observe_draft_sidebar_failure(page):
     finally:
         if not page.is_closed():
             try:
-                page.evaluate("window.__cachelikesDraftSidebarTrace?.controller.abort()")
-            except PlaywrightError:
+                _bounded_draft_sidebar_evaluate(
+                    page, "window.__cachelikesDraftSidebarTrace?.controller.abort()"
+                )
+            except (PlaywrightError, TimeoutError):
                 pass
 
 

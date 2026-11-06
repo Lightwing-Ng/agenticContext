@@ -1,6 +1,6 @@
-"""Persistent typed local X catalogs with a SQLite catalog for the LLM root."""
+"""Transactional X media catalogs with a separate legacy LLM catalog boundary."""
 
-# Code version: v1.7.0-codex.0
+# Code version: v1.8.0-codex.0
 
 from __future__ import annotations
 
@@ -10,13 +10,14 @@ from pathlib import Path
 from threading import RLock
 from typing import Any, Mapping
 
+from .media_sqlite import MediaSQLiteStore, media_store_for
 from .resource_persistence import (
     X_CACHE_CATALOG_FILENAME,
     X_CACHE_CATALOG_SCHEMA,
     X_CACHE_CATALOG_SCHEMA_VERSION,
-    read_parquet_rows,
+    read_resource_rows,
     retire_legacy_file,
-    write_parquet_rows_atomic,
+    write_resource_rows_atomic,
 )
 
 
@@ -151,7 +152,7 @@ def candidate_urls_from_payload(payload: Mapping[str, object]) -> list[str]:
 
 @dataclass(slots=True)
 class LocalTweetCacheIndex:
-    """Track cached tweets and their display metadata in one Parquet catalog."""
+    """Track cached tweets with keyed media persistence and fast memory indexes."""
 
     output_dir: Path
     catalog_path: Path
@@ -162,17 +163,33 @@ class LocalTweetCacheIndex:
     dirty: bool = False
     _lock: RLock = field(default_factory=RLock, init=False, repr=False)
     _inflight_keys: set[str] = field(default_factory=set, init=False, repr=False)
+    _dirty_directories: set[Path] = field(default_factory=set, init=False, repr=False)
+    _deleted_keys: set[str] = field(default_factory=set, init=False, repr=False)
+    _urls_by_directory: dict[Path, set[str]] = field(default_factory=dict, init=False, repr=False)
+    _status_ids_by_directory: dict[Path, set[str]] = field(default_factory=dict, init=False, repr=False)
+    _store: MediaSQLiteStore | None = field(default=None, init=False, repr=False)
+    _loading: bool = field(default=False, init=False, repr=False)
+    _requires_replace: bool = field(default=False, init=False, repr=False)
+
+    def __post_init__(self) -> None:
+        if self.output_dir.name != "llm":
+            self._store = media_store_for(self.catalog_path)
+
+    def _mark_directory_dirty(self, tweet_dir: Path) -> None:
+        if not self._loading:
+            self._dirty_directories.add(tweet_dir)
+            self.dirty = True
 
     @classmethod
     def build(cls, output_dir: Path) -> "LocalTweetCacheIndex":
-        """Load Parquet state and retire imported yt-dlp JSON sidecars."""
+        """Load typed state and retire sidecars only after verified persistence."""
         filename = ".cache_catalog.sqlite3" if output_dir.name == "llm" else CATALOG_FILENAME
         index = cls(output_dir=output_dir, catalog_path=output_dir / filename)
         if not output_dir.exists():
             return index
 
         legacy_paths = index._legacy_info_paths()
-        if index._load_parquet_catalog():
+        if index._load_catalog():
             if legacy_paths:
                 index._merge_legacy_info_sidecars(legacy_paths)
             if index.dirty:
@@ -232,6 +249,14 @@ class LocalTweetCacheIndex:
                     ),
                     {},
                 )
+            if not metadata and self._store is not None:
+                try:
+                    key = tweet_dir.relative_to(self.output_dir).as_posix()
+                except ValueError:
+                    key = ""
+                row = self._store.get(key) if key else None
+                if row is not None:
+                    metadata = _metadata_from_catalog_row(row)
             return dict(metadata)
 
     def contains_complete_cache(self, tweet_url: str) -> bool:
@@ -278,83 +303,103 @@ class LocalTweetCacheIndex:
             downloaded_videos = sum(video_count for _image_count, video_count in self.media_counts_by_directory.values())
             return downloaded_posts, downloaded_images, downloaded_videos
 
+    def _catalog_row(self, tweet_dir: Path) -> dict[str, object] | None:
+        try:
+            relative_tweet_dir = tweet_dir.relative_to(self.output_dir).as_posix()
+        except ValueError:
+            return None
+        counts = self.media_counts_by_directory.get(tweet_dir)
+        if counts is None:
+            return None
+        image_count, video_count = counts
+        metadata = self.metadata_by_directory.get(tweet_dir, {})
+        return {
+            "schema_version": CATALOG_SCHEMA_VERSION,
+            "relative_tweet_dir": relative_tweet_dir,
+            "canonical_urls": sorted(self._urls_by_directory.get(tweet_dir, ())),
+            "status_ids": sorted(self._status_ids_by_directory.get(tweet_dir, ())),
+            "image_count": image_count,
+            "video_count": video_count,
+            "title": str(metadata.get("title") or ""),
+            "description": str(metadata.get("description") or ""),
+            "uploader": str(metadata.get("uploader") or ""),
+            "uploader_id": str(metadata.get("uploader_id") or ""),
+            "display_id": str(metadata.get("display_id") or ""),
+            "webpage_url": str(metadata.get("webpage_url") or ""),
+            "timestamp": _coerce_float(metadata.get("timestamp")),
+            "upload_date": str(metadata.get("upload_date") or ""),
+            "resource_type": str(metadata.get("_type") or ""),
+        }
+
     def flush(self) -> None:
-        """Atomically persist the current catalog with native Parquet list columns."""
+        """Commit only dirty directories, retaining pending changes on failure."""
         with self._lock:
             if not self.dirty:
                 return
-
-            rows: list[dict[str, object]] = []
-            for tweet_dir in sorted(self.media_counts_by_directory, key=lambda path: str(path)):
-                try:
-                    relative_tweet_dir = tweet_dir.relative_to(self.output_dir).as_posix()
-                except ValueError:
-                    continue
-                image_count, video_count = self.media_counts_by_directory[tweet_dir]
-                canonical_urls = sorted(
-                    url for url, directories in self.directories_by_url.items() if tweet_dir in directories
-                )
-                status_ids = sorted(
-                    status_id for status_id, directories in self.directories_by_status_id.items() if tweet_dir in directories
-                )
-                metadata = self.metadata_by_directory.get(tweet_dir, {})
-                rows.append(
-                    {
-                        "schema_version": CATALOG_SCHEMA_VERSION,
-                        "relative_tweet_dir": relative_tweet_dir,
-                        "canonical_urls": canonical_urls,
-                        "status_ids": status_ids,
-                        "image_count": image_count,
-                        "video_count": video_count,
-                        "title": str(metadata.get("title") or ""),
-                        "description": str(metadata.get("description") or ""),
-                        "uploader": str(metadata.get("uploader") or ""),
-                        "uploader_id": str(metadata.get("uploader_id") or ""),
-                        "display_id": str(metadata.get("display_id") or ""),
-                        "webpage_url": str(metadata.get("webpage_url") or ""),
-                        "timestamp": _coerce_float(metadata.get("timestamp")),
-                        "upload_date": str(metadata.get("upload_date") or ""),
-                        "resource_type": str(metadata.get("_type") or ""),
-                    }
-                )
-
-            write_parquet_rows_atomic(self.catalog_path, rows, X_CACHE_CATALOG_SCHEMA)
+            snapshot = self._store is None or self._requires_replace
+            selected = self.media_counts_by_directory if snapshot else self._dirty_directories
+            rows = [
+                row for directory in sorted(selected, key=str)
+                if (row := self._catalog_row(directory)) is not None
+            ]
+            if self._store is None:
+                write_resource_rows_atomic(self.catalog_path, rows, X_CACHE_CATALOG_SCHEMA)
+            elif self._requires_replace:
+                self._store.replace_rows(rows)
+            else:
+                self._store.apply_changes(rows=rows, delete_keys=sorted(self._deleted_keys))
+            self._dirty_directories.clear()
+            self._deleted_keys.clear()
+            self._requires_replace = False
             self.dirty = False
 
-    def _load_parquet_catalog(self) -> bool:
-        """Load the account catalog, including the previous Parquet schema."""
-        rows = read_parquet_rows(self.catalog_path)
-        if rows is None:
-            return False
-
-        for row in rows:
-            relative_tweet_dir = str(row.get("relative_tweet_dir") or "").strip()
-            if not relative_tweet_dir:
-                continue
-            tweet_dir = self.output_dir / relative_tweet_dir
-            if not tweet_dir.exists() or not tweet_dir.is_dir():
-                self.dirty = True
-                continue
-
-            image_count = int(row.get("image_count") or 0)
-            video_count = int(row.get("video_count") or 0)
-            self._remember_directory(tweet_dir, image_count, video_count)
-            for url in _row_string_list(row, "canonical_urls", "canonical_urls_json"):
-                self._remember_url(url, tweet_dir)
-            for status_id in _row_string_list(row, "status_ids", "status_ids_json"):
-                if status_id:
-                    self.directories_by_status_id.setdefault(status_id, set()).add(tweet_dir)
-
-            metadata = _metadata_from_catalog_row(row)
-            if metadata:
-                self._remember_metadata(tweet_dir, metadata)
-            if int(row.get("schema_version") or 1) < CATALOG_SCHEMA_VERSION:
-                self.dirty = True
-
+    def _load_catalog(self) -> bool:
+        """Load rows while preserving the separate LLM catalog's existing format."""
+        if self._store is None:
+            rows = read_resource_rows(self.catalog_path)
+            if rows is None:
+                return False
+        else:
+            if not self.catalog_path.exists() and not self.catalog_path.with_suffix(".parquet").exists():
+                return False
+            rows = self._store.rows()
+        self._requires_replace = self._store is not None and any(
+            not set(X_CACHE_CATALOG_SCHEMA.names).issubset(row) for row in rows
+        )
+        self._loading = True
+        try:
+            for row in rows:
+                relative_tweet_dir = str(row.get("relative_tweet_dir") or "").strip()
+                if not relative_tweet_dir:
+                    continue
+                tweet_dir = self.output_dir / relative_tweet_dir
+                if not tweet_dir.exists() or not tweet_dir.is_dir():
+                    self._deleted_keys.add(relative_tweet_dir)
+                    self.dirty = True
+                    continue
+                image_count = int(row.get("image_count") or 0)
+                video_count = int(row.get("video_count") or 0)
+                self._remember_directory(tweet_dir, image_count, video_count)
+                for url in _row_string_list(row, "canonical_urls", "canonical_urls_json"):
+                    self._remember_url(url, tweet_dir)
+                for status_id in _row_string_list(row, "status_ids", "status_ids_json"):
+                    if status_id:
+                        self.directories_by_status_id.setdefault(status_id, set()).add(tweet_dir)
+                        self._status_ids_by_directory.setdefault(tweet_dir, set()).add(status_id)
+                metadata = _metadata_from_catalog_row(row)
+                if metadata:
+                    self._remember_metadata(tweet_dir, metadata)
+                if int(row.get("schema_version") or 1) < CATALOG_SCHEMA_VERSION:
+                    self._dirty_directories.add(tweet_dir)
+                    self.dirty = True
+        finally:
+            self._loading = False
+        if self._requires_replace:
+            self.dirty = True
         return True
 
     def _rebuild_from_disk(self, legacy_paths: list[Path]) -> None:
-        """Recreate Parquet rows from legacy metadata and all media-bearing directories."""
+        """Recreate catalog rows from legacy metadata and media-bearing directories."""
         self._merge_legacy_info_sidecars(legacy_paths)
         media_directories = {
             path.parent
@@ -397,22 +442,26 @@ class LocalTweetCacheIndex:
         )
 
     def _retire_legacy_info_sidecars(self, legacy_paths: list[Path]) -> None:
-        """Delete imported sidecars only after the Parquet replacement can be read back."""
-        if not legacy_paths or read_parquet_rows(self.catalog_path) is None:
+        """Delete imported sidecars only after the typed catalog can be read back."""
+        if not legacy_paths or read_resource_rows(self.catalog_path) is None:
             return
         for legacy_path in legacy_paths:
             retire_legacy_file(legacy_path)
 
     def _remember_directory(self, tweet_dir: Path, image_count: int, video_count: int) -> None:
         """Track one cached tweet directory and its media totals."""
-        self.media_counts_by_directory[tweet_dir] = (image_count, video_count)
+        counts = image_count, video_count
+        if self.media_counts_by_directory.get(tweet_dir) != counts:
+            self.media_counts_by_directory[tweet_dir] = counts
+            self._mark_directory_dirty(tweet_dir)
 
     def _remember_metadata(self, tweet_dir: Path, metadata: Mapping[str, object]) -> None:
         """Merge source metadata without replacing useful values with blanks."""
         current = self.metadata_by_directory.setdefault(tweet_dir, {})
         for key, value in metadata.items():
-            if value not in (None, "", [], {}):
+            if value not in (None, "", [], {}) and current.get(str(key)) != value:
                 current[str(key)] = value
+                self._mark_directory_dirty(tweet_dir)
 
     def _remember_url(self, tweet_url: str, tweet_dir: Path) -> None:
         """Associate a canonical URL or status ID with one cached tweet directory."""
@@ -420,8 +469,16 @@ class LocalTweetCacheIndex:
         status_id = extract_status_id(tweet_url)
         if canonical_url:
             self.directories_by_url.setdefault(canonical_url, set()).add(tweet_dir)
+            urls = self._urls_by_directory.setdefault(tweet_dir, set())
+            if canonical_url not in urls:
+                urls.add(canonical_url)
+                self._mark_directory_dirty(tweet_dir)
         if status_id:
             self.directories_by_status_id.setdefault(status_id, set()).add(tweet_dir)
+            statuses = self._status_ids_by_directory.setdefault(tweet_dir, set())
+            if status_id not in statuses:
+                statuses.add(status_id)
+                self._mark_directory_dirty(tweet_dir)
 
     def _lookup_directories_unlocked(self, tweet_url: str) -> set[Path]:
         directories: set[Path] = set()

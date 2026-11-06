@@ -1,6 +1,30 @@
 # Testing guide
 
-Documentation version: `v1.45.1-codex.0`
+Documentation version: `v1.46.2-codex.0`
+
+## Media SQLite persistence checks
+
+`tests/test_media_sqlite.py` verifies typed indexed rows, exact schemas and metadata,
+nullable/list values, unchanged-row suppression, atomic mixed mutations, failed-write
+rollback, concurrent first publication, conditional claims, and format isolation.
+Catalog and Grok integration tests exercise actual dirty-key callers, legacy
+read-only fallback, normalized old schemas, visual deduplication, failed-flush
+retry, status selection, and provider task boundaries. Migration tests cover all
+five admitted resource types, exact rollback, source drift, protected-name exclusion,
+existing-target conflicts, and open handles. They use synthetic isolated stores.
+
+Run `TZ=UTC ./scripts/check.sh` for the full non-live suite, branch coverage,
+dependency audit, documentation checks, JavaScript syntax, and JavaScript tests.
+Do not substitute a focused storage selection or exclude `slow` tests for a full
+suite claim.
+
+Use `scripts/benchmark_media_sqlite.py --rows 1000 10000 --repeats 9 --report
+test-results/media-synthetic.json` for public synthetic comparisons. Real migration
+reports stay private. Disk point queries are compared separately from full reads;
+one-row writes compare the old in-memory snapshot serialization and verification
+against a keyed SQLite transaction. Neither benchmark substitutes disk reads for
+the existing process-local memory cache. Report P95 and median, full-read costs,
+file sizes, and rollback allocation, including regressions.
 
 ## LLM SQLite persistence checks
 
@@ -962,6 +986,13 @@ when the route or service boundary is the behavior being tested.
 - `slow`: Tests materially slower than the unit-test median.
 - `live`: Explicit manual checks that require a signed-in browser or a remote service. These never
   belong in CI or the default quality gate.
+
+The live Tunnel badge contract reads the canonical Worthward style-token page at
+`http://127.0.0.1:8688/settings/style-tokens` by default. Set
+`AGENTIC_CONTEXT_REFERENCE_STYLE_URL` to the style-token URL of an actual isolated Worthward
+instance when its user-owned service is unavailable. Keep the original rendering assertions,
+use the sibling application's supported temporary-store overrides, and stop the owned instance
+after verification. The live agenticContext status remains tied to its real service on `8666`.
 
 The sidebar E2E layer may use Playwright-managed Chromium or an installed Chrome or Edge binary,
 but always launches a clean browser context without a user-data directory. Its Flask server uses

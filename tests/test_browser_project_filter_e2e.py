@@ -1,4 +1,4 @@
-"""Isolated Local resources Project filtering. Code version: v1.1.3-codex.0."""
+"""Isolated Local resources Project filtering. Code version: v1.2.0-codex.0."""
 
 from __future__ import annotations
 
@@ -221,6 +221,173 @@ def _assert_session_table_geometry(geometry: dict, *, require_source_hit: bool) 
         )
     if require_source_hit:
         assert geometry["triggerHit"], "The settled Source trigger is obstructed."
+
+
+def test_session_columns_follow_container_query_without_outer_resize(
+    disposable_browser: Browser,
+    project_browser_server_url: str,
+) -> None:
+    context = disposable_browser.new_context(
+        viewport={"width": 1_006, "height": 844}, reduced_motion="reduce",
+    )
+    context.add_init_script("""document.addEventListener('DOMContentLoaded', () => {
+        const style = document.createElement('style');
+        style.id = 'session-column-distribution-control';
+        style.textContent = `.browser-session-index-table[data-table-body] {
+            --browser-session-number-width: 5%; --browser-session-title-width: 48%;
+            --browser-session-source-width: 12%; --browser-session-count-width: 15%;
+            --browser-session-updated-width: 20%;
+        }`;
+        document.head.append(style);
+    }, {once: true});""")
+    page = context.new_page()
+    try:
+        page.goto(
+            f"{project_browser_server_url}/browser?view=text&source=chatgpt&session_view=1"
+        )
+        _sidebar(page, opened=False)
+        before = page.locator(".browser-session-index-shell").evaluate("""shell => {
+            const rect = node => {
+                const box = node.getBoundingClientRect();
+                return [box.x, box.y, box.width, box.height];
+            };
+            return [shell, shell.querySelector('[data-table-header]'),
+                shell.querySelector('[data-table-body]')].map(rect);
+        }""")
+        # CSSOM changes do not notify a MutationObserver watching body attributes.
+        page.evaluate("""() => document.getElementById(
+            'session-column-distribution-control').sheet.deleteRule(0)""")
+        _wait_for_session_table_layout(page, require_source_hit=True)
+        after = page.locator(".browser-session-index-shell").evaluate("""shell => {
+            const rect = node => {
+                const box = node.getBoundingClientRect();
+                return [box.x, box.y, box.width, box.height];
+            };
+            const body = shell.querySelector('[data-table-body]');
+            return {outer: [shell, shell.querySelector('[data-table-header]'), body].map(rect),
+                number: getComputedStyle(body).getPropertyValue('--browser-session-number-width').trim(),
+                header: shell.querySelector('[data-table-header]').rows[0].cells[0].getBoundingClientRect().width,
+                body: body.rows[0].cells[0].getBoundingClientRect().width};
+        }""")
+        assert before == after["outer"]
+        assert after["number"] == "4%"
+        assert abs(after["header"] - after["body"]) <= 1
+    finally:
+        context.close()
+
+
+def test_shared_table_tracks_measurement_row_lifecycle_and_disconnects(
+    disposable_browser: Browser,
+    project_browser_server_url: str,
+) -> None:
+    context = disposable_browser.new_context(
+        viewport={"width": 1_006, "height": 844}, reduced_motion="reduce",
+    )
+    page = context.new_page()
+    errors = []
+    page.on("pageerror", lambda error: errors.append(str(error)))
+
+    def columns_follow(row_id: str) -> None:
+        page.wait_for_function("""rowId => {
+            const header = document.querySelector('#column-lifecycle [data-table-header]');
+            const row = document.getElementById(rowId);
+            return row && Array.from(header.rows[0].cells).every((cell,index) => (
+                Math.abs(cell.getBoundingClientRect().width
+                    - row.cells[index].getBoundingClientRect().width) <= 1
+            ));
+        }""", arg=row_id)
+
+    def advance_frames() -> None:
+        page.evaluate("""() => new Promise(resolve => {
+            let frames = 0;
+            const next = () => ++frames === 8 ? resolve() : requestAnimationFrame(next);
+            requestAnimationFrame(next);
+        })""")
+
+    def redistribute(value: str) -> None:
+        page.evaluate("""value => document.getElementById('column-lifecycle-style')
+            .sheet.cssRules[0].style.setProperty('--test-column-width',value)""", value)
+
+    try:
+        page.goto(
+            f"{project_browser_server_url}/browser?view=text&source=chatgpt&session_view=1"
+        )
+        page.evaluate("""() => {
+            const style = document.createElement('style');
+            style.id = 'column-lifecycle-style';
+            style.textContent = `#column-lifecycle { --test-column-width: 20%; position:relative; width:600px; }
+                #column-lifecycle table { width:600px; table-layout:fixed; border-collapse:collapse; }
+                #column-lifecycle [data-table-header] { position:absolute; top:0; left:0; }
+                #column-lifecycle [data-table-body] { height:80px; }
+                #column-lifecycle td:first-child { width:var(--test-column-width); }`;
+            document.head.append(style);
+            const shell = document.createElement('div');
+            // Direct attachment avoids a second controller from automatic shell discovery.
+            shell.id = 'column-lifecycle';
+            shell.innerHTML = `<table data-table-header><thead><tr><th>No.</th><th>Value</th></tr></thead></table>
+                <div data-table-scroll><table data-table-body><tbody>
+                    <tr id="lifecycle-first"><td>1</td><td>First</td></tr>
+                </tbody></table></div>`;
+            document.body.append(shell);
+            window.__columnLifecycleCleanup = SHARED_SCROLLABLE_DATA_TABLE.attach(shell);
+        }""")
+        columns_follow("lifecycle-first")
+        outer = page.locator("#column-lifecycle [data-table-body]").evaluate(
+            "body => [body.getBoundingClientRect().width, body.getBoundingClientRect().height]"
+        )
+        page.evaluate("""() => document.querySelector('#column-lifecycle tbody').innerHTML =
+            '<tr id="lifecycle-replaced"><td>2</td><td>Replacement</td></tr>'""")
+        redistribute("30%")
+        columns_follow("lifecycle-replaced")
+        page.evaluate("""() => {
+            document.getElementById('lifecycle-replaced').hidden = true;
+            document.querySelector('#column-lifecycle tbody').insertAdjacentHTML('beforeend',
+                '<tr id="lifecycle-visible"><td>3</td><td>Visible</td></tr>');
+        }""")
+        redistribute("40%")
+        columns_follow("lifecycle-visible")
+        previous_width = page.locator("#column-lifecycle th").first.evaluate(
+            "cell => cell.getBoundingClientRect().width"
+        )
+        page.evaluate("""() => document.querySelector('#column-lifecycle tbody').innerHTML =
+            '<tr data-table-empty-row><td colspan="2">Empty</td></tr>'""")
+        advance_frames()
+        page.evaluate("""() => document.querySelector('#column-lifecycle tbody').innerHTML =
+            '<tr id="lifecycle-summary" data-table-summary-row><td>4</td><td>Summary</td></tr>'""")
+        redistribute("50%")
+        advance_frames()
+        assert page.locator("#column-lifecycle th").first.evaluate(
+            "cell => cell.getBoundingClientRect().width"
+        ) == previous_width
+        # An eligibility-only attribute change must discover the new first measurable row.
+        page.locator("#lifecycle-summary").evaluate(
+            "row => row.removeAttribute('data-table-summary-row')"
+        )
+        columns_follow("lifecycle-summary")
+        redistribute("60%")
+        columns_follow("lifecycle-summary")
+        assert page.locator("#column-lifecycle [data-table-body]").evaluate(
+            "body => [body.getBoundingClientRect().width, body.getBoundingClientRect().height]"
+        ) == outer
+        final_width = page.locator("#column-lifecycle th").first.evaluate(
+            "cell => cell.getBoundingClientRect().width"
+        )
+        page.evaluate("window.__columnLifecycleCleanup()")
+        redistribute("70%")
+        page.evaluate("""() => {
+            document.querySelector('#lifecycle-summary td').textContent = 'After cleanup';
+            window.dispatchEvent(new Event('resize'));
+        }""")
+        advance_frames()
+        assert page.locator("#column-lifecycle th").first.evaluate(
+            "cell => cell.getBoundingClientRect().width"
+        ) == final_width
+        assert abs(final_width - page.locator("#lifecycle-summary td").first.evaluate(
+            "cell => cell.getBoundingClientRect().width"
+        )) > 1
+        assert not errors
+    finally:
+        context.close()
 
 
 def _project_trigger(page: Page) -> Locator:

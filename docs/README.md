@@ -1,6 +1,6 @@
 # Documentation index
 
-Documentation version: `v1.1.0-codex.0`
+Documentation version: `v1.1.1-codex.0`
 
 Use the current contracts below for implementation and operation. Dated evidence records describe
 the checkout and environment observed at that time; they do not establish current behavior.
@@ -17,6 +17,7 @@ the checkout and environment observed at that time; they do not establish curren
 | Diagnose a failed quality gate | [CI failure playbook](CI_FAILURE_PLAYBOOK.md) |
 | Operate the local application | [Operations](OPERATIONS.md) |
 | Cache routes, source behavior, and recovery | [Cache runbook](CACHE_HANDOFF.md) |
+| Media metadata migration, benchmarks, and rollback | [Media SQLite storage](MEDIA_SQLITE_STORAGE.md) |
 | Preserve OpenClaw history and review removal readiness | [OpenClaw migration](OPENCLAW_MIGRATION.md) |
 | Import Gemini Takeout and protect recovered history | [Gemini import guide](GEMINI_TAKEOUT_IMPORT.md) |
 | Agent execution and browser boundaries | [Computer Use Agent](COMPUTER_USE_AGENT.md) |

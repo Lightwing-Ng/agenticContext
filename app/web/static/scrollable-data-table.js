@@ -1,4 +1,4 @@
-/* Code version: v1.0.0-codex.0 */
+/* Code version: v1.0.1-codex.0 */
 
 (function bootstrapScrollableDataTables(globalScope) {
     "use strict";
@@ -49,6 +49,8 @@
         if (!(shell instanceof HTMLElement)) return () => {};
         let frameId = 0;
         let resizeObserver = null;
+        let mutationObserver = null;
+        let measurementCells = new Set();
         const {header, scroll, body} = tableParts(shell);
         if (!(header instanceof HTMLTableElement)
             || !(scroll instanceof HTMLElement)
@@ -58,8 +60,25 @@
             header.style.translate = scroll.scrollLeft ? `${-scroll.scrollLeft}px 0` : "";
         }
 
+        function observeMeasurementCells() {
+            if (!resizeObserver) return;
+            const headerRow = Array.from(header.rows).find((row) => (
+                Array.from(row.cells).every((cell) => cell.colSpan === 1)
+            ));
+            const row = measurementRow(body, headerRow?.cells.length || 0);
+            const nextCells = new Set(Array.from(row?.cells || []));
+            measurementCells.forEach((cell) => {
+                if (!nextCells.has(cell)) resizeObserver.unobserve(cell);
+            });
+            nextCells.forEach((cell) => {
+                if (!measurementCells.has(cell)) resizeObserver.observe(cell);
+            });
+            measurementCells = nextCells;
+        }
+
         function sync() {
             frameId = 0;
+            observeMeasurementCells();
             const scrollbarWidth = Math.max(0, scroll.offsetWidth - scroll.clientWidth);
             setProperty(shell, SCROLLBAR_WIDTH_PROPERTY, `${scrollbarWidth}px`);
             syncColumnWidths(header, body, scrollbarWidth);
@@ -79,6 +98,16 @@
             resizeObserver = new ResizeObserver(schedule);
             [shell, header, scroll, body].forEach((node) => resizeObserver.observe(node));
         }
+        if (typeof MutationObserver === "function") {
+            mutationObserver = new MutationObserver(schedule);
+            // Only body-row eligibility and contents are observed; sync writes header/shell styles.
+            mutationObserver.observe(body, {
+                childList: true,
+                subtree: true,
+                attributes: true,
+                attributeFilter: ["hidden", "class", "style", "colspan", "data-table-empty-row", "data-table-summary-row"],
+            });
+        }
         schedule();
 
         return () => {
@@ -86,6 +115,8 @@
             scroll.removeEventListener("scroll", syncHorizontalPosition);
             globalScope.removeEventListener("resize", schedule);
             resizeObserver?.disconnect();
+            mutationObserver?.disconnect();
+            measurementCells.clear();
             header.style.removeProperty("translate");
             shell.style.removeProperty(HEADER_HEIGHT_PROPERTY);
             shell.style.removeProperty(SCROLLBAR_WIDTH_PROPERTY);

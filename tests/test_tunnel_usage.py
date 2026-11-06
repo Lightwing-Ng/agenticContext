@@ -1,7 +1,8 @@
-"""Tunnel call accounting and compact badge acceptance. Code version: v1.7.0-codex.0."""
+"""Tunnel call accounting and compact badge acceptance. Code version: v1.7.3-codex.0."""
 
 from __future__ import annotations
 
+import os
 import threading
 import time
 from contextlib import contextmanager
@@ -712,6 +713,10 @@ def test_summary_polling_states_and_long_integer_geometry(
         expect(badge).to_have_css("border-radius", "2px")
         expect(badge).to_have_css("padding", "2px 6px")
         expect(badge).to_have_css("font-variant-numeric", "tabular-nums")
+        expect(badge.locator(".workspace-metric-value-major")).to_have_css("font-size", "24px")
+        expect(badge.locator(".investment-holdings-allocation-badge-glyph").last).to_have_css(
+            "width", "15px"
+        )
         assert badge.evaluate("e => e.scrollWidth <= e.clientWidth + 1")
         payload["active_calls"] = []
         payload["recent_calls"] = [usage_record(1, 9_007_199_254_740_991, "completed")]
@@ -722,6 +727,7 @@ def test_summary_polling_states_and_long_integer_geometry(
         refresh()
         expect(recent_tokens.locator("[data-tunnel-recent-token-digits]")).to_have_text("9,007,199,254,740,991")
         assert badge.evaluate("e => e.scrollWidth <= e.clientWidth + 1")
+        assert abs(panel.bounding_box()["height"] - initial_height) <= 1
 
         payload["active_calls"] = []
         payload["recent_calls"] = [usage_record(1, 12_345_678, "completed")]
@@ -771,10 +777,19 @@ def test_summary_polling_states_and_long_integer_geometry(
                 "aria-label",
                 "Tokens: unavailable; estimated tool-text tokens from retained recent calls",
             )
+            assert abs(panel.bounding_box()["height"] - initial_height) <= 1, panel.evaluate(
+                """element => ({
+                    fontStatus: document.fonts.status,
+                    rowMinimum: getComputedStyle(element.querySelector('.agent-tunnel-usage-row')).minBlockSize,
+                    height: element.getBoundingClientRect().height
+                })"""
+            )
         payload["active_calls"] = []
         payload["recent_calls"] = []
         payload["recent_usage"] = {"estimated_tokens": 0, "complete": True}
         refresh()
+        expect(badge).to_be_visible()
+        expect(recent_tokens.locator("[data-tunnel-recent-token-digits]")).to_have_text("0")
         assert abs(panel.bounding_box()["height"] - initial_height) <= 1
         assert page.evaluate("document.documentElement.scrollWidth <= innerWidth")
         assert not errors
@@ -903,7 +918,12 @@ def test_live_reference_badge_contract(disposable_browser, sidebar_server_url, w
         };
     }"""
     try:
-        reference_page.goto("http://127.0.0.1:8688/settings/style-tokens")
+        reference_page.goto(
+            os.environ.get(
+                "AGENTIC_CONTEXT_REFERENCE_STYLE_URL",
+                "http://127.0.0.1:8688/settings/style-tokens",
+            )
+        )
         reference_badge = reference_page.locator(
             ".style-token-holdings-allocation-badge-demo .investment-holdings-allocation-badge"
         ).first
@@ -930,23 +950,65 @@ def test_live_reference_badge_contract(disposable_browser, sidebar_server_url, w
         local_style = local_badge.evaluate(styles)
         assert local_style == reference_style
         status_url = "http://127.0.0.1:8666/api/agent/tunnel/status?platform=chatgpt"
-        live_status = context.request.get(status_url)
+        # Compare the actual response consumed by this page, not an earlier
+        # request whose accounting snapshot may precede another user's call.
+        with live_page.expect_response(status_url) as observed_status:
+            live_page.goto("http://127.0.0.1:8666/agent/tunnel/chatgpt")
+        live_status = observed_status.value
         assert live_status.ok
-        live_page.goto("http://127.0.0.1:8666/agent/tunnel/chatgpt")
-        usage = live_status.json()["recent_usage"]
+        payload = live_status.json()
+        cumulative = payload.get("cumulative_usage")
+        usage = cumulative if isinstance(cumulative, dict) else payload["recent_usage"]
         value = usage.get("estimated_tokens")
+        usage_window = usage.get("window")
+        cumulative_window = usage_window in {"saved_lifetime", "server_lifetime"}
+        if isinstance(cumulative, dict):
+            assert cumulative_window
+        assert usage.get("scope") == "tool_text_estimate"
+        missing = usage.get("unestimated_calls", 0) if isinstance(cumulative, dict) else 0
+        assert type(missing) is int and 0 <= missing <= 9_007_199_254_740_991
+        lower_bound = missing > 0
+        sidebar_toggle = live_page.get_by_role("button", name="Toggle sidebar", exact=True)
+        if sidebar_toggle.get_attribute("aria-expanded") == "false":
+            sidebar_toggle.click()
+            expect(sidebar_toggle).to_have_attribute("aria-expanded", "true")
         live_digits = live_page.locator("[data-tunnel-recent-token-digits]")
         if (
-            usage.get("complete") is True
+            (usage.get("complete") is True or lower_bound)
             and type(value) is int
             and 0 <= value <= 9_007_199_254_740_991
         ):
             expect(live_page.locator("[data-tunnel-recent-token-badge]")).to_be_visible()
             expect(live_digits).to_have_text(f"{value:,}")
+            scope = {
+                "saved_lifetime": "since usage tracking began; saved across app server restarts",
+                "server_lifetime": "since this app server started; resets when the server restarts",
+                "since_tokenizer_ready": "since tokenizer recovery; earlier calls excluded",
+            }.get(usage_window, "from retained recent calls")
+            description = (
+                f"Tokens: {'at least ' if lower_bound else ''}{value:,} "
+                f"estimated tool-text tokens {scope}"
+            )
+            if lower_bound:
+                description += (
+                    f"; {missing:,} {'call' if missing == 1 else 'calls'} could not be estimated"
+                )
+            expect(live_page.locator(".agent-tunnel-recent-tokens")).to_have_attribute(
+                "aria-label", description
+            )
+            prefix = live_page.locator("[data-tunnel-token-lower-bound]")
+            if lower_bound:
+                expect(prefix).to_be_visible()
+                expect(prefix).to_have_text("≥")
+            else:
+                expect(prefix).to_be_hidden()
         else:
             expect(
                 live_page.locator("[data-tunnel-recent-token-unavailable]")
             ).to_be_visible()
-        print({"width": width, "reference_style": reference_style, "live_usage": usage})
+        print({
+            "width": width, "reference_style": reference_style,
+            "live_usage_window": usage.get("window"),
+        })
     finally:
         context.close()

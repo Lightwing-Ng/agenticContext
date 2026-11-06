@@ -1,6 +1,6 @@
 """Localized payment cards share bubble geometry without activating payment links.
 
-Code version: v1.2.1-codex.0
+Code version: v1.2.2-codex.0
 """
 
 from __future__ import annotations
@@ -144,6 +144,34 @@ def test_payment_cards_reuse_literal_bubbles_for_all_native_roles(
                 const text = card.querySelector('.wechat-payment-text');
                 const textStyle = getComputedStyle(text);
                 const iconStyle = getComputedStyle(icon);
+                const fontDiagnostic = () => {
+                    const ancestors = [];
+                    for (let node = text; node && ancestors.length < 5; node = node.parentElement) {
+                        const style = getComputedStyle(node);
+                        ancestors.push({
+                            tag: node.tagName, id: node.id,
+                            classes: String(node.className).slice(0, 160),
+                            fontSize: style.fontSize,
+                            fontToken: style.getPropertyValue('--wechat-message-text-font-size').trim(),
+                        });
+                    }
+                    return {
+                        owner: card.closest('article')?.id,
+                        quoted: Boolean(card.closest('blockquote')),
+                        embedded: Boolean(card.closest('[data-wechat-embedded-row]')),
+                        documentState: document.readyState,
+                        fontStatus: document.fonts.status,
+                        viewport: [innerWidth, innerHeight],
+                        ancestors,
+                        animations: text.getAnimations().slice(0, 8).map(animation => ({
+                            type: animation.constructor.name,
+                            property: animation.transitionProperty || '',
+                            state: animation.playState, pending: animation.pending,
+                            currentTime: animation.currentTime,
+                            duration: animation.effect?.getTiming().duration,
+                        })),
+                    };
+                };
                 return {
                     currency: card.dataset.wechatPaymentCurrency,
                     kind: card.dataset.wechatPaymentKind,
@@ -159,9 +187,13 @@ def test_payment_cards_reuse_literal_bubbles_for_all_native_roles(
                     textWhiteSpace: textStyle.whiteSpace,
                     textFontSize: textStyle.fontSize,
                     overflow: text.scrollWidth - text.clientWidth,
+                    ...(textStyle.fontSize !== '15px' ? {fontDiagnostic: fontDiagnostic()} : {}),
                 };
             })"""
         )
+        mismatched_fonts = [item for item in geometry if item["textFontSize"] != "15px"]
+        if mismatched_fonts:
+            print("Synthetic payment font mismatch: " + json.dumps(mismatched_fonts))
         for item in geometry:
             assert item["width"] > 0
             assert item["left"] >= item["bubbleLeft"] - 1
@@ -170,7 +202,7 @@ def test_payment_cards_reuse_literal_bubbles_for_all_native_roles(
             symbol = PAYMENT_SYMBOLS[(item["kind"], item["currency"])]
             assert f"/static/images/{symbol}" in item["iconSymbol"]
             assert item["textWhiteSpace"] == "pre-wrap"
-            assert item["textFontSize"] == "15px"
+            assert item["textFontSize"] == "15px", item
             assert item["overflow"] <= 1
         assert page.evaluate(
             "() => document.documentElement.scrollWidth <= innerWidth + 1"

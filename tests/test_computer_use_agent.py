@@ -8560,6 +8560,9 @@ def test_action_loop_records_workspace_and_delete_receipt_provenance(
         event_chain=event_chain,
     )
 
+    if consume_deleted_receipt:
+        assert "audit.txt" not in controller.state.read_receipts
+
     expected_workspace_identity = {
         "device": workspace.stat().st_dev,
         "inode": workspace.stat().st_ino,

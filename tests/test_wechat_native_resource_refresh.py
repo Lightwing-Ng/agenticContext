@@ -1,6 +1,6 @@
 """Explicit native metadata refresh preserves every verified conversation scope.
 
-Code version: v1.2.0-codex.0
+Code version: v1.2.1-codex.0
 """
 
 from __future__ import annotations
@@ -510,3 +510,27 @@ def test_rollback_flush_error_keeps_published_fallback_and_sources_unchanged(
     assert (
         fixture.history.read_bytes(), fixture.original.read_bytes(), fallback.read_bytes()
     ) == preserved
+
+
+@pytest.mark.parametrize("platform_name", ["nt", "posix"])
+def test_publication_syncs_directories_only_where_the_host_supports_them(tmp_path, monkeypatch, platform_name):
+    from types import SimpleNamespace
+    from unittest.mock import MagicMock
+
+    native = SimpleNamespace(
+        name=platform_name,
+        O_RDONLY=0,
+        open=MagicMock(return_value=73),
+        fsync=MagicMock(),
+        close=MagicMock(),
+    )
+    monkeypatch.setattr(refresh, "os", native)
+    refresh._sync_directory(tmp_path)
+    if platform_name == "nt":
+        native.open.assert_not_called()
+        native.fsync.assert_not_called()
+        native.close.assert_not_called()
+    else:
+        native.open.assert_called_once_with(tmp_path, native.O_RDONLY)
+        native.fsync.assert_called_once_with(73)
+        native.close.assert_called_once_with(73)

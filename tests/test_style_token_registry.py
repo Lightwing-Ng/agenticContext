@@ -1,6 +1,6 @@
 """Regression tests for the Settings → Style tokens registry.
 
-Code version: v1.11.4-codex.0
+Code version: v1.11.5-codex.0
 """
 
 import re
@@ -263,7 +263,7 @@ def test_style_tokens_route_renders_live_demos_and_settings_navigation(client) -
     assert "data-table-scroll" in html
     assert "data-table-body" in html
     assert "numeric-display-v1.1.0-codex.0" in html
-    assert "scrollable-data-table-v1.0.0-codex.0" in html
+    assert "scrollable-data-table-v1.0.1-codex.0" in html
     assert 'data-style-token-card="style-token-color-and-status"' not in html
     assert 'data-style-token-card="style-token-layout-and-motion"' not in html
     assert 'data-style-token-card="style-token-product-components"' not in html

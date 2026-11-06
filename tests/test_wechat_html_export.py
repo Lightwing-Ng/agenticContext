@@ -1,6 +1,6 @@
 """Exercise text-only WechatExporter ingestion and archive safety boundaries.
 
-Code version: v1.5.1
+Code version: v1.5.2
 """
 
 import html
@@ -498,15 +498,15 @@ def test_misflagged_utf8_zip_names_are_recovered_without_renaming(tmp_path):
         "C:/drive.txt",
         "Export/../alias.txt",
         "Export\\escape.txt",
+        "Export/alias.txt\x00hidden",
     ],
 )
 def test_unsafe_archive_paths_are_rejected_without_extraction(tmp_path, bad_member):
-    path = fixture_zip(tmp_path, additional={bad_member: b"ignored"})
-    preserved = path.read_bytes()
-    assert preserved.count(bad_member.encode("ascii")) == 2
+    path = raw_member_zip(tmp_path, bad_member)
+    original = path.read_bytes()
     with pytest.raises(ValueError, match="Unsafe ZIP"):
         export.parse_html_export(path)
-    assert path.read_bytes() == preserved
+    assert path.read_bytes() == original
 
 
 @pytest.mark.parametrize("bad_member", ["Export\\escape.txt", "Export/alias\x00.txt"])
@@ -1447,3 +1447,32 @@ def test_reviewed_plan_does_not_waive_unreferenced_javascript_or_final_identity(
         export.parse_html_export(
             path, reviewed_session_plan=plan, conversation_sink=changed
         )
+
+
+def raw_member_zip(tmp_path, name):
+    """Retain literal hostile names instead of letting the host ZIP writer sanitize them."""
+    path = fixture_zip(tmp_path)
+    with zipfile.ZipFile(path, "a") as archive:
+        member = zipfile.ZipInfo()
+        member.filename = member.orig_filename = name
+        archive.writestr(member, b"ignored")
+    with zipfile.ZipFile(path) as archive:
+        assert archive.infolist()[-1].orig_filename == name
+    return path
+
+
+def test_windows_separator_normalization_cannot_hide_an_unsafe_original(
+    tmp_path, monkeypatch,
+):
+    path = raw_member_zip(tmp_path, "Export\\escape.txt")
+    sanitize = zipfile._sanitize_filename
+    monkeypatch.setattr(
+        zipfile, "_sanitize_filename",
+        lambda name: sanitize(name.replace("\\", "/")),
+    )
+    with zipfile.ZipFile(path) as archive:
+        member = archive.infolist()[-1]
+        assert member.filename == "Export/escape.txt"
+        assert member.orig_filename == "Export\\escape.txt"
+    with pytest.raises(ValueError, match="Unsafe ZIP"):
+        export.parse_html_export(path)

@@ -1,6 +1,6 @@
 # Architecture guide
 
-Documentation version: `v1.78.0-codex.0`
+Documentation version: `v1.78.2-codex.0`
 
 ## Runtime flow
 
@@ -89,6 +89,33 @@ that every Web module reaches Core only through the five façades, that no Core 
 `app.web`, that `app/core/workspace/` never imports the Agent run loop, and that the Tunnel modules
 reach a project only through the published `WorkspaceAccess` surface. A Web module may depend on any
 subset of the façades; the regression no longer freezes one module's exact façade list.
+
+## Media metadata persistence
+
+ChatGPT and Grok media catalogs, the Grok download manifest and work queue, and
+the X media cache index use native row-based SQLite files. Their canonical names
+retain the original stem with a `.sqlite3` extension. `media_sqlite.py` stores the
+exact Arrow schema and provenance separately from typed SQL columns. Primary keys
+identify a file, asset, media identity, or relative post directory; scalar indexes
+support content hashes, paths, source conversations, and task status queries.
+
+Hot catalog updates serialize only dirty keys. An atomic mixed upsert/delete
+transaction handles visual deduplication, and queue claims use a status-and-attempt
+compare-and-swap transaction. ChatGPT and X retain process-local fast indexes.
+Grok also consults current persisted identities, hashes, and task state so resumed
+operations use durable records. Disk-query benchmarks exclude existing memory hits
+and do not measure complete download-loop throughput. Explicit snapshot replacement
+remains for seeding, validated schema repair, and migration.
+
+An absent canonical database permits a read-only legacy Parquet fallback. Existing
+corrupt or incompatible SQLite state fails closed. First explicit writes can import
+compatible legacy metadata but retain its original file. The X index inside the
+LLM root remains in the separate compressed history format; filename similarity
+does not allow either backend to overwrite the other format. Deleted-resource
+records, saved prompts, and Agent discovery caches are outside this migration.
+
+See [media SQLite storage](MEDIA_SQLITE_STORAGE.md) for the migration, benchmark,
+storage-accounting, and rollback boundaries.
 
 ## LLM history persistence
 

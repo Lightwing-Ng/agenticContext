@@ -369,3 +369,23 @@ def test_native_atomic_swap_and_reverse_preserve_both_original_inode_identities(
     publisher._swap(left, right)
     assert compactor.identity(left) == original_left
     assert compactor.identity(right) == original_right
+
+
+@pytest.mark.parametrize("helper", [publisher._view_content, publisher._info])
+def test_publication_readers_release_the_database_before_inode_exchange(
+    publication, monkeypatch, helper,
+):
+    retained = []
+    readonly = compactor.readonly
+
+    def tracked(path):
+        connection = readonly(path)
+        retained.append(connection)
+        return connection
+
+    monkeypatch.setattr(compactor, "readonly", tracked)
+    helper(publication["sidecar"])
+    assert retained
+    for connection in retained:
+        with pytest.raises(sqlite3.ProgrammingError, match="closed"):
+            connection.execute("SELECT 1")

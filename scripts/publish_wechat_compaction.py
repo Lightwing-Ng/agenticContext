@@ -24,7 +24,7 @@ import subprocess
 import sys
 
 
-VERSION = "v1.1.1-codex.0"
+VERSION = "v1.1.2-codex.0"
 _SPEC = importlib.util.spec_from_file_location(
     "wechat_sqlite_compactor", Path(__file__).with_name("compact_wechat_sqlite.py")
 )
