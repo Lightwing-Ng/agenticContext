@@ -1,6 +1,6 @@
 # Visual Style Reference
 
-Documentation version: `v1.31.30-codex.0`
+Documentation version: `v1.31.31-codex.0`
 
 ## Authority
 
@@ -927,6 +927,12 @@ compensation, header height, and horizontal scroll. The shared header, cell, sum
 row, minimum-width, and scrollbar-gutter visuals consume the canonical
 `--scrollable-data-table-*` tokens. AgenticContext-only shell and body aliases remain
 local adapters; product table classes only adapt column semantics and content.
+The first visible, non-summary body row remains the column-width authority. The
+controller observes its actual cells so container-query column changes synchronize
+the fixed header even when the table's outer bounds do not resize. Replacing,
+hiding, or changing the eligibility of that row refreshes the observed cells. A
+body-only mutation observer never observes the header or shell styles written by
+synchronization; cleanup disconnects both observers.
 
 Segmented controls use `.segmented-control`, shrink-wrap with `fit-content`, remain
 centered within `max-width: 100%`, and create equal tracks with
