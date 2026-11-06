@@ -1,6 +1,6 @@
 """Contact statements fit their scrollport and keep shared header alignment.
 
-Code version: v1.2.2-codex.0
+Code version: v1.2.3-codex.0
 """
 
 from __future__ import annotations
@@ -64,7 +64,7 @@ def _stylesheet_diagnostic(response):
 
 
 @contextmanager
-def _observe_contact_table_failure(page):
+def _observe_contact_table_failure(page, measurements=None):
     """Keep bounded static evidence and inspect bodies only after a failed assertion."""
     stylesheets, failed_requests, console_codes = [], [], []
 
@@ -127,6 +127,7 @@ def _observe_contact_table_failure(page):
             }""")
             diagnostics = {
                 "state": state,
+                "sampled_geometry": measurements[-1] if measurements else None,
                 "stylesheets": [_stylesheet_diagnostic(response) for response in stylesheets],
                 "failed_static_requests": failed_requests,
                 "static_console_codes": console_codes,
@@ -324,7 +325,7 @@ def test_contact_columns_fit_without_horizontal_scroll_and_keep_centered_numbers
     measurements = []
     url = fixture.url + "/browser/wechat/contacts/" + fixture.target_id
     try:
-        with _observe_contact_table_failure(page), patch(
+        with _observe_contact_table_failure(page, measurements), patch(
             "app.core.wechat_contact_analysis.query_contact_analysis",
             side_effect=_responsive_results(fixture),
         ):

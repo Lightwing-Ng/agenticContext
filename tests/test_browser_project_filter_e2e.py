@@ -1,14 +1,15 @@
-"""Isolated Local resources Project filtering. Code version: v1.1.2-codex.0."""
+"""Isolated Local resources Project filtering. Code version: v1.1.3-codex.0."""
 
 from __future__ import annotations
 
 from collections.abc import Iterator
 from threading import Thread
+import time
 from urllib.parse import parse_qs, urlsplit
 from uuid import uuid4
 
 import pytest
-from playwright.sync_api import Browser, Locator, Page, expect
+from playwright.sync_api import Browser, Locator, Page, TimeoutError as PlaywrightTimeoutError, expect
 from werkzeug.serving import make_server
 
 from app.core.agent_source_cache import AgentSourceCache
@@ -125,6 +126,30 @@ def _sidebar(page: Page, *, opened: bool) -> None:
 
 
 def _wait_for_session_table_layout(page: Page, *, require_source_hit: bool) -> None:
+    deadline = time.monotonic() + 30
+    last_geometry_error: AssertionError | None = None
+    while True:
+        remaining_ms = (deadline - time.monotonic()) * 1_000
+        if remaining_ms <= 0:
+            if last_geometry_error is not None:
+                raise last_geometry_error
+            raise PlaywrightTimeoutError("Session table layout did not settle within 30,000ms.")
+        try:
+            geometry = _stable_session_table_geometry(page, timeout_ms=remaining_ms)
+        except PlaywrightTimeoutError:
+            if last_geometry_error is not None:
+                raise last_geometry_error
+            raise
+        try:
+            _assert_session_table_geometry(geometry, require_source_hit=require_source_hit)
+        except AssertionError as error:
+            # A stable sample can precede the queued table-column measurement.
+            last_geometry_error = error
+        else:
+            return
+
+
+def _stable_session_table_geometry(page: Page, *, timeout_ms: float) -> dict:
     settled = page.wait_for_function(
         """token => {
             const rect = node => {
@@ -171,11 +196,16 @@ def _wait_for_session_table_layout(page: Page, *, require_source_hit: bool) -> N
         }""",
         arg=uuid4().hex,
         polling="raf",
+        timeout=timeout_ms,
     )
     try:
         geometry = settled.json_value()
     finally:
         settled.dispose()
+    return geometry
+
+
+def _assert_session_table_geometry(geometry: dict, *, require_source_hit: bool) -> None:
     header_cells = geometry["headerCells"]
     body_cells = geometry["bodyCells"]
     if geometry["hasTable"]:
@@ -263,9 +293,11 @@ def test_sidebar_layout_readiness_rejects_stable_geometry_defects(
         context.close()
 
 
+@pytest.mark.parametrize("deferred_frames", (2, 5))
 def test_sidebar_layout_readiness_waits_for_deferred_table_measurement(
     disposable_browser: Browser,
     project_browser_server_url: str,
+    deferred_frames: int,
 ) -> None:
     context = disposable_browser.new_context(
         viewport={"width": 1_006, "height": 844},
@@ -275,22 +307,30 @@ def test_sidebar_layout_readiness_waits_for_deferred_table_measurement(
         const NativeResizeObserver = window.ResizeObserver;
         const nextFrame = window.requestAnimationFrame.bind(window);
         window.__deferredTableDeliveries = 0;
+        window.__deferredTableFrameTimes = [];
         window.ResizeObserver = class extends NativeResizeObserver {
             constructor(callback) {
                 super((entries, observer) => {
                     if (entries.some(entry => entry.target.closest('.browser-session-index-shell'))) {
                         // Retain the real table observer and column sync across deferred frames.
-                        nextFrame(() => nextFrame(() => {
+                        const deliver = (remaining, frameTimes) => {
+                            if (remaining > 0) {
+                                nextFrame(frameTime => deliver(
+                                    remaining - 1, [...frameTimes, frameTime]));
+                                return;
+                            }
                             window.__deferredTableDeliveries += 1;
+                            window.__deferredTableFrameTimes = frameTimes;
                             callback(entries, observer);
-                        }));
+                        };
+                        deliver(DEFERRED_FRAMES, []);
                     } else {
                         callback(entries, observer);
                     }
                 });
             }
         };
-    })();""")
+    })();""".replace("DEFERRED_FRAMES", str(deferred_frames)))
     page = context.new_page()
     try:
         page.goto(
@@ -301,6 +341,9 @@ def test_sidebar_layout_readiness_waits_for_deferred_table_measurement(
         deliveries_before = page.evaluate("window.__deferredTableDeliveries")
         _sidebar(page, opened=False)
         assert page.evaluate("window.__deferredTableDeliveries") > deliveries_before
+        frame_times = page.evaluate("window.__deferredTableFrameTimes")
+        assert len(frame_times) == deferred_frames
+        assert all(later > earlier for earlier, later in zip(frame_times, frame_times[1:]))
         page.locator(
             "[data-browser-header-filter] [data-browser-source-filter-trigger]"
         ).click()
