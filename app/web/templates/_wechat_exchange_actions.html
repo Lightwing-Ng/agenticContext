@@ -1,0 +1,49 @@
+{# Code version: v1.2.0-codex.0 #}
+<div class="wechat-exchange-actions" data-wechat-exchange-actions>
+    <a
+        class="circular-icon-button global-quick-action-button wechat-conversation-share"
+        href="{{ url_for('local_resources.browser_wechat_session_csv', session_id=text_page.current_session.stable_id, account=filters.account, chat_kind=filters.chat_kind) }}"
+        aria-label="Export conversation as CSV"
+        title="Export conversation as CSV"
+        aria-haspopup="menu"
+        aria-expanded="false"
+        aria-controls="wechat_exchange_export_menu"
+        data-exchange-export-trigger
+        download
+    ><span class="icon wechat-conversation-share-icon" aria-hidden="true"></span></a>
+    <nav
+        class="wechat-exchange-export-menu"
+        id="wechat_exchange_export_menu"
+        aria-label="Export conversation"
+        role="menu"
+        data-exchange-export-menu
+        hidden
+    >
+        <a
+            class="trade-strategy-dropdown-option wechat-exchange-export-option is-selected"
+            href="{{ url_for('local_resources.browser_wechat_session_csv', session_id=text_page.current_session.stable_id, account=filters.account, chat_kind=filters.chat_kind) }}"
+            role="menuitem"
+            download
+        >
+            <span class="trade-strategy-dropdown-check" aria-hidden="true"></span>
+            <span><span>CSV (traditional)</span><small>Default · readable conversation text</small></span>
+        </a>
+        <a
+            class="trade-strategy-dropdown-option wechat-exchange-export-option"
+            href="{{ '/browser/wechat/session/' ~ text_page.current_session.stable_id|urlencode ~ '/exchange' }}?{{ {'account': filters.account, 'chat_kind': filters.chat_kind}|urlencode }}"
+            role="menuitem"
+            data-exchange-dataset-export
+            data-exchange-session-id="{{ text_page.current_session.stable_id }}"
+            data-exchange-account="{{ filters.account }}"
+            data-exchange-chat-kind="{{ filters.chat_kind }}"
+            download
+        >
+            <span class="trade-strategy-dropdown-check" aria-hidden="true"></span>
+            <span>
+                <span>Dataset exchange (.wechatx)</span>
+                <small>All source accounts · lossless import</small>
+                <small class="wechat-exchange-export-status" data-exchange-export-status role="status" aria-live="polite" aria-atomic="true" hidden></small>
+            </span>
+        </a>
+    </nav>
+</div>

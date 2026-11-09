@@ -1,6 +1,6 @@
 """Focused regression tests for the local web console."""
 
-# Code version: v1.155.10-codex.0
+# Code version: v1.155.12-codex.0
 
 from __future__ import annotations
 
@@ -7067,14 +7067,15 @@ class WebAppTests(unittest.TestCase):
             'const checkedContentMode = contentModeInputs.find((input) => input.checked)?.value || "text";',
             'rememberContentMode(event.target.value);',
             'function navigateToContentMode(mode) {',
-            'const contentModeNavigationTitles = Object.freeze({',
-            'function renderOptimisticContentModeNavigation(mode) {',
+            'const contentModeNavigationOptions = Object.freeze({',
+            'function navigateWithWaitingModal(targetUrl, mode, options = contentModeNavigationOptions[mode]) {',
+            'navigationWait = window.CacheWaitModal?.show(options);',
             'const formData = new FormData(filterForm);',
             'formData.set("view", mode);',
             'const selectedSource = String(formData.get("source") || "").trim().toLowerCase();',
             '["x", "chatgpt", "copilot", "codex", "claude", "claude_code", "gemini", "grok", "grok_build", "wechat", "zhihu"].includes(selectedSource)',
             'formData.set("source", "chatgpt");',
-            'workspace.dataset.browserNavigationSkeleton = "1";',
+            'navigationWait?.finish();',
             'document.documentElement.setAttribute("aria-busy", "true");',
             'event.target.matches("select[name=\'answerer\'], select[name=\'project\'], select[name=\'account\'], select[name=\'chat_kind\']")',
             'for (const name of ["session", "session_page"])',
@@ -7084,6 +7085,22 @@ class WebAppTests(unittest.TestCase):
         ):
             with self.subTest(fragment=fragment):
                 self.assertIn(fragment, script)
+
+        self.assertNotIn("workspace.innerHTML", script)
+        self.assertNotIn("replaceChildren", script)
+        self.assertNotIn("navigation-skeleton", script)
+
+        for name in ("browser.html", "wechat_contact_analysis.html"):
+            template = BROWSER_TEMPLATE_PATH.with_name(name).read_text(encoding="utf-8")
+            with self.subTest(template=name):
+                self.assertLess(
+                    template.index("filename='waiting-modal.js'"),
+                    template.index("filename='browser-sidebar-filters.js'"),
+                )
+                self.assertLess(
+                    template.index("filename='browser-sidebar-filters.js'"),
+                    template.index("filename='wechat-contact-navigation.js'"),
+                )
 
         from app.core.local_media_browser import normalize_browser_filters
 

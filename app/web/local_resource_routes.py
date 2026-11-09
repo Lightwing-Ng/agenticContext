@@ -1,11 +1,11 @@
 """Local resources routes: the stored media, prompt, and chat-history surface.
 
-These routes read the local catalogs the application factory builds and never reach
-for a browser, an Agent, or a cache worker. Serialization of one stored item into its
+These routes read local catalogs and expose an explicit, account-scoped native archive
+refresh service without reaching for a browser or Agent. Serialization of one stored item into its
 public shape lives here too, so a template global and a JSON response cannot drift.
 """
 
-# Code version: v1.20.2-codex.0
+# Code version: v1.21.1-codex.0
 
 from __future__ import annotations
 
@@ -221,7 +221,17 @@ def serialize_prompt_item(item) -> dict[str, Any]:
 
 def register_local_resource_routes(app: Flask, context: LocalResourceRouteContext) -> None:
     """Register the Local resources pages, media transport, and prompt API."""
+    from app.core.wechat_mac_refresh import WechatMacRefreshService
+    from app.web.wechat_refresh_routes import (
+        WECHAT_REFRESH_EXTENSION,
+        conversation_refresh_available,
+        register_wechat_refresh_routes,
+    )
+
     blueprint = Blueprint(LOCAL_RESOURCES_BLUEPRINT_NAME, __name__)
+    app.extensions[WECHAT_REFRESH_EXTENSION] = WechatMacRefreshService(
+        context.media_catalog.local_store_root
+    )
     app.template_global("browser_media_url")(browser_media_url)
     app.template_global("wechat_contact_analysis_url")(wechat_contact_analysis_url)
     app.template_filter("wechat_source_clock")(format_wechat_source_clock)
@@ -549,6 +559,18 @@ def register_local_resource_routes(app: Flask, context: LocalResourceRouteContex
             **local_resource_source_context(),
             media_page=media_page,
             text_page=text_page,
+            wechat_refresh_available=bool(
+                is_loopback_address(request.remote_addr)
+                and filters["view"] == "text"
+                and filters["source"] == "wechat"
+                and text_page
+                and text_page.session_detail
+                and text_page.current_session
+                and conversation_refresh_available(
+                    app.extensions[WECHAT_REFRESH_EXTENSION],
+                    text_page.current_session.messaging,
+                )
+            ),
             prompt_page=prompt_page,
             media_payload=media_payload,
             filters=filters,
@@ -860,6 +882,10 @@ def register_local_resource_routes(app: Flask, context: LocalResourceRouteContex
             return jsonify({"error": f"Unable to open {local_file_manager_label()}. The local file or folder may have moved."}), 409
         return jsonify({"revealed": True, "target_kind": destination["status"], "file_manager": local_file_manager_label()})
 
+    from app.web.wechat_exchange_routes import register_wechat_exchange_routes
+
+    register_wechat_exchange_routes(blueprint, context)
+    register_wechat_refresh_routes(blueprint)
     app.register_blueprint(blueprint)
 
 

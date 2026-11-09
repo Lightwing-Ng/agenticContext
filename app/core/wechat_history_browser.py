@@ -1,6 +1,6 @@
 """Adapt indexed human conversations to the shared Local resources page model."""
 
-# Code version: v1.31.3-codex.0
+# Code version: v1.32.0-codex.0
 
 from __future__ import annotations
 
@@ -27,11 +27,15 @@ from .wechat_forwarded_previews import WechatForwardedPreviews
 from .wechat_mac_resources import WechatMacResourceResolver
 from .wechat_payment_copy import localize_payment_presentation
 from .wechat_payments import payment_presentation
-from .wechat_quoted_contacts import project_native_quoted_contacts
+from .wechat_quoted_contacts import (
+    _native_quote,
+    _quoted_author,
+    project_native_quoted_contacts,
+)
 from .wechat_quote_padding import project_native_quote_padding
 from .wechat_record_presentation import compact_record_fields
 from .wechat_reconcile import native_text_metadata
-from .wechat_text import project_system_notice_text
+from .wechat_text import native_components_text, project_system_notice_text
 from .wechat_text_observations import WechatTextObservations
 from .wechat_resources import present_resource, resource_reference
 
@@ -43,6 +47,177 @@ _SYSTEM_STATUS_ICONS = re.compile(
 _SYSTEM_NOTICE_ANCHOR = re.compile(
     r"<a\b[^<>]*>(?P<label>[^<>]*)</a\s*>", re.IGNORECASE
 )
+
+_MACOS_RECOVERY_PRESENTATION = object()
+_MACOS_RESOURCE_KINDS = {3: "image", 34: "audio", 43: "video", 47: "sticker"}
+
+
+def _macos_recovery_source_context(row):
+    """Separate a sealed Mac observation from its receiving conversation's source."""
+    from .wechat_macos_recovery import validated_recovery_receipt
+
+    receipt = validated_recovery_receipt(row)
+    if receipt is None:
+        return {}
+    return {
+        "_macos_recovery_validated": _MACOS_RECOVERY_PRESENTATION,
+        "_macos_recovery_receipt": receipt,
+        "source_label": "WeChat for Mac local database",
+        "source_file": "WeChat for Mac local database: "
+        + receipt["database_relative_path"],
+        "source_snapshot_id": receipt["snapshot_id"],
+        "backup_id": "",
+    }
+
+
+def _macos_recovery_receipt(item):
+    """Require the runtime validation boundary, never a stored JSON assertion."""
+    context = item.messaging
+    receipt = context.get("_macos_recovery_receipt")
+    proof = context.get("provenance")
+    if (
+        context.get("_macos_recovery_validated") is not _MACOS_RECOVERY_PRESENTATION
+        or not isinstance(receipt, dict)
+        or not isinstance(proof, dict)
+        or proof.get("macos_recovery") != receipt
+        or receipt.get("account_id") != context.get("account_id")
+        or receipt.get("peer_id") != context.get("peer_id")
+        or receipt.get("session_id") != item.conversation_id
+    ):
+        return None
+    return receipt
+
+
+def _present_macos_recovery_quotes(items, *, originals=()):
+    """Present body-free native references only inside authenticated Mac scopes."""
+    if len(items) > 1_000 or len(originals) > 1_000:
+        return
+    by_server = {}
+    for original in [*items, *originals]:
+        receipt = _macos_recovery_receipt(original)
+        if receipt is not None:
+            key = original.conversation_id, receipt["server_id"]
+            by_server.setdefault(key, []).append(original)
+    source_fields = (
+        "source_id", "snapshot_id", "account_id", "peer_id", "main_sha256",
+        "wal_sha256", "database_relative_path", "table",
+    )
+    for item in items:
+        receipt = _macos_recovery_receipt(item)
+        candidate = _native_quote(item.messaging)
+        if receipt is None or candidate is None:
+            continue
+        quote, reference = candidate
+        kind = _MACOS_RESOURCE_KINDS.get(reference.get("original_message_type"))
+        if kind is None or quote.get("forwarded_record") or quote.get("payment"):
+            continue
+        proof = item.messaging["provenance"]
+        try:
+            metadata = native_text_metadata(proof, proof.get("locator", {}))
+            components = metadata.get("text_components", [])
+            if (
+                metadata.get("appmsg_subtype") != 57
+                or len(components) != 1
+                or components[0].get("kind") != "reply_text"
+                or native_components_text(components) != item.content_text
+            ):
+                continue
+        except (ValueError, TypeError, KeyError, RecursionError):
+            continue
+        resource = {
+            "kind": kind,
+            "availability": "metadata_only",
+            "account_id": receipt["account_id"],
+            "peer_id": receipt["peer_id"],
+        }
+        quote["resource_basis"] = "authenticated_macos_nontext_quote_type_v1"
+        quote.pop("resource_original", None)
+        server = reference.get("source_ids", {}).get("svrid")
+        matches = by_server.get((item.conversation_id, server), ())
+        if len(matches) == 1:
+            original = matches[0]
+            previous = _macos_recovery_receipt(original)
+            original_proof = original.messaging["provenance"]
+            original_resource = resource_reference(
+                original_proof, receipt["account_id"], receipt["peer_id"]
+            )
+            epoch = reference.get("source_timestamp", "")
+            if (
+                previous is not None
+                and original is not item
+                and isinstance(original.stable_id, str)
+                and re.fullmatch(r"[0-9a-f]{64}", original.stable_id)
+                and all(previous[key] == receipt[key] for key in source_fields)
+                and previous["local_id"] < receipt["local_id"]
+                and previous["create_time"] <= receipt["create_time"]
+                and original_proof.get("message_type")
+                == reference["original_message_type"]
+                and original_proof.get("text_extraction_kind")
+                == "resource_placeholder"
+                and _quoted_author(reference, receipt["peer_id"])
+                == original.messaging.get("sender_id")
+                and (not epoch or epoch == str(previous["create_time"]))
+                and original_resource is not None
+                and original_resource.get("availability") == "metadata_only"
+                and original_resource.get("kind") == kind
+                and original_resource.get("native_time") == previous["create_time"]
+            ):
+                quote["resource_basis"] = "exact_authenticated_macos_resource_original_v1"
+                quote["resource_original"] = {
+                    "message_id": original.stable_id,
+                    "server_id": previous["server_id"],
+                    "source_snapshot_id": previous["snapshot_id"],
+                }
+        quote["resource"] = present_resource(resource, None)
+
+
+def _resolve_macos_recovery_quoted_contacts(items, repository, display_names):
+    """Reuse canonical native sender bindings for the authenticated direct peer."""
+    requests, quotes = [], {}
+    for item in items:
+        receipt = _macos_recovery_receipt(item)
+        candidate = _native_quote(item.messaging)
+        if receipt is None or candidate is None:
+            continue
+        quote, reference = candidate
+        sender = _quoted_author(reference, receipt["peer_id"])
+        if sender not in {receipt["account_id"], receipt["peer_id"]}:
+            continue
+        context = item.messaging
+        identifier = item.stable_id + ":macos-quote"
+        requests.append(
+            {
+                "id": identifier,
+                "conversation_id": item.conversation_id,
+                "source_id": context["partition_id"],
+                "source_snapshot_id": receipt["snapshot_id"],
+                "account_id": receipt["account_id"],
+                "peer_id": receipt["peer_id"],
+                "sender_id": sender,
+                "sender_label": reference.get("source_sender_label", ""),
+                "conversation_kind": "direct",
+                "is_system": False,
+            }
+        )
+        quotes[identifier] = quote
+    for offset in range(0, len(requests), 400):
+        for identifier, contact in repository.resolve_messages(
+            requests[offset : offset + 400]
+        ).items():
+            if contact.get("identity_status") != "verified":
+                continue
+            name = display_names.contact_name(contact)
+            viewer = name or contact.get("preferred_name") or contact.get("display_name")
+            if not isinstance(viewer, str) or not viewer:
+                continue
+            quotes[identifier]["viewer_display_name"] = viewer
+            quotes[identifier]["contact"] = {
+                **contact,
+                "viewer_display_name": viewer,
+                "viewer_display_name_source": "local_user_preference"
+                if name
+                else "canonical_contact",
+            }
 
 
 class _SystemNoticeAnchor(HTMLParser):
@@ -640,6 +815,7 @@ def query_wechat_history(
     page=1,
     page_size=100,
     session="",
+    persist_event_cache=True,
 ):
     """Reuse page and session contracts while retaining human-message semantics."""
     from .chat_history_browser import (
@@ -661,6 +837,7 @@ def query_wechat_history(
         page=safe_page,
         page_size=safe_size,
         session=session,
+        persist_event_cache=persist_event_cache,
     )
 
     display_names = WechatDisplayNames(local_store_root)
@@ -825,6 +1002,7 @@ def query_wechat_history(
                 if isinstance(source.get(key), str) and source[key]:
                     metadata[key] = source[key]
             metadata["source_snapshot_id"] = snapshot["snapshot_id"]
+        metadata.update(_macos_recovery_source_context(row))
         observations = (
             result.get("event_projection", {})
             .get("members_by_preferred", {})
@@ -1029,7 +1207,40 @@ def query_wechat_history(
     project_native_quoted_contacts(
         items, contact_repository, display_names, account_rows, source_snapshots
     )
+    _resolve_macos_recovery_quoted_contacts(items, contact_repository, display_names)
     project_native_quote_padding(items, display_names, account_rows, source_snapshots)
+    resource_originals = []
+    visible_ids = {item.stable_id for item in items}
+    for row in result.get("quote_resource_originals", ()):
+        if row["id"] in visible_ids:
+            continue
+        proof = json.loads(row["provenance"])
+        resource_originals.append(
+            ChatHistoryMessage(
+                stable_id=row["id"],
+                source="wechat",
+                conversation_id=row["conversation_id"],
+                conversation_url="",
+                conversation_title=current.conversation_title,
+                message_key=row["id"],
+                message_index=row["ordinal"],
+                role=row["direction"],
+                author_label=row["sender_label"],
+                content_text=row["text"],
+                content_html="",
+                source_links=(),
+                model_label="",
+                first_seen_at=row["timestamp_value"],
+                last_seen_at=row["timestamp_value"],
+                messaging={
+                    **context(result["current"]),
+                    "sender_id": row["sender_id"] or "",
+                    "provenance": proof,
+                    **_macos_recovery_source_context(row),
+                },
+            )
+        )
+    _present_macos_recovery_quotes(items, originals=resource_originals)
     preview_references = WechatForwardedPreviews(local_store_root).project(
         result["messages"]
     )
@@ -1067,6 +1278,10 @@ def query_wechat_history(
             }
     _present_record_fields(items)
     _present_payment_records(items)
+    from .wechat_exchange_presentation import apply_frozen_presentation
+
+    for item in items:
+        apply_frozen_presentation(item)
     _mark_sender_runs(items, filtered=bool(str(query or "").strip()))
     return ChatHistoryPage(
         items=tuple(items),

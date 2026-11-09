@@ -1,6 +1,6 @@
 """Account and conversation-type filters share desktop and narrow UI contracts.
 
-Code version: v1.7.3-codex.0
+Code version: v1.8.0-codex.0
 """
 
 from __future__ import annotations
@@ -521,7 +521,7 @@ def _open_conversation_back_fixture(
 
 
 def _install_conversation_back_probe(page, restore_events):
-    """Observe pending content without evaluating a provisional document context."""
+    """Observe the shared waiting card without evaluating a provisional document."""
     probes = []
     page.on(
         "console",
@@ -534,43 +534,68 @@ def _install_conversation_back_probe(page, restore_events):
     page.evaluate("""events => {
         const originalMessage = document.querySelector('.wechat-message');
         const originalScrollport = document.querySelector('[data-chat-scrollport]');
+        const originalContent = document.getElementById('browser_workspace').firstElementChild;
+        const modal = document.getElementById('cache_wait_modal');
+        const rectangle = element => {
+            const box = element.getBoundingClientRect();
+            return {left: box.left, top: box.top, right: box.right, bottom: box.bottom,
+                width: box.width, height: box.height};
+        };
         const readRestored = () => ({
             messages: document.querySelectorAll('.wechat-message').length,
             skeleton: !!document.querySelector('[data-browser-navigation-skeleton]'),
+            waiting: !modal.hidden,
             workspaceBusy: document.getElementById('browser_workspace').getAttribute('aria-busy'),
             documentBusy: document.documentElement.getAttribute('aria-busy'),
             sameMessage: document.querySelector('.wechat-message') === originalMessage,
             sameScrollport: document.querySelector('[data-chat-scrollport]') === originalScrollport,
-            scrollTop: originalScrollport.scrollTop,
+            scrollTop: originalScrollport?.scrollTop || 0,
             checkpoint: window.history.state?.agenticContextWechatContactReturnV1 || null,
             navigating: document.body.classList.contains('is-page-navigating'),
             target: document.documentElement.hasAttribute('data-navigation-target'),
         });
-        // The window observer runs after production document listeners and never cancels navigation.
-        window.addEventListener('click', event => {
-            if (!event.target.closest('a.wechat-conversation-back')) return;
-            const skeleton = document.querySelector(
-                '#browser_workspace > [data-browser-navigation-skeleton]');
-            const style = skeleton && getComputedStyle(skeleton);
-            const box = skeleton?.getBoundingClientRect();
-            const line = skeleton?.querySelector('.navigation-skeleton-line');
+        const reportPending = () => {
+            const dialog = modal.querySelector('.workspace-modal-dialog');
+            const spinner = modal.querySelector('.suggestion-loading-spinner');
+            const style = getComputedStyle(dialog);
+            const box = rectangle(dialog);
             console.debug('wechat-back-pending:' + JSON.stringify({
-                visible: !!box && box.width > 0 && box.height > 0
+                visible: !modal.hidden && box.width > 0 && box.height > 0
                     && style.display !== 'none' && style.visibility === 'visible'
                     && Number(style.opacity) > 0,
-                box: box && {left: box.left, top: box.top, right: box.right, bottom: box.bottom},
+                box, spinner: rectangle(spinner),
+                close: rectangle(modal.querySelector('[data-wait-modal-close]')),
+                centerX: Math.abs(box.left + box.width / 2 - innerWidth / 2),
+                centerY: Math.abs(box.top + box.height / 2 - innerHeight / 2),
+                backdropFilter: style.backdropFilter,
+                title: document.getElementById('cache_wait_modal_title').textContent,
                 messages: document.querySelectorAll('.wechat-message').length,
+                skeleton: !!document.querySelector('[data-browser-navigation-skeleton]'),
                 workspaceBusy: document.getElementById('browser_workspace').getAttribute('aria-busy'),
                 documentBusy: document.documentElement.getAttribute('aria-busy'),
                 target: document.documentElement.dataset.navigationTarget,
-                waiting: !document.getElementById('cache_wait_modal').hidden,
-                originalConnected: originalMessage.isConnected,
+                waiting: !modal.hidden,
+                originalConnected: originalMessage?.isConnected ?? originalContent.isConnected,
+                contentConnected: originalContent.isConnected,
                 overflow: document.documentElement.scrollWidth - innerWidth,
-                animation: line && getComputedStyle(line, '::after').animationName,
+                animation: getComputedStyle(spinner).animationName,
             }));
+        };
+        // These passive observers run after the production navigation listeners.
+        window.addEventListener('click', event => {
+            if (event.target.closest('a.wechat-conversation-back')) reportPending();
+            if (event.target.closest('[data-wait-modal-close]')) {
+                console.debug('wechat-back-dismissed:' + JSON.stringify(readRestored()));
+            }
         }, {passive: true});
-        // A test-only key triggers lifecycle probes after the compositor frame is captured.
+        window.addEventListener('change', event => {
+            if (event.target.matches('#browser_filter_form input[name="view"]')) reportPending();
+        }, {passive: true});
+        // Test-only lifecycle input leaves the actual document request pending.
         window.addEventListener('keydown', event => {
+            if (event.key === 'Escape') {
+                console.debug('wechat-back-dismissed:' + JSON.stringify(readRestored()));
+            }
             if (event.code !== 'F24') return;
             const restored = events.map(type => {
                 window.dispatchEvent(new PageTransitionEvent(type, {persisted: true}));
@@ -582,11 +607,25 @@ def _install_conversation_back_probe(page, restore_events):
     return probes
 
 
+def _assert_navigation_wait_spinner_painted(pixels, state):
+    """Verify the shared inline spinner reaches the compositor."""
+    box = state["spinner"]
+    crop = pixels.crop((
+        math.floor(box["left"]), math.floor(box["top"]),
+        math.ceil(box["right"]), math.ceil(box["bottom"]),
+    )).tobytes()
+    assert sum(
+        blue > 120 and blue > red + 50 and blue > green + 20
+        for red, green, blue in zip(crop[::3], crop[1::3], crop[2::3], strict=True)
+    ) >= 80
+
+
+
 @pytest.mark.parametrize("width", [1280, 390])
 @pytest.mark.parametrize(
     ("activation", "motion"), [("click", "no-preference"), ("enter", "reduce")]
 )
-def test_conversation_back_paints_shared_skeleton_before_delayed_navigation(
+def test_conversation_back_paints_shared_waiting_card_before_delayed_navigation(
     disposable_browser, wechat_server, width, activation, motion
 ):
     """Paint pending feedback and recover the same conversation on history restore."""
@@ -632,14 +671,17 @@ def test_conversation_back_paints_shared_skeleton_before_delayed_navigation(
         assert len(probes) == 1, probes
         state = probes[0]
         assert state["visible"] is True, state
-        assert state["messages"] == 0, state
+        assert state["messages"] == 6, state
+        assert state["skeleton"] is False, state
         assert state["workspaceBusy"] == state["documentBusy"] == "true", state
         assert state["target"] == "browser-text", state
-        assert state["waiting"] is False, state
-        assert state["originalConnected"] is False, state
+        assert state["waiting"] and state["originalConnected"] and state["contentConnected"], state
+        assert state["title"] == "Opening conversations", state
+        assert state["centerX"] <= 1 and state["centerY"] <= 1, state
+        assert state["backdropFilter"] != "none", state
         assert state["overflow"] <= 1, state
         assert state["animation"] == (
-            "none" if motion == "reduce" else "browser-navigation-skeleton-sheen"
+            "none" if motion == "reduce" else "ticker-suggestion-loading"
         ), state
         assert pending_pixels.size == original_pixels.size == (width, 937)
         box = state["box"]
@@ -657,6 +699,24 @@ def test_conversation_back_paints_shared_skeleton_before_delayed_navigation(
             max(red, green, blue) >= 4
             for red, green, blue in zip(pixels[::3], pixels[1::3], pixels[2::3], strict=True)
         ) >= 1_000
+        _assert_navigation_wait_spinner_painted(pending_pixels, state)
+
+        with page.expect_console_message(
+            predicate=lambda message: message.text.startswith("wechat-back-dismissed:")
+        ) as dismissed_info:
+            if activation == "enter":
+                cdp.send("Input.dispatchKeyEvent", {"type": "keyDown", "key": "Escape", "code": "Escape"})
+            else:
+                close = state["close"]
+                point = {"x": close["left"] + close["width"] / 2,
+                         "y": close["top"] + close["height"] / 2, "button": "left", "clickCount": 1}
+                cdp.send("Input.dispatchMouseEvent", {"type": "mouseMoved", **point})
+                cdp.send("Input.dispatchMouseEvent", {"type": "mousePressed", **point})
+                cdp.send("Input.dispatchMouseEvent", {"type": "mouseReleased", **point})
+        dismissed = json.loads(dismissed_info.value.text.removeprefix("wechat-back-dismissed:"))
+        assert dismissed["waiting"] is False
+        assert dismissed["sameMessage"] and dismissed["sameScrollport"]
+        assert dismissed["documentBusy"] == "true" and len(pending) == 1
 
         with page.expect_console_message(
             predicate=lambda message: message.text.startswith("wechat-back-restored:")
@@ -668,6 +728,7 @@ def test_conversation_back_paints_shared_skeleton_before_delayed_navigation(
             "type": "pageshow",
             "messages": 6,
             "skeleton": False,
+            "waiting": False,
             "workspaceBusy": None,
             "documentBusy": None,
             "sameMessage": True,
@@ -687,6 +748,82 @@ def test_conversation_back_paints_shared_skeleton_before_delayed_navigation(
         expect(page.locator("[data-browser-navigation-skeleton]")).to_have_count(0)
         expect(page.locator("html")).not_to_have_attribute("aria-busy", "true")
         assert errors == []
+    finally:
+        for route in pending:
+            route.abort()
+        context.close()
+
+
+
+@pytest.mark.parametrize("width", [1280, 390])
+@pytest.mark.parametrize(
+    ("initial", "mode", "title"),
+    [
+        ("text", "media", "Opening cached media"),
+        ("media", "prompts", "Opening saved prompts"),
+        ("prompts", "text", "Opening cached text"),
+    ],
+)
+def test_content_modes_reuse_centered_waiting_card_without_replacing_content(
+    disposable_browser, wechat_server, width, initial, mode, title
+):
+    """Keep native content mounted while each destination paints the shared waiting card."""
+    context = disposable_browser.new_context(
+        viewport={"width": width, "height": 937}, reduced_motion="reduce"
+    )
+    page = context.new_page()
+    pending = []
+    try:
+        source = "wechat" if initial == "text" else "all"
+        page.goto(
+            f"{wechat_server}/browser?view={initial}&source={source}&sort=oldest&page=7",
+            wait_until="networkidle",
+        )
+        toggle = page.locator("#sidebar_toggle")
+        if toggle.get_attribute("aria-expanded") != "true":
+            toggle.click()
+        probes = _install_conversation_back_probe(page, ["pageshow"])
+        cdp = context.new_cdp_session(page)
+        page.route(re.compile(r"/browser\?"), lambda route: pending.append(route))
+        with page.expect_request(
+            lambda request: request.is_navigation_request()
+            and parse_qs(urlsplit(request.url).query).get("view") == [mode]
+        ):
+            page.locator(f'label[for="browser_view_{mode}"]').click(no_wait_after=True)
+        pixels = Image.open(BytesIO(b64decode(cdp.send("Page.captureScreenshot", {
+            "format": "png", "captureBeyondViewport": True,
+            "clip": {"x": 0, "y": 0, "width": width, "height": 937, "scale": 1},
+        })["data"]))).convert("RGB")
+        assert len(pending) == 1 and len(probes) == 1
+        state = probes[0]
+        assert state["visible"] and state["waiting"] and state["contentConnected"], state
+        assert state["title"] == title, state
+        assert state["skeleton"] is False, state
+        assert state["centerX"] <= 1 and state["centerY"] <= 1, state
+        assert state["backdropFilter"] != "none", state
+        assert state["workspaceBusy"] == state["documentBusy"] == "true", state
+        assert state["target"] == f"browser-{mode}", state
+        assert state["overflow"] <= 1, state
+        _assert_navigation_wait_spinner_painted(pixels, state)
+        destination = pending[0].request.url
+        values = parse_qs(urlsplit(destination).query)
+        assert values["view"] == [mode]
+        assert not {"page", "session", "session_page", "media_id"}.intersection(values)
+        with page.expect_console_message(
+            predicate=lambda message: message.text.startswith("wechat-back-restored:")
+        ) as restored_info:
+            cdp.send("Input.dispatchKeyEvent", {"type": "keyDown", "key": "F24", "code": "F24"})
+        restored = json.loads(restored_info.value.text.removeprefix("wechat-back-restored:"))[0]
+        assert restored["waiting"] is False and restored["skeleton"] is False
+        assert restored["workspaceBusy"] is restored["documentBusy"] is None
+        pending.pop().continue_()
+        page.wait_for_url(destination)
+        page.wait_for_load_state("networkidle")
+        expect(page.locator(f"#browser_view_{mode}")).to_be_checked()
+        expect(page.locator("#cache_wait_modal")).to_be_hidden()
+        assert page.evaluate(
+            "sessionStorage.getItem('cachelikes:browser-content-mode:v1')"
+        ) == mode
     finally:
         for route in pending:
             route.abort()
@@ -748,7 +885,7 @@ def test_conversation_back_restores_scroll_before_contact_return_checkpoint(
             assert state["sameMessage"] and state["sameScrollport"], state
             assert state["scrollTop"] == checkpoint["scrollTop"], state
             assert state["checkpoint"] == checkpoint, state
-            assert state["skeleton"] is False, state
+            assert state["skeleton"] is False and state["waiting"] is False, state
             assert state["workspaceBusy"] is state["documentBusy"] is None, state
             assert not state["navigating"] and not state["target"], state
         pending.pop().continue_()

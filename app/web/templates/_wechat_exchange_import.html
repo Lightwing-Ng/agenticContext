@@ -1,0 +1,43 @@
+{# Code version: v1.1.0-codex.0 #}
+<dialog
+    class="browser-dialog wechat-exchange-dialog"
+    id="wechat_exchange_import_dialog"
+    aria-labelledby="wechat_exchange_import_title"
+    aria-describedby="wechat_exchange_import_copy"
+    data-wechat-exchange-import
+    data-preview-url="/api/browser/wechat/exchange/preview"
+    data-import-url="/api/browser/wechat/exchange/import"
+    data-cancel-url="/api/browser/wechat/exchange/cancel"
+>
+    <button type="button" class="browser-dialog-close dismiss-button" aria-label="Close dataset import" data-exchange-close>×</button>
+    <h2 id="wechat_exchange_import_title">Import WeChat dataset</h2>
+    <p id="wechat_exchange_import_copy">Choose a dataset exported by this project. Review its contents before importing.</p>
+    <p class="wechat-exchange-identity-note">Source accounts stay separate, including accounts with the same name.</p>
+    <div class="wechat-exchange-file-row">
+        <button type="button" class="secondary-button" data-exchange-choose>Choose dataset</button>
+        <span data-exchange-filename>No file selected</span>
+        <input type="file" accept=".wechatx" aria-label="Choose WeChat dataset" data-exchange-file hidden>
+    </div>
+    <p role="status" aria-live="polite" data-exchange-status>Choose a .wechatx file to validate and preview.</p>
+    <section data-exchange-preview hidden aria-label="Dataset preview">
+        <dl class="wechat-exchange-counts">
+            <div><dt>Source accounts</dt><dd data-exchange-count="accounts">0</dd></div>
+            <div><dt>Sources</dt><dd data-exchange-count="sources">0</dd></div>
+            <div><dt>Conversations</dt><dd data-exchange-count="conversations">0</dd></div>
+            <div><dt>Messages</dt><dd data-exchange-count="messages">0</dd></div>
+            <div><dt>Resource references</dt><dd data-exchange-count="resources">0</dd></div>
+            <div><dt>New messages</dt><dd data-exchange-count="added_messages">0</dd></div>
+            <div><dt>Duplicate messages</dt><dd data-exchange-count="duplicate_messages">0</dd></div>
+            <div><dt>Conflicting messages</dt><dd data-exchange-count="conflicting_messages">0</dd></div>
+        </dl>
+        <h3>Source accounts</h3>
+        <ul class="wechat-exchange-accounts" data-exchange-accounts></ul>
+        <p data-exchange-conflict-note hidden>Conflicting messages are kept separately.</p>
+        <ul class="wechat-exchange-warnings" data-exchange-warnings hidden></ul>
+    </section>
+    <div class="wechat-exchange-dialog-actions">
+        <a class="secondary-button" data-exchange-view-result hidden>View imported data</a>
+        <button type="button" class="secondary-button" data-exchange-close data-exchange-cancel>Cancel</button>
+        <button type="button" class="primary-button" data-exchange-import disabled>Import</button>
+    </div>
+</dialog>

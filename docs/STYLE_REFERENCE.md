@@ -1,6 +1,6 @@
 # Visual Style Reference
 
-Documentation version: `v1.31.31-codex.0`
+Documentation version: `v1.32.0-codex.0`
 
 ## Authority
 
@@ -19,13 +19,15 @@ its backdrop. Only `.cache-wait-modal` owns this adaptation; other modal overlay
 their existing scrim. The card retains the canonical notice background, border, shadow,
 blur, spinner, dismissal and accessible dialog semantics.
 
-WeChat's All conversations link reuses the Local resources content-mode skeleton and
-paint-before-navigation helper. Its native destination retains account, conversation
-type, sort and the originating list page. Modified clicks, downloads, external links
-and new-tab targets keep native browser behavior. The template loads this adapter before
-the contact-return handlers so it restores original DOM nodes and scroll positions before
-their pagehide checkpoints run. History navigation cannot retain a skeleton or overwrite
-contact-return geometry with detached elements.
+WeChat's All conversations link and the Local resources content-mode controls reuse
+the centered shared waiting card and paint-before-navigation helper. The current
+workspace stays mounted, with its scroll positions intact, while the destination loads.
+The native destination retains account, conversation type, sort and the originating
+list page. Modified clicks, downloads, external links and new-tab targets keep native
+browser behavior. The template loads this adapter before the contact-return handlers
+so it clears its waiting and busy state before their pagehide checkpoints run. A
+persisted pageshow also clears that state. Closing the waiting card or pressing Escape
+dismisses its feedback without cancelling the committed document navigation.
 
 Before changing a shared UI component, also read
 `docs/SHARED_UI_WORKFLOW.md` and the central ledger at
@@ -111,8 +113,13 @@ motion, spacing or responsive breakpoint.
 
 Conversation detail reuses Worthward's direct-export Share action from
 `templates/_macros.html`: the existing `.circular-icon-button` primitive and
-byte-identical `square.and.arrow.up.svg`. Its only transport is the existing
-complete-conversation CSV route. The search toolbar returns to All conversations
+byte-identical `square.and.arrow.up.svg`. Its native link retains the existing
+complete-conversation CSV route as the default. A product-specific frosted menu
+offers CSV first and the compact `.wechatx` dataset second, with hover, focus,
+touch and keyboard support. Dataset preparation runs in the background with a
+live status and an expiring download token; it does not estimate a percentage.
+Escape and outside clicks remain available while preparation is pending.
+The search toolbar returns to All conversations
 through the existing Circular icon button and `browser-session-neighbor-prev-icon`
 left-arrow adapter. Its native link retains the account, conversation kind, sort,
 and collection-page context, with an accessible label and back-navigation tooltip.
@@ -120,13 +127,33 @@ The toolbar centers Back with the search field. Above the existing 900px sidebar
 breakpoint, Back remains at the toolbar's left edge, before the search-action
 container with the existing 12px gap, in both sidebar states. The compact adapter
 retains its sidebar-toggle alignment and safe-inset tokens.
-The Share action's 32px circle and 18px glyph sit 10px before the theme action on the same
-global-anchor centerline. The title reserves both circles without changing fonts
-or introducing a breakpoint. At the existing 900px sidebar-overlay breakpoint,
-the workspace Share and Back actions are hidden while that overlay is open,
+The Share action's 32px circle and 18px glyph sit in the session toolbar, centered
+vertically with search and horizontally on the theme action's column. The title
+reserves only the theme circle without changing fonts or introducing a breakpoint.
+At the existing 900px sidebar-overlay breakpoint,
+the workspace Share, Refresh and Back actions are hidden while that overlay is open,
 preserving the sidebar's width and keyboard boundary. Closing the sidebar restores them.
 The native download link retains its account and conversation-kind scope, label,
-tooltip, and standard focus state; it introduces no menu or controller.
+tooltip and standard focus state.
+
+When configured Mac database-key metadata matches the current private or group
+conversation, Refresh chat history appears immediately before Share. It consumes
+the standard 32px circle, 18px glyph, shared 10px gap and the supplied
+`square.and.arrow.down.on.square.svg`. The source and retained asset have SHA-256
+`036022f53bf5872d34a1468d03ef8db88965eaf15c881519b0cf0d1efb13ff30`.
+Progress uses the same centered waiting card and results use the existing notice.
+The scope label can truncate at 320px while its close control and editable input remain
+visible. Refresh preserves the exact URL, history state and adjacent Share menu.
+
+The selected-account WeChat conversation list places Import WeChat dataset
+immediately before the top search field. Source, details and the account-unscoped
+list have no import entry. It consumes the standard circle and retained
+`square.and.arrow.down.svg` (SHA-256
+`3731b489f1a7bc20de5f408ad7acc51245a040a323fa139706809fab703f6e46`).
+The existing sidebar-overlay visibility boundary applies. A native dialog previews
+the package before an explicit Import click; cancel releases the staged package.
+Account context does not replace the package's source identity. See
+[dataset exchange](WECHAT_EXCHANGE.md) and [Mac refresh](WECHAT_MAC_REFRESH.md).
 
 The contact aggregation toolbar consumes the same existing Circular icon button
 for its Back and Export CSV links. Back reuses the conversation navigation button
