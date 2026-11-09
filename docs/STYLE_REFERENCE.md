@@ -1,6 +1,6 @@
 # Visual Style Reference
 
-Documentation version: `v1.31.30-codex.0`
+Documentation version: `v1.31.31-codex.0`
 
 ## Authority
 
@@ -12,6 +12,20 @@ The explicit notification exception is the user-approved Local resources waiting
 card during local media delete/restore. Its `--frosted-glass-notice-*` variant is
 the shared notification baseline in all three projects; it does not replace the
 general control material.
+
+The shared waiting host keeps its full-screen interaction barrier transparent so the
+notification card samples the page directly, without a second pale scrim washing out
+its backdrop. Only `.cache-wait-modal` owns this adaptation; other modal overlays keep
+their existing scrim. The card retains the canonical notice background, border, shadow,
+blur, spinner, dismissal and accessible dialog semantics.
+
+WeChat's All conversations link reuses the Local resources content-mode skeleton and
+paint-before-navigation helper. Its native destination retains account, conversation
+type, sort and the originating list page. Modified clicks, downloads, external links
+and new-tab targets keep native browser behavior. The template loads this adapter before
+the contact-return handlers so it restores original DOM nodes and scroll positions before
+their pagehide checkpoints run. History navigation cannot retain a skeleton or overwrite
+contact-return geometry with detached elements.
 
 Before changing a shared UI component, also read
 `docs/SHARED_UI_WORKFLOW.md` and the central ledger at

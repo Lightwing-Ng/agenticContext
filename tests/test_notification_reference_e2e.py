@@ -1,6 +1,6 @@
 """Production waiting-notice and catalog reference parity.
 
-Code version: v1.2.0-codex.0
+Code version: v1.2.1-codex.0
 """
 
 from __future__ import annotations
@@ -69,6 +69,79 @@ def _waiting_spinner_frame(cdp, screenshot_path):
     return metrics
 
 
+def _assert_waiting_notice_glass_paints(page, cdp, tmp_path):
+    """Prove the real notice blurs page colors without whitening its surroundings."""
+    overlay = page.locator("#cache_wait_modal")
+    modal = overlay.locator(".workspace-modal-dialog")
+    expect(overlay).to_have_css("background-color", "rgba(0, 0, 0, 0)")
+    reference = _notice_snapshot(modal)
+    assert reference["material"] == reference["canonical"], reference
+    assert page.evaluate("""() => {
+        const probe = document.createElement('div');
+        probe.className = 'workspace-modal-overlay';
+        probe.hidden = true;
+        document.body.append(probe);
+        const original = getComputedStyle(probe).backgroundColor;
+        probe.style.background = 'var(--glass-surface-background-soft)';
+        const canonical = getComputedStyle(probe).backgroundColor;
+        probe.remove();
+        return original === canonical && original !== 'rgba(0, 0, 0, 0)';
+    }""")
+    page.evaluate("""() => {
+        const overlay = document.querySelector('#cache_wait_modal');
+        const backdrop = document.createElement('div');
+        backdrop.id = 'waiting-notice-paint-backdrop';
+        backdrop.style.cssText = 'position:fixed;inset:0;pointer-events:none;'
+            + 'background:repeating-linear-gradient(90deg,#0055cc 0 4px,#ff2f92 4px 8px);'
+            + `z-index:${Number(getComputedStyle(overlay).zIndex) - 1}`;
+        document.body.append(backdrop);
+    }""")
+
+    def capture():
+        page.evaluate("""() => new Promise(resolve => {
+            requestAnimationFrame(() => requestAnimationFrame(resolve));
+        })""")
+        screenshot = cdp.send("Page.captureScreenshot", {"format": "png"})
+        return Image.open(BytesIO(b64decode(screenshot["data"]))).convert("RGB")
+
+    try:
+        box = modal.bounding_box()
+        crop = (
+            round(box["x"] + 24),
+            round(box["y"] + 3),
+            round(box["x"] + box["width"] - 24),
+            round(box["y"] + 9),
+        )
+        painted = capture()
+        painted.save(tmp_path / "waiting-glass-painted.png")
+        assert painted.getpixel((1, 1)) == (0, 85, 204)
+        assert painted.getpixel((5, 1)) == (255, 47, 146)
+        modal.evaluate("""node => {
+            node.style.backdropFilter = 'none';
+            node.style.webkitBackdropFilter = 'none';
+        }""")
+        unblurred = capture()
+        unblurred.save(tmp_path / "waiting-glass-control.png")
+
+        def edge_contrast(frame):
+            sample = frame.crop(crop)
+            return sum(
+                abs(sample.getpixel((x + 1, y))[0] - sample.getpixel((x, y))[0])
+                for y in range(sample.height)
+                for x in range(sample.width - 1)
+            ) / (sample.height * (sample.width - 1))
+
+        # Compare fine stripe edges; broad transmitted color remains visible through glass.
+        assert edge_contrast(painted) < 5
+        assert edge_contrast(unblurred) > 20
+    finally:
+        modal.evaluate("""node => {
+            node.style.removeProperty('backdrop-filter');
+            node.style.removeProperty('-webkit-backdrop-filter');
+        }""")
+        page.locator("#waiting-notice-paint-backdrop").evaluate("node => node.remove()")
+
+
 @pytest.mark.parametrize(
     ("width", "scheme", "motion"),
     [(831, "light", "no-preference"), (390, "dark", "reduce")],
@@ -116,6 +189,7 @@ def test_wechat_filter_wait_spinner_paints_without_an_external_mask(
         assert submissions[0]["method"] == "get"
         assert submissions[0]["fields"]["source"] == "wechat"
         assert submissions[0]["fields"]["chat_kind"] == "group"
+        _assert_waiting_notice_glass_paints(page, cdp, tmp_path)
         expect(page.locator("#cache_wait_modal_title")).to_have_text(
             "Updating Local resources"
         )

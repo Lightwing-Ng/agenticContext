@@ -1,4 +1,4 @@
-/* Code version: v2.159.1-codex.0 */
+/* Code version: v2.159.2-codex.0 */
 /*
  * Standalone faces are extracted from the approved TTC by scripts/build_web_fonts.py.
  * Collection URL fragments are not reliable face selectors in Chromium.
@@ -6077,6 +6077,11 @@ main.agent-page[data-agent-connection-mode="tunnel"] .agent-workspace-grid {
 
 .workspace-modal-overlay[hidden] {
     display: none;
+}
+
+.cache-wait-modal {
+    /* Let the approved notice material sample the page without a whitening scrim. */
+    background: transparent;
 }
 
 .workspace-modal-dialog {

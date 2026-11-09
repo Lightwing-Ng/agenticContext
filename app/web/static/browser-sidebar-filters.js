@@ -1,4 +1,4 @@
-/* Code version: v1.0.0-codex.0 */
+/* Code version: v1.0.1-codex.0 */
 
 (function initializeLocalResourceSidebarFilters() {
     "use strict";
@@ -37,6 +37,42 @@
         media: "Cached media browser",
         prompts: "Saved prompts",
     });
+    let navigationSnapshot = null;
+    let navigationFrame = 0;
+    let navigationPaintTimer = 0;
+    let navigationFallbackTimer = 0;
+
+    function clearNavigationTimers() {
+        window.cancelAnimationFrame(navigationFrame);
+        window.clearTimeout(navigationPaintTimer);
+        window.clearTimeout(navigationFallbackTimer);
+        navigationFrame = navigationPaintTimer = navigationFallbackTimer = 0;
+    }
+
+    function restoreContentNavigation() {
+        clearNavigationTimers();
+        if (!navigationSnapshot) return;
+        const { workspace, nodes, focusedElement, workspaceBusy, documentBusy,
+            navigationTarget, wasNavigating, scrollPositions, documentX, documentY } = navigationSnapshot;
+        navigationSnapshot = null;
+        workspace.replaceChildren(...nodes);
+        for (const { node, top, left } of scrollPositions) {
+            node.scrollTop = top;
+            node.scrollLeft = left;
+        }
+        delete workspace.dataset.browserNavigationSkeleton;
+        for (const [element, attribute, value] of [
+            [workspace, "aria-busy", workspaceBusy],
+            [document.documentElement, "aria-busy", documentBusy],
+            [document.documentElement, "data-navigation-target", navigationTarget],
+        ]) {
+            if (value === null) element.removeAttribute(attribute);
+            else element.setAttribute(attribute, value);
+        }
+        document.body.classList.toggle("is-page-navigating", wasNavigating);
+        window.scrollTo(documentX, documentY);
+        if (focusedElement?.isConnected) focusedElement.focus({ preventScroll: true });
+    }
 
     const navigationSkeletonLine = (width = "100%", className = "") => `
         <span class="navigation-skeleton-line${className ? ` ${className}` : ""}"
@@ -105,6 +141,60 @@
         return true;
     }
 
+    function navigateWithContentModeSkeleton(targetUrl, mode) {
+        restoreContentNavigation();
+        const workspace = document.getElementById("browser_workspace");
+        if (workspace instanceof HTMLElement) {
+            navigationSnapshot = {
+                workspace,
+                nodes: Array.from(workspace.childNodes),
+                focusedElement: workspace.contains(document.activeElement) ? document.activeElement : null,
+                scrollPositions: Array.from(
+                    workspace.querySelectorAll("[data-chat-scrollport], [data-table-scroll]"),
+                    (node) => ({ node, top: node.scrollTop, left: node.scrollLeft }),
+                ),
+                documentX: window.scrollX,
+                documentY: window.scrollY,
+                workspaceBusy: workspace.getAttribute("aria-busy"),
+                documentBusy: document.documentElement.getAttribute("aria-busy"),
+                navigationTarget: document.documentElement.getAttribute("data-navigation-target"),
+                wasNavigating: document.body.classList.contains("is-page-navigating"),
+            };
+        }
+        renderOptimisticContentModeNavigation(mode);
+        let navigationCommitted = false;
+        const commitNavigation = () => {
+            if (navigationCommitted) return;
+            navigationCommitted = true;
+            clearNavigationTimers();
+            window.location.assign(targetUrl.toString());
+        };
+        navigationFallbackTimer = window.setTimeout(commitNavigation, 120);
+        navigationFrame = window.requestAnimationFrame(() => {
+            navigationFrame = 0;
+            navigationPaintTimer = window.setTimeout(commitNavigation, 0);
+        });
+    }
+
+    // Restore message geometry before contact-return checkpoints and BFCache capture.
+    window.addEventListener("pagehide", restoreContentNavigation);
+    window.addEventListener("pageshow", (event) => {
+        if (event.persisted) restoreContentNavigation();
+    });
+
+    document.addEventListener("click", (event) => {
+        if (event.defaultPrevented || event.button !== 0 || event.metaKey || event.ctrlKey
+            || event.shiftKey || event.altKey) return;
+        const link = event.target instanceof Element
+            ? event.target.closest("a.wechat-conversation-back[href]") : null;
+        if (!link || link.hasAttribute("download")
+            || !["", "_self"].includes(link.target.toLowerCase())) return;
+        const destination = new URL(link.href, window.location.href);
+        if (destination.origin !== window.location.origin) return;
+        event.preventDefault();
+        navigateWithContentModeSkeleton(destination, "text");
+    });
+
     function navigateToContentMode(mode) {
         if (!filterForm || !["media", "text", "prompts"].includes(mode)) return;
         const targetUrl = new URL(filterForm.action || window.location.href, window.location.origin);
@@ -125,20 +215,7 @@
             targetUrl.searchParams.delete("media_view");
         }
         if (mode !== "text") targetUrl.searchParams.delete("project");
-        renderOptimisticContentModeNavigation(mode);
-        let navigationCommitted = false;
-        const commitNavigation = () => {
-            if (navigationCommitted) return;
-            navigationCommitted = true;
-            window.location.assign(targetUrl.toString());
-        };
-        const fallbackTimer = window.setTimeout(commitNavigation, 120);
-        window.requestAnimationFrame(() => {
-            window.setTimeout(() => {
-                window.clearTimeout(fallbackTimer);
-                commitNavigation();
-            }, 0);
-        });
+        navigateWithContentModeSkeleton(targetUrl, mode);
     }
 
     const currentUrl = new URL(window.location.href);
