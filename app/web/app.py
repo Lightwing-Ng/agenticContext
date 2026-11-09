@@ -10,7 +10,7 @@ registered first because it owns the access gate and the exclusive-browser rule 
 Tunnel, Jury, iPhone, and Cache blueprints borrow through :class:`AgentSurface`.
 """
 
-# Code version: v2.10.3-codex.0
+# Code version: v2.10.4-codex.0
 
 from __future__ import annotations
 
@@ -539,12 +539,18 @@ def create_app(
     runtime_shutdown_started = False
 
     def stop_runtime_services() -> None:
-        """Stop browser-owning services exactly once before process exit."""
+        """Stop local refresh and browser-owning services once before process exit."""
         nonlocal runtime_shutdown_started
         with runtime_shutdown_lock:
             if runtime_shutdown_started:
                 return
             runtime_shutdown_started = True
+        wechat_refresh = app.extensions.get("wechat_mac_refresh")
+        if wechat_refresh is not None:
+            try:
+                wechat_refresh.shutdown(wait=True, timeout=5.0)
+            except Exception:
+                app.logger.error("Could not stop the local chat refresh service during shutdown.")
         tunnel_mcp_service.stop()
         try:
             tunnel_runtime.stop()

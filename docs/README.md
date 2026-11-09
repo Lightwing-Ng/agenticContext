@@ -1,6 +1,6 @@
 # Documentation index
 
-Documentation version: `v1.1.0-codex.0`
+Documentation version: `v1.1.1-codex.0`
 
 Use the current contracts below for implementation and operation. Dated evidence records describe
 the checkout and environment observed at that time; they do not establish current behavior.
@@ -19,6 +19,8 @@ the checkout and environment observed at that time; they do not establish curren
 | Cache routes, source behavior, and recovery | [Cache runbook](CACHE_HANDOFF.md) |
 | Preserve OpenClaw history and review removal readiness | [OpenClaw migration](OPENCLAW_MIGRATION.md) |
 | Import Gemini Takeout and protect recovered history | [Gemini import guide](GEMINI_TAKEOUT_IMPORT.md) |
+| Refresh a scoped Mac WeChat conversation with configured keys | [Mac WeChat refresh](WECHAT_MAC_REFRESH.md) |
+| Exchange a WeChat conversation dataset with reviewed import | [WeChat dataset exchange](WECHAT_EXCHANGE.md) |
 | Agent execution and browser boundaries | [Computer Use Agent](COMPUTER_USE_AGENT.md) |
 | Connect and control a USB iPhone locally or through ChatGPT Tunnel | [iPhone control](IPHONE.md) |
 | ChatGPT Agent Cloudflare on macOS Edge | [ChatGPT Agent Cloudflare lessons](CHATGPT_AGENT_CLOUDFLARE.md) |

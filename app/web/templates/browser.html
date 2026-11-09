@@ -1,4 +1,4 @@
-<!-- Code version: v1.106.4-codex.0 -->
+<!-- Code version: v1.111.2-codex.0 -->
 <!doctype html>
 <html lang="en-US">
 <head>
@@ -9,23 +9,27 @@
     <script src="{{ url_for('static', filename='language-rendering.js', v='language-rendering-v1.0.0-codex.1') }}"></script>
     <script src="{{ url_for('static', filename='theme-mode.js', v='theme-mode-v1.0.0-codex.1') }}"></script>
     <script defer src="{{ url_for('static', filename='segmented-control.js', v='segmented-control-v1.0.4-codex.1') }}"></script>
-    <link rel="stylesheet" href="{{ url_for('static', filename='style.css', v=version ~ '-style-v2.159.1-codex.0') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css', v=version ~ '-style-v2.159.2-codex.0') }}">
     {% include "_cache_activity_assets.html" %}
     <script defer src="{{ url_for('static', filename='numeric-display.js', v='numeric-display-v1.1.0-codex.0') }}"></script>
     <script defer src="{{ url_for('static', filename='scrollable-data-table.js', v='scrollable-data-table-v1.0.0-codex.0') }}"></script>
     <link rel="stylesheet" href="{{ url_for('static', filename='browser-search.css', v='browser-search-v1.4.5-claude.0') }}">
+    {# Restore optimistic navigation before the contact-return pagehide checkpoint runs. #}
+    <script defer src="{{ url_for('static', filename='waiting-modal.js', v='waiting-modal-v1.2.0-codex.0') }}"></script>
+    <script defer src="{{ url_for('static', filename='browser-sidebar-filters.js', v='browser-sidebar-filters-v1.1.0-codex.0') }}"></script>
     {% if filters.view == 'text' and filters.source == 'wechat' %}
     <link rel="stylesheet" href="{{ url_for('static', filename='wechat-kind-badge.css', v='wechat-kind-badge-v1.0.0-codex.0') }}">
-    <link rel="stylesheet" href="{{ url_for('static', filename='browser-messaging.css', v='browser-messaging-v1.18.2-codex.0') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='browser-messaging.css', v='browser-messaging-v1.18.3-codex.0') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='wechat-exchange.css', v='wechat-exchange-v1.2.3-codex.0') }}">
+    <script defer src="{{ url_for('static', filename='wechat-exchange.js', v='wechat-exchange-v1.2.2-codex.0') }}"></script>
+    <script defer src="{{ url_for('static', filename='wechat-refresh.js', v='wechat-refresh-v1.0.0-codex.0') }}"></script>
     <script defer src="{{ url_for('static', filename='wechat-contact-navigation.js', v='wechat-contact-navigation-v1.1.2-codex.0') }}"></script>
     <script defer src="{{ url_for('static', filename='disclosure-motion.js', v='disclosure-motion-v1.1.0-codex.0') }}"></script>
     <script defer src="{{ url_for('static', filename='browser-messaging.js', v='browser-messaging-v1.13.0-codex.0') }}"></script>
     {% endif %}
     <script src="{{ url_for('static', filename='responsive.js', v='responsive-v1.0.0-codex.1') }}"></script>
-    <script defer src="{{ url_for('static', filename='waiting-modal.js', v='waiting-modal-v1.2.0-codex.0') }}"></script>
     <script defer src="{{ url_for('static', filename='notice-banner.js', v='notice-banner-v0.1.0-codex.1') }}"></script>
     <script defer src="{{ url_for('static', filename='pagination-motion.js', v='pagination-motion-v1.1.0-codex.1') }}"></script>
-    <script defer src="{{ url_for('static', filename='browser-sidebar-filters.js', v='browser-sidebar-filters-v1.0.0-codex.0') }}"></script>
     <script defer src="{{ url_for('static', filename='local-media-browser.js', v='local-media-browser-v1.45.1-codex.0') }}"></script>
     <script defer src="{{ url_for('static', filename='browser-session-messages.js', v='browser-session-messages-v1.0.1-codex.1') }}"></script>
     <script defer src="{{ url_for('static', filename='browser-chat-ruler.js', v='browser-chat-ruler-v1.1.0-codex.0') }}"></script>
@@ -118,15 +122,6 @@
     <div class="app-shell is-sidebar-open" id="app_shell">
 
         {% include "_theme_toggle.html" %}
-        {% if is_wechat_text and text_page.session_detail %}
-        <a
-            class="circular-icon-button global-quick-action-button wechat-conversation-share"
-            href="{{ url_for('local_resources.browser_wechat_session_csv', session_id=text_page.current_session.stable_id, account=filters.account, chat_kind=filters.chat_kind) }}"
-            aria-label="Export conversation as CSV"
-            title="Export conversation as CSV"
-            download
-        ><span class="icon wechat-conversation-share-icon" aria-hidden="true"></span></a>
-        {% endif %}
 
         <button
             type="button"
@@ -247,6 +242,17 @@
                                 {% endif %}
                             </div>
                             {% endif %}
+                            {% if is_wechat_text and not text_page.session_detail and filters.account %}
+                            <button
+                                type="button"
+                                class="circular-icon-button global-quick-action-button wechat-exchange-import-button"
+                                aria-label="Import WeChat dataset"
+                                title="Import WeChat dataset"
+                                aria-haspopup="dialog"
+                                aria-controls="wechat_exchange_import_dialog"
+                                data-wechat-exchange-import-trigger
+                            ><span class="icon wechat-exchange-import-icon" aria-hidden="true"></span></button>
+                            {% endif %}
                             <div class="field browser-filter-field browser-search-field" data-browser-search>
                                 <div class="browser-search-control">
                                     <span class="icon browser-search-icon" aria-hidden="true"></span>
@@ -289,6 +295,20 @@
                                     ></div>
                                 </div>
                             </div>
+                            {% if is_wechat_text and text_page.session_detail %}
+                            {% if wechat_refresh_available|default(false) %}
+                            <button
+                                type="button"
+                                class="circular-icon-button global-quick-action-button browser-session-refresh-button wechat-conversation-refresh"
+                                data-wechat-conversation-refresh
+                                data-wechat-refresh-url="{{ url_for('local_resources.browser_wechat_refresh') }}"
+                                data-wechat-session-id="{{ text_page.current_session.stable_id }}"
+                                aria-label="Refresh chat history"
+                                title="Refresh chat history"
+                            ><span class="icon wechat-conversation-refresh-icon" aria-hidden="true"></span></button>
+                            {% endif %}
+                            {% include "_wechat_exchange_actions.html" %}
+                            {% endif %}
                         </div>
                     </div>
                     {% if filters.view == "media" %}
@@ -1277,6 +1297,21 @@
 ) %}{% endcall %}
 {% endif %}
 
+{% if is_wechat_text and text_page.session_detail %}
+{% call render_notice_banner(
+    icon_class="browser-session-refresh-banner-icon",
+    banner_class="notice-floating-banner-global browser-session-refresh-banner",
+    banner_attrs="data-wechat-refresh-banner",
+    close_label="Close refresh result",
+    close_attrs="data-wechat-refresh-dismiss",
+    title_attrs="data-wechat-refresh-title",
+    message_attrs="data-wechat-refresh-copy",
+    role="status",
+    is_hidden=true,
+    numbered=false
+) %}{% endcall %}
+{% endif %}
+
 <dialog class="browser-dialog" id="browser_detail_dialog" aria-labelledby="browser_dialog_title">
     <button type="button" class="browser-dialog-close dismiss-button" data-dialog-close aria-label="Close media details">×</button>
     <div class="browser-dialog-media" data-viewer-media aria-label="Media detail preview"></div>
@@ -1298,6 +1333,7 @@
     </div>
 </dialog>
 
+{% if is_wechat_text %}{% include "_wechat_exchange_import.html" %}{% endif %}
 {% include "_waiting_modal.html" %}
 <script type="application/json" id="browser_media_data">{{ media_payload|tojson }}</script>
 <script src="{{ url_for('static', filename='sidebar.js', v='sidebar-v1.31.0-codex.0') }}"></script>

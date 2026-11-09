@@ -1,6 +1,6 @@
 """Stream one complete source-scoped WeChat timeline from pinned local inputs.
 
-Code version: v1.4.0-codex.0
+Code version: v1.5.0-codex.0
 """
 
 from __future__ import annotations
@@ -93,10 +93,39 @@ def _identity(path):
     )
 
 
+def _active_timeline_views(connection, message_table):
+    """Follow the final TEMP view through every source overlay it actually uses."""
+    pending, active = [message_table], set()
+    while pending:
+        name = pending.pop()
+        if "." in name:
+            schema, name = name.split(".", 1)
+            if schema != "temp":
+                continue
+        if name in active:
+            continue
+        row = connection.execute(
+            "SELECT sql FROM temp.sqlite_master WHERE type='view' AND name=?", (name,)
+        ).fetchone()
+        if row is None:
+            continue
+        active.add(name)
+        if len(active) > 32:
+            raise ValueError("The export timeline exceeds its supported view structure.")
+        pending.extend(
+            re.findall(
+                r"\b(?:FROM|JOIN)\s+((?:[A-Za-z_][A-Za-z0-9_]*\.)?[A-Za-z_][A-Za-z0-9_]*)",
+                row[0],
+                re.IGNORECASE,
+            )
+        )
+    return active
+
+
 class WechatSessionExport:
     """Keep one read-only cursor open instead of materializing a paginated view."""
 
-    def __init__(self, local_store_root, session_id, *, account="", kind="all"):
+    def __init__(self, local_store_root, session_id, *, account="", kind="all", write_event_cache=True):
         self.connection = None
         if (
             not isinstance(session_id, str)
@@ -131,6 +160,16 @@ class WechatSessionExport:
             media_event_identity = _identity(media_event_path)
         except (OSError, ValueError, WechatSessionSourceChanged):
             media_event_identity = None
+        recovery_path = repository.path.with_name("macos_recovery.json")
+        try:
+            recovery_identity = _identity(recovery_path)
+        except (OSError, ValueError, WechatSessionSourceChanged):
+            recovery_identity = None
+        bank_path = repository.path.with_name("macos_recovery.sqlite3")
+        try:
+            bank_identity = _identity(bank_path)
+        except (OSError, ValueError, WechatSessionSourceChanged):
+            bank_identity = None
         try:
             self.connection = sqlite3.connect(
                 repository.path.resolve().as_uri() + "?mode=ro&immutable=1", uri=True
@@ -140,36 +179,57 @@ class WechatSessionExport:
             conversations, messages, self.resource_status = repository._timeline_tables(
                 self.connection, _file_identity(repository.path), conversation_id=session_id
             )
-            if messages == "placeholder_timeline_messages" or (
-                messages == "media_event_timeline_messages"
-                and placeholder_identity is not None
+            try:
+                recovery_after = _identity(recovery_path)
+            except (OSError, ValueError, WechatSessionSourceChanged):
+                recovery_after = None
+            if recovery_after != recovery_identity:
+                raise WechatSessionSourceChanged(
+                    "The Mac recovery metadata changed during timeline projection."
+                )
+            try:
+                bank_after = _identity(bank_path)
+            except (OSError, ValueError, WechatSessionSourceChanged):
+                bank_after = None
+            if bank_after != bank_identity:
+                raise WechatSessionSourceChanged(
+                    "The Mac recovery bank changed during timeline projection."
+                )
+            active_views = _active_timeline_views(self.connection, messages)
+            for view, path, expected in (
+                ("timeline_messages", resource_path, resource_identity),
+                ("placeholder_timeline_messages", placeholder_path, placeholder_identity),
+                ("media_event_timeline_messages", media_event_path, media_event_identity),
+                ("macos_recovery_timeline_messages", recovery_path, recovery_identity),
+                ("macos_recovery_bank_timeline_messages", bank_path, bank_identity),
             ):
-                if (
-                    placeholder_identity is None
-                    or _identity(placeholder_path) != placeholder_identity
+                if view in active_views:
+                    if expected is None or _identity(path) != expected:
+                        raise WechatSessionSourceChanged(
+                            "The timeline source metadata changed during export."
+                        )
+                    self.sources[path] = expected
+            if "macos_recovery_bank_timeline_messages" in active_views and self.connection.execute(
+                "SELECT 1 FROM macos_recovery_bank.sqlite_master WHERE type='table' AND name='shadow_replacements'"
+            ).fetchone() is not None:
+                bank_inputs = json.loads(self.connection.execute(
+                    "SELECT value FROM macos_recovery_bank.archive_info WHERE key='input_identities'"
+                ).fetchone()[0])
+                for source in self.connection.execute(
+                    "SELECT DISTINCT source_file_name FROM macos_recovery_bank.shadow_replacements WHERE conversation_id=?",
+                    (session_id,),
                 ):
-                    raise WechatSessionSourceChanged(
-                        "The media placeholder metadata changed during export."
-                    )
-                self.sources[placeholder_path] = placeholder_identity
-            if messages == "media_event_timeline_messages":
-                if (
-                    media_event_identity is None
-                    or _identity(media_event_path) != media_event_identity
-                ):
-                    raise WechatSessionSourceChanged(
-                        "The media event index changed during export."
-                    )
-                self.sources[media_event_path] = media_event_identity
-            if self.resource_status == "ready":
-                if (
-                    resource_identity is None
-                    or _identity(resource_path) != resource_identity
-                ):
-                    raise WechatSessionSourceChanged(
-                        "The resource index changed during export."
-                    )
-                self.sources[resource_path] = resource_identity
+                    name = source[0]
+                    if name not in {"resource_references.sqlite3", "resource_revalidated.sqlite3"}:
+                        raise ValueError("A shadow export requires its original resource catalog.")
+                    source_path = repository.path.with_name(name)
+                    expected_source = bank_inputs.get(name)
+                    actual_source = _identity(source_path)
+                    if not isinstance(expected_source, dict) or actual_source != tuple(
+                        expected_source.get(key) for key in ("dev", "ino", "size", "mtime_ns", "ctime_ns")
+                    ):
+                        raise WechatSessionSourceChanged("An original shadow source changed during export.")
+                    self.sources[source_path] = actual_source
             where, parameters = ["c.id=?"], [session_id]
             if account:
                 where.append("c.account_key=?")
@@ -208,7 +268,9 @@ class WechatSessionExport:
                 self.conversation,
                 messages,
                 _file_identity(repository.path),
+                persist=write_event_cache,
             )
+            self.events = events
             if events["preferred_by_id"]:
                 if (
                     registry_identity is None
@@ -257,6 +319,22 @@ class WechatSessionExport:
     def _project_viewer_names(self, rows):
         """Reuse verified message bindings while keeping every source field intact."""
         items = [dict(row) for row in rows]
+        from .wechat_macos_recovery import (
+            mark_mac_recovery_rows,
+            validated_recovery_receipt,
+        )
+
+        mark_mac_recovery_rows(self.connection, items)
+        for item in items:
+            receipt = validated_recovery_receipt(item)
+            if receipt is not None:
+                item.update(
+                    source_label="WeChat for Mac local database",
+                    source_file="WeChat for Mac local database: "
+                    + receipt["database_relative_path"],
+                    source_snapshot_id=receipt["snapshot_id"],
+                    backup_id="",
+                )
         if self.display_names is None:
             return items
         conversation = self.conversation
@@ -336,6 +414,13 @@ class WechatSessionExport:
         for item in rows:
             clocks = projections.get(item["id"])
             if not clocks:
+                from .wechat_exchange_presentation import frozen_forwarded_items
+
+                frozen = frozen_forwarded_items(
+                    json.loads(item["provenance"]), self.conversation, parent_id=item["id"]
+                )
+                if frozen:
+                    item["forwarded_items"] = frozen
                 continue
             provenance = json.loads(item["provenance"])
             record = project_html_forwarded(

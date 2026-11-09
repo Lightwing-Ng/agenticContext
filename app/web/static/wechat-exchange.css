@@ -1,0 +1,228 @@
+/* Code version: v1.2.3-codex.0 */
+/* Product adapters consume the existing circular, select, and dialog primitives. */
+.wechat-exchange-import-button {
+    flex: 0 0 var(--circular-icon-button-size);
+    margin-inline-start: auto;
+}
+
+.browser-local-resources-header-actions:has(> .wechat-exchange-import-button) {
+    flex-wrap: nowrap;
+    min-width: 0;
+    align-items: center;
+    gap: var(--layout-global-action-gap);
+}
+
+.browser-local-resources-header-actions:has(> .wechat-exchange-import-button) .browser-search-field {
+    min-width: 0;
+    margin-inline-start: 0;
+}
+
+.browser-local-resources-header-actions:has(> .wechat-exchange-import-button) .browser-search-control {
+    min-width: 0;
+}
+
+@media (max-width: 900px) {
+    .app-shell.is-sidebar-open .browser-local-resources-header-actions > .wechat-exchange-import-button {
+        visibility: hidden;
+    }
+}
+
+.wechat-exchange-import-icon {
+    mask-image: url("/static/images/square.and.arrow.down.svg");
+    -webkit-mask-image: url("/static/images/square.and.arrow.down.svg");
+}
+
+.browser-wechat-session .browser-local-resources-header-actions {
+    flex-wrap: nowrap;
+    align-items: center;
+    gap: var(--layout-global-action-gap);
+}
+
+.wechat-conversation-refresh {
+    flex: 0 0 var(--circular-icon-button-size);
+}
+
+.browser-wechat-session .browser-local-resources-header-actions:has(.wechat-conversation-refresh),
+.browser-wechat-session .browser-local-resources-header-actions:has(.wechat-conversation-refresh) .browser-search-control {
+    min-width: 0;
+}
+
+.browser-wechat-session .browser-local-resources-header-actions:has(.wechat-conversation-refresh) .browser-search-input {
+    /* Keep a short editable query beside the truncatable scope label. */
+    flex: 1 0 3em;
+}
+
+.browser-wechat-session .browser-local-resources-header-actions:has(.wechat-conversation-refresh) .browser-search-session-tag {
+    flex-shrink: 1;
+}
+
+.browser-wechat-session .browser-local-resources-header-actions:has(.wechat-conversation-refresh) .browser-search-session-tag > span {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.browser-wechat-session .browser-local-resources-header-actions:has(.wechat-conversation-refresh) .browser-prompt-tag-remove {
+    flex-shrink: 0;
+}
+
+.wechat-conversation-refresh-icon {
+    mask-image: url("/static/images/square.and.arrow.down.on.square.svg");
+    -webkit-mask-image: url("/static/images/square.and.arrow.down.on.square.svg");
+}
+
+.wechat-exchange-actions {
+    position: relative;
+    flex: 0 0 var(--circular-icon-button-size);
+    width: var(--circular-icon-button-size);
+    height: var(--circular-icon-button-size);
+    margin-inline-end: calc(var(--global-quick-actions-right) - var(--page-edge-pad) - var(--workspace-article-pad-inline));
+    z-index: var(--layer-global-popover);
+}
+
+.wechat-exchange-actions > .wechat-conversation-share {
+    position: relative;
+    top: auto;
+    right: auto;
+}
+
+.browser-wechat-session .browser-summary-card {
+    padding-inline-end: calc(var(--workspace-article-pad-inline) + var(--circular-icon-button-size) + var(--layout-global-action-gap));
+}
+
+.wechat-exchange-export-menu {
+    position: absolute;
+    top: calc(100% + 8px);
+    right: 0;
+    z-index: var(--layer-global-popover);
+    width: min(304px, calc(100vw - 32px));
+    padding: 6px;
+    border: var(--glass-popover-border);
+    border-radius: var(--radius-panel);
+    background: var(--glass-popover-background);
+    box-shadow: var(--glass-popover-shadow);
+    backdrop-filter: var(--glass-popover-blur);
+    -webkit-backdrop-filter: var(--glass-popover-blur);
+}
+
+.wechat-exchange-export-menu::before {
+    position: absolute;
+    inset: -10px 0 auto;
+    height: 10px;
+    content: "";
+}
+
+.wechat-exchange-export-menu[hidden],
+.wechat-exchange-export-status[hidden],
+.wechat-exchange-dialog [hidden] {
+    display: none;
+}
+
+.wechat-exchange-export-option {
+    text-decoration: none;
+    white-space: normal;
+}
+
+.wechat-exchange-export-option > span:last-child {
+    display: grid;
+    gap: 3px;
+    min-width: 0;
+}
+
+.wechat-exchange-export-option small {
+    color: var(--theme-muted);
+    font-size: 12px;
+    font-weight: normal;
+}
+
+.wechat-exchange-export-status {
+    overflow-wrap: anywhere;
+}
+
+.browser-dialog.wechat-exchange-dialog {
+    display: block;
+    width: min(560px, calc(100vw - 32px));
+    box-sizing: border-box;
+}
+
+.wechat-exchange-dialog h2 {
+    margin: 0 28px 12px 0;
+    font-size: 22px;
+}
+
+.wechat-exchange-dialog h3 {
+    margin: 16px 0 8px;
+    font-size: 16px;
+}
+
+.wechat-exchange-dialog p {
+    margin-block: 10px;
+    overflow-wrap: anywhere;
+}
+
+.wechat-exchange-identity-note {
+    color: var(--theme-muted);
+    font-size: 14px;
+}
+
+.wechat-exchange-file-row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 10px;
+    margin-block: 18px;
+}
+
+.wechat-exchange-file-row > span {
+    min-width: 0;
+    overflow-wrap: anywhere;
+}
+
+.wechat-exchange-counts {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 12px;
+    margin-block: 18px;
+}
+
+.wechat-exchange-counts dt {
+    color: var(--theme-muted);
+    font-size: 13px;
+}
+
+.wechat-exchange-counts dd {
+    margin: 4px 0 0;
+    overflow-wrap: anywhere;
+    font-size: 20px;
+}
+
+.wechat-exchange-accounts,
+.wechat-exchange-warnings {
+    padding-inline-start: 20px;
+    overflow-wrap: anywhere;
+}
+
+.wechat-exchange-accounts li {
+    margin-block: 6px;
+    white-space: pre-wrap;
+}
+
+.wechat-exchange-dialog-actions {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    gap: 10px;
+    margin-block-start: 20px;
+}
+
+@media (max-width: 900px) {
+    .browser-wechat-session .app-shell.is-sidebar-open .wechat-exchange-export-menu {
+        visibility: hidden;
+    }
+}
+
+@media (max-width: 560px) {
+    .wechat-exchange-actions {
+        margin-inline-end: calc(var(--global-quick-actions-right) - var(--page-compact-edge-pad) - var(--workspace-article-pad-inline));
+    }
+}

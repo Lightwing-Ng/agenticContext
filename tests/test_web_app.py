@@ -1,6 +1,6 @@
 """Focused regression tests for the local web console."""
 
-# Code version: v1.155.9-codex.0
+# Code version: v1.155.12-codex.0
 
 from __future__ import annotations
 
@@ -930,12 +930,7 @@ class WebAppTests(unittest.TestCase):
                 self.assertNotIn('class="browser-picker-option-icon"', dock_markup)
                 self.assertIn('src="/static/sidebar.js?v=sidebar-v1.31.0-codex.0"', body)
                 self.assertIn('src="/static/responsive.js?v=responsive-v1.0.0-codex.1"', body)
-                expected_style_version = (
-                    "style-v2.159.1-codex.0"
-                    if page_source == "local-resources"
-                    else "style-v2.157.0-codex.0"
-                )
-                self.assertIn(expected_style_version, body)
+                self.assertIn("style-v2.159.2-codex.0", body)
                 self.assertIn("/static/images/sparkles.2.svg", dock_markup)
                 self.assertIn('src="/static/theme-mode.js?v=theme-mode-v1.0.0-codex.1"', body)
                 self.assertIn('id="global_theme_toggle"', body)
@@ -1365,7 +1360,7 @@ class WebAppTests(unittest.TestCase):
         self.assertIn('browser-session-status.js?v=browser-session-status-v1.14.1-codex.0', local_body)
         self.assertIn('pagination-motion.js?v=pagination-motion-v1.1.0-codex.1', local_body)
         self.assertIn('vendor/katex/katex.min.css?v=katex-v0.18.7', local_body)
-        self.assertIn('style-v2.157.0-codex.0', local_body)
+        self.assertIn('style-v2.159.2-codex.0', local_body)
         self.assertIn('vendor/katex/katex.min.js?v=katex-v0.18.7', local_body)
         self.assertIn('vendor/katex/contrib/auto-render.min.js?v=katex-v0.18.7', local_body)
         self.assertIn('agent-sessions.css?v=1.9.0', local_body)
@@ -5973,7 +5968,7 @@ class WebAppTests(unittest.TestCase):
             self.assertNotIn(str(root), body)
             self.assertIn("/browser/media/grok/clip.mp4", body)
             self.assertNotIn("/browser/media/media/", body)
-            self.assertIn("style-v2.159.1-codex.0", body)
+            self.assertIn("style-v2.159.2-codex.0", body)
             self.assertIn("/static/images/photo.stack.svg", body)
             self.assertIn('pagination-motion.js?v=pagination-motion-v1.1.0-codex.1', body)
             self.assertIn('local-media-browser.js?v=local-media-browser-v1.45.1-codex.0', body)
@@ -7072,23 +7067,40 @@ class WebAppTests(unittest.TestCase):
             'const checkedContentMode = contentModeInputs.find((input) => input.checked)?.value || "text";',
             'rememberContentMode(event.target.value);',
             'function navigateToContentMode(mode) {',
-            'const contentModeNavigationTitles = Object.freeze({',
-            'function renderOptimisticContentModeNavigation(mode) {',
+            'const contentModeNavigationOptions = Object.freeze({',
+            'function navigateWithWaitingModal(targetUrl, mode, options = contentModeNavigationOptions[mode]) {',
+            'navigationWait = window.CacheWaitModal?.show(options);',
             'const formData = new FormData(filterForm);',
             'formData.set("view", mode);',
             'const selectedSource = String(formData.get("source") || "").trim().toLowerCase();',
             '["x", "chatgpt", "copilot", "codex", "claude", "claude_code", "gemini", "grok", "grok_build", "wechat", "zhihu"].includes(selectedSource)',
             'formData.set("source", "chatgpt");',
-            'workspace.dataset.browserNavigationSkeleton = "1";',
+            'navigationWait?.finish();',
             'document.documentElement.setAttribute("aria-busy", "true");',
             'event.target.matches("select[name=\'answerer\'], select[name=\'project\'], select[name=\'account\'], select[name=\'chat_kind\']")',
             'for (const name of ["session", "session_page"])',
-            'const fallbackTimer = window.setTimeout(commitNavigation, 120);',
+            'navigationFallbackTimer = window.setTimeout(commitNavigation, 120);',
             'window.requestAnimationFrame(() => {',
             'window.location.assign(targetUrl.toString());',
         ):
             with self.subTest(fragment=fragment):
                 self.assertIn(fragment, script)
+
+        self.assertNotIn("workspace.innerHTML", script)
+        self.assertNotIn("replaceChildren", script)
+        self.assertNotIn("navigation-skeleton", script)
+
+        for name in ("browser.html", "wechat_contact_analysis.html"):
+            template = BROWSER_TEMPLATE_PATH.with_name(name).read_text(encoding="utf-8")
+            with self.subTest(template=name):
+                self.assertLess(
+                    template.index("filename='waiting-modal.js'"),
+                    template.index("filename='browser-sidebar-filters.js'"),
+                )
+                self.assertLess(
+                    template.index("filename='browser-sidebar-filters.js'"),
+                    template.index("filename='wechat-contact-navigation.js'"),
+                )
 
         from app.core.local_media_browser import normalize_browser_filters
 

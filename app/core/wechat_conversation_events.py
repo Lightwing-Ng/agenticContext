@@ -1,6 +1,6 @@
 """Retain source occurrences while projecting proven same-session text events.
 
-Code version: v1.6.3-codex.0
+Code version: v1.7.0-codex.0
 """
 
 from __future__ import annotations
@@ -72,6 +72,7 @@ _CACHE_CONTEXT_FIELDS = (
     "sender_label",
 )
 _LOCK = RLock()
+_READ_ONLY_PROJECTIONS = {}
 _ID = re.compile(r"[0-9a-f]{64}")
 _SESSION = re.compile(r"wechat:([0-9a-f]{64})")
 _TABLES = {
@@ -82,6 +83,10 @@ _TABLES = {
     "temp.placeholder_timeline_messages",
     "media_event_timeline_messages",
     "temp.media_event_timeline_messages",
+    "macos_recovery_timeline_messages",
+    "temp.macos_recovery_timeline_messages",
+    "macos_recovery_bank_timeline_messages",
+    "temp.macos_recovery_bank_timeline_messages",
 }
 
 
@@ -172,6 +177,30 @@ def _inputs(repository, history_identity=None):
             "mtime_ns": value.st_mtime_ns,
         }
     result[str(media_events.resolve())] = media_event_identity
+    recovery = history.with_name("macos_recovery.json")
+    if recovery.exists() or recovery.is_symlink():
+        try:
+            recovery_identity = _identity(recovery)
+        except ValueError:
+            value = recovery.lstat()
+            recovery_identity = {
+                "unavailable": True,
+                "size": value.st_size,
+                "mtime_ns": value.st_mtime_ns,
+            }
+        result[str(recovery.resolve())] = recovery_identity
+    bank = history.with_name("macos_recovery.sqlite3")
+    if bank.exists() or bank.is_symlink():
+        try:
+            bank_identity = _identity(bank)
+        except ValueError:
+            value = bank.lstat()
+            bank_identity = {
+                "unavailable": True,
+                "size": value.st_size,
+                "mtime_ns": value.st_mtime_ns,
+            }
+        result[str(bank.resolve())] = bank_identity
     review_root = history.parent.parent.parent
     review_digest = reviewed_quotes_digest(review_root)
     review_path = reviewed_quotes_path(review_root)
@@ -889,7 +918,8 @@ def _group(candidates, current):
 
 
 def conversation_events(
-    repository, connection, session, current, message_table, history_identity=None
+    repository, connection, session, current, message_table, history_identity=None,
+    *, persist=True,
 ):
     """Return a pinned same-session display membership without changing source rows."""
     count = current.get("message_count", 0) if isinstance(current, dict) else 0
@@ -910,6 +940,11 @@ def conversation_events(
         if target.parent.is_symlink() or target.is_symlink():
             raise ValueError("The conversation event cache cannot be a symbolic link.")
         with _LOCK:
+            transient_key = (session, fingerprint, count)
+            if not persist and transient_key in _READ_ONLY_PROJECTIONS:
+                cached = _READ_ONLY_PROJECTIONS[transient_key]
+                if _inputs(repository, history_identity) == inputs:
+                    return {**cached, "status": "ready"}
             cached = _read_cache(target, fingerprint, session)
             if cached is not None and _inputs(repository, history_identity) == inputs:
                 return {**cached, "status": "ready"}
@@ -942,6 +977,11 @@ def conversation_events(
             encoded = _encode_cache(result)
             if encoded is None:
                 return _empty("bounded", count)
+            if not persist:
+                if len(_READ_ONLY_PROJECTIONS) >= 2:
+                    _READ_ONLY_PROJECTIONS.pop(next(iter(_READ_ONLY_PROJECTIONS)))
+                _READ_ONLY_PROJECTIONS[transient_key] = result
+                return {**result, "status": "ready"}
             target.parent.mkdir(mode=0o700, exist_ok=True)
             descriptor, name = tempfile.mkstemp(
                 prefix=".events-", suffix=".json", dir=target.parent

@@ -1,8 +1,38 @@
 # Testing guide
 
-Documentation version: `v1.43.0-codex.0`
+Documentation version: `v1.44.0-codex.0`
 
 ## Supported commands
+
+WeChat conversation-action tests use synthetic archives, key registries, encrypted
+page/WAL fixtures and disposable browsers. They never discover production keys,
+automate WeChat or refresh the live archive. Mac suites cover account/peer binding,
+authenticated committed-WAL reads, exact replay, publication locks, input drift,
+partial coverage, worker capability probing, cancellation and shutdown. HTTP tests
+require loopback-only jobs, canonical session-only input and bounded public status.
+Browser checks preserve standard circle geometry, adjacent Share behavior, failure
+recovery and exact-URL reload with existing history state retained.
+
+Exchange suites retain source identity, recovery dependencies, replay and conflicts
+through validated export/preview/commit. They exercise file ownership checks and
+failed-publication preservation. Rendered checks require the import action before
+search only on a selected-account list, no Source or detail entry, native keyboard
+focus and no overflow at 1280px, 842px, 390px and 320px. Navigation tests delay the
+destination document to inspect the centered frosted waiting card, spinner,
+Close/Escape, content-mode changes, click guards and history cleanup while the
+original workspace nodes and scroll geometry remain intact.
+
+```bash
+TZ=UTC ./scripts/test.sh tests/test_wechat_mac_refresh.py \
+  tests/test_wechat_mac_refresh_source.py tests/test_wechat_mac_refresh_cipher.py \
+  tests/test_wechat_mac_refresh_worker.py tests/test_wechat_mac_publication_lock.py \
+  tests/test_wechat_refresh_routes.py tests/test_wechat_refresh_e2e.py
+TZ=UTC ./scripts/test.sh tests/test_wechat_exchange.py \
+  tests/test_wechat_exchange_import.py tests/test_wechat_exchange_presentation.py \
+  tests/test_wechat_exchange_routes.py tests/test_wechat_exchange_ui.py
+TZ=UTC ./scripts/test.sh tests/test_wechat_browser_e2e.py \
+  tests/test_web_app.py tests/test_style_tokens.py
+```
 
 CI runs eight deterministic file shards on each existing Linux and Windows platform.
 The partition balances end-to-end browser files and other files separately by source

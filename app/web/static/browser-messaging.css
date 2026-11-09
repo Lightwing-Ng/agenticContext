@@ -1,4 +1,4 @@
-/* Code version: v1.18.2-codex.0 */
+/* Code version: v1.18.3-codex.0 */
 /* Human-message variants consume the existing Local resources primitives. */
 .wechat-conversation-share {
     position: fixed;
@@ -37,6 +37,7 @@
 @media (max-width: 900px) {
     /* The workspace action yields to the existing sidebar overlay. */
     .browser-wechat-session .app-shell.is-sidebar-open .wechat-conversation-share,
+    .browser-wechat-session .app-shell.is-sidebar-open .wechat-conversation-refresh,
     .browser-wechat-session .app-shell.is-sidebar-open .wechat-conversation-back {
         visibility: hidden;
     }

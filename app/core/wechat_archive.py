@@ -1,6 +1,6 @@
 """Source-separated, text-only WeChat archive import and indexed local queries."""
 
-# Code version: v1.6.3-codex.0
+# Code version: v1.7.0-codex.0
 
 from __future__ import annotations
 
@@ -695,6 +695,22 @@ class WechatArchiveRepository:
         ).fetchone()
         if row is not None:
             return row[0]
+        from .wechat_macos_recovery import mac_recovery_conversation
+
+        try:
+            mac_conversation = mac_recovery_conversation(self.path, message_id)
+        except (OSError, ValueError, TypeError, KeyError, RecursionError) as exc:
+            raise WechatTimelineProjectionError("invalid") from exc
+        if mac_conversation is not None:
+            return mac_conversation
+        from .wechat_macos_recovery_bank import bank_message_conversation
+
+        try:
+            bank_conversation = bank_message_conversation(self.path, message_id)
+        except (OSError, sqlite3.Error, ValueError, TypeError, KeyError) as exc:
+            raise WechatTimelineProjectionError("invalid") from exc
+        if bank_conversation is not None:
+            return bank_conversation
         from .wechat_native_resource_revalidation import (
             locate_revalidated_resource,
             select_resource_index,
@@ -781,6 +797,8 @@ class WechatArchiveRepository:
         """Share source-bound metadata placeholders across browsing and export."""
         from .wechat_media_event_index import attach_media_event_index
         from .wechat_media_placeholders import attach_media_placeholders
+        from .wechat_macos_recovery import attach_mac_recovery
+        from .wechat_macos_recovery_bank import attach_mac_recovery_bank
 
         conversations, messages, status = self._resource_timeline_tables(
             connection, history_identity, conversation_id=conversation_id
@@ -806,6 +824,28 @@ class WechatArchiveRepository:
             if strict:
                 raise WechatTimelineProjectionError(event_status)
             status = event_status
+        conversations, messages, mac_status = attach_mac_recovery(
+            connection,
+            self.path,
+            conversations,
+            messages,
+            conversation_id=conversation_id,
+        )
+        if mac_status not in {"ready", "absent"}:
+            if strict:
+                raise WechatTimelineProjectionError(mac_status)
+            status = mac_status
+        conversations, messages, bank_status = attach_mac_recovery_bank(
+            connection,
+            self.path,
+            conversations,
+            messages,
+            conversation_id=conversation_id,
+        )
+        if bank_status not in {"ready", "absent"}:
+            if strict:
+                raise WechatTimelineProjectionError(bank_status)
+            status = bank_status
         if status_conversation_id is not None:
             status = (
                 native_status
@@ -821,6 +861,10 @@ class WechatArchiveRepository:
                     status = source_status
                 elif source_status == "ready" and status == "absent":
                     status = "ready"
+            if mac_status not in {"ready", "absent"}:
+                status = mac_status
+            if bank_status not in {"ready", "absent"}:
+                status = bank_status
         return conversations, messages, status
 
     def _resource_timeline_tables(self, connection, history_identity, *, conversation_id=None):
@@ -1043,6 +1087,74 @@ class WechatArchiveRepository:
             return None
 
     @staticmethod
+    def _quoted_resource_originals(connection, messages, conversation_id):
+        """Read exact server-ID candidates only from an attached, verified Mac scope.
+
+        The timeline view exists only after native catalog validation succeeds.
+        Candidate rows remain separate from the page and require full reference
+        proof in the presentation layer before any quote can use their metadata.
+        """
+        if len(messages) > 1000:
+            return []
+        servers = set()
+        for message in messages:
+            try:
+                proof = json.loads(message["provenance"])
+                reference = proof.get("quoted_reference", {})
+                server = reference.get("source_ids", {}).get("svrid")
+                if (
+                    proof.get("message_type") == 49
+                    and proof.get("text_extraction_kind") == "quoted_reply"
+                    and isinstance(server, str)
+                    and re.fullmatch(r"[1-9][0-9]{0,18}", server)
+                    and int(server) <= 9223372036854775807
+                ):
+                    servers.add(server)
+            except (ValueError, TypeError, AttributeError):
+                continue
+        if not servers:
+            return []
+        placeholders = ",".join("?" for _ in servers)
+        rows = []
+        if connection.execute(
+            "SELECT 1 FROM temp.sqlite_master WHERE type='table' AND name='macos_recovery_bank_validated'"
+        ).fetchone() is not None:
+            rows = [
+                dict(row)
+                for row in connection.execute(
+                    "SELECT m.* FROM macos_recovery_bank.messages m JOIN macos_recovery_bank.event_keys k "
+                    "ON k.message_id=m.id WHERE m.conversation_id=? "
+                    f"AND k.server_id IN ({placeholders}) ORDER BY m.id LIMIT 1001",
+                    [conversation_id, *sorted(servers)],
+                )
+            ]
+        if connection.execute(
+            "SELECT 1 FROM temp.sqlite_master WHERE type='table' AND name='macos_recovery_validated'"
+        ).fetchone() is not None:
+            rows.extend([
+                dict(row)
+                for row in connection.execute(
+                    "SELECT * FROM temp.macos_recovery_messages WHERE conversation_id=? "
+                    f"AND json_extract(provenance,'$.server_id') IN ({placeholders}) "
+                    "ORDER BY id LIMIT 1001",
+                    [conversation_id, *sorted(servers)],
+                )
+            ])
+        byte_count = sum(
+            len(value.encode())
+            for row in rows
+            for value in row.values()
+            if isinstance(value, str)
+        )
+        if len(rows) > 1000 or byte_count > 8 * 1024**2:
+            return []
+        if rows:
+            from .wechat_macos_recovery import mark_mac_recovery_rows
+
+            mark_mac_recovery_rows(connection, rows)
+        return rows
+
+    @staticmethod
     def _source_snapshots(connection, messages, partition_id):
         """Read local checkpoints, proving any native source routed into this container."""
         identifiers = set()
@@ -1146,12 +1258,14 @@ class WechatArchiveRepository:
         sort="newest",
         page=1,
         page_size=100,
+        persist_event_cache=True,
     ):
         kind = kind if kind in WECHAT_KINDS else "all"
         empty = {
             "accounts": [],
             "conversations": [],
             "messages": [],
+            "quote_resource_originals": [],
             "source_snapshots": {},
             "current": None,
             "count": 0,
@@ -1177,7 +1291,7 @@ class WechatArchiveRepository:
                 connection,
                 history_identity,
                 conversation_id=(session or None)
-                if self.path.with_name("resource_revalidated.sqlite3").exists()
+                if not persist_event_cache or self.path.with_name("resource_revalidated.sqlite3").exists()
                 else None,
                 status_conversation_id=session or None,
             )
@@ -1225,7 +1339,8 @@ class WechatArchiveRepository:
                 )
 
                 events = conversation_events(
-                    self, connection, session, current, message_table, history_identity
+                    self, connection, session, current, message_table, history_identity,
+                    persist=persist_event_cache,
                 )
                 source_message_table = message_table
                 message_table = canonical_message_table(
@@ -1266,12 +1381,19 @@ class WechatArchiveRepository:
                         [*message_params, page_size, (safe_page - 1) * page_size],
                     )
                 ]
+                from .wechat_macos_recovery import mark_mac_recovery_rows
+
+                mark_mac_recovery_rows(connection, messages)
+                quote_originals = self._quoted_resource_originals(
+                    connection, messages, session
+                )
                 return {
                     **empty,
                     "accounts": accounts,
                     "messages": messages,
+                    "quote_resource_originals": quote_originals,
                     "source_snapshots": self._source_snapshots(
-                        connection, messages, current["partition_id"]
+                        connection, [*messages, *quote_originals], current["partition_id"]
                     ),
                     "current": current,
                     "event_projection": events,
