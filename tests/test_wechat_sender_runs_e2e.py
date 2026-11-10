@@ -1,6 +1,6 @@
 """Consecutive native senders retain clocks and actions while reclaiming headers.
 
-Code version: v1.2.0-codex.0
+Code version: v1.2.1-codex.0
 """
 
 from __future__ import annotations
@@ -339,8 +339,9 @@ def test_sender_runs_keep_only_the_first_name_and_preserve_clocks_and_actions(
             raise
 
         resource = cards.nth(2).locator("[data-wechat-resource-reveal]")
+        cards.nth(2).hover()
         resource.click()
-        expect(resource.locator("[data-wechat-resource-feedback]")).to_have_text(
+        expect(cards.nth(2).locator("[data-wechat-resource-feedback]")).to_have_text(
             "Folder shown in Finder"
         )
         assert len(requests) == 1

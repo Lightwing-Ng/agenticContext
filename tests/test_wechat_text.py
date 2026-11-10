@@ -1,6 +1,6 @@
 """Known text envelopes retain source evidence without accessing media.
 
-Code version: v1.4.0-codex.0
+Code version: v1.4.1-codex.0
 """
 
 from __future__ import annotations
@@ -685,7 +685,7 @@ def test_system_profile_join_has_its_own_expanded_utf8_budget(monkeypatch):
         ('type="link_plain"', 'type="link_unknown"'),
         ("<plain>Member A, Member B</plain>", "<plain><a>Member A</a></plain>"),
         ("<nickname>Inviting member</nickname>", "<nickname/>"),
-        ("<username>wxid_inviter</username>", "<username/>"),
+        ("<username>wxid_inviter</username>", "<username> </username>"),
         (
             "</memberlist>",
             "<member><nickname>Another member</nickname></member></memberlist>",

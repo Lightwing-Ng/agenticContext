@@ -1,8 +1,71 @@
 # Testing guide
 
-Documentation version: `v1.44.0-codex.0`
+Documentation version: `v1.48.0-codex.0`
 
 ## Supported commands
+
+Secondary WeChat completion checks use independently bound synthetic native packets.
+They verify exact primary event matching, missing-sender recovery, inert resource quotes,
+viewer-scoped invitation roles, source pins, publication exclusion, stale/tampered input
+rejection, SQL paging/search/export consistency, and unchanged source database bytes.
+The quote browser cases also verify the primary contact remark and a recovered Image
+body when its exact original falls outside the filtered page. Native system profile
+labels may explicitly lack an identity; missing, conflicting, and whitespace-only
+identity fields remain rejected. Compatible decoder tests preserve dictionary gaps,
+framing, input/output hashes, and bounded private worker transport.
+
+```bash
+./scripts/test.sh tests/test_wechat_resource_sender_evidence.py \
+  tests/test_wechat_secondary_completions.py tests/test_wechat_secondary_system_notices.py \
+  tests/test_wechat_system_literal_profiles.py tests/test_wechat_wcdb_compat.py \
+  tests/test_wechat_macos_recovery_lock_byte.py tests/test_wechat_global_guard.py \
+  tests/test_wechat_quoted_resources.py tests/test_wechat_quoted_contacts.py \
+  tests/test_wechat_quote_original_timeline.py tests/test_wechat_secondary_quotes_e2e.py \
+  tests/test_wechat_completion_contact_cache.py
+```
+
+Retained-bank compatibility checks keep the published schema-4 table contract,
+three known monotone revision policies, exact source/row digests, historical
+occurrences, and retained catalog/native clocks. They reject unknown policies,
+forged clocks or source witnesses, changed known labels/leaves, orphan receipts,
+and resealed tampering. Account-binding version 2 retains its explicitly proved
+owner row; version 1 still requires its original owner-row contract. Declared
+publisher/application paths remain closed, and subtype-19 resources retain their
+ordinary status. Already retained Pat representations require their exact closed
+fields, neutral system roles, and matching source room; arbitrary authorless Type
+49 records remain invalid. These readers add no XML parser, parser-repair, or
+revision-writing workflow.
+
+```bash
+./scripts/test.sh tests/test_wechat_macos_bank_v4_reader.py \
+  tests/test_wechat_macos_retained_clock_reader.py tests/test_wechat_retained_source_contracts.py
+```
+
+Derived JSON transport checks preserve exact UTF-8 text and canonical proof hashes
+across bounded compression, legacy TEXT cells, mixed catalogs, extension, SQL paging,
+search, exports, and the actual filtered quote browser. They reject truncated,
+trailing, oversized, checksum-damaged, or hash-mismatched frames. Concurrent cache
+misses, eviction, clear, and mixed-width Unicode use actual resident byte accounting;
+publication caches remain bound to the verified generation and unchanged inputs.
+
+```bash
+./scripts/test.sh tests/test_wechat_completion_json_codec.py \
+  tests/test_wechat_completion_json_codec_review.py tests/test_wechat_secondary_completions.py \
+  tests/test_wechat_secondary_quotes_e2e.py
+```
+
+WeChat resource-card checks cover bounded subtype-5 source labels, original body
+hashes, bank publication and older-bank compatibility, escaped publisher-only link
+cards, unchanged non-link statuses, compact Image/Sticker widths, and badge-only
+conversation headers. Browser cases verify the painted link asset, standard 32px
+Finder circles with 18px glyphs, hover and keyboard focus, and actual touch activation
+within the 44px hit region. All fixtures use disposable archives and browsers.
+
+```bash
+./scripts/test.sh tests/test_wechat_link_projection.py tests/test_wechat_resources.py \
+  tests/test_wechat_resources_e2e.py tests/test_wechat_sender_runs_e2e.py \
+  tests/test_wechat_card_click_e2e.py
+```
 
 WeChat conversation-action tests use synthetic archives, key registries, encrypted
 page/WAL fixtures and disposable browsers. They never discover production keys,

@@ -1,6 +1,6 @@
 """Index native resource references without copying or decoding media payloads.
 
-Code version: v1.0.2-codex.0
+Code version: v1.1.0-codex.0
 """
 
 from __future__ import annotations
@@ -44,6 +44,7 @@ _LABELS = {
 }
 _DECLARATION = re.compile(r"<!\s*(?:DOCTYPE|ENTITY)\b", re.IGNORECASE)
 _MAX_XML = 256 * 1024
+_APP_LABEL_FIELDS = ("safe_title", "publisher_name", "app_name")
 _MAX_PEERS = 200_000
 _SCHEMA = """
 CREATE TABLE messages (
@@ -145,6 +146,18 @@ def _string(value, limit=1024):
         if isinstance(value, str) and len(value) <= limit and "\0" not in value
         else ""
     )
+
+
+def _app_label(value):
+    """Retain only bounded, nonempty plain labels from their direct XML leaf."""
+    if (
+        not isinstance(value, str)
+        or not value.strip()
+        or len(value) > 1024
+        or any(ord(char) < 32 and char not in "\t\r\n" for char in value)
+    ):
+        return ""
+    return value
 
 
 def _extension(value):
@@ -340,6 +353,22 @@ def _app_metadata(payload, group, received):
     result["kind"] = {"2": "image", "3": "audio", "4": "video", "6": "file"}.get(
         subtype, "app"
     )
+    types = app.findall("type")
+    if subtype == "5" and len(types) == 1 and len(types[0]) == 0:
+        result.update(app_subtype="5", availability="metadata_only")
+        labels = {}
+        for key, parent, path in (
+            ("safe_title", app, "title"),
+            ("publisher_name", app, "sourcedisplayname"),
+            ("app_name", document, "appinfo/appname"),
+        ):
+            nodes = parent.findall(path)
+            if len(nodes) == 1 and len(nodes[0]) == 0:
+                value = _app_label(nodes[0].text)
+                if value:
+                    labels[key] = value
+        if labels:
+            result.update(labels, app_metadata_version="1")
     if subtype == "6":
         result["filename"] = _string(app.findtext("title", ""))
         result["file_extension"] = _extension(app.findtext("appattach/fileext", ""))
@@ -590,6 +619,12 @@ def build_resource_index(local_store_root, preservation_snapshot, *, account_ids
                                             "file_extension",
                                             "checksum_md5",
                                             "byte_size",
+                                            "app_subtype",
+                                            "availability",
+                                            "safe_title",
+                                            "publisher_name",
+                                            "app_name",
+                                            "app_metadata_version",
                                         }
                                     }
                                 )

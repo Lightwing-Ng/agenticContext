@@ -1,5 +1,17 @@
-{# Code version: v1.24.1-codex.0 #}
+{# Code version: v1.25.0-codex.0 #}
 {% from "_wechat_conversation_kind.html" import conversation_kind_label, conversation_kind_badge %}
+{% macro resource_card(resource, message_id='', embedded=false) %}
+{% set resource_can_reveal = resource.can_reveal and not embedded and message_id %}
+{% set resource_feedback_id = 'wechat_resource_feedback_' ~ message_id %}
+{% set resource_is_link = resource.is_link|default(false) %}
+{% set resource_publisher = resource.publisher_name|default('') %}
+{% set resource_show_status = not resource_is_link %}
+<div class="wechat-resource" data-wechat-resource-kind="{{ resource.kind }}" data-wechat-resource-status="{{ resource.status }}"{% if resource_is_link %} data-wechat-resource-link="true"{% endif %}>
+    <span class="wechat-resource-icon" aria-hidden="true"></span>
+    <span class="wechat-resource-copy"><span class="wechat-resource-label">{{ resource.label }}</span>{% if resource_publisher or resource_show_status %}<span class="wechat-resource-status"{% if resource_can_reveal %} id="{{ resource_feedback_id }}"{% endif %} data-wechat-resource-feedback aria-live="polite">{% if resource_publisher %}<span class="wechat-resource-publisher">{{ resource_publisher }}</span>{% if resource_show_status %} · {% endif %}{% endif %}{% if resource_show_status %}{{ resource.status_label }}{% endif %}</span>{% endif %}</span>
+    {% if resource_can_reveal %}<button type="button" class="circular-icon-button wechat-resource-reveal" data-wechat-resource-reveal="{{ url_for('local_resources.reveal_wechat_resource', message_id=message_id) }}" title="{{ resource.action_label }}" aria-label="{{ resource.label }}: {{ resource.action_label }}" aria-describedby="{{ resource_feedback_id }}"><span class="icon browser-media-reveal-icon" aria-hidden="true"></span></button>{% endif %}
+</div>
+{% endmacro %}
 {% macro payment_card(payment, text) %}
 <div class="wechat-resource wechat-payment" data-wechat-payment-kind="{{ payment.kind }}" data-wechat-payment-currency="{{ payment.currency }}" role="group" aria-label="{{ (payment.currency ~ ' ') if payment.currency else '' }}{{ payment.label }}" title="{{ payment.currency_label }}">
     <span class="wechat-resource-icon wechat-payment-icon" aria-hidden="true"></span>
@@ -51,6 +63,8 @@
         <p class="wechat-quoted-speaker">{{ context.quoted_reply.viewer_display_name or context.quoted_reply.speaker }}</p>
         {% if context.quoted_reply.payment %}
         {{ payment_card(context.quoted_reply.payment, context.quoted_reply.text) }}
+        {% elif context.quoted_reply.resource %}
+        {{ resource_card(context.quoted_reply.resource, embedded=true) }}
         {% else %}
         <p class="wechat-quoted-text" lang="zh-CN">{{ context.quoted_reply.display_text if context.quoted_reply.display_text is defined else context.quoted_reply.text }}</p>
         {% endif %}
@@ -112,14 +126,7 @@
     {% elif context.payment %}
     {{ payment_card(context.payment, display_text) }}
     {% elif context.resource %}
-    {% set resource = context.resource %}
-    {% set resource_can_reveal = resource.can_reveal and not embedded %}
-    {% set resource_tag = 'button' if resource_can_reveal else 'div' %}
-    <{{ resource_tag }} class="wechat-resource" data-wechat-resource-kind="{{ resource.kind }}" data-wechat-resource-status="{{ resource.status }}" {% if resource_can_reveal %}type="button" data-wechat-resource-reveal="{{ url_for('local_resources.reveal_wechat_resource', message_id=message.stable_id) }}" title="{{ resource.action_label }}" aria-label="{{ resource.label }}: {{ resource.action_label }}"{% endif %}>
-        <span class="wechat-resource-icon" aria-hidden="true"></span>
-        <span class="wechat-resource-copy"><span class="wechat-resource-label">{{ resource.label }}</span><span class="wechat-resource-status" data-wechat-resource-feedback aria-live="polite">{{ resource.status_label }}</span></span>
-        {% if resource_can_reveal %}<span class="browser-media-reveal-icon" aria-hidden="true"></span>{% endif %}
-    </{{ resource_tag }}>
+    {{ resource_card(context.resource, message.stable_id, embedded) }}
     {% else %}
     <div class="wechat-message-text" lang="zh-CN">{{ display_text }}</div>
     {% endif %}
@@ -139,9 +146,6 @@
     <header class="wechat-conversation-context" data-wechat-conversation-kind="{{ origin.kind }}">
         <div class="wechat-conversation-labels">
             {{ conversation_kind_badge(origin) }}
-            <span class="wechat-account-label">{{ origin.viewer_account_label or origin.account_label }}</span>
-            <span class="wechat-source-label">{{ origin.identity_status }} · {{ origin.source_label }}</span>
-            {% if origin.mac_account_mapping and origin.mac_account_mapping.status == 'mapped' %}<span class="wechat-source-label">Mac account linked</span>{% endif %}
         </div>
         {% if text_page.messaging and text_page.messaging.resource_index_accounts is defined and text_page.messaging.resource_index_accounts is not none and origin.account_id and origin.account_id not in text_page.messaging.resource_index_accounts %}
         <p class="wechat-source-note" role="status">Media and file references are unavailable in this source archive.</p>

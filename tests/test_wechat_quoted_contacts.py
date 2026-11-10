@@ -1,6 +1,6 @@
 """Quoted speakers reuse proven native identities without changing source labels.
 
-Code version: v1.0.1-codex.0
+Code version: v1.1.1-codex.0
 """
 
 from copy import deepcopy
@@ -18,7 +18,11 @@ from app.core.wechat_contacts import (
 )
 from app.core.wechat_display_names import WechatDisplayNames, display_names_path
 from app.core.wechat_history_browser import _native_quoted_reply_presentation
-from app.core.wechat_quoted_contacts import project_native_quoted_contacts
+from app.core.wechat_quoted_contacts import (
+    _exact_original_quoted_author,
+    _quoted_author,
+    project_native_quoted_contacts,
+)
 from tests.test_wechat_contacts import bind, insert_contact, observe
 from tests.test_wechat_reconcile import merge, record, source
 
@@ -127,13 +131,14 @@ def quote_store(tmp_path):
     )
 
 
-def _project(fixture, items):
+def _project(fixture, items, *, originals=()):
     project_native_quoted_contacts(
         items,
         WechatContactRepository(fixture.store),
         WechatDisplayNames(fixture.store),
         fixture.account_rows,
         fixture.snapshots,
+        originals=originals,
     )
 
 
@@ -315,6 +320,155 @@ def test_native_forwarded_child_quote_reuses_verified_receiving_envelope(quote_s
     assert child.messaging["quoted_reply"]["viewer_display_name"] == VIEWER
 
 
+def test_nested_room_quote_cannot_borrow_reply_author_or_parent_original_proof(quote_store):
+    parent = _item(sender=ROOM, chat=OTHER)
+    parent.messaging["sender_id"] = OTHER
+    parent.messaging["source_observations"] = [{
+        "id": parent.stable_id,
+        "source_id": SOURCE,
+        "source_snapshot_id": SNAPSHOT,
+        "sender_id": OTHER,
+        "event_kind": "quoted_reply",
+        "quoted_original_id": "c" * 64,
+        "quoted_server_id": "8591339163006592468",
+        "quoted_sender_id": TARGET,
+        "quoted_contact_id": quote_store.identifiers[TARGET],
+    }]
+    child = _item(sender=ROOM, chat=OTHER, number="b")
+    child.messaging["sender_id"] = OTHER
+    evidence = child.messaging["provenance"]
+    child.messaging["provenance"] = {
+        "embedded_forwarded_component": {
+            "kind": "forwarded_quote",
+            "source_chat_id": ROOM,
+            "text_components": evidence["text_components"],
+            "quoted_reference": evidence["quoted_reference"],
+        }
+    }
+    child.messaging["source_observations"] = deepcopy(parent.messaging["source_observations"])
+    parent.messaging["forwarded_record"] = {
+        "authority": "native_forwarded_envelope", "items": [child]
+    }
+    before = deepcopy(child)
+    _project(quote_store, [parent])
+    assert parent.messaging["quoted_reply"]["viewer_display_name"] == VIEWER
+    assert child == before
+
+
+@pytest.mark.parametrize("room", [ROOM, "123456@im.chatroom"])
+@pytest.mark.parametrize("chat_role", ["original", "reply"])
+def test_exact_original_author_accepts_only_proven_room_roles_and_legacy_names(room, chat_role):
+    original, reply = "legacy_native_original", "wxid_reply_author"
+    reference = {
+        "source_sender_id": room,
+        "source_chat_id": original if chat_role == "original" else reply,
+    }
+    assert _exact_original_quoted_author(reference, room, original, reply) == original
+    assert _quoted_author({"source_sender_id": original}, room) == ""
+
+
+@pytest.mark.parametrize(
+    "sender,chat,original,reply",
+    [
+        (ROOM, "wxid_third_person", TARGET, OTHER),
+        ("999999@chatroom", TARGET, TARGET, OTHER),
+        (OTHER, ROOM, TARGET, OTHER),
+        (TARGET, OTHER, TARGET, OTHER),
+        (ROOM, TARGET, ROOM, OTHER),
+        (ROOM, "789", "789", OTHER),
+        (ROOM, "wxid_unknwn_123", "wxid_unknwn_123", OTHER),
+        (ROOM, OTHER, TARGET, ROOM),
+        (ROOM, "", TARGET, OTHER),
+    ],
+)
+def test_exact_original_author_does_not_promote_conflicting_or_unresolved_roles(
+    sender, chat, original, reply
+):
+    assert _exact_original_quoted_author(
+        {"source_sender_id": sender, "source_chat_id": chat}, ROOM, original, reply
+    ) == ""
+
+
+def _resource_quote_original(fixture):
+    reply = _item(sender=ROOM, chat=OTHER)
+    reply.messaging["sender_id"] = OTHER
+    locator = {
+        "database": "message_4.sqlite",
+        "database_relative_path": f"Documents/{SOURCE[4:]}/DB/message_4.sqlite",
+        "database_sha256": "a" * 64,
+        "table": "Chat_" + hashlib.md5(ROOM.encode(), usedforsecurity=False).hexdigest(),
+        "local_id": 117, "row_id": 117,
+    }
+    proof = reply.messaging["provenance"]
+    proof.update(
+        server_id="8591339163006592469", unix_timestamp=1700000020, locator=locator,
+        text_components=[{"kind": "reply_text", "text": "Current reply"}],
+    )
+    reference = proof["quoted_reference"]
+    reference.update(original_message_type=49, source_timestamp="1700000000")
+    reply.content_text = "Current reply"
+    reply.messaging.update(_native_quoted_reply_presentation(proof))
+    original = deepcopy(reply)
+    original.stable_id = "c" * 64
+    original.content_text = "[App message]"
+    original.messaging["sender_id"] = TARGET
+    original.messaging.pop("quoted_reply", None)
+    original.messaging["provenance"] = {
+        "message_type": 49, "text_extraction_kind": "resource_placeholder",
+        "source_snapshot": 1, "server_id": reference["source_ids"]["svrid"],
+        "unix_timestamp": 1700000000,
+        "locator": {**locator, "local_id": 115, "row_id": 115},
+        "resource_reference": {
+            "kind": "app", "account_id": OWNER, "peer_id": ROOM,
+            "availability": "metadata_only", "unix_timestamp": 1700000000,
+            "safe_title": "Original source title",
+        },
+    }
+    fixture.snapshots[1]["metadata"]["input_databases"] = [
+        {"path": locator["database_relative_path"], "sha256": "a" * 64}
+    ]
+    return reply, original
+
+
+def test_exact_resource_original_resolves_speaker_without_borrowing_reply_identity(quote_store):
+    reply, original = _resource_quote_original(quote_store)
+    before, original_before = deepcopy(reply), deepcopy(original)
+    registry = quote_store.path.read_bytes()
+    _project(quote_store, [reply], originals=[original])
+    quote = reply.messaging["quoted_reply"]
+    assert quote["viewer_display_name"] == VIEWER
+    assert quote["contact"]["id"] == quote_store.identifiers[TARGET]
+    assert quote["contact"]["id"] != quote_store.identifiers[OTHER]
+    for key in ("reference", "text_components", "speaker", "text"):
+        assert quote[key] == before.messaging["quoted_reply"][key]
+    assert reply.messaging["provenance"] == before.messaging["provenance"]
+    assert reply.content_text == before.content_text and original == original_before
+    assert quote_store.path.read_bytes() == registry
+
+
+@pytest.mark.parametrize("defect", ["absent", "snapshot", "database", "duplicate", "unregistered"])
+def test_resource_speaker_requires_the_exact_original_and_verified_contact(quote_store, defect):
+    reply, original = _resource_quote_original(quote_store)
+    originals = [original]
+    if defect == "absent":
+        originals = []
+        reply.messaging["quoted_reply"]["resource_original"] = {
+            "message_id": original.stable_id, "sender_id": TARGET
+        }
+    elif defect == "snapshot":
+        original.messaging["provenance"]["source_snapshot"] = 999
+    elif defect == "database":
+        original.messaging["provenance"]["locator"]["database_sha256"] = "b" * 64
+    elif defect == "duplicate":
+        originals.append(deepcopy(original))
+    else:
+        with sqlite3.connect(quote_store.path) as connection:
+            connection.execute("DELETE FROM sender_bindings WHERE contact_id=?", (quote_store.identifiers[TARGET],))
+    before = deepcopy(reply)
+    _project(quote_store, [reply], originals=originals)
+    assert reply == before
+
+
 def test_html_forwarded_tree_cannot_borrow_native_parent_identity(quote_store):
     parent = _item(sender=TARGET, chat=ROOM)
     child = _item(sender=TARGET, chat=ROOM, number="b")
@@ -408,3 +562,19 @@ def test_malformed_native_locator_does_not_crash_projection(quote_store):
     original = deepcopy(item.messaging)
     _project(quote_store, [item])
     assert item.messaging == original
+
+
+def test_exact_legacy_resource_quote_reuses_the_receiving_owners_contact_remark(quote_store):
+    reply, original = _resource_quote_original(quote_store)
+    original.messaging["provenance"]["resource_reference"].pop("availability")
+    display_names_path(quote_store.store).write_text(json.dumps({"schema_version": 1, "contacts": {}}))
+    with sqlite3.connect(quote_store.path) as connection:
+        observe(connection, quote_store.identifiers[TARGET], "remark", "Owner-scoped preferred remark", source=SOURCE, snapshot=SNAPSHOT, owner=OWNER, room=ROOM)
+    before = deepcopy(reply)
+    _project(quote_store, [reply], originals=[original])
+    quote = reply.messaging["quoted_reply"]
+    assert quote["viewer_display_name"] == "Owner-scoped preferred remark"
+    assert quote["contact"]["id"] == quote_store.identifiers[TARGET]
+    assert quote["contact"]["display_name"] == "Canonical target"
+    assert quote["speaker"] == before.messaging["quoted_reply"]["speaker"]
+    assert reply.messaging["provenance"] == before.messaging["provenance"]

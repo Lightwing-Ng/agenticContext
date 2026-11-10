@@ -1,6 +1,6 @@
 """Adapt indexed human conversations to the shared Local resources page model."""
 
-# Code version: v1.32.0-codex.0
+# Code version: v1.33.0-codex.0
 
 from __future__ import annotations
 
@@ -32,6 +32,7 @@ from .wechat_quoted_contacts import (
     _quoted_author,
     project_native_quoted_contacts,
 )
+from .wechat_quoted_resources import project_native_quoted_resources
 from .wechat_quote_padding import project_native_quote_padding
 from .wechat_record_presentation import compact_record_fields
 from .wechat_reconcile import native_text_metadata
@@ -1204,9 +1205,6 @@ def query_wechat_history(
     _resolve_native_forwarded_contacts(
         items, contact_repository, display_names, account_rows, source_snapshots
     )
-    project_native_quoted_contacts(
-        items, contact_repository, display_names, account_rows, source_snapshots
-    )
     _resolve_macos_recovery_quoted_contacts(items, contact_repository, display_names)
     project_native_quote_padding(items, display_names, account_rows, source_snapshots)
     resource_originals = []
@@ -1240,6 +1238,14 @@ def query_wechat_history(
                 },
             )
         )
+    project_native_quoted_contacts(
+        items, contact_repository, display_names, account_rows, source_snapshots,
+        originals=resource_originals,
+    )
+    project_native_quoted_resources(
+        items, display_names, account_rows, source_snapshots,
+        originals=resource_originals,
+    )
     _present_macos_recovery_quotes(items, originals=resource_originals)
     preview_references = WechatForwardedPreviews(local_store_root).project(
         result["messages"]

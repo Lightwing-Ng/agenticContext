@@ -1,6 +1,6 @@
 # Visual Style Reference
 
-Documentation version: `v1.32.0-codex.0`
+Documentation version: `v1.33.0-codex.0`
 
 ## Authority
 
@@ -786,12 +786,20 @@ WeChat media and file occurrences remain compact message bubbles with the normal
 speaker, source disclosure, timestamp rail, and external shadow. A resource body
 reuses the bundled `photo.stack.svg`, `film.circle.svg`,
 `document.on.document.fill.svg`, and `play.fill.svg` symbols instead of loading
-media previews. Its native button has a 44px minimum target and an inline status:
+media previews. The body stays passive; a separate standard 32px Circular icon
+button with the existing 18px Finder glyph reveals on hover or keyboard focus.
+Coarse pointers keep the control visible with a transparent 44px hit region.
+The inline status remains:
 `Show in Finder`, `Local file candidate`, `Mac folder`, or `Not found on this Mac`.
 Missing resources remain visible without an action. Folder actions explicitly
 describe their scope rather than claiming an exact file match. Native Finder
 feedback and failures stay inside the resource; neither removes the placeholder.
-Verified native account mappings add the compact `Mac account linked` context.
+Image and Sticker bubbles use the same 240px minimum, intrinsic-width measurement,
+and magnetic clock containment as ordinary messages. Their detached timestamps do
+not reserve invisible horizontal space inside the resource body; the timestamp
+baseline and shared outer rail remain intact.
+The selected-conversation header contains only its standard conversation-kind badge;
+account and source evidence remain available in each message's Source details.
 Stale resource indices show an explicit refresh notice while retaining the stored
 resource catalog. All geometry and color changes stay in the WeChat adapter.
 On a selected session, that notice applies only to verified source families serving the
@@ -799,6 +807,13 @@ conversation. Ready HTML placeholders do not inherit an unrelated native catalog
 stale HTML proofs and applicable native failures remain visible. Global source views retain
 their catalog-wide status. Source scopes, counts, export dependencies, and placeholder bodies
 are unchanged by this notice selection.
+
+Native subtype-5 article links reuse `link.svg`, retain their explicit title and
+publisher or source-app name as escaped text, and omit the visible `Metadata only`
+status. The underlying metadata-only availability remains unchanged. Other app
+subtypes and media/file statuses keep their existing presentation. Quoted and
+forwarded cards reuse the same resource macro without acquiring local Finder actions.
+No article URL, remote preview, or media payload is opened by this presentation.
 
 Audited top-level HTML media nodes can also supply metadata-only timeline events.
 These use the unchanged standard message bubble and plain `[Image]`, `[Video]`,
