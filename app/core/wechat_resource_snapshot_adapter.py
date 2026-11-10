@@ -1,6 +1,6 @@
 """Resolve existing snapshots through exact retained resource-source receipts.
 
-Code version: v1.0.1-codex.1
+Code version: v1.0.1-codex.2
 This pure adapter never discovers files or creates source declarations. Its caller
 must pin the primary archive and the already validated resource catalog.
 """
@@ -14,7 +14,7 @@ import json
 from pathlib import PurePosixPath
 import re
 
-CODE_VERSION = "v1.0.1-codex.1"
+CODE_VERSION = "v1.0.1-codex.2"
 PROOF_VERSION = "v1.0.0-codex.0"
 VERSION = PROOF_VERSION
 _HEX = re.compile(r"[0-9a-f]{64}")
@@ -94,7 +94,7 @@ def validate_catalog_source_receipt(snapshot, receipt):
     if not isinstance(owner, str) or not owner:
         raise ValueError("A resource source needs an explicit native owner.")
     # Native WeChat account directories require this MD5 identifier.
-    # codeql[py/weak-sensitive-data-hashing] Not a security or credential digest.
+    # This is not a security or credential digest.
     hashed = hashlib.md5(owner.encode(), usedforsecurity=False).hexdigest()
     relative = _relative(receipt["database_relative_path"], hashed)
     digest = receipt["database_sha256"]

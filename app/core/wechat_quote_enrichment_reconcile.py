@@ -1,6 +1,6 @@
 """Restore only exact reviewed prior quote projections in a fresh streaming output.
 
-Code version: v1.0.0-codex.0
+Code version: v1.0.1-codex.0
 Every decision is replayed; an independent upstream-active check still decides
 retention. Current source candidates and historical quarantine ledgers stay intact.
 """
@@ -16,7 +16,7 @@ from .owner_only_files import ensure_owner_only
 from .wechat_completion_stream_copy import encode_stream_values
 from .wechat_quote_enrichment_replay import replay_quote_enrichment
 
-CODE_VERSION = "v1.0.0-codex.0"
+CODE_VERSION = "v1.0.1-codex.0"
 
 
 def prepare_reviewed_audit(
@@ -117,8 +117,13 @@ def reconcile_reviewed_quotes(
     record_pruned,
     codec_stats,
     progress,
+    active_selection=None,
 ):
     from . import wechat_secondary_completions as common
+    from .wechat_completion_selection import BoundedActiveSelection
+
+    if active_selection is None:
+        active_selection = BoundedActiveSelection(history, upstream)
 
     manifest_path = Path(manifest_path)
     descriptor = os.open(manifest_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
@@ -157,16 +162,7 @@ def reconcile_reviewed_quotes(
                     seen_ids.add(decision["ledger_id"])
                     seen_rows.add(decision["message_id"])
                     original = projection["original"]
-                    active = history.execute(
-                        "SELECT "
-                        + common._active_predicate(upstream)
-                        + " FROM (SELECT ? AS id,? AS conversation_id,'replace' AS operation,? AS original_row,NULL AS plan) e",
-                        (
-                            original["id"],
-                            original["conversation_id"],
-                            common._json(original),
-                        ),
-                    ).fetchone()[0]
+                    active = active_selection.original_is_active(original)
                     row = {
                         "id": original["id"],
                         "conversation_id": original["conversation_id"],

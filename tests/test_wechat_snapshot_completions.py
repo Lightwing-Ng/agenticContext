@@ -1,9 +1,10 @@
 """Persisted overviews retain newly merged secondary completion semantics.
 
-Code version: v1.0.0-codex.0
+Code version: v1.0.1-codex.0
 """
 
 from collections import OrderedDict
+from contextlib import closing
 from pathlib import Path
 import sqlite3
 
@@ -62,7 +63,7 @@ def _publish(fixture, *, encoded=False):
             candidate_sha256=report["candidate_sha256"],
         )
         fixture = {**fixture, "candidate": Path(report["candidate"])}
-        with sqlite3.connect(fixture["candidate"]) as connection:
+        with closing(sqlite3.connect(fixture["candidate"])) as connection:
             assert connection.execute(
                 "SELECT typeof(provenance) FROM messages WHERE id=?",
                 (fixture["quote"]["id"],),

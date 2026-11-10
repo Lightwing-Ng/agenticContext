@@ -1,6 +1,6 @@
 # Architecture guide
 
-Documentation version: `v1.77.1-codex.0`
+Documentation version: `v1.77.2-codex.0`
 
 ## Runtime flow
 
@@ -1152,6 +1152,13 @@ matches; a newer upstream recovery row wins. Existing invitation server IDs prev
 duplicate additions. Source history, resource catalogs, and native account boundaries
 remain unchanged. Reader and contact-index fingerprints include this derived catalog.
 
+`wechat_completion_selection.py` shares bounded candidate selection across runtime
+attachment, compaction, and reviewed quote reconciliation. Batches of up to 256 IDs
+use indexed upstream filters before applying the same 14-column `IS` comparison.
+Notice membership retains only matching ID or conversation/server-ID keys, preserving
+SQLite type and NULL semantics. Global and scoped readers use this same path without
+building full-body covering indexes over the entire upstream timeline.
+
 Staging streams sealed packets and retains each verified packet in an explicitly
 incomplete candidate until final input checks succeed. Publication verifies every
 projection again under the global repair and recovery-bank leases, then uses an atomic
@@ -1160,6 +1167,9 @@ upstream precedence predicate for both clone-and-vacuum and streaming output. Th
 streaming path writes only active projections into a new private catalog and encodes
 JSON while copying, limiting temporary storage. Both paths retain pruning evidence
 and validate source and output proofs before marking a candidate complete.
+An unchanged full-source proof can be reused only in the validating process, keyed
+by the complete source identity and primary pins. A new process replays the source
+proof; saved observations are not a persistent validation attestation.
 
 Reviewed quote reconciliation can restore a prior projection only when an exact
 SHA-bound decision manifest links the current candidate to that source generation.

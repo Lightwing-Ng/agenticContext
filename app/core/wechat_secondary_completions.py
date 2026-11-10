@@ -1,6 +1,6 @@
 """Stage and read evidence-checked message completions in one derived SQL catalog.
 
-Code version: v1.0.7-codex.2
+Code version: v1.0.8-codex.0
 
 Original history, resource catalogs, account boundaries, and recovery-bank pins
 remain unchanged. Strategies produce either exact resource-row replacements or
@@ -48,7 +48,7 @@ from .wechat_resource_sender_evidence import (
 from .wechat_text import native_components_text
 
 
-CODE_VERSION = "v1.0.7-codex.2"
+CODE_VERSION = "v1.0.8-codex.0"
 PROOF_VERSION = "v1.0.0-codex.0"
 VERSION = PROOF_VERSION
 FILENAME = "secondary_message_completions.sqlite3"
@@ -1724,14 +1724,35 @@ def compact_secondary_message_completions(
                     quote_enrichment_source_sha256,
                 )
             notify("validating_source_entries")
-            _validate_entries(
-                derived,
-                history,
-                catalog,
-                progress=lambda count: notify(
-                    "validating_source_entries", validated_entries=count
-                ),
-            )
+            if (
+                _identity(source) != source_identity
+                or _pins(history_path) != pins
+                or _compaction_inputs(history_path) != inputs
+                or _identity(target, optional=True) != expected_target
+            ):
+                raise ValueError("A compaction source changed before proof validation.")
+            with _LOCK:
+                source_validation_reused = (
+                    _validation_cache_key(source, source_identity, pins) in _CACHE
+                )
+            if not source_validation_reused:
+                _validate_entries(
+                    derived,
+                    history,
+                    catalog,
+                    progress=lambda count: notify(
+                        "validating_source_entries", validated_entries=count
+                    ),
+                )
+            if (
+                _identity(source) != source_identity
+                or _pins(history_path) != pins
+                or _compaction_inputs(history_path) != inputs
+                or _identity(target, optional=True) != expected_target
+            ):
+                raise ValueError("A compaction source changed after proof validation.")
+            if not source_validation_reused:
+                _remember_validation(source, source_identity, pins)
             notify("validating_upstream_timeline")
             repository = WechatArchiveRepository(local_store_root)
             _conversations, upstream, status = repository._timeline_tables(
@@ -1803,35 +1824,24 @@ def compact_secondary_message_completions(
                 if stream_compaction
                 else "selecting_inactive_entries"
             )
-            selection = (
-                "SELECT e.id,e.conversation_id,e.operation,e.strategy,e.original_sha256,e.projected_sha256,"
-                "e.source_key,e.witness_key"
-            )
-            if stream_compaction:
-                selection += (
-                    ",CASE WHEN "
-                    + _active_predicate(upstream)
-                    + " THEN 1 ELSE 0 END AS is_active"
-                )
-            selection += " FROM completion_source.entries e"
-            if not stream_compaction:
-                selection += " WHERE NOT " + _active_predicate(upstream)
-            selection += " ORDER BY e.id"
+            from .wechat_completion_selection import BoundedActiveSelection
+
+            active_selection = BoundedActiveSelection(history, upstream)
             retained_selected = 0
-            for entry in history.execute(selection):
-                entry = dict(entry)
-                if stream_compaction and entry.pop("is_active"):
-                    retained_selected += 1
-                    if output is not None:
-                        output.execute(
-                            "INSERT INTO retained_ids VALUES(?)", (entry["id"],)
-                        )
-                    if retained_selected % 1000 == 0:
-                        notify(
-                            "selecting_active_entries",
-                            retained_entries=retained_selected,
-                            pruned_entries=sum(reasons.values()),
-                        )
+            for entry in active_selection.entries("completion_source.entries"):
+                if entry.pop("is_active"):
+                    if stream_compaction:
+                        retained_selected += 1
+                        if output is not None:
+                            output.execute(
+                                "INSERT INTO retained_ids VALUES(?)", (entry["id"],)
+                            )
+                        if retained_selected % 1000 == 0:
+                            notify(
+                                "selecting_active_entries",
+                                retained_entries=retained_selected,
+                                pruned_entries=sum(reasons.values()),
+                            )
                     continue
                 reason = (
                     "upstream_precedence"
@@ -1942,6 +1952,7 @@ def compact_secondary_message_completions(
                         audit=enrichment_audit,
                         manifest_path=restoration_manifest,
                         upstream=upstream,
+                        active_selection=active_selection,
                         record_pruned=record,
                         codec_stats=codec_stats,
                         progress=lambda **counts: notify(
@@ -2159,6 +2170,7 @@ def compact_secondary_message_completions(
             "source_candidate": str(source),
             "source_candidate_sha256": candidate_sha256,
             "source_candidate_bytes": source_identity["size"],
+            "source_validation_cache_reused": source_validation_reused,
             "input_identities": pins,
             "upstream_input_identities": inputs,
             "expected_existing_catalog": expected_target,
@@ -2237,10 +2249,14 @@ def completion_message_conversation(history_path, message_id):
     return row[0] if row is not None else None
 
 
-def _active_predicate(message_table):
+def _active_predicate(message_table, *, membership_table=None):
     """Share the exact upstream precedence predicate with private compaction."""
     if not _SQL.fullmatch(message_table):
         raise ValueError("Unsafe completion timeline table name.")
+    if membership_table is not None and _SQL.fullmatch(membership_table) is None:
+        raise ValueError("Unsafe completion membership table name.")
+    membership = membership_table or message_table
+    server = "b.server_id" if membership_table else "json_extract(b.provenance,'$.server_id')"
     equality = " AND ".join(
         'b."'
         + column
@@ -2257,9 +2273,9 @@ def _active_predicate(message_table):
         + " b WHERE b.id=e.id AND "
         + equality
         + ")) OR (e.operation='append' AND NOT EXISTS(SELECT 1 FROM "
-        + message_table
+        + membership
         + " b WHERE b.conversation_id=e.conversation_id AND "
-        "(b.id=e.id OR json_extract(b.provenance,'$.server_id')=json_extract(_wechat_completion_json_v1(e.plan),'$.event.server_id')))))"
+        "(b.id=e.id OR " + server + "=json_extract(_wechat_completion_json_v1(e.plan),'$.event.server_id')))))"
     )
 
 
@@ -2313,17 +2329,20 @@ def attach_secondary_message_completions(
                 "ATTACH DATABASE ? AS secondary_completions",
                 (target.absolute().as_uri() + "?mode=ro&immutable=1",),
             )
-        scope = " AND e.conversation_id=?" if conversation_id else ""
-        parameters = (conversation_id,) if conversation_id else ()
         connection.execute("DROP TABLE IF EXISTS temp.secondary_completion_active")
         connection.execute(
             "CREATE TEMP TABLE secondary_completion_active(id TEXT PRIMARY KEY)"
         )
-        connection.execute(
-            "INSERT INTO secondary_completion_active SELECT e.id FROM secondary_completions.entries e "
-            "WHERE " + _active_predicate(message_table) + scope,
-            parameters,
-        )
+        from .wechat_completion_selection import BoundedActiveSelection
+
+        with BoundedActiveSelection(connection, message_table) as active_selection:
+            for entry in active_selection.entries(
+                "secondary_completions.entries", conversation_id=conversation_id or None
+            ):
+                if entry["is_active"]:
+                    connection.execute(
+                        "INSERT INTO secondary_completion_active VALUES(?)", (entry["id"],)
+                    )
         connection.execute("DROP VIEW IF EXISTS temp." + MESSAGE_TABLE)
         columns = ",".join('b."' + column + '"' for column in COLUMNS)
         projected = ",".join(

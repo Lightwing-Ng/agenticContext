@@ -1,6 +1,6 @@
 # Testing guide
 
-Documentation version: `v1.50.1-codex.0`
+Documentation version: `v1.51.0-codex.0`
 
 ## Supported commands
 
@@ -67,6 +67,19 @@ unavailable. Handle regressions verify that staging closes every owned SQLite
 connection after its transaction, including partial failures, and that a failed
 stream reservation closes its original descriptor before removing private files.
 These module-local Windows boundary models supplement the native Windows CI run.
+
+Completion activity selection batches at most 256 replacement or append IDs and
+merges their decisions in the original ID order. Tests compare the unchanged
+14-column `IS` predicate against bounded queries across compound upstream views,
+duplicate IDs, computed columns, mixed TEXT/BLOB/NULL storage, and typed JSON
+server IDs. Replacement probes and notice conversation filters must reach every
+physical arm's existing index without global body/provenance covering indexes.
+Notice workspaces retain only candidate-matching scalar keys. Global and scoped
+readers, private compaction, and reconstructed prior quotes use this same helper.
+Full-source proof cache reuse is process-local, requires the exact global source
+identity/input key after metadata gates, and rechecks every input before and after
+reuse. A scoped cache entry cannot stand in for full validation; clearing the
+process cache requires a fresh complete replay.
 
 Retained-bank compatibility checks keep the published schema-4 table contract,
 four known monotone revision policies, exact source/row digests, historical

@@ -1,17 +1,20 @@
 """Derived completion catalogs preserve originals and serve one consistent timeline.
 
-Code version: v1.0.7-codex.1
+Code version: v1.0.7-codex.2
 """
 
+from contextlib import closing
 from copy import deepcopy
 import hashlib
 import json
 from pathlib import Path
 import sqlite3
+import sys
 
 import pytest
 
 from app.core import wechat_secondary_completions as completions
+from app.core.owner_only_files import owner_only_problem
 from app.core.wechat_archive import (
     WechatArchiveRepository,
     _file_identity,
@@ -754,7 +757,7 @@ def test_private_compaction_prunes_only_upstream_precedence_and_keeps_cross_owne
         manifest = [json.loads(line) for line in stream]
     assert len(manifest) == 2
     assert manifest[1]["id"] == fixture["image"]["id"]
-    with completions._readonly(fixture["catalog"]) as catalog:
+    with closing(completions._readonly(fixture["catalog"])) as catalog:
         original_row = dict(
             catalog.execute(
                 "SELECT * FROM messages WHERE id=?", (fixture["image"]["id"],)
@@ -762,8 +765,8 @@ def test_private_compaction_prunes_only_upstream_precedence_and_keeps_cross_owne
         )
     assert manifest[1]["original_sha256"] == completions._sha(original_row)
     with (
-        completions._readonly(compacted) as output,
-        completions._readonly(fixture["candidate"]) as source,
+        closing(completions._readonly(compacted)) as output,
+        closing(completions._readonly(fixture["candidate"])) as source,
     ):
         assert output.execute("SELECT COUNT(*) FROM entries").fetchone()[0] == 1
         assert output.execute("SELECT COUNT(*) FROM witnesses").fetchone()[0] == 1
@@ -1444,7 +1447,7 @@ def test_legacy_snapshot_receipt_recovers_new_rows_and_revalidates_at_publicatio
     report = _stage(fixture)
     assert report["counts"] == {"native_sender": 1, "native_quote": 1}
     assert report["snapshot_adapter"]["rejected"] == {}
-    with completions._readonly(fixture["candidate"]) as candidate:
+    with closing(completions._readonly(fixture["candidate"])) as candidate:
         for row in candidate.execute("SELECT provenance FROM messages"):
             receipt = json.loads(row[0])["secondary_resource_completion"][
                 "snapshot_receipt_adapter"
@@ -1956,7 +1959,9 @@ def test_stream_compaction_matches_exact_clone_selection_and_canonical_cells(
     assert fixture["candidate"].read_bytes() == source_bytes
     assert "vacuuming_candidate" not in [value["phase"] for value in phases]
     assert not list(tmp_path.glob(".completion-stream-*"))
-    assert Path(streamed["candidate"]).stat().st_mode & 0o777 == 0o600
+    assert not owner_only_problem(Path(streamed["candidate"]))
+    if sys.platform != "win32":
+        assert Path(streamed["candidate"]).stat().st_mode & 0o777 == 0o600
 
 
 def test_stream_compaction_keeps_quarantined_audit_only_native_witnesses(

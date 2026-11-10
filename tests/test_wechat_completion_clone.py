@@ -1,12 +1,14 @@
 """Portable derived copies preserve bytes, private boundaries, and source leases.
 
-Code version: v1.1.1-codex.0
+Code version: v1.1.2-codex.0
 """
 
+from contextlib import closing
 import hashlib
 import io
 from pathlib import Path
 import sqlite3
+import sys
 from types import SimpleNamespace
 
 import pytest
@@ -21,7 +23,7 @@ from app.core.owner_only_files import owner_only_problem
 def catalog(tmp_path, monkeypatch):
     monkeypatch.setattr(clone, "IS_MACOS", False)
     source = tmp_path / "completed.sqlite3"
-    with sqlite3.connect(source) as connection:
+    with closing(sqlite3.connect(source)) as connection, connection:
         connection.executescript(completions._SCHEMA)
         connection.executemany(
             "INSERT INTO archive_info VALUES(?,?)",
@@ -86,7 +88,7 @@ def test_macos_keeps_mandatory_archive_clone_without_byte_fallback(
 )
 def test_non_macos_copy_rejects_other_archives_and_incomplete_catalogs(catalog, defect):
     source, destination = catalog
-    with sqlite3.connect(source) as connection:
+    with closing(sqlite3.connect(source)) as connection, connection:
         if defect == "missing_witnesses":
             connection.execute("DROP TABLE witnesses")
         elif defect == "raw_archive":
@@ -117,14 +119,17 @@ def test_reviewed_hash_mismatch_leaves_no_destination_or_partial_copy(catalog):
 @pytest.mark.parametrize("replacement", [False, True])
 def test_source_change_during_streaming_fails_closed(catalog, monkeypatch, replacement):
     source, destination = catalog
-    digest = hashlib.sha256(source.read_bytes()).hexdigest()
+    before = source.read_bytes()
+    digest = hashlib.sha256(before).hexdigest()
     copy_bytes = clone._copy_bytes
+    replacements = []
 
     def changed(original, output, size):
         result = copy_bytes(original, output, size)
         if replacement:
             other = source.with_name("other.sqlite3")
             other.write_bytes(source.read_bytes())
+            replacements.append(other)
             other.replace(source)
         else:
             with source.open("ab") as stream:
@@ -132,8 +137,20 @@ def test_source_change_during_streaming_fails_closed(catalog, monkeypatch, repla
         return result
 
     monkeypatch.setattr(clone, "_copy_bytes", changed)
-    with pytest.raises(ValueError, match="changed during copying"):
-        _copy(source, destination, expected_sha256=digest)
+    if replacement and sys.platform == "win32":
+        # Windows rejects replacement while the source lease remains open.
+        with pytest.raises(PermissionError) as denied:
+            _copy(source, destination, expected_sha256=digest)
+        assert denied.value.winerror in {5, 32}
+        assert replacements == [source.with_name("other.sqlite3")]
+        assert replacements[0].read_bytes() == source.read_bytes() == before
+    else:
+        with pytest.raises(ValueError, match="changed during copying"):
+            _copy(source, destination, expected_sha256=digest)
+        if replacement:
+            assert replacements == [source.with_name("other.sqlite3")]
+            assert not replacements[0].exists()
+            assert source.read_bytes() == before
     assert not destination.exists()
     assert list(source.parent.glob(".completion-copy-*")) == []
 
@@ -304,6 +321,7 @@ def _windows_metadata(monkeypatch, source, *, changed_field=None):
     real_os = clone.os
     source_inode = (source.stat().st_dev, source.stat().st_ino)
     births = {}
+    changes = {}
     mutation = {"offset": 0}
 
     def fields(state):
@@ -329,8 +347,11 @@ def _windows_metadata(monkeypatch, source, *, changed_field=None):
 
     def change_time(path, *, descriptor=None):
         state = real_os.fstat(descriptor) if descriptor is not None else real_path(path).lstat()
-        offset = mutation["offset"] if (state.st_dev, state.st_ino) == source_inode else 0
-        return state.st_ctime_ns + offset
+        key = state.st_dev, state.st_ino
+        # Native ChangeTime has one meaning independent of either Python ctime.
+        token = changes.setdefault(key, 100_000 + len(changes))
+        offset = mutation["offset"] if key == source_inode else 0
+        return token + offset
 
     monkeypatch.setattr(clone, "IS_WINDOWS", True)
     monkeypatch.setattr(clone, "Path", WindowsStatPath)
