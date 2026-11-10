@@ -1,12 +1,12 @@
 """Retain source occurrences while projecting proven same-session text events.
 
-Code version: v1.7.0-codex.0
+Code version: v1.7.1-codex.0
 """
 
 from __future__ import annotations
 
 import base64
-from collections import defaultdict
+from collections import OrderedDict, defaultdict
 from datetime import datetime
 from decimal import Decimal, InvalidOperation
 import hashlib
@@ -73,6 +73,9 @@ _CACHE_CONTEXT_FIELDS = (
 )
 _LOCK = RLock()
 _READ_ONLY_PROJECTIONS = {}
+_SUMMARY_LOCK = RLock()
+_SUMMARY_CACHE = OrderedDict()
+_SUMMARY_CACHE_LIMIT = 1_024
 _ID = re.compile(r"[0-9a-f]{64}")
 _SESSION = re.compile(r"wechat:([0-9a-f]{64})")
 _TABLES = {
@@ -1017,6 +1020,33 @@ def cached_conversation_events(repository, session, history_identity=None):
     return None
 
 
+def _cached_summary(path, fingerprint, identity):
+    """Retain only validated counts, with one decode for concurrent readers."""
+    key = (
+        str(path.absolute()),
+        fingerprint,
+        tuple(sorted(identity.items())),
+        MAX_CACHE_BYTES,
+        MAX_COMPRESSED_CACHE_BYTES,
+        MAX_DECODED_CACHE_BYTES,
+    )
+    with _SUMMARY_LOCK:
+        if _identity(path) != identity:
+            return None
+        if key in _SUMMARY_CACHE:
+            summary = _SUMMARY_CACHE.pop(key)
+            _SUMMARY_CACHE[key] = summary
+            return summary
+        value = _read_cache(path, fingerprint, expected_identity=identity)
+        summary = (value["session"], value["count_delta"]) if value is not None else None
+        if _identity(path) != identity:
+            return None
+        _SUMMARY_CACHE[key] = summary
+        while len(_SUMMARY_CACHE) > _SUMMARY_CACHE_LIMIT:
+            _SUMMARY_CACHE.popitem(last=False)
+        return summary
+
+
 def cache_only_summaries(repository, history_identity=None):
     """Read already-published counts only; never scan another conversation."""
     try:
@@ -1039,9 +1069,12 @@ def cache_only_summaries(repository, history_identity=None):
             ):
                 continue
             scanned_bytes += size + 1
-            value = _read_cache(path, fingerprint, expected_identity=identity)
-            if value is not None:
-                result[value["session"]] = value["count_delta"]
+            try:
+                summary = _cached_summary(path, fingerprint, identity)
+            except (OSError, ValueError):
+                continue
+            if summary is not None:
+                result[summary[0]] = summary[1]
         return result if _inputs(repository, history_identity) == inputs else {}
     except (OSError, ValueError, TypeError):
         return {}
