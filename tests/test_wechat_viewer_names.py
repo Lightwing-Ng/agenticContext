@@ -1,6 +1,6 @@
 """Viewer names project across native identities without rewriting source evidence.
 
-Code version: v1.5.2-codex.0
+Code version: v1.5.3-codex.0
 """
 
 from __future__ import annotations
@@ -1216,12 +1216,14 @@ def test_browser_corroborated_only_account_select_keeps_completion_sources(
                 ),
                 wait_until="networkidle",
             )
-            expect(
-                page.locator(".wechat-conversation-context .wechat-account-label")
-            ).to_have_text(HTML_ONLY_ACCOUNT)
-            expect(
-                page.locator(".wechat-conversation-context .wechat-source-label").first
-            ).to_contain_text("Corroborated export ID")
+            expect(page.locator(".wechat-conversation-labels")).to_have_text(
+                "Private chat"
+            )
+            expect(page.locator(".wechat-conversation-labels > *")).to_have_count(1)
+            source_account = page.locator(".wechat-provenance dt").filter(
+                has_text=re.compile(r"^Source account$")
+            )
+            assert source_account.count() > 0
             assert (
                 page.get_by_text(
                     "A native-only preference must stay unused", exact=False
@@ -1316,9 +1318,8 @@ def test_browser_viewer_names_keep_native_filters_and_compact_source_details(
         page.get_by_role("link", name="Same title", exact=True).click()
         page.evaluate("document.fonts.ready")
         assert parse_qs(urlsplit(page.url).query)["account"] == [f"account:{OWNER_A}"]
-        expect(
-            page.locator(".wechat-conversation-context .wechat-account-label")
-        ).to_have_text(ALIAS + " · ount_a")
+        expect(page.locator(".wechat-conversation-labels")).to_have_text("Private chat")
+        expect(page.locator(".wechat-conversation-labels > *")).to_have_count(1)
         target = page.locator(".wechat-message--sent")
         expect(target).to_have_count(1)
         expect(target.locator(".wechat-speaker")).to_have_text(ALIAS)
@@ -1389,12 +1390,14 @@ def test_browser_viewer_names_keep_native_filters_and_compact_source_details(
             ),
             wait_until="networkidle",
         )
-        expect(
-            page.locator(".wechat-conversation-context .wechat-account-label")
-        ).to_have_text(ALIAS + " · ount_a")
-        expect(
-            page.locator(".wechat-conversation-context .wechat-source-label").first
-        ).to_contain_text("Corroborated export ID")
+        expect(page.locator(".wechat-conversation-labels")).to_have_text("Private chat")
+        expect(page.locator(".wechat-conversation-labels > *")).to_have_count(1)
+        assert (
+            page.locator(".wechat-provenance dt")
+            .filter(has_text=re.compile(r"^Source account$"))
+            .count()
+            > 0
+        )
         expect(
             page.locator(f'#browser_wechat_account option[value="account:{OWNER_A}"]')
         ).to_have_count(1)

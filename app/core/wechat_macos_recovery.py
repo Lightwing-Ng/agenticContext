@@ -1,6 +1,6 @@
 """Project authenticated Mac message receipts without changing original archives.
 
-Code version: v1.1.1-codex.0
+Code version: v1.1.2-codex.0
 """
 
 from __future__ import annotations
@@ -55,6 +55,8 @@ _SOURCE_FIELDS = {
     "page_count",
     "authenticated_page_count",
 }
+_LOCK_BYTE_SOURCE_FIELDS = {"lock_byte_page_count", "authenticated_content_pages"}
+_LOCK_BYTE_PAGE_NUMBER = 0x40000000 // 4096 + 1
 _MESSAGE_FIELDS = {
     "local_id",
     "local_type",
@@ -219,8 +221,12 @@ def _validate_quote(native):
 
 def _validate_source(source):
     """Validate a closed authenticated source receipt independently of scope mode."""
-    if not isinstance(source, dict) or set(source) != _SOURCE_FIELDS:
+    if not isinstance(source, dict) or set(source) not in (
+        _SOURCE_FIELDS,
+        _SOURCE_FIELDS | _LOCK_BYTE_SOURCE_FIELDS,
+    ):
         raise ValueError("Mac recovery requires a complete source proof.")
+    lock_byte_page = "lock_byte_page_count" in source
     if re.fullmatch(r"macos-[A-Za-z0-9_-]{1,120}", source.get("source_id", "")) is None:
         raise ValueError("A recovered Mac source cannot impersonate an iOS source.")
     _string(source["snapshot_id"])
@@ -235,13 +241,21 @@ def _validate_source(source):
         or re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]{0,127}", source.get("table", ""))
         is None
         or source["integrity_check"] != "ok"
-        or source["authenticated_pages"] is not True
+        or source["authenticated_pages"] is not (not lock_byte_page)
         or type(source["page_count"]) is not int
         or source["page_count"] < 1
         or type(source["authenticated_page_count"]) is not int
-        or source["authenticated_page_count"] != source["page_count"]
+        or source["authenticated_page_count"]
+        != source["page_count"] - int(lock_byte_page)
+        or lock_byte_page
+        and (
+            type(source["lock_byte_page_count"]) is not int
+            or source["lock_byte_page_count"] != 1
+            or source["authenticated_content_pages"] is not True
+            or source["page_count"] < _LOCK_BYTE_PAGE_NUMBER
+        )
     ):
-        raise ValueError("Mac recovery requires complete authenticated source pages.")
+        raise ValueError("Mac recovery requires complete authenticated content pages.")
 
 
 def _validate_anchors(anchors, *, minimum=2):

@@ -1,6 +1,6 @@
 # Architecture guide
 
-Documentation version: `v1.75.3-codex.0`
+Documentation version: `v1.76.0-codex.0`
 
 ## Runtime flow
 
@@ -1125,6 +1125,52 @@ buckets. The sidecar pins the text archive's file identity and partition fingerp
 archive requires an explicit rebuild, with a visible stale-index notice rather than a silent
 claim that resources are absent.
 
+`wechat_secondary_completions.py` owns a derived
+`secondary_message_completions.sqlite3` catalog. Format adapters feed existing native
+message contracts into reusable sender, quoted-resource, and invitation evidence
+strategies. Resource replacements require an exact original event and independently
+bound native account to agree on peer, server ID, type, and compatible clock facts.
+Missing authors may be completed; known conflicting authors remain unresolved.
+Same-owner system additions reuse the existing native bank projection and its real
+source clock. Cross-account invitations require exact primary text anchors and retain
+the source viewer, typed participant roles, original template, and both device clocks.
+Display names do not establish identity.
+
+The completion catalog joins the final accepted SQL timeline before paging, search,
+counts, exports, and quoted-original lookup. Shared message and resource macros render
+its normalized results. Replacements apply only while the complete original row still
+matches; a newer upstream recovery row wins. Existing invitation server IDs prevent
+duplicate additions. Source history, resource catalogs, and native account boundaries
+remain unchanged. Reader and contact-index fingerprints include this derived catalog.
+
+Staging streams sealed packets and retains each verified packet in an explicitly
+incomplete candidate until final input checks succeed. Publication verifies every
+projection again under the global repair and recovery-bank leases, then uses an atomic
+replacement with compare-and-swap checks. Review-only compaction can clone a complete
+candidate, remove projections already superseded by a verified upstream timeline,
+retain a row/hash pruning manifest, and vacuum the new candidate. It never edits the
+published timeline or the preserved source packets. Proof schema versions remain
+stable across implementation-only changes.
+
+Review compaction can encode derived JSON cells through
+`wechat_completion_json_codec.py`. Its closed, length-bound and SHA-256-bound zlib
+frame restores the exact original text before proof validation or SQL JSON access.
+Existing plain TEXT and NULL cells retain their behavior; compressed, decoded, and
+cache allocations stay bounded. This storage adapter does not reserialize evidence
+or change its canonical proof hash.
+
+`wechat_macos_bank_v4_reader.py` preserves read compatibility with retained schema-4
+banks. It verifies the closed schema, journal-inclusive payload digest, native event
+identity, linked revision chain, and the supported monotonic quote, forwarded, and
+app-label completion reasons. Earlier schema-3 banks retain their existing path.
+This adapter does not introduce a reparse writer or accept unknown revision reasons.
+
+`wechat_wcdb_compat.py` delegates only a missing local compression backend to the existing
+compatible-interpreter resolver and a fixed local worker. Bounded stdin/stdout transport,
+time limits, native and decoded hashes, and a bounded cache preserve the decoder's
+existing framing and dictionary requirements. Plain cells stay in process; unavailable
+dictionaries and malformed frames remain explicit gaps.
+
 An explicit `stage_resource_catalog_refresh()` can instead reprove an existing resident
 catalog against the current archive without reopening native databases or media. It streams
 exact preserved database receipts and local event signatures, including corroborating source
@@ -1435,6 +1481,7 @@ Doctor. The service never replays a local Action or continues automatically.
 | `local_store/llm/zhihu/history.parquet` | Formal Zhihu answer text, rich-text source, and source links indexed by Local resources | Ignored |
 | `local_store/messaging/wechat/history.sqlite3` | Source-separated, text-only human-message index; no media payloads | Ignored |
 | `local_store/messaging/wechat/resource_references.sqlite3` | Additive media/file reference metadata, source locators, and pinned archive identity; no payload copies | Ignored |
+| `local_store/messaging/wechat/secondary_message_completions.sqlite3` | Reproducible, source-pinned sender, quote, and invitation completions with replayable evidence; no media payloads | Ignored |
 | `local_store/messaging/wechat/contacts.sqlite3` | Native contact identities, scoped name observations, and pinned speaker corroboration | Ignored |
 | `logs/` | Local structured JSON-line logs | Ignored except `.gitkeep` |
 | Platform-native agenticContext settings path (`~/Library/Application Support/agenticContext/...` on macOS; `%APPDATA%\agenticContext\...` on Windows) | Device-local configuration | Outside the repository |

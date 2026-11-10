@@ -1,6 +1,6 @@
 """Extract known WeChat textual envelopes without opening attachments or rendering HTML.
 
-Code version: v1.6.1-codex.0
+Code version: v1.6.3-codex.0
 """
 
 from __future__ import annotations
@@ -17,6 +17,9 @@ MAX_XML_BYTES = 2 * 1024 * 1024
 MAX_XML_DEPTH = 32
 MAX_XML_NODES = 20_000
 MAX_FORWARD_DEPTH = 8
+PARSER_VERSION = "v1.6.3-codex.0"
+_PAT_IDENTIFIER = re.compile(r"[A-Za-z0-9_.@-]{1,256}")
+_PAT_USER = re.compile(r"[A-Za-z][A-Za-z0-9_.-]{1,127}")
 _XML_DECLARATION = re.compile(r"<!\s*(?:DOCTYPE|ENTITY)\b", re.IGNORECASE)
 _CODE = re.compile(r"[0-9]{1,10}")
 _SYSTEM_ROOM_PREFIX = re.compile(r"(?P<room>[0-9]{1,32}@chatroom):[ \t]*(?:\r\n|\n|\r)")
@@ -562,12 +565,15 @@ def _system_profile_text(link: ElementTree.Element) -> str | None:
             member.attrib
             or len(member) != 2
             or not _system_container(member, {"username", "nickname"})
-            or not _usable(username or "")
+            or username is None
+            or (username and not _usable(username))
             or not _usable(nickname or "")
-            or username in usernames
+            or (username and username in usernames)
         ):
             return None
-        usernames.add(username)
+        # Some native links retain a literal display label without an identity.
+        if username:
+            usernames.add(username)
         names.append(nickname)
     # An observed separator is literal source copy, not a locale-dependent join.
     try:
@@ -859,3 +865,66 @@ def extract_wechat_text(message_type: int, raw: str) -> dict[str, Any] | None:
                 payment_card_fields=payment["payment_card_fields"],
             )
     return None
+
+
+def is_native_pat_projection(
+    native: Any, local_type: int, *, peer_id: str | None = None
+) -> bool:
+    """Recognize only the closed pat projection, preserving neutral system roles.
+
+    This validates representation and optional room agreement. It does not assert
+    participant identity from a label or replace authenticated source validation.
+    """
+    fields = {
+        "text",
+        "text_extraction_kind",
+        "original_message_type",
+        "appmsg_subtype",
+        "flags",
+        "system_message_subtype",
+        "system_source_ids",
+    }
+    if (
+        type(local_type) is not int
+        or local_type & 0xFFFFFFFF != 49
+        or local_type >> 32 not in {0, 62}
+        or not isinstance(native, dict)
+        or set(native) != fields
+        or native.get("text_extraction_kind") != "system_text"
+        or type(native.get("original_message_type")) is not int
+        or native["original_message_type"] != 49
+        or type(native.get("appmsg_subtype")) is not int
+        or native["appmsg_subtype"] != 62
+        or native.get("flags") != ["system_notice"]
+        or native.get("system_message_subtype") != "pat"
+        or not isinstance(native.get("text"), str)
+        or not _usable(native["text"])
+        or "\x00" in native["text"]
+    ):
+        return False
+    identifiers = native.get("system_source_ids")
+    source_keys = {
+        "patinfo/fromusername",
+        "patinfo/chatusername",
+        "patinfo/pattedusername",
+    }
+    if (
+        not isinstance(identifiers, dict)
+        or set(identifiers) != source_keys
+        or any(not isinstance(value, str) for value in identifiers.values())
+        or any(
+            _PAT_USER.fullmatch(identifiers[field]) is None
+            for field in ("patinfo/fromusername", "patinfo/pattedusername")
+        )
+        or _PAT_IDENTIFIER.fullmatch(identifiers["patinfo/chatusername"]) is None
+        or peer_id is not None
+        and (
+            not isinstance(peer_id, str)
+            or identifiers["patinfo/chatusername"] != peer_id
+        )
+    ):
+        return False
+    try:
+        return len(native["text"].encode("utf-8")) <= MAX_XML_BYTES
+    except UnicodeEncodeError:
+        return False
