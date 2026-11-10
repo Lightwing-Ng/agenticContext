@@ -1,6 +1,6 @@
 """Read a published global metadata timeline without opening media payloads.
 
-Code version: v1.0.0-codex.0
+Code version: v1.1.0-codex.0
 """
 
 from __future__ import annotations
@@ -427,6 +427,17 @@ def attach_media_event_index(
         ]
         if not selected:
             return *default, "absent"
+        # Flatten summary views once before per-conversation lookups. Their
+        # message timelines remain lazy and retain their original source scope.
+        connection.execute(
+            "CREATE TEMP TABLE media_event_input_conversations AS "
+            f"SELECT * FROM {conversation_table}"
+        )
+        connection.execute(
+            "CREATE UNIQUE INDEX media_event_input_conversation_id "
+            "ON media_event_input_conversations(id)"
+        )
+        conversation_table = "temp.media_event_input_conversations"
         connection.execute(
             "CREATE TEMP TABLE media_event_selected_conversations(id TEXT PRIMARY KEY) WITHOUT ROWID"
         )
@@ -453,6 +464,10 @@ def attach_media_event_index(
             )
         connection.execute(
             f"CREATE TEMP TABLE media_event_conversation_summaries AS SELECT * FROM {conversation_table} WHERE 0"
+        )
+        connection.execute(
+            "CREATE UNIQUE INDEX media_event_summary_id "
+            "ON media_event_conversation_summaries(id)"
         )
         for media in selected:
             original = _row(
