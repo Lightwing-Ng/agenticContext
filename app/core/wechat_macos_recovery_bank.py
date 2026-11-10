@@ -1,15 +1,18 @@
 """Stage indexed, source-bound Mac recovery without rewriting the original archive.
 
-Code version: v1.5.0-codex.0
+Code version: v1.6.0-codex.0
 """
 
 from __future__ import annotations
 
 from collections import Counter
+from concurrent.futures import Future, ProcessPoolExecutor
+from concurrent.futures.process import BrokenProcessPool
 from contextlib import closing, contextmanager
 from datetime import datetime
 import hashlib
 import json
+from multiprocessing import get_context
 import os
 from pathlib import Path
 import re
@@ -19,6 +22,7 @@ from threading import RLock
 
 from . import wechat_macos_recovery as legacy
 from . import wechat_macos_bank_v4_reader as schema4_reader
+from .compute_resources import resolve_cpu_process_workers
 from .platform_lock import lock_file, unlock_file
 from .wechat_archive import _identifier, _time_fields, wechat_archive_path
 from .wechat_reconcile import _TEXT_METADATA_FIELDS, native_text_metadata
@@ -26,7 +30,7 @@ from .wechat_resource_index import _APP_LABEL_FIELDS as _LINK_LABEL_FIELDS, _KIN
 from .wechat_text import is_native_pat_projection, native_components_text
 
 
-CODE_VERSION = "v1.5.0-codex.0"
+CODE_VERSION = "v1.6.0-codex.0"
 VERSION = "v1.4.0-codex.0"
 MAX_PACKET_BYTES = 128 * 1024**2
 MAX_PACKET_MESSAGES = 100_000
@@ -34,8 +38,12 @@ MAX_SCOPE_MESSAGES = 5_000_000
 _LOCK = RLock()
 _PUBLICATION_LOCK_NAME = ".macos_recovery.publication.lock"
 _VALIDATED = {}
+_VALIDATING = {}
+_MIN_PARALLEL_SHADOW_ROWS = 1_024
+_MAX_VALIDATION_WORKERS = 3
 _SCHEMA_CONTRACT = {}
 _SHADOW_VALIDATED = {}
+_SHADOW_VALIDATING = {}
 _CATALOG_HASHES = {}
 _ACCOUNT_BINDINGS = {}
 _ACCOUNT_BINDING_SHAPES = {}
@@ -1682,18 +1690,157 @@ def _attach(connection, history):
     key = (str(path.resolve()), _json(identity), _json(inputs))
     with _LOCK:
         metadata = _VALIDATED.get(key)
+        pending = _VALIDATING.get(key) if metadata is None else None
+        owner = metadata is None and pending is None
+        if owner:
+            pending = Future()
+            _VALIDATING[key] = pending
     if metadata is None:
-        with closing(
-            sqlite3.connect(path.resolve().as_uri() + "?mode=ro&immutable=1", uri=True)
-        ) as verifier:
-            metadata = _validate_bank(verifier, history, inputs)
-        with _LOCK:
-            if len(_VALIDATED) >= 4:
-                _VALIDATED.pop(next(iter(_VALIDATED)))
-            _VALIDATED[key] = metadata
+        if not owner:
+            metadata = pending.result()
+        else:
+            try:
+                with closing(
+                    sqlite3.connect(path.resolve().as_uri() + "?mode=ro&immutable=1", uri=True)
+                ) as verifier:
+                    metadata = _validate_bank(verifier, history, inputs)
+                if _identity(path) != identity or _inputs(Path(history)) != inputs:
+                    raise ValueError("The Mac recovery bank changed during validation.")
+                with _LOCK:
+                    if len(_VALIDATED) >= 4:
+                        _VALIDATED.pop(next(iter(_VALIDATED)))
+                    _VALIDATED[key] = metadata
+                    _VALIDATING.pop(key, None)
+                pending.set_result(metadata)
+            except BaseException as error:
+                with _LOCK:
+                    _VALIDATING.pop(key, None)
+                pending.set_exception(error)
+                raise
     if _identity(path) != identity or _inputs(Path(history)) != inputs:
         raise ValueError("The Mac recovery bank changed during validation.")
     return metadata
+
+
+def _validate_shadow_rows(connection, alias, name, *, rowid_range=None):
+    """Validate exact original rows without publishing any reusable scope state."""
+    if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", alias) is None:
+        raise ValueError("Unsupported original resource catalog alias.")
+    row_filter = " AND s.rowid BETWEEN ? AND ?" if rowid_range is not None else ""
+    count = 0
+    for row in connection.execute(
+        "SELECT s.original_text_sha256,s.original_provenance_sha256,s.original_row_sha256,m.* "
+        "FROM macos_recovery_bank.shadow_replacements s CROSS JOIN "
+        + alias
+        + ".messages m "
+        "WHERE s.original_id=m.id AND s.source_file_name=? "
+        "AND s.conversation_id IN (SELECT id FROM temp.macos_recovery_bank_scopes)"
+        + row_filter,
+        (name, *rowid_range) if rowid_range is not None else (name,),
+    ):
+        count += 1
+        original = {
+            key: row[key] for key in row.keys() if not key.startswith("original_")
+        }
+        if (
+            hashlib.sha256(original["text"].encode()).hexdigest()
+            != row["original_text_sha256"]
+            or hashlib.sha256(original["provenance"].encode()).hexdigest()
+            != row["original_provenance_sha256"]
+            or _sha(original) != row["original_row_sha256"]
+        ):
+            raise ValueError(
+                "An original resource stub differs from its exact shadow receipt."
+            )
+    return count
+
+
+def _validate_shadow_job(history, name, scopes, rowid_range, bank_identity, catalog_identity, inputs):
+    """Check one disjoint range with fresh immutable handles and no cache publication."""
+    history = Path(history)
+    path = history.with_name("macos_recovery.sqlite3")
+    if name not in {"resource_references.sqlite3", "resource_revalidated.sqlite3"}:
+        raise ValueError("Unsupported original resource catalog.")
+    catalog = history.with_name(name)
+
+    def check_inputs():
+        if (
+            _identity(path) != bank_identity
+            or _identity(catalog) != catalog_identity
+            or _inputs(history) != inputs
+        ):
+            raise ValueError("A Mac shadow input changed during worker validation.")
+
+    check_inputs()
+    with closing(
+        sqlite3.connect(history.resolve().as_uri() + "?mode=ro&immutable=1", uri=True)
+    ) as connection:
+        connection.row_factory = sqlite3.Row
+        for alias, database in (("macos_recovery_bank", path), ("shadow_catalog", catalog)):
+            connection.execute(
+                f"ATTACH DATABASE ? AS {alias}",
+                (database.resolve().as_uri() + "?mode=ro&immutable=1",),
+            )
+        connection.execute(
+            "CREATE TEMP TABLE macos_recovery_bank_scopes(id TEXT PRIMARY KEY) WITHOUT ROWID"
+        )
+        connection.executemany(
+            "INSERT INTO temp.macos_recovery_bank_scopes VALUES(?)",
+            ((identifier,) for identifier in scopes),
+        )
+        count = _validate_shadow_rows(connection, "shadow_catalog", name, rowid_range=rowid_range)
+    check_inputs()
+    return count
+
+
+def _parallel_shadow_count(connection, history, name, expected_count, catalog_identity, inputs):
+    """Partition a large published scope by the closed schema's ordinary row IDs."""
+    if expected_count < _MIN_PARALLEL_SHADOW_ROWS:
+        return None
+    workers = min(_MAX_VALIDATION_WORKERS, resolve_cpu_process_workers(workload_size=expected_count))
+    if workers <= 1:
+        return None
+    history = Path(history)
+    path = history.with_name("macos_recovery.sqlite3")
+    databases = {row[1]: row[2] for row in connection.execute("PRAGMA database_list")}
+    if (
+        not databases.get("main")
+        or Path(databases["main"]).resolve() != history.resolve()
+        or not databases.get("macos_recovery_bank")
+        or Path(databases["macos_recovery_bank"]).resolve() != path.resolve()
+    ):
+        return None
+    identity = _identity(path)
+    scopes = tuple(row[0] for row in connection.execute("SELECT id FROM temp.macos_recovery_bank_scopes"))
+    first, last = connection.execute(
+        "SELECT MIN(rowid),MAX(rowid) FROM macos_recovery_bank.shadow_replacements "
+        "WHERE source_file_name=? AND conversation_id IN "
+        "(SELECT id FROM temp.macos_recovery_bank_scopes)",
+        (name,),
+    ).fetchone()
+    if first is None:
+        return 0
+    width = (last - first + workers) // workers
+    ranges = tuple((start, min(last, start + width - 1)) for start in range(first, last + 1, width))
+    try:
+        executor = ProcessPoolExecutor(max_workers=workers, mp_context=get_context("spawn"))
+    except (OSError, BrokenProcessPool):
+        return None
+    try:
+        with executor:
+            futures = [
+                executor.submit(
+                    _validate_shadow_job, str(history), name, scopes, interval,
+                    identity, catalog_identity, inputs,
+                )
+                for interval in ranges
+            ]
+            count = sum(future.result() for future in futures)
+    except BrokenProcessPool:
+        return None
+    if _identity(path) != identity or _inputs(history) != inputs:
+        raise ValueError("A Mac shadow input changed during parallel validation.")
+    return count
 
 
 def _validate_shadow_sources(connection, history, *, conversation_id=None):
@@ -1705,6 +1852,35 @@ def _validate_shadow_sources(connection, history, *, conversation_id=None):
     with _LOCK:
         if key in _SHADOW_VALIDATED or (*base_key, None) in _SHADOW_VALIDATED:
             return
+        pending = _SHADOW_VALIDATING.get((*base_key, None)) or _SHADOW_VALIDATING.get(key)
+        owner = pending is None
+        if owner:
+            pending = Future()
+            _SHADOW_VALIDATING[key] = pending
+    if not owner:
+        pending.result()
+        if _inputs(Path(history)) != inputs:
+            raise ValueError("A Mac shadow input changed during source validation.")
+        return
+    try:
+        _validate_shadow_scope(connection, history, inputs)
+        if _inputs(Path(history)) != inputs:
+            raise ValueError("A Mac shadow input changed during source validation.")
+        with _LOCK:
+            if len(_SHADOW_VALIDATED) >= 16:
+                _SHADOW_VALIDATED.pop(next(iter(_SHADOW_VALIDATED)))
+            _SHADOW_VALIDATED[key] = True
+            _SHADOW_VALIDATING.pop(key, None)
+        pending.set_result(True)
+    except BaseException as error:
+        with _LOCK:
+            _SHADOW_VALIDATING.pop(key, None)
+        pending.set_exception(error)
+        raise
+
+
+def _validate_shadow_scope(connection, history, inputs):
+    """Retain full-file receipts and membership counts around independent row proofs."""
     source_files = connection.execute(
         "SELECT DISTINCT source_file_name,source_file_sha256 FROM macos_recovery_bank.shadow_replacements "
         "WHERE conversation_id IN (SELECT id FROM temp.macos_recovery_bank_scopes)"
@@ -1753,40 +1929,17 @@ def _validate_shadow_sources(connection, history, *, conversation_id=None):
             "AND conversation_id IN (SELECT id FROM temp.macos_recovery_bank_scopes)",
             (name,),
         ).fetchone()[0]
-        count = 0
-        for row in connection.execute(
-            "SELECT s.original_text_sha256,s.original_provenance_sha256,s.original_row_sha256,m.* "
-            "FROM macos_recovery_bank.shadow_replacements s CROSS JOIN "
-            + alias
-            + ".messages m "
-            "WHERE s.original_id=m.id AND s.source_file_name=? "
-            "AND s.conversation_id IN (SELECT id FROM temp.macos_recovery_bank_scopes)",
-            (name,),
-        ):
-            count += 1
-            original = {
-                key: row[key] for key in row.keys() if not key.startswith("original_")
-            }
-            if (
-                hashlib.sha256(original["text"].encode()).hexdigest()
-                != row["original_text_sha256"]
-                or hashlib.sha256(original["provenance"].encode()).hexdigest()
-                != row["original_provenance_sha256"]
-                or _sha(original) != row["original_row_sha256"]
-            ):
-                raise ValueError(
-                    "An original resource stub differs from its exact shadow receipt."
-                )
+        count = _parallel_shadow_count(
+            connection, history, name, expected_count, catalog_identity, inputs
+        )
+        if count is None:
+            count = _validate_shadow_rows(connection, alias, name)
         if count != expected_count or _identity(catalog) != catalog_identity:
             raise ValueError(
                 "The original resource stub membership changed during validation."
             )
     if _inputs(Path(history)) != inputs:
         raise ValueError("A Mac shadow input changed during source validation.")
-    with _LOCK:
-        if len(_SHADOW_VALIDATED) >= 16:
-            _SHADOW_VALIDATED.pop(next(iter(_SHADOW_VALIDATED)))
-        _SHADOW_VALIDATED[key] = True
 
 
 def attach_mac_recovery_bank(
@@ -1840,11 +1993,21 @@ def attach_mac_recovery_bank(
             "SELECT b.* FROM macos_recovery_bank.messages b WHERE b.conversation_id IN (SELECT id FROM temp.macos_recovery_bank_scopes)"
         )
         connection.execute(
-            f"CREATE TEMP TABLE macos_recovery_bank_conversations AS SELECT * FROM {conversation_table} WHERE 0"
+            f"CREATE TEMP TABLE macos_recovery_bank_input_conversations AS SELECT * FROM {conversation_table}"
+        )
+        connection.execute(
+            "CREATE INDEX temp.macos_recovery_bank_input_id ON macos_recovery_bank_input_conversations(id)"
+        )
+        connection.execute(
+            "CREATE TEMP TABLE macos_recovery_bank_conversations AS "
+            "SELECT * FROM temp.macos_recovery_bank_input_conversations WHERE 0"
+        )
+        connection.execute(
+            "CREATE INDEX temp.macos_recovery_bank_summary_id ON macos_recovery_bank_conversations(id)"
         )
         for row in rows:
             existing = connection.execute(
-                f"SELECT * FROM {conversation_table} WHERE id=?", (row["id"],)
+                "SELECT * FROM temp.macos_recovery_bank_input_conversations WHERE id=?", (row["id"],)
             ).fetchone()
             if existing is None:
                 raise ValueError(
@@ -1868,7 +2031,8 @@ def attach_mac_recovery_bank(
                 tuple(value[key] for key in legacy._CONVERSATION_COLUMNS),
             )
         connection.execute(
-            f"CREATE TEMP VIEW macos_recovery_bank_timeline_conversations AS SELECT c.* FROM {conversation_table} c "
+            "CREATE TEMP VIEW macos_recovery_bank_timeline_conversations AS "
+            "SELECT c.* FROM temp.macos_recovery_bank_input_conversations c "
             "WHERE NOT EXISTS(SELECT 1 FROM temp.macos_recovery_bank_conversations b WHERE b.id=c.id) UNION ALL "
             "SELECT * FROM temp.macos_recovery_bank_conversations"
         )

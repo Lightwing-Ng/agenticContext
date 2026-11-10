@@ -1,6 +1,6 @@
 """Source-separated, text-only WeChat archive import and indexed local queries."""
 
-# Code version: v1.8.0-codex.0
+# Code version: v1.10.1-codex.0
 
 from __future__ import annotations
 
@@ -1315,6 +1315,35 @@ class WechatArchiveRepository:
         page_size=100,
         persist_event_cache=True,
     ):
+        """Reuse bounded source-pinned list pages; details retain live validation."""
+        from .wechat_browser_cache import conversation_page
+
+        parameters = {
+            "account": account,
+            "kind": kind,
+            "query": query,
+            "session": session,
+            "sort": sort,
+            "page": page,
+            "page_size": page_size,
+            "persist_event_cache": persist_event_cache,
+        }
+        return conversation_page(
+            self, parameters, lambda: self._query_uncached(**parameters)
+        )
+
+    def _query_uncached(
+        self,
+        *,
+        account="",
+        kind="all",
+        query="",
+        session="",
+        sort="newest",
+        page=1,
+        page_size=100,
+        persist_event_cache=True,
+    ):
         kind = kind if kind in WECHAT_KINDS else "all"
         empty = {
             "accounts": [],
@@ -1342,20 +1371,31 @@ class WechatArchiveRepository:
         )
         connection.row_factory = sqlite3.Row
         try:
-            conversation_table, message_table, resource_status = self._timeline_tables(
-                connection,
-                history_identity,
-                conversation_id=(session or None)
-                if not persist_event_cache or self.path.with_name("resource_revalidated.sqlite3").exists()
-                else None,
-                status_conversation_id=session or None,
-            )
+            snapshot = None
+            if not session and not str(query or "").strip():
+                from .wechat_browser_snapshot import load_conversation_snapshot
+
+                snapshot = load_conversation_snapshot(self, connection, history_identity)
+            if snapshot is not None:
+                conversation_table, resource_status, resource_accounts = snapshot
+                message_table = "main.messages"
+            else:
+                conversation_table, message_table, resource_status = self._timeline_tables(
+                    connection,
+                    history_identity,
+                    conversation_id=(session or None)
+                    if not persist_event_cache or self.path.with_name("resource_revalidated.sqlite3").exists()
+                    else None,
+                    status_conversation_id=session or None,
+                )
             empty["resource_index_status"] = resource_status
             if resource_status == "ready" and self._native_resource_scope(
                 connection, session or None, conversation_table=conversation_table
             ):
-                empty["resource_index_accounts"] = self._resource_index_accounts(
-                    connection
+                empty["resource_index_accounts"] = (
+                    resource_accounts
+                    if snapshot is not None
+                    else self._resource_index_accounts(connection)
                 )
             accounts = [
                 dict(row)
