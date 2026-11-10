@@ -1,8 +1,8 @@
 """Validate retained schema-4 Mac revisions without writing or reparsing sources.
 
-Code version: v1.0.0-codex.0
+Code version: v1.1.0-codex.0
 
-Only the three retained monotone revision policies are accepted. New parser
+Only the four retained monotone revision policies are accepted. New parser
 policies and revision publication remain owned by the canonical bank writer.
 """
 
@@ -13,10 +13,15 @@ import json
 import re
 
 from . import wechat_text
+from .wechat_reconcile import native_quote_card_metadata_extends
 
 
 MAX_REVISIONS = 32
 POLICY = "same-authenticated-native-row-v1"
+METADATA_ORIGIN_FIELDS = {
+    "app_card_metadata_completion": "app_card_metadata_origin",
+    "quoted_card_metadata_completion": "quoted_app_card_metadata_origin",
+}
 SCHEMA = """
 CREATE TABLE projection_revisions (
  message_id TEXT NOT NULL, sequence INTEGER NOT NULL,
@@ -59,6 +64,7 @@ _METADATA_SOURCE_FIELDS = (
 
 _REASONS = {
     "app_card_metadata_completion",
+    "quoted_card_metadata_completion",
     "forwarded_completion",
     "quoted_reply_completion",
 }
@@ -224,6 +230,12 @@ def _reason(old_row, new_row):
         return None
     if _resource_upgrade(old_row, new_row):
         return "app_card_metadata_completion"
+    if (
+        old["text_extraction_kind"] == new["text_extraction_kind"]
+        and old["text_extraction_kind"] in {"quoted_reply", "forwarded_text"}
+        and native_quote_card_metadata_extends(old, new)
+    ):
+        return "quoted_card_metadata_completion"
     if (
         old["text_extraction_kind"] == new["text_extraction_kind"] == "forwarded_text"
         and old.get("appmsg_subtype") == new.get("appmsg_subtype") == 19
@@ -401,8 +413,9 @@ def validate(connection):
             proof = json.loads(following["provenance"])
             native = proof["macos_recovery"]
             source_native = native
-            if record["reason"] == "app_card_metadata_completion":
-                source_native = proof.get("app_card_metadata_origin")
+            origin_field = METADATA_ORIGIN_FIELDS.get(record["reason"])
+            if origin_field is not None:
+                source_native = proof.get(origin_field)
                 if (
                     not isinstance(source_native, dict)
                     or set(source_native) != set(_METADATA_SOURCE_FIELDS)

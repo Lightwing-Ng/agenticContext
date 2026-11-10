@@ -1,6 +1,6 @@
 # Testing guide
 
-Documentation version: `v1.48.0-codex.0`
+Documentation version: `v1.49.2-codex.0`
 
 ## Supported commands
 
@@ -9,14 +9,22 @@ They verify exact primary event matching, missing-sender recovery, inert resourc
 viewer-scoped invitation roles, source pins, publication exclusion, stale/tampered input
 rejection, SQL paging/search/export consistency, and unchanged source database bytes.
 The quote browser cases also verify the primary contact remark and a recovered Image
-body when its exact original falls outside the filtered page. Native system profile
+body when its exact original falls outside the filtered page, including a retained
+legacy archive-member source receipt. Snapshot checks cover the three observed legacy
+receipt shapes against existing primary snapshots and the pinned resource catalog.
+They preserve successful declarations byte-for-byte, reject mismatched or ambiguous
+receipts, and never reopen cloud reports or create source declarations. Incremental
+staging skips exact completed witnesses, retains new contradictory evidence in its
+conflict audit, and keeps previously quarantined rows excluded. Native system profile
 labels may explicitly lack an identity; missing, conflicting, and whitespace-only
 identity fields remain rejected. Compatible decoder tests preserve dictionary gaps,
 framing, input/output hashes, and bounded private worker transport.
 
 ```bash
 ./scripts/test.sh tests/test_wechat_resource_sender_evidence.py \
-  tests/test_wechat_secondary_completions.py tests/test_wechat_secondary_system_notices.py \
+  tests/test_wechat_secondary_completions.py tests/test_wechat_resource_snapshot_adapter.py \
+  tests/test_wechat_completion_clone.py \
+  tests/test_wechat_secondary_system_notices.py \
   tests/test_wechat_system_literal_profiles.py tests/test_wechat_wcdb_compat.py \
   tests/test_wechat_macos_recovery_lock_byte.py tests/test_wechat_global_guard.py \
   tests/test_wechat_quoted_resources.py tests/test_wechat_quoted_contacts.py \
@@ -24,8 +32,16 @@ framing, input/output hashes, and bounded private worker transport.
   tests/test_wechat_completion_contact_cache.py
 ```
 
+Completion-only staging retains mandatory APFS cloning on macOS. Other supported
+platforms copy only validated derived catalogs with bounded reads, verified source
+identities and SHA-256, an owner-only temporary file, and atomic absent-name
+promotion. Clone tests preserve racing destination and temporary names, reject
+source drift and incomplete or unrelated archives, and remove owned interrupted
+copies. File flushes use writable handles on Windows, while POSIX retains its
+directory flush. The preserved archive/history/bank clone policy remains unchanged.
+
 Retained-bank compatibility checks keep the published schema-4 table contract,
-three known monotone revision policies, exact source/row digests, historical
+four known monotone revision policies, exact source/row digests, historical
 occurrences, and retained catalog/native clocks. They reject unknown policies,
 forged clocks or source witnesses, changed known labels/leaves, orphan receipts,
 and resealed tampering. Account-binding version 2 retains its explicitly proved
@@ -36,8 +52,18 @@ fields, neutral system roles, and matching source room; arbitrary authorless Typ
 49 records remain invalid. These readers add no XML parser, parser-repair, or
 revision-writing workflow.
 
+Retained quoted-card revisions may only add body-free labels inside an existing
+Type 49 reference. The complete surrounding evidence tree and known labels stay
+exact, and its 14-field metadata origin remains bound to the authenticated source.
+Tests reject actor/SVR changes, unknown labels, payload bodies, altered original
+receipts, and resealed origin tampering. Incremental witness checks compare only
+mutually explicit quoted identities, global server IDs, types, subtypes, and literal
+titles; viewer aliases, local IDs, clocks, and unknown-to-known details do not
+rewrite or invalidate otherwise compatible retained proof bytes.
+
 ```bash
 ./scripts/test.sh tests/test_wechat_macos_bank_v4_reader.py \
+  tests/test_wechat_quoted_card_read_contract.py \
   tests/test_wechat_macos_retained_clock_reader.py tests/test_wechat_retained_source_contracts.py
 ```
 

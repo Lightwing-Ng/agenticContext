@@ -1,6 +1,6 @@
 """Retained schema-4 revision proofs remain closed and source-preserving.
 
-Code version: v1.0.0-codex.0
+Code version: v1.1.0-codex.0
 """
 
 from copy import deepcopy
@@ -65,6 +65,13 @@ def _messages(kind):
     raw = "<msg><appmsg><type>57</type><title>Literal reply</title><refermsg><type>49</type><svrid>451</svrid><fromusr>wxid_synthetic_original</fromusr><displayname>Original source</displayname><createtime>1700000200</createtime><content>&lt;msg&gt;&lt;appmsg&gt;&lt;type&gt;57&lt;/type&gt;&lt;title&gt;Exact quoted body&lt;/title&gt;&lt;/appmsg&gt;&lt;/msg&gt;</content></refermsg></appmsg></msg>"
     old = native._message(90, 49, raw=raw)
     new = deepcopy(old)
+    if kind == "quoted_card":
+        new["native_text"]["quoted_reference"]["app_card_metadata"] = {
+            "schema_version": 1,
+            "appmsg_subtype": 76,
+            "safe_title": "Retained quoted title",
+        }
+        return old, new
     metadata = new["native_text"]
     metadata["text_components"].append(
         {
@@ -133,7 +140,7 @@ def _seal(connection):
     connection.commit()
 
 
-@pytest.fixture(params=["card", "forward", "quote"])
+@pytest.fixture(params=["card", "forward", "quote", "quoted_card"])
 def retained_v4(bank_archive, request):
     fixture = bank_archive
     old, new = _messages(request.param)
@@ -146,10 +153,15 @@ def retained_v4(bank_archive, request):
     following = dict(zip(prior, bank._row(old_packet, new), strict=True))
     for column in reader._STABLE_COLUMNS:
         following[column] = prior[column]
-    if request.param == "card":
+    if request.param in {"card", "quoted_card"}:
         proof = json.loads(following["provenance"])
-        proof["app_card_metadata"] = reader._card_metadata(new["resource"])
-        proof["app_card_metadata_origin"] = {
+        if request.param == "card":
+            proof["app_card_metadata"] = reader._card_metadata(new["resource"])
+        origin = (
+            "app_card_metadata_origin" if request.param == "card"
+            else "quoted_app_card_metadata_origin"
+        )
+        proof[origin] = {
             key: proof["macos_recovery"][key] for key in reader._METADATA_SOURCE_FIELDS
         }
         following["provenance"] = bank._json(proof)
@@ -157,6 +169,7 @@ def retained_v4(bank_archive, request):
         "card": "app_card_metadata_completion",
         "forward": "forwarded_completion",
         "quote": "quoted_reply_completion",
+        "quoted_card": "quoted_card_metadata_completion",
     }[request.param]
     source_key = connection.execute("SELECT id FROM sources").fetchone()[0]
     _record(connection, prior, following, source_key, reason)
@@ -250,6 +263,45 @@ def test_revision_tampering_is_rejected_even_after_resealing_payload(
             source,
             "unknown_policy" if defect == "unknown_reason" else reason,
         )
+    _seal(connection)
+    with pytest.raises(ValueError):
+        bank._validate_bank(connection, fixture.history)
+
+
+@pytest.mark.parametrize("retained_v4", ["quoted_card"], indirect=True)
+@pytest.mark.parametrize(
+    "defect",
+    ["actor", "server", "unknown_label", "original_type", "origin_missing",
+     "origin_raw", "origin_source", "origin_extra", "original_receipt"],
+)
+def test_quoted_card_revision_rejects_resealed_source_or_reference_tampering(
+    retained_v4, defect
+):
+    fixture, connection, prior, following, source, reason = retained_v4
+    proof = json.loads(following["provenance"])
+    reference = proof["quoted_reference"]
+    if defect == "actor":
+        reference["source_sender_id"] = "wxid_other_quoted_actor"
+    elif defect == "server":
+        reference["source_ids"]["svrid"] = "999"
+    elif defect == "unknown_label":
+        reference["app_card_metadata"]["unvalidated_label"] = "Unknown"
+    elif defect == "original_type":
+        reference["original_message_type"] = 3
+    elif defect == "origin_missing":
+        proof.pop("quoted_app_card_metadata_origin")
+    elif defect == "original_receipt":
+        proof["macos_recovery"]["source_id"] = "altered-original-receipt"
+    else:
+        origin = proof["quoted_app_card_metadata_origin"]
+        if defect == "origin_raw":
+            origin["content_sha256"] = "0" * 64
+        elif defect == "origin_source":
+            origin["source_id"] = "different-authenticated-source"
+        elif defect == "origin_extra":
+            origin["unvalidated_field"] = True
+    following["provenance"] = bank._json(proof)
+    _record(connection, prior, following, source, reason)
     _seal(connection)
     with pytest.raises(ValueError):
         bank._validate_bank(connection, fixture.history)

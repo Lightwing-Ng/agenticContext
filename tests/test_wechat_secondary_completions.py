@@ -1,6 +1,6 @@
 """Derived completion catalogs preserve originals and serve one consistent timeline.
 
-Code version: v1.0.5-codex.1
+Code version: v1.0.6-codex.2
 """
 
 from copy import deepcopy
@@ -365,7 +365,7 @@ def test_completion_metadata_changes_invalidate_the_browser_source_fingerprint(
     _publish(fixture, _stage(fixture))
     after = _inputs(repository)
     path = str(completions.completion_path(fixture["root"]).absolute())
-    assert before[path] is None and after[path] is not None
+    assert path not in before and after[path] is not None
     assert before != after
 
 
@@ -1376,3 +1376,461 @@ def test_an_external_post_rename_replacement_cannot_seed_verified_cache(
         target, completions._identity(target), completions._pins(fixture["history"])
     )
     assert key not in completions._CACHE
+
+
+def _legacy_source_receipt(fixture, *, retain_declared_path=False):
+    proof = json.loads(fixture["image"]["provenance"])
+    owner = sender.PRIMARY
+    hashed = hashlib.md5(owner.encode(), usedforsecurity=False).hexdigest()
+    relative = "Documents/" + hashed + "/DB/message_2.sqlite"
+    member = {
+        "bytes": 512,
+        "member_path": "Preserved archive/" + relative,
+        "sha256": proof["source_sha256"],
+    }
+    with sqlite3.connect(fixture["history"]) as history:
+        history.row_factory = sqlite3.Row
+        snapshot = dict(
+            history.execute(
+                "SELECT * FROM source_snapshots WHERE source_id=?", ("ios-" + hashed,)
+            ).fetchone()
+        )
+        metadata = json.loads(snapshot["metadata"])
+        metadata.update(
+            source_id=snapshot["source_id"],
+            backup_id=snapshot["snapshot_id"],
+            container_kind="legacy_ios",
+            archive_sha256="a" * 64,
+            identity_sha256="b" * 64,
+        )
+        if not retain_declared_path:
+            metadata["input_databases"] = [member]
+        raw = json.dumps(metadata)
+        history.execute(
+            "UPDATE source_snapshots SET metadata=? WHERE id=?", (raw, snapshot["id"])
+        )
+    with sqlite3.connect(fixture["catalog"]) as catalog:
+        catalog.execute(
+            "CREATE TABLE IF NOT EXISTS native_resource_sources(source_snapshot_id INTEGER,database_relative_path TEXT,database_sha256 TEXT,account_id TEXT,source_id TEXT,backup_id TEXT,metadata_sha256 TEXT,file_id TEXT,receipt_basis TEXT,proof TEXT)"
+        )
+        catalog.execute(
+            "INSERT INTO native_resource_sources VALUES(?,?,?,?,?,?,?,?,?,?)",
+            (
+                snapshot["id"],
+                relative,
+                proof["source_sha256"],
+                owner,
+                snapshot["source_id"],
+                snapshot["snapshot_id"],
+                hashlib.sha256(raw.encode()).hexdigest(),
+                hashlib.sha1(
+                    ("AppDomain-com.tencent.xin-" + relative).encode()
+                ).hexdigest(),
+                "preservation_manifest",
+                json.dumps(member),
+            ),
+        )
+        catalog.execute(
+            "UPDATE archive_info SET value=? WHERE key='history_file_identity'",
+            (json.dumps(_file_identity(fixture["history"])),),
+        )
+
+
+def test_legacy_snapshot_receipt_recovers_new_rows_and_revalidates_at_publication(
+    completion_fixture,
+):
+    fixture = completion_fixture
+    _legacy_source_receipt(fixture)
+    report = _stage(fixture)
+    assert report["counts"] == {"native_sender": 1, "native_quote": 1}
+    assert report["snapshot_adapter"]["rejected"] == {}
+    with completions._readonly(fixture["candidate"]) as candidate:
+        for row in candidate.execute("SELECT provenance FROM messages"):
+            receipt = json.loads(row[0])["secondary_resource_completion"][
+                "snapshot_receipt_adapter"
+            ]
+            assert receipt["receipt_shape"] == "legacy_archive_member_path"
+            assert len(receipt["catalog_source_receipt_sha256"]) == 64
+    assert _publish(fixture, report)["published"]
+
+
+def test_existing_successful_snapshot_rows_remain_byte_identical(completion_fixture):
+    fixture = completion_fixture
+    _legacy_source_receipt(fixture, retain_declared_path=True)
+    events = completions.iter_secondary_native_events(fixture["packet"])
+    events = list(events)
+    with (
+        completions._readonly(fixture["history"]) as history,
+        completions._readonly(fixture["catalog"]) as catalog,
+    ):
+        declared = completions._snapshot_index(history)
+        adapted = completions._snapshot_resolver(history, catalog)
+        for row in catalog.execute("SELECT * FROM messages"):
+            before = completions._complete_resource(
+                dict(row), fixture["conversation"], events, declared
+            )
+            after = completions._complete_resource(
+                dict(row), fixture["conversation"], events, adapted
+            )
+            assert before == after
+            assert (
+                "snapshot_receipt_adapter"
+                not in json.loads(after[0]["provenance"])[
+                    "secondary_resource_completion"
+                ]
+            )
+
+
+def test_incremental_replay_skips_exact_verified_witnesses_before_projection(
+    completion_fixture, tmp_path, monkeypatch
+):
+    fixture = completion_fixture
+    base = _stage(fixture)
+
+    def unexpected(*_args):
+        raise AssertionError("A completed physical witness must not be reprojected.")
+
+    monkeypatch.setattr(completions, "_complete_resource", unexpected)
+    report = completions.stage_secondary_message_completions(
+        fixture["root"],
+        tmp_path / "incremental.sqlite3",
+        [fixture["packet"]],
+        notice_plans=(),
+        base_candidate_path=fixture["candidate"],
+        base_candidate_sha256=base["candidate_sha256"],
+        only_uncompleted=True,
+    )
+    assert report["incremental"]["same_stored_witness_skipped"] == 2
+    assert report["counts"] == base["counts"]
+
+
+def test_incremental_new_sender_conflict_is_quarantined_and_preserved(
+    completion_fixture, tmp_path
+):
+    fixture = completion_fixture
+    base = _stage(fixture)
+    packet = deepcopy(fixture["packet"])
+    packet["messages"][0].update(
+        sender_id=native.OWNER,
+        sender_label=native.OWNER,
+        direction="sent",
+        real_sender_id=9,
+        sender_proof=native._proof(9, native.OWNER),
+    )
+    report = completions.stage_secondary_message_completions(
+        fixture["root"],
+        tmp_path / "incremental-conflict.sqlite3",
+        [packet],
+        notice_plans=(),
+        base_candidate_path=fixture["candidate"],
+        base_candidate_sha256=base["candidate_sha256"],
+        only_uncompleted=True,
+    )
+    assert report["incremental"]["new_sender_conflicts"] == 1
+    assert report["counts"] == {"native_quote": 1}
+    with completions._readonly(report["candidate"]) as output:
+        assert (
+            output.execute("SELECT id FROM ambiguities").fetchone()[0]
+            == fixture["image"]["id"]
+        )
+        conflict = output.execute(
+            "SELECT * FROM incremental_resource_conflicts"
+        ).fetchone()
+        old = completions.load_json_cell(
+            output.execute(
+                "SELECT message FROM witnesses WHERE id=?",
+                (conflict["prior_witness_key"],),
+            ).fetchone()[0]
+        )
+        new = completions.load_json_cell(
+            output.execute(
+                "SELECT message FROM witnesses WHERE id=?", (conflict["witness_key"],)
+            ).fetchone()[0]
+        )
+        assert old["sender_id"] != new["sender_id"]
+    replay = completions.stage_secondary_message_completions(
+        fixture["root"],
+        tmp_path / "quarantine-replay.sqlite3",
+        [fixture["packet"]],
+        notice_plans=(),
+        base_candidate_path=report["candidate"],
+        base_candidate_sha256=report["candidate_sha256"],
+        only_uncompleted=True,
+    )
+    assert replay["incremental"]["quarantined_rows_skipped"] == 1
+    assert replay["counts"] == {"native_quote": 1}
+
+
+def test_incremental_encoded_successful_rows_keep_storage_and_proof_bytes(
+    completion_fixture, tmp_path
+):
+    fixture = completion_fixture
+    base = _stage(fixture)
+    encoded = completions.compact_secondary_message_completions(
+        fixture["root"],
+        fixture["candidate"],
+        tmp_path / "encoded-only-base.sqlite3",
+        candidate_sha256=base["candidate_sha256"],
+    )
+    packet = deepcopy(fixture["packet"])
+    packet["messages"][0]["local_id"] += 100
+    report = completions.stage_secondary_message_completions(
+        fixture["root"],
+        tmp_path / "incremental-encoded.sqlite3",
+        [packet],
+        notice_plans=(),
+        base_candidate_path=encoded["candidate"],
+        base_candidate_sha256=encoded["candidate_sha256"],
+        only_uncompleted=True,
+    )
+    assert report["incremental"]["new_nonconflicting_witness_observations"] == 1
+    with (
+        completions._readonly(encoded["candidate"]) as before,
+        completions._readonly(report["candidate"]) as after,
+    ):
+        for table, columns in [
+            ("messages", "id,provenance"),
+            ("entries", "id,original_row,projected_sha256"),
+        ]:
+            assert [
+                tuple(row)
+                for row in before.execute(
+                    "SELECT " + columns + " FROM " + table + " ORDER BY id"
+                )
+            ] == [
+                tuple(row)
+                for row in after.execute(
+                    "SELECT " + columns + " FROM " + table + " ORDER BY id"
+                )
+            ]
+
+
+def test_incremental_typed_quote_body_conflict_is_not_hidden_by_existing_entry(
+    completion_fixture, tmp_path
+):
+    fixture = completion_fixture
+    base = _stage(fixture)
+    packet = deepcopy(fixture["packet"])
+    quote = native._message(
+        10,
+        49,
+        sender=sender.PRIMARY,
+        raw="<msg><appmsg><title>A changed literal reply</title><type>57</type><refermsg><type>3</type><svrid>504</svrid><fromusr>"
+        + native.ROOM
+        + "</fromusr><chatusr>"
+        + native.MEMBER
+        + "</chatusr><displayname>Native quoted author</displayname><createtime>1700000004</createtime><content>opaque image metadata</content></refermsg></appmsg></msg>",
+    )
+    quote.update(real_sender_id=9, sender_proof=native._proof(9, sender.PRIMARY))
+    packet["messages"][1] = quote
+    report = completions.stage_secondary_message_completions(
+        fixture["root"],
+        tmp_path / "incremental-body-conflict.sqlite3",
+        [packet],
+        notice_plans=(),
+        base_candidate_path=fixture["candidate"],
+        base_candidate_sha256=base["candidate_sha256"],
+        only_uncompleted=True,
+    )
+    assert report["incremental"]["new_quote_body_conflicts"] == 1
+    assert report["counts"] == {"native_sender": 1}
+
+
+def test_incremental_mode_still_validates_every_packet_before_skipping(
+    completion_fixture, tmp_path
+):
+    fixture = completion_fixture
+    base = _stage(fixture)
+    packet = deepcopy(fixture["packet"])
+    packet.pop("account_binding")
+    with pytest.raises(ValueError, match="account binding"):
+        completions.stage_secondary_message_completions(
+            fixture["root"],
+            tmp_path / "invalid-incremental.sqlite3",
+            [packet],
+            notice_plans=(),
+            base_candidate_path=fixture["candidate"],
+            base_candidate_sha256=base["candidate_sha256"],
+            only_uncompleted=True,
+        )
+
+
+def test_optional_completion_input_omits_absence_but_retains_unavailable_presence(
+    tmp_path, monkeypatch
+):
+    history = tmp_path / "history.sqlite3"
+    catalog = history.with_name(completions.FILENAME)
+    path = str(catalog.absolute())
+    assert completions.completion_input_identities(history) == {}
+    catalog.write_bytes(b"Resident metadata probe; no database payload is read.")
+    original_identity = completions._identity
+    monkeypatch.setattr(
+        Path,
+        "open",
+        lambda *_args, **_kwargs: pytest.fail(
+            "Input identities must not read source payloads."
+        ),
+    )
+    assert completions.completion_input_identities(history)[path] == original_identity(
+        catalog
+    )
+
+    def unavailable(_path, *, optional=False):
+        assert _path == catalog and optional
+        raise ValueError("Synthetic resident source is temporarily unavailable.")
+
+    monkeypatch.setattr(completions, "_identity", unavailable)
+    state = catalog.lstat()
+    assert completions.completion_input_identities(history) == {
+        path: {
+            "unavailable": True,
+            "size": state.st_size,
+            "mtime_ns": state.st_mtime_ns,
+        }
+    }
+
+
+def _same_body_quote_witness(
+    *,
+    actor=native.MEMBER,
+    server="504",
+    typ=3,
+    subtype=6,
+    label="Native quoted author",
+    title="Same inert title",
+):
+    from xml.sax.saxutils import escape
+
+    content = (
+        escape(
+            "<msg><appmsg><type>"
+            + str(subtype)
+            + "</type><title>"
+            + title
+            + "</title></appmsg></msg>"
+        )
+        if typ == 49
+        else ""
+    )
+    quote = native._message(
+        10,
+        49,
+        sender=sender.PRIMARY,
+        raw="<msg><appmsg><title>Verified reply</title><type>57</type><refermsg><type>"
+        + str(typ)
+        + "</type><svrid>"
+        + server
+        + "</svrid><fromusr>"
+        + native.ROOM
+        + "</fromusr><chatusr>"
+        + actor
+        + "</chatusr><displayname>"
+        + label
+        + "</displayname><createtime>1700000004</createtime><content>"
+        + content
+        + "</content></refermsg></appmsg></msg>",
+    )
+    quote.update(real_sender_id=9, sender_proof=native._proof(9, sender.PRIMARY))
+    if typ == 49:
+        # Exercise retained, source-provided metadata without adding a parser.
+        quote["native_text"]["quoted_reference"]["app_card_metadata"] = {
+            "schema_version": 1,
+            "appmsg_subtype": subtype,
+            "safe_title": title,
+        }
+    return quote
+
+
+@pytest.mark.parametrize(
+    "initial,change",
+    [
+        ({}, {"actor": "wxid_different_quoted_actor"}),
+        ({}, {"server": "999"}),
+        ({}, {"typ": 43}),
+        ({"typ": 49}, {"typ": 49, "subtype": 5}),
+        ({"typ": 49}, {"typ": 49, "title": "Another explicit quoted title"}),
+    ],
+)
+def test_incremental_same_reply_cannot_hide_conflicting_quoted_reference_facts(
+    completion_fixture, tmp_path, initial, change
+):
+    fixture = completion_fixture
+    fixture["packet"]["messages"][1] = _same_body_quote_witness(**initial)
+    base = _stage(fixture)
+    packet = deepcopy(fixture["packet"])
+    packet["messages"][1] = _same_body_quote_witness(**change)
+    assert packet["messages"][1]["text"] == fixture["packet"]["messages"][1]["text"]
+    report = completions.stage_secondary_message_completions(
+        fixture["root"],
+        tmp_path / "reference-conflict.sqlite3",
+        [packet],
+        notice_plans=(),
+        base_candidate_path=base["candidate"],
+        base_candidate_sha256=base["candidate_sha256"],
+        only_uncompleted=True,
+    )
+    assert report["incremental"]["new_quote_reference_conflicts"] == 1
+    assert report["counts"] == {"native_sender": 1}
+    with completions._readonly(report["candidate"]) as output:
+        conflict = output.execute(
+            "SELECT * FROM incremental_resource_conflicts"
+        ).fetchone()
+        assert conflict["prior_witness_key"] != conflict["witness_key"]
+        assert "quoted-reference" in conflict["reason"]
+    replay = completions.stage_secondary_message_completions(
+        fixture["root"],
+        tmp_path / "retained-reference-quarantine.sqlite3",
+        [fixture["packet"]],
+        notice_plans=(),
+        base_candidate_path=report["candidate"],
+        base_candidate_sha256=report["candidate_sha256"],
+        only_uncompleted=True,
+    )
+    assert replay["incremental"]["quarantined_rows_skipped"] == 1
+    assert replay["counts"] == {"native_sender": 1}
+
+
+@pytest.mark.parametrize(
+    "initial,change",
+    [
+        ({}, {"label": "Another account's alias"}),
+        ({"actor": "", "server": ""}, {}),
+    ],
+)
+def test_incremental_quote_labels_and_unknown_detail_enrichment_keep_encoded_proof(
+    completion_fixture, tmp_path, initial, change
+):
+    fixture = completion_fixture
+    fixture["packet"]["messages"][1] = _same_body_quote_witness(**initial)
+    base = _stage(fixture)
+    encoded = completions.compact_secondary_message_completions(
+        fixture["root"],
+        base["candidate"],
+        tmp_path / "encoded-reference-base.sqlite3",
+        candidate_sha256=base["candidate_sha256"],
+    )
+    packet = deepcopy(fixture["packet"])
+    packet["messages"][1] = _same_body_quote_witness(**change)
+    report = completions.stage_secondary_message_completions(
+        fixture["root"],
+        tmp_path / "compatible-reference.sqlite3",
+        [packet],
+        notice_plans=(),
+        base_candidate_path=encoded["candidate"],
+        base_candidate_sha256=encoded["candidate_sha256"],
+        only_uncompleted=True,
+    )
+    assert report["counts"] == {"native_quote": 1, "native_sender": 1}
+    assert report["incremental"]["new_nonconflicting_witness_observations"] == 1
+    with (
+        completions._readonly(encoded["candidate"]) as before,
+        completions._readonly(report["candidate"]) as after,
+    ):
+        for table, columns in [
+            ("messages", "id,provenance"),
+            ("entries", "id,original_row,projected_sha256"),
+        ]:
+            statement = "SELECT " + columns + " FROM " + table + " ORDER BY id"
+            assert list(map(tuple, before.execute(statement))) == list(
+                map(tuple, after.execute(statement))
+            )

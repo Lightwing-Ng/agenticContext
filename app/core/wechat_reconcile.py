@@ -1,6 +1,6 @@
 """Add native text observations without replacing earlier WeChat evidence."""
 
-# Code version: v1.6.4-codex.0
+# Code version: v1.6.5-codex.0
 
 from __future__ import annotations
 
@@ -77,6 +77,112 @@ def _json(value: Any) -> str:
         separators=(",", ":"),
         allow_nan=False,
     )
+
+
+def validate_quoted_app_card_metadata(value):
+    """Validate body-free labels from one explicit quoted Type 49 envelope."""
+    labels = {"safe_title", "publisher_name", "app_name"}
+    paths = {
+        "publisher_name": {"appmsg/sourcedisplayname"},
+        "app_name": {"appinfo/appname", "appmsg/appinfo/appname"},
+    }
+    allowed = {"schema_version", "appmsg_subtype", *labels}
+    allowed.update(key + "_source" for key in paths)
+    if (
+        not isinstance(value, dict)
+        or set(value) - allowed
+        or type(value.get("schema_version")) is not int
+        or value["schema_version"] != 1
+        or type(value.get("appmsg_subtype")) is not int
+        or not 0 < value["appmsg_subtype"] <= 2**31 - 1
+        or value["appmsg_subtype"] in {2, 3, 4, 19, 57, 2000, 2001}
+        or not labels & value.keys()
+    ):
+        raise ValueError("Native quoted app cards need a closed, versioned label schema.")
+    for key in labels & value.keys():
+        text = value[key]
+        if (
+            not isinstance(text, str)
+            or not text.strip()
+            or len(text) > 1024
+            or any(ord(char) < 32 and char not in "\t\r\n" for char in text)
+        ):
+            raise ValueError("Native quoted app-card labels must be bounded literal text.")
+    for key, permitted in paths.items():
+        if key in value or key + "_source" in value:
+            source = value.get(key + "_source")
+            if key not in value or not isinstance(source, str) or source not in permitted:
+                raise ValueError("Native quoted app-card labels need their exact source paths.")
+    return dict(value)
+
+
+def native_quote_card_metadata_extends(previous, candidate):
+    """Allow only missing quoted card labels in an otherwise identical evidence tree."""
+    changed = False
+    remaining = 20_000
+
+    def same(old, new, *, role="projection", depth=0):
+        nonlocal changed, remaining
+        remaining -= 1
+        if remaining < 0 or depth > 40 or type(old) is not type(new):
+            return False
+        if isinstance(old, dict):
+            field = "app_card_metadata"
+            if field in old or field in new:
+                if (
+                    role != "reference"
+                    or old.get("original_message_type") != 49
+                    or field not in new
+                ):
+                    return False
+                prior = old.get(field, {})
+                current = validate_quoted_app_card_metadata(new[field])
+                if field in old:
+                    validate_quoted_app_card_metadata(prior)
+                if any(key not in current or _json(value) != _json(current[key]) for key, value in prior.items()):
+                    return False
+                changed = changed or prior != current
+            keys = set(old) - {field}
+            if keys != set(new) - {field}:
+                return False
+            for key in keys:
+                child_role = "other"
+                if key == "text_components" and role in {"projection", "component"}:
+                    child_role = "components"
+                elif key == "quoted_reference" and (
+                    role == "projection"
+                    and old.get("appmsg_subtype") == 57
+                    and old.get("text_extraction_kind") == "quoted_reply"
+                    or role == "component"
+                    and old.get("kind") == "forwarded_quote"
+                    and old.get("appmsg_subtype") == 57
+                    and (
+                        "original_message_type" not in old
+                        or type(old["original_message_type"]) is int
+                        and old["original_message_type"] in {1, 49}
+                    )
+                ):
+                    child_role = "reference"
+                if not same(old[key], new[key], role=child_role, depth=depth + 1):
+                    return False
+            return True
+        if isinstance(old, list):
+            return len(old) == len(new) and all(
+                same(
+                    left, right,
+                    role="component" if role == "components" else "other",
+                    depth=depth + 1,
+                )
+                for left, right in zip(old, new, strict=True)
+            )
+        return _json(old) == _json(new)
+
+    try:
+        native_text_metadata(previous, {})
+        native_text_metadata(candidate, {})
+        return same(previous, candidate) and changed
+    except (ValueError, TypeError, KeyError, RecursionError):
+        return False
 
 
 def _forwarded_reference_schema(reference):
@@ -191,7 +297,11 @@ def native_text_metadata(raw, locator):
         if remaining_bytes < 0:
             raise ValueError("Native text metadata exceeds the supported size.")
 
-    def source_fields(value):
+    def source_fields(value, *, is_reference=False):
+        if "app_card_metadata" in value:
+            if not is_reference or value.get("original_message_type") != 49:
+                raise ValueError("Native quoted app-card metadata needs its original Type 49 reference.")
+            validate_quoted_app_card_metadata(value["app_card_metadata"])
         for key in _SOURCE_TEXT_FIELDS & value.keys():
             if not isinstance(value[key], str):
                 raise ValueError("Native quoted source fields must be strings.")
@@ -223,7 +333,11 @@ def native_text_metadata(raw, locator):
     def quoted_reference(reference, values):
         if not isinstance(reference, dict):
             raise ValueError("Native quoted references must be objects.")
-        source_fields(reference)
+        source_fields(reference, is_reference=True)
+        if "app_card_metadata" in reference and any(
+            component.get("kind") != "reply_text" for component in values
+        ):
+            raise ValueError("Native quoted app-card labels cannot introduce a quoted text body.")
         for component in values:
             if component["kind"] in {"quoted_text", "quoted_forwarded_text"}:
                 if reference.get("content_unavailable") is True:

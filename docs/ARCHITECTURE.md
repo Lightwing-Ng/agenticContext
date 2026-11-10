@@ -1,6 +1,6 @@
 # Architecture guide
 
-Documentation version: `v1.76.0-codex.0`
+Documentation version: `v1.77.0-codex.0`
 
 ## Runtime flow
 
@@ -1136,6 +1136,15 @@ source clock. Cross-account invitations require exact primary text anchors and r
 the source viewer, typed participant roles, original template, and both device clocks.
 Display names do not establish identity.
 
+`wechat_resource_snapshot_adapter.py` resolves three retained legacy receipt shapes
+through the pinned resource catalog and existing primary snapshot metadata. Exact
+snapshot/source IDs, metadata and database hashes, and native account paths must agree.
+The adapter preserves successful declarations and explicitly linked aliases, rejects
+ambiguous links, and creates no snapshot or cloud read. Incremental replay can skip an
+already retained exact witness while checking novel observations for mutually known
+reply, author, reference, type, and clock conflicts. Missing detail remains unknown;
+viewer labels do not establish identity or contradict a literal reply.
+
 The completion catalog joins the final accepted SQL timeline before paging, search,
 counts, exports, and quoted-original lookup. Shared message and resource macros render
 its normalized results. Replacements apply only while the complete original row still
@@ -1152,6 +1161,14 @@ retain a row/hash pruning manifest, and vacuum the new candidate. It never edits
 published timeline or the preserved source packets. Proof schema versions remain
 stable across implementation-only changes.
 
+Derived catalog copies use `wechat_completion_clone.py`: macOS retains the existing
+mandatory APFS clone policy. Linux and Windows copy only validated completion catalogs
+through a bounded, hash-checked stream into a private file, then atomically claim an
+absent destination with a hard link. Source/temporary identity checks prevent racing
+replacement and cleanup from touching another file. This adapter does not change raw
+archive, history, or recovery-bank copying. Derived-file flushing uses a writable
+handle on Windows and retains POSIX file and directory durability checks.
+
 Review compaction can encode derived JSON cells through
 `wechat_completion_json_codec.py`. Its closed, length-bound and SHA-256-bound zlib
 frame restores the exact original text before proof validation or SQL JSON access.
@@ -1161,8 +1178,8 @@ or change its canonical proof hash.
 
 `wechat_macos_bank_v4_reader.py` preserves read compatibility with retained schema-4
 banks. It verifies the closed schema, journal-inclusive payload digest, native event
-identity, linked revision chain, and the supported monotonic quote, forwarded, and
-app-label completion reasons. Earlier schema-3 banks retain their existing path.
+identity, linked revision chain, and the supported monotonic quote, forwarded, app-label, and quoted-app-label
+completion reasons. Earlier schema-3 banks retain their existing path.
 This adapter does not introduce a reparse writer or accept unknown revision reasons.
 
 `wechat_wcdb_compat.py` delegates only a missing local compression backend to the existing
