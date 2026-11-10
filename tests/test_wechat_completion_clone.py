@@ -1,6 +1,6 @@
 """Portable derived copies preserve bytes, private boundaries, and source leases.
 
-Code version: v1.1.0-codex.0
+Code version: v1.1.1-codex.0
 """
 
 import hashlib
@@ -13,6 +13,7 @@ import pytest
 
 from app.core import wechat_completion_clone as clone
 from app.core import wechat_secondary_completions as completions
+from app.core import windows_file_metadata
 from app.core.owner_only_files import owner_only_problem
 
 
@@ -295,3 +296,130 @@ def test_completion_directory_flush_keeps_posix_without_a_windows_directory_fd(
     assert calls == (
         [] if windows else [("open", source.parent, 0), ("fsync", 42), ("close", 42)]
     )
+
+
+def _windows_metadata(monkeypatch, source, *, changed_field=None):
+    """Model Windows creation-time stat and change-time fstat in this module only."""
+    real_path = Path
+    real_os = clone.os
+    source_inode = (source.stat().st_dev, source.stat().st_ino)
+    births = {}
+    mutation = {"offset": 0}
+
+    def fields(state):
+        values = {name: getattr(state, name) for name in dir(state) if name.startswith("st_")}
+        key = state.st_dev, state.st_ino
+        values["st_birthtime_ns"] = births.setdefault(key, state.st_ctime_ns)
+        return values
+
+    class WindowsStatPath(type(Path())):
+        def lstat(self):
+            values = fields(super().lstat())
+            values["st_ctime_ns"] = values["st_birthtime_ns"]
+            return SimpleNamespace(**values)
+
+    def fstat(descriptor):
+        state = real_os.fstat(descriptor)
+        values = fields(state)
+        # This models CPython 3.13's distinct ctime semantics, even for a new file.
+        values["st_ctime_ns"] = values["st_birthtime_ns"] + 10_000
+        if changed_field and (state.st_dev, state.st_ino) == source_inode:
+            values["st_" + changed_field] += 1
+        return SimpleNamespace(**values)
+
+    def change_time(path, *, descriptor=None):
+        state = real_os.fstat(descriptor) if descriptor is not None else real_path(path).lstat()
+        offset = mutation["offset"] if (state.st_dev, state.st_ino) == source_inode else 0
+        return state.st_ctime_ns + offset
+
+    monkeypatch.setattr(clone, "IS_WINDOWS", True)
+    monkeypatch.setattr(clone, "Path", WindowsStatPath)
+    monkeypatch.setattr(clone, "os", SimpleNamespace(**{**vars(real_os), "fstat": fstat}))
+    monkeypatch.setattr(windows_file_metadata, "file_change_time", change_time)
+    return mutation
+
+
+def test_windows_copy_compares_matching_native_metadata_instead_of_split_ctime(
+    catalog, monkeypatch
+):
+    source, destination = catalog
+    _windows_metadata(monkeypatch, source)
+    _copy(source, destination)
+    assert destination.read_bytes() == source.read_bytes()
+    assert not list(source.parent.glob(".completion-copy-*"))
+
+
+@pytest.mark.parametrize("field", ["dev", "ino", "size", "mtime_ns", "birthtime_ns"])
+def test_windows_copy_still_rejects_each_open_descriptor_identity_mismatch(
+    catalog, monkeypatch, field
+):
+    source, destination = catalog
+    _windows_metadata(monkeypatch, source, changed_field=field)
+    with pytest.raises(ValueError, match="opened completion source identity"):
+        _copy(source, destination)
+    assert not destination.exists()
+
+
+def test_windows_native_change_time_drift_cannot_hide_behind_retained_birthtime(
+    catalog, monkeypatch
+):
+    source, destination = catalog
+    mutation = _windows_metadata(monkeypatch, source)
+    copy_bytes = clone._copy_bytes
+
+    def changed(original, output, size):
+        result = copy_bytes(original, output, size)
+        mutation["offset"] += 1
+        return result
+
+    monkeypatch.setattr(clone, "_copy_bytes", changed)
+    with pytest.raises(ValueError, match="changed during checksum validation"):
+        _copy(source, destination)
+    assert not destination.exists()
+
+
+def test_windows_copy_requires_matching_path_and_descriptor_change_time(
+    catalog, monkeypatch
+):
+    source, destination = catalog
+    _windows_metadata(monkeypatch, source)
+    change_time = windows_file_metadata.file_change_time
+
+    def changed(path, *, descriptor=None):
+        return change_time(path, descriptor=descriptor) + int(descriptor is not None)
+
+    monkeypatch.setattr(windows_file_metadata, "file_change_time", changed)
+    with pytest.raises(ValueError, match="opened completion source identity"):
+        _copy(source, destination)
+    assert not destination.exists()
+
+
+@pytest.mark.parametrize("failure", ["birthtime", "native_api", "nonregular"])
+def test_windows_copy_cannot_fall_back_when_native_metadata_is_unavailable(
+    catalog, monkeypatch, failure
+):
+    source, destination = catalog
+    _windows_metadata(monkeypatch, source)
+    fstat = clone.os.fstat
+
+    def unavailable(descriptor):
+        state = vars(fstat(descriptor)).copy()
+        if failure == "birthtime":
+            del state["st_birthtime_ns"]
+        else:
+            state["st_mode"] = 0
+        return SimpleNamespace(**state)
+
+    if failure == "native_api":
+        def unavailable_api(*_args, **_kwargs):
+            raise OSError("Native metadata API failed")
+
+        monkeypatch.setattr(windows_file_metadata, "file_change_time", unavailable_api)
+        error, pattern = OSError, "Native metadata API failed"
+    else:
+        monkeypatch.setattr(clone.os, "fstat", unavailable)
+        error = ValueError
+        pattern = "native creation metadata" if failure == "birthtime" else "regular opened file"
+    with pytest.raises(error, match=pattern):
+        _copy(source, destination)
+    assert not destination.exists()

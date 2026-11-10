@@ -1,6 +1,6 @@
 # Testing guide
 
-Documentation version: `v1.50.0-codex.0`
+Documentation version: `v1.50.1-codex.0`
 
 ## Supported commands
 
@@ -61,6 +61,12 @@ promotion. Clone tests preserve racing destination and temporary names, reject
 source drift and incomplete or unrelated archives, and remove owned interrupted
 copies. File flushes use writable handles on Windows, while POSIX retains its
 directory flush. The preserved archive/history/bank clone policy remains unchanged.
+Windows copy checks compare creation identity and the same native `ChangeTime`
+for the path and open descriptor; they fail closed when native metadata is
+unavailable. Handle regressions verify that staging closes every owned SQLite
+connection after its transaction, including partial failures, and that a failed
+stream reservation closes its original descriptor before removing private files.
+These module-local Windows boundary models supplement the native Windows CI run.
 
 Retained-bank compatibility checks keep the published schema-4 table contract,
 four known monotone revision policies, exact source/row digests, historical

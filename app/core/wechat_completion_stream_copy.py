@@ -1,6 +1,6 @@
 """Copy already validated active completions into a bounded, encoded private catalog.
 
-Code version: v1.0.0-codex.0
+Code version: v1.0.1-codex.0
 The caller owns source validation, the exact upstream-active selection, and final
 proof/CAS validation. This helper never modifies an attached source database.
 """
@@ -15,7 +15,7 @@ import tempfile
 from .wechat_completion_json_codec import decode_json_cell, encode_json_cell
 from . import owner_only_files
 
-CODE_VERSION = "v1.0.0-codex.0"
+CODE_VERSION = "v1.0.1-codex.0"
 _TABLES = {
     "messages",
     "entries",
@@ -145,13 +145,16 @@ def create_stream_output(destination):
     except BaseException:
         if output is not None:
             output.close()
+        os.close(descriptor)
+        descriptor = None
         # The reserved public candidate, if created, remains reviewable; never remove a racer.
         if stream_directory_owned(owner) and stream_file_owned(owner, private):
             private.unlink()
             directory.rmdir()
         raise
     finally:
-        os.close(descriptor)
+        if descriptor is not None:
+            os.close(descriptor)
 
 
 def release_stream_link(owner, destination):

@@ -1,6 +1,6 @@
 """Stage and read evidence-checked message completions in one derived SQL catalog.
 
-Code version: v1.0.7-codex.1
+Code version: v1.0.7-codex.2
 
 Original history, resource catalogs, account boundaries, and recovery-bank pins
 remain unchanged. Strategies produce either exact resource-row replacements or
@@ -48,7 +48,7 @@ from .wechat_resource_sender_evidence import (
 from .wechat_text import native_components_text
 
 
-CODE_VERSION = "v1.0.7-codex.1"
+CODE_VERSION = "v1.0.7-codex.2"
 PROOF_VERSION = "v1.0.0-codex.0"
 VERSION = PROOF_VERSION
 FILENAME = "secondary_message_completions.sqlite3"
@@ -957,10 +957,10 @@ def stage_secondary_message_completions(
                     )
             _clonefile(target, candidate)
         else:
-            with sqlite3.connect(candidate) as output:
+            with closing(sqlite3.connect(candidate)) as output, output:
                 output.executescript(_SCHEMA)
         candidate.chmod(0o600)
-        with sqlite3.connect(candidate) as output:
+        with closing(sqlite3.connect(candidate)) as output, output:
             register_json_codec(output)
             output.execute("PRAGMA journal_mode=DELETE")
             output.execute("PRAGMA synchronous=FULL")
@@ -1271,7 +1271,7 @@ def stage_secondary_message_completions(
         and _identity(base) != base_identity
     ):
         raise ValueError("A published input changed while staging completions.")
-    with sqlite3.connect(candidate) as output:
+    with closing(sqlite3.connect(candidate)) as output, output:
         output.execute(
             "UPDATE archive_info SET value='complete' WHERE key='staging_state'"
         )

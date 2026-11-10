@@ -1,6 +1,6 @@
 """Clone only completion catalogs without relaxing preserved-archive policies.
 
-Code version: v1.1.0-codex.0
+Code version: v1.1.1-codex.0
 """
 
 from __future__ import annotations
@@ -18,7 +18,7 @@ from .owner_only_files import ensure_owner_only, owner_only_problem
 from .wechat_export_merge import _clonefile
 
 
-VERSION = "v1.1.0-codex.0"
+VERSION = "v1.1.1-codex.0"
 IS_MACOS = sys.platform == "darwin"
 IS_WINDOWS = os.name == "nt"
 COPY_BLOCK_BYTES = 8 * 1024**2
@@ -57,9 +57,29 @@ def _identity(path):
     return {key: getattr(state, "st_" + key) for key in _IDENTITY_FIELDS}
 
 
-def _descriptor_identity(stream):
-    state = os.fstat(stream.fileno())
-    return {key: getattr(state, "st_" + key) for key in _IDENTITY_FIELDS}
+def _copy_identity(path, *, descriptor=None):
+    """Compare one metadata contract for a path and its opened copy handle."""
+    state = Path(path).lstat() if descriptor is None else os.fstat(descriptor)
+    if not stat.S_ISREG(state.st_mode):
+        raise ValueError("A completion copy requires a regular opened file.")
+    identity = {key: getattr(state, "st_" + key) for key in _IDENTITY_FIELDS}
+    if IS_WINDOWS:
+        from .windows_file_metadata import file_change_time
+
+        # Windows path stat and fstat expose different meanings for ctime.
+        # Preserve creation identity and compare the same native mutation token.
+        try:
+            identity["ctime_ns"] = state.st_birthtime_ns
+        except AttributeError as error:
+            raise ValueError(
+                "Windows completion copies require native creation metadata."
+            ) from error
+        identity["change_time"] = file_change_time(path, descriptor=descriptor)
+    return identity
+
+
+def _descriptor_identity(stream, path):
+    return _copy_identity(path, descriptor=stream.fileno())
 
 
 def _catalog_contract(path):
@@ -150,16 +170,20 @@ def clone_completion_catalog(
         raise ValueError(
             "The validated completion source changed during header checks."
         )
+    copy_identity = _copy_identity(source)
     temporary = None
     temporary_identity = None
     try:
         descriptor = os.open(source, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
         with os.fdopen(descriptor, "rb") as original:
-            if _descriptor_identity(original) != expected_identity:
+            if _descriptor_identity(original, source) != copy_identity:
                 raise ValueError("The opened completion source identity changed.")
             if expected_sha256 is None:
                 expected_sha256 = _copy_bytes(original, None, expected_identity["size"])
-                if _identity(source) != expected_identity:
+                if (
+                    _identity(source) != expected_identity
+                    or _copy_identity(source) != copy_identity
+                ):
                     raise ValueError(
                         "The completion source changed during checksum validation."
                     )
@@ -169,25 +193,26 @@ def clone_completion_catalog(
             )
             temporary = Path(name)
             with os.fdopen(descriptor, "wb") as output:
-                temporary_identity = _descriptor_identity(output)
+                temporary_identity = _descriptor_identity(output, temporary)
                 ensure_owner_only(temporary)
-                temporary_identity = _descriptor_identity(output)
-                if _identity(temporary) != temporary_identity:
+                temporary_identity = _descriptor_identity(output, temporary)
+                if _copy_identity(temporary) != temporary_identity:
                     raise ValueError("The private completion copy was replaced.")
                 digest = _copy_bytes(original, output, expected_identity["size"])
                 output.flush()
                 os.fsync(output.fileno())
                 if (
-                    _descriptor_identity(original) != expected_identity
+                    _descriptor_identity(original, source) != copy_identity
                     or _identity(source) != expected_identity
+                    or _copy_identity(source) != copy_identity
                     or digest != expected_sha256
                     or output.tell() != expected_identity["size"]
                 ):
                     raise ValueError(
                         "The completion source or reviewed SHA-256 changed during copying."
                     )
-                copied_identity = _descriptor_identity(output)
-                if _identity(temporary) != copied_identity or owner_only_problem(
+                copied_identity = _descriptor_identity(output, temporary)
+                if _copy_identity(temporary) != copied_identity or owner_only_problem(
                     temporary
                 ):
                     raise ValueError(
@@ -197,6 +222,7 @@ def clone_completion_catalog(
                 destination.parent.lstat().st_dev != parent.st_dev
                 or destination.parent.lstat().st_ino != parent.st_ino
                 or _identity(source) != expected_identity
+                or _copy_identity(source) != copy_identity
             ):
                 raise ValueError("A private completion input changed before promotion.")
             # Hard-link creation is an atomic absent-name compare-and-swap on
@@ -212,7 +238,7 @@ def clone_completion_catalog(
             temporary = None
             # Link/unlink changes ctime. Retain the verified inode, byte count,
             # and mtime while checking the final owner-only boundary.
-            published = _identity(destination)
+            published = _copy_identity(destination)
             if any(
                 published[key] != copied_identity[key]
                 for key in ("dev", "ino", "size", "mtime_ns")
