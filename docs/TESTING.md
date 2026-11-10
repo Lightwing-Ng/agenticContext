@@ -1,6 +1,6 @@
 # Testing guide
 
-Documentation version: `v1.49.2-codex.0`
+Documentation version: `v1.50.0-codex.0`
 
 ## Supported commands
 
@@ -30,6 +30,28 @@ framing, input/output hashes, and bounded private worker transport.
   tests/test_wechat_quoted_resources.py tests/test_wechat_quoted_contacts.py \
   tests/test_wechat_quote_original_timeline.py tests/test_wechat_secondary_quotes_e2e.py \
   tests/test_wechat_completion_contact_cache.py
+```
+
+Streaming compaction copies only the same upstream-active rows into a new private
+catalog, encoding JSON during the copy. Checks compare clone and streaming output
+for empty, complete, partial, mixed TEXT/BLOB/NULL, orphan-proof, and audit-only
+cases, including a 300-row transaction boundary. A partial output remains
+unpublishable through final proof, hash, flush, and input checks; racing names and
+original source files remain unchanged. The quote browser exercises the retained
+member-path receipt through a published streaming output.
+
+Optional quote reconciliation requires the reviewed decision-manifest SHA and its
+current source generation or exact direct parent. Every row must regenerate the
+byte-identical prior projected SHA; the same upstream predicate can still exclude
+it. Historical conflict evidence and unrelated quarantines remain intact. Tests
+reject changed manifests, unrelated generations, forged prior hashes, conflicting
+facts, and input drift without completing or publishing the partial output.
+
+```bash
+./scripts/test.sh tests/test_wechat_secondary_completions.py \
+  tests/test_wechat_quote_enrichment_replay.py tests/test_wechat_quote_enrichment_compaction.py \
+  tests/test_wechat_secondary_quotes_e2e.py tests/test_wechat_browser_snapshot.py \
+  tests/test_wechat_browser_cache.py
 ```
 
 Completion-only staging retains mandatory APFS cloning on macOS. Other supported

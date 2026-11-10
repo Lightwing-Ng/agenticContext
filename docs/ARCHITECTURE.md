@@ -1,6 +1,6 @@
 # Architecture guide
 
-Documentation version: `v1.77.0-codex.0`
+Documentation version: `v1.77.1-codex.0`
 
 ## Runtime flow
 
@@ -1155,11 +1155,20 @@ remain unchanged. Reader and contact-index fingerprints include this derived cat
 Staging streams sealed packets and retains each verified packet in an explicitly
 incomplete candidate until final input checks succeed. Publication verifies every
 projection again under the global repair and recovery-bank leases, then uses an atomic
-replacement with compare-and-swap checks. Review-only compaction can clone a complete
-candidate, remove projections already superseded by a verified upstream timeline,
-retain a row/hash pruning manifest, and vacuum the new candidate. It never edits the
-published timeline or the preserved source packets. Proof schema versions remain
-stable across implementation-only changes.
+replacement with compare-and-swap checks. Review-only compaction uses the same
+upstream precedence predicate for both clone-and-vacuum and streaming output. The
+streaming path writes only active projections into a new private catalog and encodes
+JSON while copying, limiting temporary storage. Both paths retain pruning evidence
+and validate source and output proofs before marking a candidate complete.
+
+Reviewed quote reconciliation can restore a prior projection only when an exact
+SHA-bound decision manifest links the current candidate to that source generation.
+The retained witness must regenerate the byte-identical prior projection and pass
+the same known-fact and upstream precedence checks. Omitted quote details remain
+unknown; contradictory known facts remain quarantined. Reconciliation keeps the
+historical conflict ledger and a separate decision manifest. It never edits the
+published timeline or preserved source packets. Proof schema versions remain stable
+across implementation-only changes.
 
 Derived catalog copies use `wechat_completion_clone.py`: macOS retains the existing
 mandatory APFS clone policy. Linux and Windows copy only validated completion catalogs

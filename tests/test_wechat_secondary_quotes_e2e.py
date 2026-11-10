@@ -1,6 +1,6 @@
 """Published source-scoped image quotes keep exact authors and inert card bodies.
 
-Code version: v1.2.0-codex.0
+Code version: v1.2.1-codex.0
 """
 
 from __future__ import annotations
@@ -104,6 +104,7 @@ def completed_quote_server(completion_fixture, tmp_path, request):
         fixture["candidate"],
         tmp_path / "encoded-completions.sqlite3",
         candidate_sha256=staged["candidate_sha256"],
+        stream_compaction=request.param == "legacy_member",
     )
     completion.completions.publish_secondary_message_completions(
         fixture["root"],
