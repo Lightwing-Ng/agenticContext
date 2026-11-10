@@ -1,6 +1,6 @@
 """Aggregate one verified contact's text occurrences without merging namesakes.
 
-Code version: v1.22.1-codex.0
+Code version: v1.23.0-codex.0
 """
 
 from __future__ import annotations
@@ -304,6 +304,9 @@ def _source_state(root):
             "A contact analysis input has a database journal; wait for publication to finish."
         )
     identities = {str(path.resolve()): _identity(path) for path in (history, contacts)}
+    from .wechat_secondary_completions import completion_input_identities
+
+    identities.update(completion_input_identities(history))
     from .wechat_conversation_events import (
         VERSION as event_version,
         cache_only_summaries,
@@ -1184,6 +1187,9 @@ def _copy_legacy_references(target, output, history, contacts):
             identities = {
                 str(path.resolve()): _identity(path) for path in (history, contacts)
             }
+            from .wechat_secondary_completions import completion_input_identities
+
+            identities.update(completion_input_identities(history))
             version = info.get("version")
             expected = hashlib.sha256(_json([version, identities]).encode()).hexdigest()
             old_fields = [row[1] for row in retained.execute("PRAGMA table_info(refs)")]
@@ -1241,6 +1247,9 @@ def _copy_complete_event_index(target, output, history, contacts):
             identities = {
                 str(path.resolve()): _identity(path) for path in (history, contacts)
             }
+            from .wechat_secondary_completions import completion_input_identities
+
+            identities.update(completion_input_identities(history))
             version = info.get("version")
             expected = hashlib.sha256(_json([version, identities]).encode()).hexdigest()
             tables = ("refs", "statement_groups", "statement_members")
@@ -2096,6 +2105,8 @@ def _link_recovered_quoted_origins(output):
 
 
 def _build_index(root, contact_id, fingerprint):
+    from .wechat_secondary_completions import completion_input_identities
+
     _check_build_cancelled()
     with _build_lock():
         _check_build_cancelled()
@@ -2297,6 +2308,7 @@ def _build_index(root, contact_id, fingerprint):
                                         str(path.resolve()): _identity(path)
                                         for path in (history, contacts)
                                     }
+                                    | completion_input_identities(history)
                                 ).encode()
                             ).hexdigest(),
                         ),

@@ -1,4 +1,4 @@
-/* Code version: v1.18.3-codex.0 */
+/* Code version: v1.19.1-codex.0 */
 /* Human-message variants consume the existing Local resources primitives. */
 .wechat-conversation-share {
     position: fixed;
@@ -80,9 +80,10 @@
 .wechat-message-row { position: relative; min-width: 0; }
 
 .wechat-resources .wechat-message {
+    --wechat-message-min-width: min(240px, 100%);
     width: fit-content;
     max-width: min(88%, 64ch);
-    min-width: min(240px, 100%);
+    min-width: var(--wechat-message-min-width);
     gap: 4px;
     margin: 0 auto 0 0;
     padding: 8px 12px;
@@ -120,7 +121,7 @@
 /* Read the undocked logical size without disturbing an active width spring. */
 .wechat-resources .wechat-message--time-measuring {
     width: fit-content !important;
-    min-width: min(240px, 100%) !important;
+    min-width: var(--wechat-message-min-width) !important;
     max-width: min(88%, 64ch) !important;
     margin-inline-end: auto !important;
 }
@@ -144,6 +145,12 @@
     font-size: 0.8em;
     line-height: 1.35;
     white-space: nowrap;
+}
+.wechat-message:has(> .wechat-resource[data-wechat-resource-kind="image"]) > .wechat-provenance .wechat-time-slot,
+.wechat-message:has(> .wechat-resource[data-wechat-resource-kind="sticker"]) > .wechat-provenance .wechat-time-slot {
+    /* Preserve the detached clock's baseline without widening compact content. */
+    inline-size: 0;
+    overflow: hidden;
 }
 .wechat-message-time {
     position: absolute;
@@ -256,7 +263,7 @@
 }
 .wechat-resource {
     display: grid;
-    grid-template-columns: 32px minmax(0, 1fr) auto;
+    grid-template-columns: 32px minmax(0, 1fr);
     align-items: center;
     gap: 12px;
     min-height: 44px;
@@ -268,9 +275,33 @@
     font: inherit;
     text-align: start;
 }
-button.wechat-resource { cursor: pointer; }
-button.wechat-resource:focus-visible { outline: 2px solid var(--theme-accent-primary); outline-offset: 4px; border-radius: 4px; }
-.wechat-resource:disabled { cursor: wait; }
+.wechat-resource:has(> .wechat-resource-reveal) { grid-template-columns: 32px minmax(0, 1fr) auto; }
+.wechat-resource-reveal {
+    position: relative;
+    justify-self: end;
+    opacity: 0;
+    pointer-events: none;
+}
+.wechat-message:hover > .wechat-resource > .wechat-resource-reveal,
+.wechat-resource:focus-within > .wechat-resource-reveal,
+.wechat-resource-reveal:focus-visible {
+    opacity: 1;
+    pointer-events: auto;
+}
+.wechat-resource-reveal:disabled { cursor: wait; }
+@media (hover: none), (pointer: coarse) {
+    .wechat-resource-reveal { opacity: 1; pointer-events: auto; }
+    .wechat-resource-reveal::before {
+        content: "";
+        position: absolute;
+        top: 50%;
+        left: 50%;
+        width: var(--circular-icon-button-hit-size);
+        height: var(--circular-icon-button-hit-size);
+        transform: translate(-50%, -50%);
+        border-radius: inherit;
+    }
+}
 .wechat-resource-copy { display: grid; gap: 4px; min-width: 0; }
 .wechat-resource-label { font-size: var(--wechat-message-text-font-size); overflow-wrap: anywhere; }
 .wechat-resource-status { color: var(--theme-muted); font-size: 0.8em; overflow-wrap: anywhere; }
@@ -286,6 +317,7 @@ button.wechat-resource:focus-visible { outline: 2px solid var(--theme-accent-pri
 [data-wechat-resource-kind="sticker"] .wechat-resource-icon { --wechat-resource-symbol: url("/static/images/photo.stack.svg"); }
 [data-wechat-resource-kind="video"] .wechat-resource-icon { --wechat-resource-symbol: url("/static/images/film.circle.svg"); }
 [data-wechat-resource-kind="audio"] .wechat-resource-icon { --wechat-resource-symbol: url("/static/images/play.fill.svg"); }
+[data-wechat-resource-link="true"] .wechat-resource-icon { --wechat-resource-symbol: url("/static/images/link.svg"); }
 .wechat-payment { grid-template-columns: 32px minmax(0, 1fr); }
 .wechat-payment-text { min-width: 0; }
 .wechat-payment-icon { --wechat-resource-symbol: url("/static/images/arrow.trianglehead.2.clockwise.svg"); }

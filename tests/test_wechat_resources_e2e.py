@@ -1,6 +1,6 @@
 """Media references remain visible and reveal only their mapped Mac destinations.
 
-Code version: v1.0.0-codex.0
+Code version: v1.1.0-codex.0
 """
 
 from __future__ import annotations
@@ -9,6 +9,7 @@ from datetime import datetime, timedelta, timezone
 import hashlib
 from io import BytesIO
 import json
+import sqlite3
 from threading import Thread
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -43,9 +44,11 @@ LONG_FILENAME = (
 MONTH = "2021-08"
 
 
-def _resource_row(session, kind, second, **values):
+def _resource_row(session, kind, second, *, sender=None, **values):
     identifier = hashlib.sha256(f"{session['id']}:{kind}:{second}".encode()).hexdigest()
     row = list(_reference(session, kind.title(), second, identifier=identifier))
+    if sender is not None:
+        row[3:5] = sender
     timestamp = int(
         datetime(
             2021, 8, 7, 19, 0, second, tzinfo=timezone(timedelta(hours=8))
@@ -55,7 +58,13 @@ def _resource_row(session, kind, second, **values):
         {"sent_at_utc_iso": datetime.fromtimestamp(timestamp, timezone.utc).isoformat()}
     )
     provenance = json.loads(row[11])
-    provenance["message_type"] = {"image": 3, "video": 43, "file": 49}[kind]
+    provenance["message_type"] = {
+        "image": 3,
+        "video": 43,
+        "file": 49,
+        "app": 49,
+        "sticker": 47,
+    }[kind]
     provenance["locator"] = {"database": "fixture-message.sqlite", "row_id": second}
     provenance["resource_reference"].update(
         kind=kind, unix_timestamp=timestamp, **values
@@ -71,10 +80,45 @@ def resource_server(tmp_path_factory):
     import_wechat_archive(make_archive(sandbox / "archive", repeated=3), store)
     first = _session(store)
     other = _session(store, owner="wxid_account_b")
+    with sqlite3.connect(wechat_archive_path(store)) as connection:
+        short_text_id = connection.execute(
+            "SELECT id FROM messages WHERE conversation_id=? AND direction='received' LIMIT 1",
+            (first["id"],),
+        ).fetchone()[0]
+        connection.execute(
+            "UPDATE messages SET text=?,sender_id=?,sender_label=?,search_text=? WHERE id=?",
+            (
+                "A short message", "wxid_synthetic_media_sender", "Sam",
+                "a short message", short_text_id,
+            ),
+        )
     rows = [
+        _resource_row(
+            first,
+            "image",
+            17,
+            sender=("wxid_synthetic_media_sender", "Sam"),
+            availability="metadata_only",
+        ),
+        _resource_row(
+            first,
+            "sticker",
+            18,
+            sender=("wxid_synthetic_media_sender", "Sam"),
+            availability="metadata_only",
+        ),
         _resource_row(first, "image", 20, checksum_md5=CHECKSUM),
         _resource_row(first, "video", 40),
         _resource_row(first, "file", 55, filename=LONG_FILENAME, byte_size=4),
+        _resource_row(
+            first,
+            "app",
+            58,
+            availability="metadata_only",
+            app_subtype="5",
+            safe_title="A third-party article",
+            publisher_name="Synthetic publisher",
+        ),
     ]
     missing = _resource_row(other, "image", 25, checksum_md5=CHECKSUM)
     sidecar = _sidecar(store, [*((first, row) for row in rows), (other, missing)])
@@ -128,6 +172,7 @@ def resource_server(tmp_path_factory):
                 session=first["id"],
                 other_session=other["id"],
                 rows=rows,
+                short_text_id=short_text_id,
                 history=history,
                 sidecar=sidecar,
                 before=before,
@@ -234,22 +279,61 @@ def test_resource_placeholders_preserve_mac_mapping_icons_and_finder_actions(
     page.on("pageerror", lambda error: errors.append(str(error)))
     try:
         _open_session(page, fixture)
+        expect(page.locator(".wechat-conversation-labels")).to_have_text("Private chat")
+        expect(page.locator(".wechat-conversation-labels > *")).to_have_count(1)
         resources = page.locator(".wechat-resource")
-        expect(resources).to_have_count(3)
+        expect(resources).to_have_count(6)
         assert str(fixture.home) not in page.content()
-        image = page.locator('.wechat-resource[data-wechat-resource-kind="image"]')
+        image = page.locator(
+            '.wechat-resource[data-wechat-resource-kind="image"][data-wechat-resource-status="file"]'
+        )
         video = page.locator('.wechat-resource[data-wechat-resource-kind="video"]')
         file = page.locator('.wechat-resource[data-wechat-resource-kind="file"]')
+        article = page.locator('.wechat-resource[data-wechat-resource-link="true"]')
         for resource, status, asset in [
             (image, "file", "photo.stack.svg"),
             (video, "folder", "film.circle.svg"),
             (file, "candidate", "document.on.document.fill.svg"),
         ]:
             expect(resource).to_have_attribute("data-wechat-resource-status", status)
-            assert resource.evaluate("node => node.tagName") == "BUTTON"
+            assert resource.evaluate("node => node.tagName") == "DIV"
+            button = resource.locator("button[data-wechat-resource-reveal]")
+            expect(button).to_have_count(1)
+            expect(button).to_have_class("circular-icon-button wechat-resource-reveal")
             _assert_painted_svg(page, resource, asset)
         expect(file.locator(".wechat-resource-label")).to_have_text(LONG_FILENAME)
+        expect(article).to_have_count(1)
+        expect(article).to_have_attribute(
+            "data-wechat-resource-status", "metadata_only"
+        )
+        expect(article.locator(".wechat-resource-label")).to_have_text(
+            "A third-party article"
+        )
+        expect(article.locator(".wechat-resource-status")).to_have_text(
+            "Synthetic publisher"
+        )
+        expect(article).not_to_contain_text("Metadata only")
+        assert article.evaluate("node => node.tagName") == "DIV"
+        assert article.get_attribute("data-wechat-resource-reveal") is None
+        _assert_painted_svg(page, article, "link.svg")
         geometry = _assert_resource_geometry(page)
+        compact = page.locator('.wechat-resource[data-wechat-resource-kind="sticker"]')
+        _assert_painted_svg(page, compact, "photo.stack.svg")
+        if width >= 710:
+            compact_widths = page.locator(
+                '.wechat-resource[data-wechat-resource-status="metadata_only"]'
+                ':is([data-wechat-resource-kind="image"], [data-wechat-resource-kind="sticker"])'
+            ).evaluate_all(
+                "nodes => nodes.map(node => node.closest('.wechat-message').getBoundingClientRect().width)"
+            )
+            assert len(compact_widths) == 2
+            short_text = page.locator(f"#wechat_message_{fixture.short_text_id}")
+            text_width = short_text.evaluate("node => node.getBoundingClientRect().width")
+            assert text_width == pytest.approx(240, abs=1)
+            assert all(
+                media_width == pytest.approx(text_width, abs=1)
+                for media_width in compact_widths
+            ), (compact_widths, text_width)
         if width == 390:
             assert (
                 next(row for row in geometry["rows"] if row["kind"] == "file")[
@@ -258,23 +342,38 @@ def test_resource_placeholders_preserve_mac_mapping_icons_and_finder_actions(
                 > 24
             )
         _assert_bubble_effects(page)
-        expect(page.locator(".browser-chat-effect")).to_have_count(6)
+        expect(page.locator(".browser-chat-effect")).to_have_count(9)
 
-        video.click()
+        page.mouse.move(0, 0)
+        video_button = video.locator("[data-wechat-resource-reveal]")
+        expect(video_button).to_have_css("opacity", "0")
+        video_button.focus()
+        expect(video_button).to_have_css("opacity", "1")
+        expect(video_button).to_have_css("width", "32px")
+        expect(video_button).to_have_css("height", "32px")
+        expect(video_button.locator(".icon")).to_have_css("width", "18px")
+        expect(video_button.locator(".icon")).to_have_css("height", "18px")
+        video_button.evaluate("node => node.blur()")
+        expect(video_button).to_have_css("opacity", "0")
+        video.hover()
+        expect(video_button).to_have_css("opacity", "1")
+        video_button.click()
         expect(video.locator("[data-wechat-resource-feedback]")).to_have_text(
             "Folder shown in Finder"
         )
         fixture.opener.assert_called_once_with(fixture.video)
         fixture.file_opener.assert_not_called()
-        expect(video).to_be_enabled()
+        expect(video_button).to_be_enabled()
         fixture.account.rename(fixture.parked)
         try:
-            image.click()
+            image.hover()
+            image_button = image.locator("[data-wechat-resource-reveal]")
+            image_button.click()
             expect(image.locator("[data-wechat-resource-feedback]")).to_contain_text(
                 "no longer available"
             )
-            expect(image).to_be_enabled()
-            expect(resources).to_have_count(3)
+            expect(image_button).to_be_enabled()
+            expect(resources).to_have_count(6)
             fixture.opener.assert_called_once_with(fixture.video)
         finally:
             fixture.parked.rename(fixture.account)
@@ -299,4 +398,46 @@ def test_resource_placeholders_preserve_mac_mapping_icons_and_finder_actions(
     finally:
         if fixture.parked.exists():
             fixture.parked.rename(fixture.account)
+        context.close()
+
+
+@pytest.mark.parametrize("color_scheme", ["light", "dark"])
+def test_touch_finder_action_stays_visible_with_a_full_coarse_pointer_hit_region(
+    disposable_browser, resource_server, color_scheme
+):
+    fixture = resource_server
+    fixture.opener.reset_mock()
+    context = disposable_browser.new_context(
+        viewport={"width": 390, "height": 1109},
+        color_scheme=color_scheme,
+        reduced_motion="reduce",
+        has_touch=True,
+        is_mobile=True,
+    )
+    page = context.new_page()
+    try:
+        _open_session(page, fixture)
+        resource = page.locator('.wechat-resource[data-wechat-resource-kind="video"]')
+        button = resource.locator("[data-wechat-resource-reveal]")
+        button.scroll_into_view_if_needed()
+        expect(button).to_have_css("opacity", "1")
+        hit_region = button.evaluate("""node => {
+            const box = node.getBoundingClientRect();
+            const hit = getComputedStyle(node, '::before');
+            return {width:box.width, height:box.height,
+                hitWidth:parseFloat(hit.width), hitHeight:parseFloat(hit.height)};
+        }""")
+        assert hit_region == {
+            "width": 32,
+            "height": 32,
+            "hitWidth": 44,
+            "hitHeight": 44,
+        }
+        box = button.bounding_box()
+        page.touchscreen.tap(box["x"] - 4, box["y"] + box["height"] / 2)
+        expect(resource.locator("[data-wechat-resource-feedback]")).to_have_text(
+            "Folder shown in Finder"
+        )
+        fixture.opener.assert_called_once_with(fixture.video)
+    finally:
         context.close()

@@ -1,6 +1,6 @@
 """Stage indexed, source-bound Mac recovery without rewriting the original archive.
 
-Code version: v1.3.0-codex.0
+Code version: v1.6.0-codex.0
 """
 
 from __future__ import annotations
@@ -21,15 +21,17 @@ import stat
 from threading import RLock
 
 from . import wechat_macos_recovery as legacy
+from . import wechat_macos_bank_v4_reader as schema4_reader
 from .compute_resources import resolve_cpu_process_workers
 from .platform_lock import lock_file, unlock_file
-from .wechat_archive import _identifier, wechat_archive_path
+from .wechat_archive import _identifier, _time_fields, wechat_archive_path
 from .wechat_reconcile import _TEXT_METADATA_FIELDS, native_text_metadata
-from .wechat_resource_index import _KINDS, _LABELS
-from .wechat_text import native_components_text
+from .wechat_resource_index import _APP_LABEL_FIELDS as _LINK_LABEL_FIELDS, _KINDS, _LABELS, _app_label
+from .wechat_text import is_native_pat_projection, native_components_text
 
 
-VERSION = "v1.2.1-codex.0"
+CODE_VERSION = "v1.6.0-codex.0"
+VERSION = "v1.4.0-codex.0"
 MAX_PACKET_BYTES = 128 * 1024**2
 MAX_PACKET_MESSAGES = 100_000
 MAX_SCOPE_MESSAGES = 5_000_000
@@ -61,7 +63,9 @@ _SIGNATURE_FIELDS = (
     "invitation_card_fields",
     "system_message_subtype",
     "system_source_ids",
+    "app_card_metadata",
 )
+_APP_LABEL_FIELDS = ("safe_title", "app_name", "app_name_source", "publisher_name", "publisher_name_source")
 _SOURCE_INPUTS = (
     "history.sqlite3",
     "macos_recovery.json",
@@ -239,7 +243,7 @@ def _account_binding_shape(packet):
     if (
         not isinstance(binding, dict)
         or set(binding) != fields
-        or binding.get("schema_version") != 1
+        or binding.get("schema_version") not in (1, 2)
         or type(binding["schema_version"]) is not int
         or binding.get("account_id") != packet["account_id"]
         or not isinstance(source, dict)
@@ -263,7 +267,9 @@ def _account_binding_shape(packet):
         raise ValueError(
             "The captured Mac account directory conflicts with its native owner."
         )
-    _name_proof(binding["owner_proof"], owner, 2)
+    owner_row = _name_proof(
+        binding["owner_proof"], owner, 2 if binding["schema_version"] == 1 else None
+    )
     digest = _sha(binding)
     with _LOCK:
         if digest in _ACCOUNT_BINDING_SHAPES:
@@ -319,7 +325,7 @@ def _account_binding_shape(packet):
             != ("sent" if anchor["sender_id"] == owner else "received")
             or anchor["direction"] == "sent"
             and (
-                anchor["real_sender_id"] != 2
+                anchor["real_sender_id"] != owner_row["rowid"]
                 or anchor["sender_proof"] != binding["owner_proof"]
             )
             or not peer.endswith(("@chatroom", "@im.chatroom"))
@@ -468,6 +474,59 @@ def _safe_metadata(value, depth=0):
         raise ValueError("Mac parser metadata must contain only bounded JSON values.")
 
 
+def _valid_resource_labels(resource, typ):
+    for key in _APP_LABEL_FIELDS:
+        if key in resource and (
+            not isinstance(resource[key], str)
+            or len(resource[key]) > 1024
+            or any(
+                ord(char) < 32 and char not in "\t\r\n"
+                for char in resource[key]
+            )
+        ):
+            return False
+    versioned = "app_metadata_version" in resource
+    if any(key in resource for key in _APP_LABEL_FIELDS if key != "safe_title"):
+        if not versioned:
+            return False
+    if not versioned:
+        return True
+    if (
+        resource["app_metadata_version"] != "1"
+        or typ != 49
+        or resource.get("kind") != "app"
+        or not any(
+            resource.get(key, "").strip()
+            for key in ("safe_title", "publisher_name", "app_name")
+        )
+    ):
+        return False
+    if (
+        resource.get("app_subtype") == "5"
+        and not any(key in resource for key in ("app_name_source", "publisher_name_source"))
+        and typ == 49 and resource.get("kind") == "app"
+        and resource.get("app_metadata_version") == "1"
+        and any(key in resource for key in _LINK_LABEL_FIELDS)
+        and all(
+            key not in resource or _app_label(resource[key]) == resource[key]
+            and bool(_app_label(resource[key]))
+            for key in _LINK_LABEL_FIELDS
+        )
+    ):
+        return True
+    for key, paths in (
+        ("publisher_name", {"appmsg/sourcedisplayname"}),
+        ("app_name", {"appinfo/appname", "appmsg/appinfo/appname"}),
+    ):
+        if key in resource or key + "_source" in resource:
+            if (
+                not resource.get(key, "").strip()
+                or resource.get(key + "_source") not in paths
+            ):
+                return False
+    return True
+
+
 def _validate_packet(packet, accounts):
     required = legacy._PACKET_FIELDS | {"conversation_kind", "peer_proof"}
     if (
@@ -494,7 +553,7 @@ def _validate_packet(packet, accounts):
     _name_proof(packet["peer_proof"], peer)
     source = packet["source"]
     if not isinstance(source, dict) or set(source) - (
-        legacy._SOURCE_FIELDS | {"account_directory"}
+        legacy._SOURCE_FIELDS | legacy._LOCK_BYTE_SOURCE_FIELDS | {"account_directory"}
     ):
         raise ValueError("Unsupported Mac account source receipt fields.")
     legacy._validate_source(
@@ -557,7 +616,10 @@ def _validate_packet(packet, accounts):
             raise ValueError("One Mac source row has conflicting message metadata.")
         seen[local] = message
         typ = message["local_type"] & 0xFFFFFFFF
-        system = typ in {10000, 10002}
+        pat = is_native_pat_projection(
+            message.get("native_text"), message["local_type"], peer_id=peer
+        )
+        system = typ in {10000, 10002} or pat
         proof = message.get("sender_proof")
         if system:
             if (
@@ -611,6 +673,7 @@ def _validate_packet(packet, accounts):
                 or system
                 and kind != "system_text"
                 or typ == 49
+                and not pat
                 and kind
                 not in {"app_text", "text_appmsg", "quoted_reply", "forwarded_text"}
                 or "text_components" in native
@@ -628,7 +691,8 @@ def _validate_packet(packet, accounts):
                 "label",
                 "native_time",
                 "app_subtype",
-                "safe_title",
+                *_APP_LABEL_FIELDS,
+                "app_metadata_version",
             }
             if (
                 system
@@ -636,6 +700,8 @@ def _validate_packet(packet, accounts):
                 or set(resource) - allowed_resource
             ):
                 raise ValueError("A Mac resource needs body-free typed metadata.")
+            if not _valid_resource_labels(resource, typ):
+                raise ValueError("Mac resource labels need bounded declared source metadata.")
             kind = resource.get("kind")
             expected = _KINDS.get(typ, "unknown")
             if typ == 49 and "app_subtype" in resource and kind != "app":
@@ -748,7 +814,8 @@ def _row(packet, message):
     if "account_binding" in packet:
         proof["macos_recovery"].update(
             account_binding_sha256=_sha(packet["account_binding"]),
-            binding_mode="authenticated_source_account_binding_v1",
+            binding_mode="authenticated_source_account_binding_v"
+            + str(packet["account_binding"]["schema_version"]),
         )
     projected[11] = _json(proof)
     return projected
@@ -769,6 +836,8 @@ def _rows_digest(connection):
         "SELECT 1 FROM sqlite_master WHERE name='shadow_replacements' AND type='table'"
     ).fetchone():
         tables.append("shadow_replacements")
+    if schema4_reader._has_table(connection):
+        tables.append("projection_revisions")
     for table in tables:
         digest.update(table.encode())
         for row in connection.execute(f"SELECT * FROM {table} ORDER BY 1,2"):
@@ -804,6 +873,9 @@ def _stub_source(connection, row, catalog_hashes):
                 "native_metadata",
                 "safe_title",
                 "app_subtype",
+                "publisher_name",
+                "app_name",
+                "app_metadata_version",
             )
         ):
             return None
@@ -835,6 +907,180 @@ def _stub_source(connection, row, catalog_hashes):
             )
         catalog_hashes[str(path)] = digest
     return path.name, catalog_hashes[str(path)]
+
+
+_STUB_CLOCK_POLICY = "inert_resource_stub_to_authenticated_native_projection_v2"
+_STUB_CLOCK_FIELDS = ("time_sort", "timestamp_value", "timestamp_label", "time_basis")
+
+def _exact_epoch(value):
+    return type(value) is int and 1 <= value <= 253402271999
+
+
+def _catalog_clock(row):
+    proof = json.loads(row["provenance"])
+    epoch = proof.get("unix_timestamp")
+    if (
+        not _exact_epoch(epoch)
+        or type(row["time_sort"]) not in {int, float}
+        or any(not isinstance(row[key], str) or not row[key] for key in _STUB_CLOCK_FIELDS[1:])
+    ):
+        return None
+    try:
+        observed = datetime.fromisoformat(row["timestamp_value"])
+        if observed.tzinfo is None or observed.timestamp() != epoch:
+            return None
+        if tuple(row[key] for key in _STUB_CLOCK_FIELDS) != _time_fields(
+            {"sent_at_utc_iso": observed.isoformat()}
+        ):
+            return None
+    except (ValueError, TypeError, OverflowError, OSError):
+        return None
+    return {"epoch": epoch, **{key: row[key] for key in _STUB_CLOCK_FIELDS}}
+
+
+def _validate_stub_clock_receipt(connection, row, upgrade, *, original=None, schema="main"):
+    """Validate both observed clocks without choosing a preferred source epoch."""
+    if upgrade.get("upgrade_basis") != _STUB_CLOCK_POLICY:
+        raise ValueError("Unsupported retained-clock stub upgrade policy.")
+    clocks = upgrade.get("clock_observations")
+    catalog = clocks.get("catalog") if isinstance(clocks, dict) else None
+    native = clocks.get("native") if isinstance(clocks, dict) else None
+    delta = clocks.get("native_minus_catalog_seconds") if isinstance(clocks, dict) else None
+    proof = json.loads(row["provenance"])
+    receipt = proof.get("macos_recovery", {})
+    if (
+        not isinstance(catalog, dict) or set(catalog) != {"epoch", *_STUB_CLOCK_FIELDS}
+        or not isinstance(native, dict) or set(native) != {"epoch"}
+        or set(clocks) != {"catalog", "native", "native_minus_catalog_seconds"}
+        or not _exact_epoch(catalog.get("epoch")) or not _exact_epoch(native.get("epoch"))
+        or type(delta) is not int or delta not in {-1, 0, 1}
+        or native["epoch"] - catalog["epoch"] != delta
+        or type(upgrade.get("original_ordinal")) is not int
+        or upgrade["original_id"] != row["id"] or upgrade["original_ordinal"] != row["ordinal"]
+        or any(catalog[key] != row[key] for key in _STUB_CLOCK_FIELDS)
+        or type(upgrade.get("sender_identity_filled")) is not bool
+        or delta and upgrade["sender_identity_filled"]
+        or not isinstance(receipt, dict)
+        or not _exact_epoch(proof.get("unix_timestamp"))
+        or not _exact_epoch(receipt.get("create_time"))
+        or proof.get("unix_timestamp") != native["epoch"]
+        or receipt.get("create_time") != native["epoch"]
+        or type(proof.get("appmsg_subtype")) is not int
+        or proof.get("appmsg_subtype") not in {1, 19, 57, 2000, 2001}
+    ):
+        raise ValueError("A retained-clock stub upgrade has inconsistent observations.")
+    catalog_projection = {
+        **row, "provenance": _json({**proof, "unix_timestamp": catalog["epoch"]})
+    }
+    if _catalog_clock(catalog_projection) != catalog:
+        raise ValueError("A retained-clock stub upgrade has an invalid catalog clock.")
+    source_key = upgrade.get("native_source_key")
+    if not isinstance(source_key, str) or re.fullmatch(r"[0-9a-f]{64}", source_key) is None:
+        raise ValueError("A retained-clock stub upgrade lost its native source key.")
+    source = connection.execute(f"SELECT proof FROM {schema}.sources WHERE id=?", (source_key,)).fetchone()
+    observed = connection.execute(
+        f"SELECT proof,canonical_id FROM {schema}.occurrences "
+        "WHERE source_id=? AND conversation_id=? AND local_id=?",
+        (source_key, row["conversation_id"], receipt.get("local_id")),
+    ).fetchone()
+    if source is None or observed is None or observed[1] != row["id"]:
+        raise ValueError("A retained-clock stub upgrade lost its exact native observation.")
+    packet, message = json.loads(source[0]), json.loads(observed[0])
+    _validate_packet({**packet, "messages": [message]}, (packet["account_id"],))
+    if (
+        _sha(packet) != source_key
+        or packet["session_id"] != row["conversation_id"]
+        or packet["account_id"] != receipt.get("account_id")
+        or packet["peer_id"] != receipt.get("peer_id")
+        or message["create_time"] != native["epoch"]
+        or message["server_id"] != str(proof.get("server_id"))
+        or message["sender_id"] != row["sender_id"] or message["direction"] != row["direction"]
+        or any(message.get(key) != receipt.get(key) for key in (
+            "local_id", "local_type", "server_id", "content_sha256", "real_sender_id"
+        ))
+    ):
+        raise ValueError("A retained-clock stub upgrade differs from its native proof.")
+    if original is not None:
+        original_proof = json.loads(original["provenance"])
+        reference = original_proof.get("resource_reference", {})
+        if (
+            _catalog_clock(original) != catalog
+            or original["id"] != row["id"] or original["ordinal"] != row["ordinal"]
+            or reference.get("account_id") != packet["account_id"]
+            or reference.get("peer_id") != packet["peer_id"]
+            or str(original_proof.get("server_id")) != message["server_id"]
+            or original_proof.get("message_type") != 49
+            or original["direction"] != message["direction"]
+            or original["sender_id"] not in {None, "", message["sender_id"]}
+            or delta and original["sender_id"] != message["sender_id"]
+        ):
+            raise ValueError("A retained-clock stub upgrade differs from its original catalog.")
+
+
+def _validate_stub_clocks(connection, history):
+    if not connection.execute(
+        "SELECT 1 FROM sqlite_master WHERE name='shadow_replacements' AND type='table'"
+    ).fetchone():
+        return
+    if connection.execute(
+        "SELECT 1 FROM messages m WHERE instr(m.provenance,?)>0 "
+        "AND json_extract(m.provenance,'$.macos_stub_upgrade.upgrade_basis')=? "
+        "AND NOT EXISTS(SELECT 1 FROM shadow_replacements s WHERE s.original_id=m.id) LIMIT 1",
+        (_STUB_CLOCK_POLICY, _STUB_CLOCK_POLICY),
+    ).fetchone():
+        raise ValueError("A retained-clock projection lost its original shadow receipt.")
+    cursor = connection.execute(
+        "SELECT s.proof AS shadow_proof,s.original_id AS shadow_original_id,"
+        "s.source_file_name AS shadow_source_file_name,s.source_file_sha256 AS shadow_source_file_sha256,"
+        "s.original_text_sha256 AS shadow_original_text_sha256,"
+        "s.original_provenance_sha256 AS shadow_original_provenance_sha256,"
+        "s.original_row_sha256 AS shadow_original_row_sha256,m.* FROM shadow_replacements s "
+        "LEFT JOIN messages m ON m.id=s.original_id "
+        "WHERE instr(s.proof,?)>0 OR instr(s.proof,'\"clock_observations\"')>0",
+        (_STUB_CLOCK_POLICY,),
+    )
+    fields = [column[0] for column in cursor.description]
+    catalogs = {}
+    try:
+        for observed in cursor:
+            row = dict(zip(fields, observed, strict=True))
+            upgrade = json.loads(row.pop("shadow_proof"))
+            if (
+                row.get("id") is None
+                or json.loads(row["provenance"]).get("macos_stub_upgrade") != upgrade
+                or any(upgrade.get(key) != row["shadow_" + key] for key in (
+                    "original_id", "source_file_name", "source_file_sha256",
+                    "original_text_sha256", "original_provenance_sha256", "original_row_sha256",
+                ))
+            ):
+                raise ValueError("A retained-clock stub upgrade lost its canonical receipt.")
+            name = upgrade["source_file_name"]
+            if name not in {"resource_references.sqlite3", "resource_revalidated.sqlite3"}:
+                raise ValueError("A retained-clock upgrade names an unsupported catalog.")
+            if name not in catalogs:
+                path = Path(history).with_name(name)
+                identity = _identity(path)
+                catalog = sqlite3.connect(path.resolve().as_uri() + "?mode=ro&immutable=1", uri=True)
+                catalog.row_factory = sqlite3.Row
+                catalogs[name] = (path, identity, catalog)
+            path, identity, catalog = catalogs[name]
+            original = catalog.execute("SELECT * FROM messages WHERE id=?", (row["id"],)).fetchone()
+            if original is None:
+                raise ValueError("A retained-clock upgrade lost its original catalog row.")
+            original = dict(original)
+            if (
+                hashlib.sha256(original["text"].encode()).hexdigest() != upgrade["original_text_sha256"]
+                or hashlib.sha256(original["provenance"].encode()).hexdigest() != upgrade["original_provenance_sha256"]
+                or _sha(original) != upgrade["original_row_sha256"]
+            ):
+                raise ValueError("A retained-clock upgrade differs from its exact catalog receipt.")
+            _validate_stub_clock_receipt(connection, row, upgrade, original=original)
+        for path, identity, _catalog in catalogs.values():
+            if _identity(path) != identity:
+                raise ValueError("An original clock catalog changed during validation.")
+    finally:
+        for _path, _identity_value, catalog in catalogs.values():
+            catalog.close()
 
 
 def _upgrade_stub(stub, packet, message):
@@ -1282,7 +1528,8 @@ def _validate_bank(connection, history, current_inputs=None):
     supported = {
         "1": ("v1.0.0-codex.0",),
         "2": ("v1.1.0-codex.0",),
-        "3": ("v1.2.0-codex.0", VERSION),
+        "3": ("v1.2.0-codex.0", "v1.2.1-codex.0", "v1.2.2-codex.0", "v1.3.0-codex.0", VERSION),
+        "4": ("v1.4.0-codex.0", "v1.4.1-codex.0", "v1.4.2-codex.0", "v1.5.0-codex.0"),
     }
     if (
         schema_version not in supported
@@ -1291,9 +1538,10 @@ def _validate_bank(connection, history, current_inputs=None):
         raise ValueError("Unsupported Mac recovery bank schema.")
     if schema_version not in _SCHEMA_CONTRACT:
         with closing(sqlite3.connect(":memory:")) as expected_schema:
-            expected_schema.executescript(
-                _SCHEMA_V1 if schema_version == "1" else _SCHEMA
-            )
+            schema = _SCHEMA_V1 if schema_version == "1" else _SCHEMA
+            if schema_version == "4":
+                schema += schema4_reader.SCHEMA
+            expected_schema.executescript(schema)
             _SCHEMA_CONTRACT[schema_version] = list(
                 expected_schema.execute(
                     "SELECT type,name,tbl_name,sql FROM sqlite_master "
@@ -1323,6 +1571,9 @@ def _validate_bank(connection, history, current_inputs=None):
         raise ValueError(
             "The Mac recovery bank payload differs from its sealed manifest."
         )
+    if schema_version == "4":
+        schema4_reader.validate(connection)
+    _validate_stub_clocks(connection, history)
     return metadata
 
 
@@ -1369,6 +1620,13 @@ def _publication_lock(history):
             yield
         finally:
             unlock_file(handle)
+
+
+@contextmanager
+def mac_recovery_publication_guard(local_store_root):
+    """Share the existing bank writer lease with derived message publication."""
+    with _LOCK, _publication_lock(wechat_archive_path(local_store_root)):
+        yield
 
 
 def publish_mac_recovery_bank(
@@ -1719,7 +1977,7 @@ def attach_mac_recovery_bank(
             ):
                 _binding(connection, json.loads(record[0]))
         shadow_filter = ""
-        if metadata["schema_version"] in {"2", "3"}:
+        if metadata["schema_version"] in {"2", "3", "4"}:
             _validate_shadow_sources(
                 connection, history_path, conversation_id=conversation_id
             )

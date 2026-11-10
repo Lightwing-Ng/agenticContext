@@ -1,6 +1,6 @@
 """Message cards share provenance activation without taking over text or actions.
 
-Code version: v1.1.0-codex.0
+Code version: v1.1.1-codex.0
 """
 
 from __future__ import annotations
@@ -241,8 +241,9 @@ def test_resource_action_keeps_its_own_behavior_without_opening_details(
     try:
         card = _open(page, fixture).nth(2)
         button = card.locator("[data-wechat-resource-reveal]")
+        card.hover()
         button.click()
-        expect(button.locator("[data-wechat-resource-feedback]")).to_have_text(
+        expect(card.locator("[data-wechat-resource-feedback]")).to_have_text(
             "Folder shown in Finder"
         )
         assert len(requests) == 1

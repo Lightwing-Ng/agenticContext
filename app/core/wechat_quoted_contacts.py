@@ -1,6 +1,6 @@
 """Project verified native quoted-speaker names without rewriting source labels.
 
-Code version: v1.1.1-codex.0
+Code version: v1.2.1-codex.0
 """
 
 from __future__ import annotations
@@ -8,12 +8,13 @@ from __future__ import annotations
 import hashlib
 import re
 
-from .wechat_contacts import canonical_contact_id
+from .wechat_contacts import canonical_contact_id, classify_wechat_identifier
 from .wechat_reconcile import native_text_metadata
 
 
 _NATIVE_USER = re.compile(r"wxid_[A-Za-z0-9_]{1,100}")
 _ROOM = re.compile(r"[1-9][0-9]*@chatroom")
+_EXACT_ROOM = re.compile(r"[1-9][0-9]*@(?:im\.)?chatroom")
 _MAX_CHILDREN = 4_096
 _MAX_DEPTH = 32
 _MESSAGE_ID = re.compile(r"[0-9a-f]{64}")
@@ -42,6 +43,40 @@ def _quoted_author(reference, peer):
     if chat and chat not in {sender, peer}:
         return ""
     return sender
+
+
+def _exact_original_quoted_author(reference, peer, original_sender, reply_sender):
+    """Interpret source roles only after the caller proves the exact native original."""
+    if not isinstance(reference, dict) or not isinstance(peer, str) or not peer:
+        return ""
+
+    def native_user(value):
+        if classify_wechat_identifier(value)["kind"] not in {
+            "wechat_account", "wechat_identity"
+        }:
+            return False
+        try:
+            canonical_contact_id(value, authority="native_message_sender")
+        except (TypeError, ValueError):
+            return False
+        return True
+
+    if not native_user(original_sender):
+        return ""
+    sender = reference.get("source_sender_id", "")
+    chat = reference.get("source_chat_id", "")
+    if not isinstance(sender, str) or not isinstance(chat, str):
+        return ""
+    if _EXACT_ROOM.fullmatch(peer) and sender == peer:
+        return (
+            original_sender
+            if chat == original_sender
+            or chat == reply_sender and native_user(reply_sender)
+            else ""
+        )
+    if sender != original_sender or chat not in {"", peer, original_sender}:
+        return ""
+    return original_sender
 
 
 def _native_quote(context):
@@ -187,7 +222,7 @@ def _proven_original_author(item, snapshot, reference):
 
 
 def project_native_quoted_contacts(
-    items, repository, display_names, account_rows, source_snapshots
+    items, repository, display_names, account_rows, source_snapshots, *, originals=()
 ):
     """Add viewer fields to native quotes inside their verified receiving accounts.
 
@@ -195,6 +230,9 @@ def project_native_quoted_contacts(
     Label-only HTML/PDF quotations and unverified native accounts retain their labels.
     """
     partitions = {row["partition_id"]: row for row in account_rows}
+    from .wechat_quoted_resources import _exact_resource_original, _originals_by_server
+
+    resource_originals = _originals_by_server(items, originals)
     requests, quotes, expected_contacts = [], {}, {}
     remaining = _MAX_CHILDREN
 
@@ -210,11 +248,17 @@ def project_native_quoted_contacts(
         proved_sender = (
             _proven_original_author(item, snapshot, reference) if primary_group else ""
         )
+        if not proved_sender and item is parent:
+            original = _exact_resource_original(
+                item, resource_originals, partitions, display_names, source_snapshots
+            )
+            if original is not None:
+                proved_sender = original[0].messaging["sender_id"]
         sender = proved_sender
         if not sender:
-            if primary_group and reference.get("source_sender_id") == peer:
+            if isinstance(peer, str) and _ROOM.fullmatch(peer) and reference.get("source_sender_id") == peer:
                 # Room envelopes do not distinguish a quoted author from a reply
-                # author in chatusr. Only the proved original resolves that role.
+                # author in chatusr. A nested quote cannot borrow its parent's proof.
                 return
             sender = _quoted_author(reference, peer)
         if not sender:
@@ -309,7 +353,7 @@ def project_native_quoted_contacts(
             if expected and contact.get("id") != expected:
                 continue
             name = display_names.contact_name(contact)
-            viewer = name or contact.get("display_name")
+            viewer = name or contact.get("preferred_name") or contact.get("display_name")
             if not isinstance(viewer, str) or not viewer:
                 continue
             quotes[identifier]["viewer_display_name"] = viewer

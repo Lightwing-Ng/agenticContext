@@ -1,6 +1,6 @@
 """Retain source occurrences while projecting proven same-session text events.
 
-Code version: v1.7.1-codex.0
+Code version: v1.8.1-codex.0
 """
 
 from __future__ import annotations
@@ -90,6 +90,8 @@ _TABLES = {
     "temp.macos_recovery_timeline_messages",
     "macos_recovery_bank_timeline_messages",
     "temp.macos_recovery_bank_timeline_messages",
+    "secondary_completion_timeline_messages",
+    "temp.secondary_completion_timeline_messages",
 }
 
 
@@ -204,6 +206,9 @@ def _inputs(repository, history_identity=None):
                 "mtime_ns": value.st_mtime_ns,
             }
         result[str(bank.resolve())] = bank_identity
+    from .wechat_secondary_completions import completion_input_identities
+
+    result.update(completion_input_identities(history))
     review_root = history.parent.parent.parent
     review_digest = reviewed_quotes_digest(review_root)
     review_path = reviewed_quotes_path(review_root)

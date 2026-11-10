@@ -1,6 +1,6 @@
 """Account and conversation-type filters share desktop and narrow UI contracts.
 
-Code version: v1.8.0-codex.0
+Code version: v1.8.1-codex.0
 """
 
 from __future__ import annotations
@@ -154,7 +154,7 @@ def _assert_conversation_kind_badges(page, selector, theme):
         const region = badge.closest('td, .wechat-conversation-labels');
         const regionBounds = region.getBoundingClientRect();
         const source = badge.closest('tr, header').querySelector('.wechat-source-label');
-        const sourceStyle = getComputedStyle(source);
+        const sourceStyle = source ? getComputedStyle(source) : null;
         let opacity = 1;
         for (let parent = badge; parent; parent = parent.parentElement) {
             opacity *= parseFloat(getComputedStyle(parent).opacity);
@@ -176,9 +176,11 @@ def _assert_conversation_kind_badges(page, selector, theme):
             fontWeight: style.fontWeight,
             insideRegion: bounds.left >= regionBounds.left - 1
                 && bounds.right <= regionBounds.right + 1,
-            sourceColor: sourceStyle.color,
-            sourceBackground: sourceStyle.backgroundColor,
-            sourceOpacity: sourceStyle.opacity,
+            headerBadgeOnly: region.matches('.wechat-conversation-labels')
+                && region.children.length === 1,
+            sourceColor: sourceStyle?.color ?? null,
+            sourceBackground: sourceStyle?.backgroundColor ?? null,
+            sourceOpacity: sourceStyle?.opacity ?? null,
         };
     })""")
 
@@ -220,7 +222,12 @@ def _assert_conversation_kind_badges(page, selector, theme):
         assert metric["fontSize"] == metric["sharedFontSize"]
         assert metric["fontWeight"] == "500"
         assert metric["insideRegion"]
-        assert opaque_rgb(metric["sourceColor"]) == muted_rgb
+        if metric["sourceColor"] is not None:
+            assert opaque_rgb(metric["sourceColor"]) == muted_rgb
+            assert metric["sourceBackground"] == "rgba(0, 0, 0, 0)"
+            assert metric["sourceOpacity"] == "1"
+        else:
+            assert metric["headerBadgeOnly"]
         if theme == "light":
             expected_fill = [
                 muted * 0.16 + surface * 0.84
@@ -233,8 +240,6 @@ def _assert_conversation_kind_badges(page, selector, theme):
             assert theme == "dark"
             assert background_rgb == muted_rgb
             assert foreground_rgb == surface_rgb
-        assert metric["sourceBackground"] == "rgba(0, 0, 0, 0)"
-        assert metric["sourceOpacity"] == "1"
     assert page.evaluate("document.documentElement.scrollWidth <= window.innerWidth")
 
 

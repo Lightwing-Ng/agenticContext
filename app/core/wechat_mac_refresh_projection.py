@@ -1,6 +1,6 @@
 """Project only an authenticated requested peer into the existing Mac bank contract.
 
-Code version: v1.0.0-codex.0
+Code version: v1.1.0-codex.0
 """
 
 from __future__ import annotations
@@ -15,7 +15,7 @@ import sqlite3
 from . import wechat_macos_recovery_bank as bank
 from .wechat_archive import WechatArchiveRepository, _file_identity, wechat_archive_path
 from .wechat_mac_refresh_source import MAX_NAMES, RefreshError
-from .wechat_resource_index import _KINDS, _LABELS
+from .wechat_resource_index import _APP_LABEL_FIELDS, _KINDS, _LABELS, _app_metadata
 from .wechat_text import extract_wechat_text
 from .wechat_wcdb import WCDBBackendUnavailableError, WCDBDecodeError, decode_wcdb_text
 
@@ -186,6 +186,16 @@ def _project_message(row, owner, kind, names):
         )
         if typ == 49:
             message["resource"]["app_subtype"] = str(row["local_type"] >> 32)
+            if row["local_type"] >> 32 == 5:
+                metadata = _app_metadata(decoded, False, False)
+                if metadata.get("app_subtype") == "5":
+                    message["resource"].update(
+                        {
+                            key: metadata[key]
+                            for key in (*_APP_LABEL_FIELDS, "app_metadata_version")
+                            if key in metadata
+                        }
+                    )
     return message
 
 

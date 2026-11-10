@@ -1,11 +1,13 @@
-/* Code version: v1.13.0-codex.0 */
+/* Code version: v1.14.0-codex.0 */
 
 (function initializeMessagingDisclosures() {
     "use strict";
 
     document.querySelectorAll("[data-wechat-resource-reveal]").forEach((button) => {
         button.addEventListener("click", async () => {
-            const feedback = button.querySelector("[data-wechat-resource-feedback]");
+            const feedback = button.closest(".wechat-resource")?.querySelector("[data-wechat-resource-feedback]");
+            if (!feedback) return;
+            const restoreFocus = document.activeElement === button;
             button.disabled = true;
             try {
                 const response = await fetch(button.dataset.wechatResourceReveal, {
@@ -21,6 +23,9 @@
                 feedback.textContent = error instanceof Error ? error.message : "Unable to open Finder.";
             } finally {
                 button.disabled = false;
+                if (restoreFocus && document.activeElement === document.body) {
+                    button.focus({ preventScroll: true });
+                }
             }
         });
     });

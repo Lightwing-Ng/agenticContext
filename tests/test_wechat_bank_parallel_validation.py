@@ -1,6 +1,6 @@
 """Published shadow proofs use bounded processes without changing sealed evidence.
 
-Code version: v1.2.0-codex.0
+Code version: v1.3.0-codex.0
 """
 
 from concurrent.futures import Future, ProcessPoolExecutor, ThreadPoolExecutor
@@ -13,13 +13,17 @@ from threading import Event
 import pytest
 
 from app.core import wechat_macos_recovery_bank as bank
+from tests import test_wechat_macos_bank_v4_reader as revisions
 from tests import test_wechat_macos_recovery_bank as fixtures
 from tests import test_wechat_macos_recovery_bank_upgrades as upgrades
+from tests import test_wechat_macos_retained_clock_reader as clocks
 
 
 mac_archive = fixtures.mac_archive
 bank_archive = fixtures.bank_archive
 app_stubs = upgrades.app_stubs
+retained_clock = clocks.retained_clock
+retained_v4 = revisions.retained_v4
 
 
 def _read_only(path):
@@ -65,6 +69,7 @@ def test_concurrent_cold_readers_share_one_validation(bank_archive, monkeypatch)
 
 def test_bank_payload_keeps_the_original_sequential_digest(bank_archive, monkeypatch):
     fixture = bank_archive
+    writer_version = bank.VERSION
     fixtures._publish(fixture)
     before = fixture.bank_path.read_bytes()
 
@@ -76,7 +81,7 @@ def test_bank_payload_keeps_the_original_sequential_digest(bank_archive, monkeyp
         metadata = bank._attach(connection, fixture.history)
     with closing(_read_only(fixture.bank_path)) as connection:
         assert bank._rows_digest(connection) == metadata["payload_sha256"]
-    assert bank.VERSION == "v1.2.1-codex.0"
+    assert bank.VERSION == writer_version == metadata["code_version"]
     assert fixture.bank_path.read_bytes() == before
 
 
@@ -140,6 +145,37 @@ def test_real_spawn_shadow_ranges_match_complete_sequential_proofs(app_stubs, mo
     assert fixture.fixture.bank_path.read_bytes() == bank_bytes
     assert fixture.catalog.read_bytes() == catalog_bytes
     assert bank._SHADOW_VALIDATED
+
+
+def test_retained_clock_proofs_survive_parallel_shadow_checks(retained_clock, monkeypatch):
+    fixture, _connection, _row, upgrade = retained_clock
+    before = fixture.fixture.bank_path.read_bytes(), fixture.catalog.read_bytes()
+    _enable_shadow_parallel(monkeypatch)
+    with closing(_read_only(fixture.history)) as connection:
+        assert bank._attach(connection, fixture.history)["schema_version"] == "3"
+    with _shadow_connection(fixture) as connection:
+        bank._validate_shadow_sources(connection, fixture.history)
+    assert upgrade["clock_observations"]["native_minus_catalog_seconds"] == 1
+    assert (fixture.fixture.bank_path.read_bytes(), fixture.catalog.read_bytes()) == before
+
+
+def test_schema4_proofs_remain_checked_once_for_shared_bank_reads(retained_v4, monkeypatch):
+    fixture, _connection, _prior, _following, _source, _reason = retained_v4
+    before = fixture.bank_path.read_bytes()
+    original = bank.schema4_reader.validate
+    calls = []
+
+    def validate(connection):
+        calls.append(1)
+        return original(connection)
+
+    monkeypatch.setattr(bank.schema4_reader, "validate", validate)
+    monkeypatch.setattr(bank, "_VALIDATED", {})
+    for _attempt in range(2):
+        with closing(_read_only(fixture.history)) as connection:
+            assert bank._attach(connection, fixture.history)["schema_version"] == "4"
+    assert calls == [1]
+    assert fixture.bank_path.read_bytes() == before
 
 
 def test_shadow_ranges_cover_rowid_gaps_without_promoting_a_subset(app_stubs, monkeypatch):

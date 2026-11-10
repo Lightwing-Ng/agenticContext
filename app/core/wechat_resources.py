@@ -1,6 +1,6 @@
 """Present persistent WeChat resource references without exposing host paths.
 
-Code version: v1.1.0-codex.0
+Code version: v1.2.0-codex.0
 """
 
 from __future__ import annotations
@@ -30,6 +30,18 @@ _STATUS_LABELS = {
     "missing": "Not found on this Mac",
 }
 _DIGEST = re.compile(r"[0-9a-f]{64}")
+
+
+def _card_label(value):
+    """Keep a bounded original label as inert text without accepting markup."""
+    if (
+        not isinstance(value, str)
+        or not value.strip()
+        or len(value) > 1024
+        or any(ord(char) < 32 and char not in "\t\r\n" for char in value)
+    ):
+        return ""
+    return value
 
 
 def _html_resource_reference(provenance, account_id, peer_id):
@@ -138,7 +150,7 @@ def present_resource(reference, resolver):
     """Keep unavailable references visible and distinguish folders from files."""
     if reference.get("availability") == "metadata_only":
         label = RESOURCE_LABELS[reference["kind"]]
-        return {
+        result = {
             "kind": reference["kind"],
             "kind_label": label,
             "label": label,
@@ -147,6 +159,14 @@ def present_resource(reference, resolver):
             "action_label": "",
             "can_reveal": False,
         }
+        if reference["kind"] == "app" and reference.get("app_subtype") == "5":
+            result.update(
+                label=_card_label(reference.get("safe_title")) or label,
+                publisher_name=_card_label(reference.get("publisher_name"))
+                or _card_label(reference.get("app_name")),
+                is_link=True,
+            )
+        return result
     destination = resolver.resolve(reference)
     status = destination["status"]
     filename = reference.get("filename")
