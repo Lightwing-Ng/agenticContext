@@ -1,4 +1,4 @@
-/* Code version: v1.0.0-codex.0 */
+/* Code version: v1.1.0-codex.0 */
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 import test from 'node:test';
@@ -13,7 +13,7 @@ const last = source.indexOf('    function agentPaginationRangeElements(', first)
 assert.ok(first >= 0 && last > first, 'The production pagination functions exist.');
 const runtime = vm.runInNewContext(
     source.slice(first, last)
-        + '\n({buildAgentPaginationItems, buildAgentPaginationRanges})',
+        + '\n({buildAgentPaginationItems, buildAgentPaginationRanges, nearestAgentPaginationPage})',
 );
 const itemsFor = (total, current) => JSON.parse(JSON.stringify(
     runtime.buildAgentPaginationItems(total, current),
@@ -71,4 +71,14 @@ test('multi-page tails retain existing five-page jump ranges', () => {
     assert.deepEqual(rangesFor(leading), Array.from({length: 10}, (_, index) => [index * 5 + 1, index * 5 + 5]));
     assert.deepEqual(rangesFor(trailing).slice(-2), [[446, 450], [451, 457]]);
     assert.equal(rangesFor(trailing).length, 80);
+});
+
+test('conversation history ranges select the page nearest the current page', () => {
+    for (const [current, start, end, expected] of [
+        [821, 816, 820, 820],
+        [7, 11, 15, 11],
+        [12, 11, 15, 12],
+    ]) {
+        assert.equal(runtime.nearestAgentPaginationPage(current, start, end), expected);
+    }
 });
