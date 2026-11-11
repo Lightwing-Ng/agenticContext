@@ -1,6 +1,13 @@
 # Shared UI workflow
 
-Documentation version: `v1.4.2-codex.0`
+Documentation version: `v1.4.3-codex.0`
+
+## Shared pagination range selection
+
+The central layout contract v1.21.4 defines an inclusive range destination as
+`clamp(current_page, range_start, range_end)`. Text, Media, and Prompts link
+targets and Agent conversation history buttons apply that rule for pointer and
+keyboard activation. Range labels and five-page grouping remain unchanged.
 
 ## Shared Circular icon button
 

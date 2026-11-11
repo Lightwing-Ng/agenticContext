@@ -1,6 +1,6 @@
-"""Keep redundant singleton ranges out of shared pagination controls.
+"""Keep shared pagination controls reachable and range navigation local.
 
-Code version: v1.0.0-codex.0
+Code version: v1.1.0-codex.0
 """
 
 from __future__ import annotations
@@ -11,6 +11,7 @@ from pathlib import Path
 import shutil
 import subprocess
 from types import SimpleNamespace
+from urllib.parse import parse_qs, urlsplit
 
 from flask import Flask, render_template_string
 import pytest
@@ -79,6 +80,7 @@ def test_rendered_page_ten_of_eleven_has_no_redundant_later_menu(view):
     )
     page = SimpleNamespace(
         pagination_items=build_local_store_pagination(11, 10),
+        current_page=10,
         session_detail=view == "text",
         session_view=False,
         pagination_unit="page",
@@ -131,6 +133,68 @@ def test_rendered_page_ten_of_eleven_has_no_redundant_later_menu(view):
         attrs.get("data-pagination-ellipsis") == "leading"
         for _, attrs in navigation.controls
     )
+
+
+@pytest.mark.parametrize(
+    ("view", "range_prefix"),
+    [("text", "Messages"), ("media", "Pages"), ("prompts", "Saved prompts")],
+)
+@pytest.mark.parametrize(
+    ("current", "range_label", "expected"),
+    [(821, "816 through 820", 820), (7, "11 through 15", 11)],
+)
+def test_range_option_links_open_the_nearest_page(
+    view, range_prefix, current, range_label, expected
+):
+    app = Flask(__name__, template_folder=str(ROOT / "app/web/templates"))
+    app.add_url_rule(
+        "/browser", endpoint="local_resources.browser", view_func=lambda: ""
+    )
+    page = SimpleNamespace(
+        pagination_items=build_local_store_pagination(821, current),
+        current_page=current,
+        session_detail=view == "text",
+        session_view=True,
+        pagination_unit="page",
+    )
+    filters = SimpleNamespace(
+        source="wechat" if view == "text" else "fixture",
+        account="account:fixture-owner",
+        chat_kind="group",
+        project="",
+        answerer="",
+        q="preserved query",
+        sort="oldest",
+        session_view=True,
+        session="wechat:fixture-conversation",
+        session_page=7,
+        kind="all",
+        session_index=False,
+        media_view="",
+    )
+    with app.test_request_context("/browser"):
+        body = render_template_string(
+            '{% from "_pagination.html" import render_browser_pagination %}'
+            '{{ render_browser_pagination(page, "Fixture pages", view, filters) }}',
+            page=page,
+            filters=filters,
+            view=view,
+        )
+    navigation = _Navigation()
+    navigation.feed(body)
+    matching_links = [
+        attrs
+        for tag, attrs in navigation.controls
+        if tag == "a"
+        and attrs.get("aria-label") == f"{range_prefix} {range_label}"
+    ]
+    assert len(matching_links) == 1
+    query = parse_qs(urlsplit(matching_links[0]["href"]).query)
+    assert query["page"] == [str(expected)]
+    if view == "text":
+        assert query["account"] == [filters.account]
+        assert query["chat_kind"] == [filters.chat_kind]
+        assert query["session"] == [filters.session]
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="Node.js is required.")

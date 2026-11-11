@@ -1,4 +1,4 @@
-/* Code version: v3.74.3-codex.0 */
+/* Code version: v3.74.4-codex.0 */
 
 (() => {
     const BOOTSTRAPPED_SOURCE_PLATFORMS = new Set(["chatgpt", "gemini", "grok", "claude"]);
@@ -4893,6 +4893,10 @@
         return ranges;
     }
 
+    function nearestAgentPaginationPage(currentPage, rangeStart, rangeEnd) {
+        return Math.min(rangeEnd, Math.max(rangeStart, currentPage));
+    }
+
     function agentPaginationRangeElements(picker) {
         return {
             trigger: picker?.querySelector("[data-pagination-range-trigger]") || null,
@@ -5089,7 +5093,11 @@
             option.setAttribute("aria-label", `Conversation pages ${rangeStart} through ${rangeEnd}`);
             option.textContent = `${rangeStart}-${rangeEnd}`;
             option.addEventListener("click", () => {
-                const targetPage = Number(option.dataset.paginationRangeStart);
+                const targetPage = nearestAgentPaginationPage(
+                    responseHistoryPage,
+                    rangeStart,
+                    rangeEnd,
+                );
                 const nextAnimationState = paginationMotion?.capturePaginationAnimation(pagination, targetPage);
                 agentPaginationRangePinnedPicker = null;
                 setAgentPaginationRangePickerOpen(picker, false);
