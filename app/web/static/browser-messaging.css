@@ -1,4 +1,4 @@
-/* Code version: v1.19.1-codex.0 */
+/* Code version: v1.22.3-codex.0 */
 /* Human-message variants consume the existing Local resources primitives. */
 .wechat-conversation-share {
     position: fixed;
@@ -74,6 +74,59 @@
 .wechat-source-label,
 .wechat-source-note { color: var(--theme-muted); font-size: 0.85em; }
 .wechat-source-note { margin: 0; }
+
+.wechat-read-view,
+.wechat-read-skeleton {
+    display: flex;
+    flex: 1 1 auto;
+    flex-direction: column;
+    gap: 12px;
+    min-width: 0;
+    min-height: 0;
+}
+
+.wechat-read-view[data-state="running"] > .wechat-read-status {
+    position: absolute;
+    inline-size: 1px;
+    block-size: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+}
+
+.wechat-read-status h3 { margin: 0 0 4px; }
+.wechat-read-retry { align-self: flex-start; }
+
+.wechat-read-pagination {
+    box-sizing: border-box;
+    flex: 0 0 auto;
+    block-size: calc(var(--local-store-pagination-slot-size) + 2 * var(--local-store-pagination-floating-shell-padding) + 2px);
+}
+
+.wechat-read-pagination:not(:has(> span)) { visibility: hidden; }
+.wechat-read-pagination .wechat-read-line { inline-size: var(--local-store-pagination-slot-size); }
+
+.wechat-read-line {
+    display: inline-block;
+    inline-size: min(100%, var(--wechat-read-line-width, 6em));
+    block-size: 0.7em;
+    vertical-align: middle;
+}
+
+.wechat-read-metric { --wechat-read-line-width: 2.4em; }
+.wechat-read-kind { --wechat-read-line-width: 4.2em; block-size: 1.1em; }
+.wechat-conversation-labels > .wechat-read-kind {
+    inline-size: 4.2rem;
+    block-size: auto;
+    border: 0;
+}
+.wechat-read-row-number { --wechat-read-line-width: 1.6em; }
+.wechat-read-row-title { --wechat-read-line-width: 9em; }
+.wechat-resources .wechat-read-bubble:nth-child(3n) { inline-size: min(56%, 20rem); }
+.wechat-read-bubble .wechat-read-line { display: block; margin-block: 4px; }
+.wechat-read-bubble .wechat-read-line:first-child { margin-block: 9px; }
+.wechat-read-bubble .wechat-read-line:last-child { --wechat-read-line-width: 13em; }
+.wechat-read-bubble:nth-child(even) .wechat-read-line:last-child { --wechat-read-line-width: 9em; }
 .wechat-account-label,
 .wechat-source-label { display: block; overflow-wrap: anywhere; }
 .wechat-message-list { flex: 1 1 auto; min-height: 0; overflow: auto; }

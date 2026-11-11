@@ -10,7 +10,7 @@ registered first because it owns the access gate and the exclusive-browser rule 
 Tunnel, Jury, iPhone, and Cache blueprints borrow through :class:`AgentSurface`.
 """
 
-# Code version: v2.10.4-codex.0
+# Code version: v2.10.5-codex.0
 
 from __future__ import annotations
 
@@ -546,6 +546,12 @@ def create_app(
                 return
             runtime_shutdown_started = True
         wechat_refresh = app.extensions.get("wechat_mac_refresh")
+        wechat_read = app.extensions.get("wechat_browser_read")
+        if wechat_read is not None:
+            try:
+                wechat_read.shutdown(wait=True, timeout=0.5)
+            except Exception:
+                app.logger.error("Could not stop the saved chat view reader during shutdown.")
         if wechat_refresh is not None:
             try:
                 wechat_refresh.shutdown(wait=True, timeout=5.0)

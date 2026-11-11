@@ -1,8 +1,9 @@
 """Durable local-resource boundary for catalogs, history, and backups."""
 
-# Code version: v1.6.0-codex.0
+# Code version: v1.7.0-codex.0
 
 from ..chat_history_browser import (
+    ChatHistoryPage,
     attach_media_references,
     build_chat_history_markdown,
     format_chat_message_timestamp_label,
@@ -42,6 +43,7 @@ from ..shadow_backup import (
 )
 
 _LAZY_EXPORTS = {
+    "wechat_browser_read": frozenset({"WechatBrowserReadService"}),
     "wechat_contact_analysis": frozenset({
         "ContactAnalysisSourceChanged", "query_contact_analysis",
         "contact_analysis_export_context", "export_contact_analysis_items",
@@ -64,6 +66,7 @@ def __getattr__(name: str):
 
 
 __all__ = [
+    "ChatHistoryPage",
     "LocalMediaCatalog",
     "PromptPage",
     "PromptStore",
