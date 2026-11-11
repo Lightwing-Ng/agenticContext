@@ -5,7 +5,7 @@ refresh service without reaching for a browser or Agent. Serialization of one st
 public shape lives here too, so a template global and a JSON response cannot drift.
 """
 
-# Code version: v1.22.0-codex.0
+# Code version: v1.22.1-codex.0
 
 from __future__ import annotations
 
@@ -52,6 +52,7 @@ from app.web.cache_sources import get_cache_source_label
 from app.web.local_resource_navigation import (
     local_resource_source_context,
     wechat_contact_sidebar_context,
+    wechat_navigation_messaging,
 )
 from app.web.presentation import (
     build_browser_search_suggestions,
@@ -221,8 +222,7 @@ def serialize_prompt_item(item) -> dict[str, Any]:
 
 def register_local_resource_routes(app: Flask, context: LocalResourceRouteContext) -> None:
     """Register the Local resources pages, media transport, and prompt API."""
-    from app.core.storage import ChatHistoryPage, WechatBrowserReadService
-    from app.core.wechat_mac_refresh import WechatMacRefreshService
+    from app.core.storage import ChatHistoryPage, WechatBrowserReadService, WechatMacRefreshService
     from app.web.wechat_read_routes import (
         WECHAT_READ_EXTENSION,
         read_job_payload,
@@ -489,6 +489,7 @@ def register_local_resource_routes(app: Flask, context: LocalResourceRouteContex
         )
         force_refresh = request.args.get("refresh") == "1"
         wechat_read_job = None
+        wechat_read_preview = False
         prompt_page = None
         saved_prompt_keys = context.prompt_store.saved_pointer_keys()
         saved_prompt_content_keys = (
@@ -519,11 +520,30 @@ def register_local_resource_routes(app: Flask, context: LocalResourceRouteContex
                         "message": "Saved records are changing. Try loading this view again.",
                         "status_url": "", "retry_url": "",
                     }
+                if (
+                    text_page is None
+                    and wechat_read_job["state"] == "running"
+                    and not filters["session"]
+                    and not filters["q"]
+                ):
+                    from app.core.storage import query_wechat_history
+
+                    preview = query_wechat_history(
+                        context.media_catalog.local_store_root,
+                        account=filters["account"], chat_kind=filters["chat_kind"],
+                        sort=filters["sort"], page=filters["page"], previous_snapshot=True,
+                    )
+                    if preview is not None and preview.sessions:
+                        text_page = preview
+                        wechat_read_preview = True
                 if text_page is None:
                     text_page = ChatHistoryPage(
                         items=(), total_count=0, conversation_count=0,
                         current_page=1, total_pages=1, session_view=True,
-                        messaging={"accounts": (), "account_options": (), "message_count": 0},
+                        messaging={
+                            **wechat_navigation_messaging(context.media_catalog.local_store_root),
+                            "message_count": 0,
+                        },
                     )
             else:
                 text_page = query_chat_history(
@@ -585,7 +605,7 @@ def register_local_resource_routes(app: Flask, context: LocalResourceRouteContex
         browser_search_suggestions = build_browser_search_suggestions(
             view=filters["view"],
             media_items=media_page.items if media_page is not None else all_items,
-            text_page=text_page,
+            text_page=None if wechat_read_preview else text_page,
             prompt_page=prompt_page,
         )
         return render_template(
@@ -594,6 +614,7 @@ def register_local_resource_routes(app: Flask, context: LocalResourceRouteContex
             media_page=media_page,
             text_page=text_page,
             wechat_read_job=wechat_read_job,
+            wechat_read_preview=wechat_read_preview,
             wechat_refresh_available=bool(
                 is_loopback_address(request.remote_addr)
                 and filters["view"] == "text"

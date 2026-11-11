@@ -1,4 +1,4 @@
-{# Code version: v1.34.2-codex.0 #}
+{# Code version: v1.34.3-codex.0 #}
 {% from "_wechat_conversation_kind.html" import conversation_kind_label, conversation_kind_badge %}
 {% from "_wechat_view_layout.html" import conversation_transcript, conversation_table, conversation_list_note %}
 {% macro resource_card(resource, message_id='', embedded=false) %}
@@ -138,7 +138,7 @@
 <p class="wechat-system-notice" id="{{ 'wechat_notice_' ~ key ~ '_' ~ loop.index if display_text or not loop.first else 'wechat_message_' ~ key }}"{% if not embedded %} data-wechat-source-message-id="{{ message.stable_id }}"{% endif %} data-wechat-source-start="{{ notice.source_start }}" data-wechat-source-end="{{ notice.source_end }}" role="note" aria-label="System message" lang="zh-CN">{{ notice.text }}</p>
 {% endfor %}
 {% endmacro %}
-<section class="wechat-resources" aria-label="WeChat text archive" data-wechat-resources{% if text_page.messaging is defined and text_page.messaging and text_page.messaging.event_projection is defined and text_page.messaging.event_projection.count_delta|default(0) %} data-wechat-event-projection="true"{% endif %}>
+<section class="wechat-resources" aria-label="WeChat text archive" data-wechat-resources{% if wechat_read_preview %} data-wechat-read-placeholder data-wechat-read-preview{% endif %}{% if text_page.messaging is defined and text_page.messaging and text_page.messaging.event_projection is defined and text_page.messaging.event_projection.count_delta|default(0) %} data-wechat-event-projection="true"{% endif %}>
     {% if text_page.messaging and text_page.messaging.resource_index_status in ['stale', 'invalid'] %}
     <p class="wechat-source-note" role="status">Media and file references need refreshing after the archive changed.</p>
     {% endif %}
@@ -160,7 +160,7 @@
         {% endfor %}
     {% endcall %}
     {% elif text_page.sessions %}
-    {{ conversation_list_note() }}
+    {% if not wechat_read_preview %}{{ conversation_list_note() }}{% endif %}
     {% call conversation_table() %}
         {% for session in text_page.sessions %}
         <tr data-chat-session-id="{{ session.stable_id }}" data-wechat-conversation-kind="{{ session.messaging.kind }}" data-wechat-account="{{ session.messaging.account_key }}">
@@ -170,7 +170,7 @@
                 <span class="wechat-conversation-kind">{{ conversation_kind_badge(session.messaging) }}</span>
             </td>
             <td><span class="wechat-account-label">{{ session.messaging.viewer_account_label or session.messaging.account_label }}</span><span class="wechat-source-label">{{ session.messaging.source_label }} · {{ session.messaging.identity_status }}</span></td>
-            <td>{{ '{:,}'.format(session.message_count) }}</td>
+            <td>{{ '—' if wechat_read_preview else '{:,}'.format(session.message_count) }}</td>
         </tr>
         {% endfor %}
     {% endcall %}

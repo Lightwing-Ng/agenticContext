@@ -1,18 +1,18 @@
 """Rejected resource indexes retain safe guidance without admitting a saved page.
 
-Code version: v1.0.0-codex.0
+Code version: v1.0.1-codex.0
 """
 
 import json
 from threading import Event
 
-from bs4 import BeautifulSoup
 import pytest
 
 from app.core.chat_history_browser import ChatHistoryPage, query_chat_history
 from app.core.wechat_browser_read import WechatBrowserReadService
 from tests import test_wechat_browser_read as read_tests
 from tests import test_wechat_resources as resources
+from tests.wechat_browser_markup import parse_browser_markup
 
 
 resource_app = resources.resource_app
@@ -96,14 +96,15 @@ def test_running_read_becomes_a_safe_failed_warning_in_poll_and_document(resourc
         initial = client.get(address)
         assert initial.status_code == 200
         assert entered.wait(1)
-        shell = BeautifulSoup(initial.data, "html.parser").select_one("[data-wechat-read-pending]")
-        assert shell["data-state"] == "running"
+        shell = parse_browser_markup(initial.data).find(".//*[@data-wechat-read-pending]")
+        assert shell is not None
+        assert shell.get("data-state") == "running"
         assert "Media and file references need refreshing" not in initial.get_data(as_text=True)
-        status_url = shell["data-status-url"]
+        status_url = shell.get("data-status-url")
         assert client.get(status_url).json["state"] == "running"
 
         release.set()
-        assert read_tests._done(service, shell["data-task-id"])["state"] == "failed"
+        assert read_tests._done(service, shell.get("data-task-id"))["state"] == "failed"
         polled = client.get(status_url)
         assert polled.status_code == 200 and polled.cache_control.no_store
         assert polled.json["state"] == "failed"
@@ -112,12 +113,16 @@ def test_running_read_becomes_a_safe_failed_warning_in_poll_and_document(resourc
 
         failed_document = client.get(address)
         assert failed_document.status_code == 200
-        soup = BeautifulSoup(failed_document.data, "html.parser")
-        failed_shell = soup.select_one("[data-wechat-read-pending]")
-        assert failed_shell["data-state"] == "failed"
-        assert failed_shell.select_one("[data-wechat-read-copy]").get_text() == _WARNING
-        assert soup.select_one(".wechat-conversation-table") is None
-        assert soup.select_one("[data-chat-message-id]") is None
+        markup = parse_browser_markup(failed_document.data)
+        failed_shell = markup.find(".//*[@data-wechat-read-pending]")
+        assert failed_shell is not None
+        assert failed_shell.get("data-state") == "failed"
+        assert "".join(failed_shell.find(".//*[@data-wechat-read-copy]").itertext()) == _WARNING
+        assert not any(
+            "wechat-conversation-table" in element.get("class", "").split()
+            for element in markup.iter()
+        )
+        assert markup.find(".//*[@data-chat-message-id]") is None
         assert _PRIVATE_PATH not in failed_document.get_data(as_text=True)
         assert service.acquire({})[0] is None
     finally:

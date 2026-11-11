@@ -1,6 +1,6 @@
 """Build exact, source-pinned browser pages outside document requests.
 
-Code version: v1.0.1-codex.0
+Code version: v1.1.1-codex.0
 """
 
 from collections import OrderedDict, deque
@@ -13,7 +13,7 @@ import secrets
 import sqlite3
 import stat
 import sys
-from threading import Condition, Event, Thread
+from threading import Condition, Event, Lock, Thread
 import time
 
 
@@ -76,10 +76,12 @@ class WechatBrowserReadService:
         self._condition = Condition()
         self._tasks = OrderedDict()
         self._keys = {}
-        self._queue = deque()
-        self._thread = None
+        self._queues = {"list": deque(), "conversation": deque()}
+        self._threads = {}
         self._closing = False
         self._result_bytes = 0
+        self._contact_lock = Lock()
+        self._verified_contacts = None
 
     def _pin(self):
         if self._pin_override is not None:
@@ -188,10 +190,33 @@ class WechatBrowserReadService:
                     connection, identity,
                     conversation_id=parameters.get("session") or None, strict=True,
                 )
-        contacts = repository.path.with_name("contacts.sqlite3")
-        if contacts.exists():
+        self._validate_contacts(repository.path.with_name("contacts.sqlite3"))
+
+    @staticmethod
+    def _contacts_identity(path):
+        identity = _state(path)
+        if identity is not None and (
+            not stat.S_ISREG(identity[2])
+            or identity[-1] & 0x40000000
+            or any(_state(path.with_name(path.name + suffix)) is not None
+                   for suffix in ("-wal", "-shm", "-journal"))
+        ):
+            raise ValueError("The saved identity context must be a published local file.")
+        if _state(path) != identity:
+            raise ValueError("The saved identity context changed during validation.")
+        return identity
+
+    def _validate_contacts(self, path):
+        """Share one successful integrity check while its exact registry remains unchanged."""
+        with self._contact_lock:
+            identity = self._contacts_identity(path)
+            if identity == self._verified_contacts:
+                return
+            self._verified_contacts = None
+            if identity is None:
+                return
             with closing(sqlite3.connect(
-                contacts.resolve().as_uri() + "?mode=ro&immutable=1", uri=True
+                path.absolute().as_uri() + "?mode=ro&immutable=1", uri=True
             )) as connection:
                 connection.execute("PRAGMA query_only=ON")
                 if connection.execute("PRAGMA quick_check").fetchall() != [("ok",)]:
@@ -201,6 +226,9 @@ class WechatBrowserReadService:
                 ).fetchone()
                 if schema is None or schema[0] not in {"1", "2"}:
                     raise ValueError("The saved identity context has an unsupported schema.")
+            if self._contacts_identity(path) != identity:
+                raise ValueError("The saved identity context changed during validation.")
+            self._verified_contacts = identity
 
     @staticmethod
     def _public(task):
@@ -253,10 +281,17 @@ class WechatBrowserReadService:
                 }
                 self._tasks[token] = task
                 self._keys[key] = token
-                self._queue.append(token)
-                if self._thread is None or not self._thread.is_alive():
-                    self._thread = Thread(target=self._run, daemon=True, name="wechat-browser-read")
-                    self._thread.start()
+                lane = "conversation" if parameters.get("session") else "list"
+                queue = self._queues[lane]
+                queue.append(token)
+                thread = self._threads.get(lane)
+                if thread is None or not thread.is_alive():
+                    thread = Thread(
+                        target=self._run, args=(queue,), daemon=True,
+                        name=f"wechat-browser-read-{lane}",
+                    )
+                    self._threads[lane] = thread
+                    thread.start()
                 self._condition.notify_all()
         if wait:
             task["done"].wait(READY_GRACE_SECONDS)
@@ -314,14 +349,14 @@ class WechatBrowserReadService:
         self._result_bytes -= task.get("size", 0)
         task["result"], task["size"] = None, 0
 
-    def _run(self):
+    def _run(self, queue):
         while True:
             with self._condition:
-                while not self._queue and not self._closing:
+                while not queue and not self._closing:
                     self._condition.wait()
                 if self._closing:
                     return
-                task = self._tasks[self._queue.popleft()]
+                task = self._tasks[queue.popleft()]
             try:
                 if self._pin() != task["pin"]:
                     raise ValueError("Saved-view inputs changed before checking.")
@@ -329,6 +364,8 @@ class WechatBrowserReadService:
                 with self._condition:
                     if self._closing:
                         raise RuntimeError("The saved-view reader is shutting down.")
+                # A conversation read may publish counts while a list page is built.
+                list_proofs = self._proofs() if not task["parameters"].get("session") else None
                 if self.loader is None:
                     from .chat_history_browser import query_chat_history
 
@@ -345,6 +382,8 @@ class WechatBrowserReadService:
                     raise ValueError("The saved message projection is not verified.")
                 size = _result_size(page)
                 proofs = self._proofs()
+                if list_proofs is not None and list_proofs != proofs:
+                    raise ValueError("Conversation counts changed while building the saved list.")
                 if self._pin() != task["pin"]:
                     raise ValueError("Saved-view inputs changed while checking.")
                 with self._condition:
@@ -370,12 +409,14 @@ class WechatBrowserReadService:
     def shutdown(self, *, wait=True, timeout=0.5):
         with self._condition:
             self._closing = True
-            for token in self._queue:
-                task = self._tasks[token]
-                task.update(state="failed", message="The saved-view reader is shutting down.")
-                task["done"].set()
-            self._queue.clear()
+            for queue in self._queues.values():
+                while queue:
+                    task = self._tasks[queue.popleft()]
+                    task.update(state="failed", message="The saved-view reader is shutting down.")
+                    task["done"].set()
             self._condition.notify_all()
-            thread = self._thread
-        if wait and thread is not None:
-            thread.join(min(0.5, max(0, timeout)))
+            threads = tuple(self._threads.values())
+        if wait:
+            deadline = time.monotonic() + min(0.5, max(0, timeout))
+            for thread in threads:
+                thread.join(max(0, deadline - time.monotonic()))

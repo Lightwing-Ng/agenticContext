@@ -1,6 +1,6 @@
 # Visual Style Reference
 
-Documentation version: `v1.38.7-codex.0`
+Documentation version: `v1.38.8-codex.0`
 
 ## Authority
 
@@ -35,7 +35,9 @@ search toolbar, metric grid, list note and table, or conversation badge and
 transcript. Empty slots reserve the width of optional actions and the height of
 pagination. Pending views expose a live status and keep placeholders out of the
 accessibility tree. Verified results replace the skeleton through one matching
-reload. Failures replace the skeleton with an inline retry.
+reload. An eligible previously verified conversation list can provide rows and pagination
+during validation, with a visible status and unavailable message totals. Failed or
+timed-out status polling exposes an inline retry.
 
 Before changing a shared UI component, also read
 `docs/SHARED_UI_WORKFLOW.md` and the central ledger at

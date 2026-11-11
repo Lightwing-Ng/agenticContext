@@ -1,4 +1,4 @@
-<!-- Code version: v1.114.6-codex.0 -->
+<!-- Code version: v1.114.7-codex.0 -->
 <!doctype html>
 <html lang="en-US">
 <head>
@@ -23,7 +23,7 @@
     <link rel="stylesheet" href="{{ url_for('static', filename='wechat-exchange.css', v='wechat-exchange-v1.2.3-codex.0') }}">
     <script defer src="{{ url_for('static', filename='wechat-exchange.js', v='wechat-exchange-v1.2.2-codex.0') }}"></script>
     <script defer src="{{ url_for('static', filename='wechat-refresh.js', v='wechat-refresh-v1.0.0-codex.0') }}"></script>
-    <script defer src="{{ url_for('static', filename='wechat-browser-read.js', v='wechat-browser-read-v1.1.0-codex.0') }}"></script>
+    <script defer src="{{ url_for('static', filename='wechat-browser-read.js', v='wechat-browser-read-v1.1.1-codex.0') }}"></script>
     <script defer src="{{ url_for('static', filename='wechat-contact-navigation.js', v='wechat-contact-navigation-v1.1.2-codex.0') }}"></script>
     <script defer src="{{ url_for('static', filename='disclosure-motion.js', v='disclosure-motion-v1.1.0-codex.0') }}"></script>
     <script defer src="{{ url_for('static', filename='browser-messaging.js', v='browser-messaging-v1.14.0-codex.0') }}"></script>
@@ -376,7 +376,7 @@
                         </div>
                     </div>
                     {% else %}
-                    {% if not wechat_read_job or wechat_read_loading %}
+                    {% if not wechat_read_preview and (not wechat_read_job or wechat_read_loading) %}
                     <div class="metric-grid browser-metric-grid browser-text-metric-grid{% if is_zhihu_text %} browser-zhihu-metric-grid{% endif %}"{% if wechat_read_loading %} data-wechat-read-placeholder aria-hidden="true"{% else %} aria-label="{{ 'Zhihu answerer totals' if is_zhihu_text and text_page.session_detail else ('Zhihu answer totals' if is_zhihu_text else 'Cached text totals') }}"{% endif %}>
                         {% if is_zhihu_text %}
                         <div class="metric-card foundation-metric-card metric-card-accent{% if text_page.session_detail %} browser-zhihu-answerer-metric{% endif %}">
@@ -1274,14 +1274,14 @@
                     {% if filters.view == "prompts" %}
                     {{ render_browser_pagination(prompt_page, 'Saved prompts', 'prompts', filters, 'prompts') }}
                     {% endif %}
-                    {% if wechat_read_loading or (is_wechat_text and not wechat_read_job and (text_page.session_detail or text_page.sessions) and not text_page.pagination_items) %}
+                    {% if (wechat_read_loading and not wechat_read_preview) or (is_wechat_text and not wechat_read_job and (text_page.session_detail or text_page.sessions) and not text_page.pagination_items) %}
                     <div class="browser-pagination wechat-read-pagination" aria-hidden="true"{% if wechat_read_loading %} data-wechat-read-placeholder{% endif %}>
                         {% if wechat_read_loading %}
                         {% for _ in range(4) %}<span class="navigation-skeleton-line wechat-read-line"></span>{% endfor %}
                         {% endif %}
                     </div>
-                    {% elif filters.view == "text" and not wechat_read_job %}
-                    {{ render_browser_pagination(text_page, ('Answer pages' if text_page.session_detail else 'Answerers') if is_zhihu_text else ('Message pages' if text_page.session_detail else ('Sessions' if filters.session_view else 'Text pages')), 'text', filters, ('answers' if text_page.session_detail else 'answerers') if is_zhihu_text else ('messages' if text_page.session_detail else ('sessions' if filters.session_view else 'pages'))) }}
+                    {% elif filters.view == "text" and (not wechat_read_job or wechat_read_preview) %}
+                    {{ render_browser_pagination(text_page, ('Answer pages' if text_page.session_detail else 'Answerers') if is_zhihu_text else ('Message pages' if text_page.session_detail else ('Sessions' if filters.session_view else 'Text pages')), 'text', filters, ('answers' if text_page.session_detail else 'answerers') if is_zhihu_text else ('messages' if text_page.session_detail else ('sessions' if filters.session_view else 'pages')), read_preview=wechat_read_preview|default(false)) }}
                     {% endif %}
                 </div>
             </div>

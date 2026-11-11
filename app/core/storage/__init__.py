@@ -1,6 +1,6 @@
 """Durable local-resource boundary for catalogs, history, and backups."""
 
-# Code version: v1.7.0-codex.0
+# Code version: v1.7.1-codex.0
 
 from ..chat_history_browser import (
     ChatHistoryPage,
@@ -49,8 +49,13 @@ _LAZY_EXPORTS = {
         "contact_analysis_export_context", "export_contact_analysis_items",
         "message_source_location",
     }),
+    "wechat_contacts": frozenset({"classify_wechat_identifier"}),
     "wechat_display_names": frozenset({"WechatDisplayNames"}),
+    "wechat_exchange": frozenset({"export_conversation", "read_package"}),
+    "wechat_exchange_import": frozenset({"archive_state", "import_package", "preview_package"}),
+    "wechat_history_browser": frozenset({"query_wechat_history"}),
     "wechat_html_export": frozenset({"normalize_html_clock"}),
+    "wechat_mac_refresh": frozenset({"WechatMacRefreshService"}),
     "wechat_session_export": frozenset({"WechatSessionExport", "WechatSessionSourceChanged"}),
 }
 

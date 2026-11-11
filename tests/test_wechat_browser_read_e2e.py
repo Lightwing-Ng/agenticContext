@@ -1,6 +1,6 @@
 """Pending saved views retain honest content and bounded document navigation.
 
-Code version: v1.3.0-codex.0
+Code version: v1.3.1-codex.0
 """
 
 from __future__ import annotations
@@ -233,9 +233,10 @@ def test_pending_view_shows_no_messages_false_zero_totals_or_exports(
         expect(metrics.locator("[data-numeric-display-value]")).to_have_count(0)
         search = page.locator("[data-browser-search-input]")
         expect(search).to_have_attribute("data-browser-search-scope", "session" if detail else "global")
-        expect(page.locator("#browser_wechat_account option:checked")).to_have_text(
-            "Selected source account"
-        )
+        account = page.locator("#browser_wechat_account")
+        expect(account).to_have_value("account:wxid_account_a")
+        expect(account.locator("option:checked")).to_contain_text("wxid_account_a")
+        expect(account.locator('option[value="account:wxid_account_b"]')).to_have_count(1)
         pending = page.locator("[data-wechat-read-pending]")
         status = pending.get_by_role("status")
         expect(status).to_have_text(

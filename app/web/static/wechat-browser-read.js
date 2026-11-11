@@ -1,4 +1,4 @@
-/* Code version: v1.1.0-codex.0 */
+/* Code version: v1.1.1-codex.0 */
 
 (function initializeWechatReadPage() {
     "use strict";
@@ -32,6 +32,15 @@
             throw new Error("The saved-view status address is unavailable.");
         }
         return url.href;
+    }
+
+    function requestTask(value, method = "GET") {
+        return fetch(address(value), {
+            method,
+            cache: "no-store",
+            headers: { Accept: "application/json" },
+            signal: AbortSignal.timeout(10_000),
+        });
     }
 
     function fail(message) {
@@ -72,7 +81,7 @@
         while (!stopped && run === pollRun && window.location.href === originalUrl && reads < 1_800) {
             reads += 1;
             try {
-                const response = await fetch(address(statusUrl), { cache: "no-store", headers: { Accept: "application/json" } });
+                const response = await requestTask(statusUrl);
                 const snapshot = await response.json();
                 if (stopped || run !== pollRun || window.location.href !== originalUrl) return;
                 if (!response.ok) throw new Error("This saved-view task has expired. Try loading the view again.");
@@ -98,7 +107,7 @@
         retry.disabled = true;
         try {
             if (root.dataset.retryUrl) {
-                await fetch(address(root.dataset.retryUrl), { method: "POST", cache: "no-store", headers: { Accept: "application/json" } });
+                await requestTask(root.dataset.retryUrl, "POST");
             }
             if (!canReloadCurrentView()) {
                 retry.disabled = false;

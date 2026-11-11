@@ -1,6 +1,6 @@
 """Cold pages remain responsive while exact verified results are built once.
 
-Code version: v1.0.0-codex.0
+Code version: v1.0.1-codex.0
 """
 
 from threading import Event
@@ -12,6 +12,7 @@ from app.core.chat_history_browser import ChatHistoryPage
 from app.core.wechat_browser_read import WechatBrowserReadService
 from tests import test_wechat_session_csv
 from tests import test_wechat_conversation_events
+from tests.wechat_browser_markup import parse_browser_markup
 
 
 session_app = test_wechat_session_csv.session_app
@@ -235,6 +236,67 @@ def test_real_route_returns_pending_shell_and_safe_poll_while_loader_blocked(ses
         ready = app.test_client().get(address)
         assert ready.status_code == 200 and b"data-wechat-read-pending" not in ready.data
         assert b"WeChat conversations" in ready.data if not detail else b"data-chat-message-id" in ready.data
+    finally:
+        release.set()
+        app.extensions["runtime_shutdown"]()
+
+
+def test_pending_account_shows_previous_conversations_until_current_page_is_ready(
+    session_app, monkeypatch,
+):
+    from app.core import wechat_browser_snapshot
+
+    app, _ = session_app
+    service = app.extensions["wechat_browser_read"]
+    entered, release = Event(), Event()
+    current_loader = service.loader
+
+    def blocked_loader(parameters):
+        entered.set()
+        assert release.wait(4)
+        return current_loader(parameters)
+
+    monkeypatch.setattr(service, "loader", blocked_loader)
+    monkeypatch.setattr(service, "validator", lambda _: None)
+    monkeypatch.setattr(
+        wechat_browser_snapshot,
+        "load_previous_conversation_snapshot",
+        lambda *_: ("main.conversations", "absent", None),
+    )
+    account = "account:wxid_account_a"
+    parameters = {
+        "view": "text", "source": "wechat", "session_view": "1", "account": account,
+    }
+    client = app.test_client()
+    try:
+        response = client.get("/browser", query_string=parameters)
+        assert response.status_code == 200
+        assert entered.wait(1)
+        pending = parse_browser_markup(response.data)
+        shell = pending.find(".//*[@data-wechat-read-pending]")
+        assert shell.get("data-state") == "running"
+        assert client.get(shell.get("data-status-url")).json["state"] == "running"
+        copy = shell.find(".//*[@data-wechat-read-copy]")
+        assert "last verified conversations" in "".join(copy.itertext())
+        preview = pending.find(".//*[@data-wechat-read-preview]")
+        rows = preview.findall(".//tr[@data-chat-session-id]")
+        assert len(rows) == 2
+        assert {row.get("data-wechat-account") for row in rows} == {account}
+        assert all("".join(row.findall("td")[-1].itertext()).strip() == "—" for row in rows)
+        assert not pending.findall(".//*[@data-chat-message-id]")
+
+        release.set()
+        assert _done(service, shell.get("data-task-id"))["state"] == "succeeded"
+        response = client.get("/browser", query_string=parameters)
+        assert response.status_code == 200
+        ready = parse_browser_markup(response.data)
+        assert ready.find(".//*[@data-wechat-read-pending]") is None
+        assert ready.find(".//*[@data-wechat-read-preview]") is None
+        current_rows = ready.findall(".//tr[@data-chat-session-id]")
+        assert [row.get("data-chat-session-id") for row in current_rows] == [
+            row.get("data-chat-session-id") for row in rows
+        ]
+        assert all("".join(row.findall("td")[-1].itertext()).strip() == "215" for row in current_rows)
     finally:
         release.set()
         app.extensions["runtime_shutdown"]()
