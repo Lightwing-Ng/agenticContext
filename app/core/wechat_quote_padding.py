@@ -1,6 +1,6 @@
 """Project redundant native quote padding only against a retained page original.
 
-Code version: v1.0.0-codex.0
+Code version: v1.0.1-codex.0
 """
 
 from __future__ import annotations
@@ -11,10 +11,11 @@ import re
 
 from .wechat_quoted_contacts import _native_quote, _quoted_author, _source_envelope
 from .wechat_reconcile import native_text_metadata
+from .wechat_resource_snapshot_adapter import _relative
 from .wechat_text import native_components_text
 
 
-VERSION = "v1.0.0-codex.0"
+VERSION = "v1.0.1-codex.0"
 MATCH_BASIS = "same_native_page_original_without_quote_padding_v1"
 MAX_PAGE_ITEMS = 1_000
 _HEX = re.compile(r"[0-9a-f]{64}")
@@ -48,6 +49,29 @@ def _key(item, server):
     ):
         return None
     return *scope, snapshot, server
+
+
+def _declares_database(value, metadata, relative):
+    if not isinstance(value, dict):
+        return False
+    if value.get("path") == relative:
+        return True
+    if (
+        set(value) != {"bytes", "member_path", "sha256"}
+        or type(value["bytes"]) is not int
+        or value["bytes"] < 0
+        or metadata.get("container_kind") != "legacy_ios"
+        or any(
+            not isinstance(metadata.get(key), str)
+            or _HEX.fullmatch(metadata[key]) is None
+            for key in ("archive_sha256", "identity_sha256")
+        )
+    ):
+        return False
+    try:
+        return _relative(value["member_path"], metadata["account_hash"]) == relative
+    except ValueError:
+        return False
 
 
 def _proof(item, partitions, display_names, snapshots):
@@ -96,7 +120,7 @@ def _proof(item, partitions, display_names, snapshots):
         declared = [
             value
             for value in inputs
-            if isinstance(value, dict) and value.get("path") == relative
+            if _declares_database(value, snapshot["metadata"], relative)
         ]
         if len(declared) != 1 or declared[0].get("sha256") != digest:
             return None

@@ -1,6 +1,6 @@
 # Architecture guide
 
-Documentation version: `v1.76.0-codex.0`
+Documentation version: `v1.77.2-codex.0`
 
 ## Runtime flow
 
@@ -1136,6 +1136,15 @@ source clock. Cross-account invitations require exact primary text anchors and r
 the source viewer, typed participant roles, original template, and both device clocks.
 Display names do not establish identity.
 
+`wechat_resource_snapshot_adapter.py` resolves three retained legacy receipt shapes
+through the pinned resource catalog and existing primary snapshot metadata. Exact
+snapshot/source IDs, metadata and database hashes, and native account paths must agree.
+The adapter preserves successful declarations and explicitly linked aliases, rejects
+ambiguous links, and creates no snapshot or cloud read. Incremental replay can skip an
+already retained exact witness while checking novel observations for mutually known
+reply, author, reference, type, and clock conflicts. Missing detail remains unknown;
+viewer labels do not establish identity or contradict a literal reply.
+
 The completion catalog joins the final accepted SQL timeline before paging, search,
 counts, exports, and quoted-original lookup. Shared message and resource macros render
 its normalized results. Replacements apply only while the complete original row still
@@ -1143,14 +1152,41 @@ matches; a newer upstream recovery row wins. Existing invitation server IDs prev
 duplicate additions. Source history, resource catalogs, and native account boundaries
 remain unchanged. Reader and contact-index fingerprints include this derived catalog.
 
+`wechat_completion_selection.py` shares bounded candidate selection across runtime
+attachment, compaction, and reviewed quote reconciliation. Batches of up to 256 IDs
+use indexed upstream filters before applying the same 14-column `IS` comparison.
+Notice membership retains only matching ID or conversation/server-ID keys, preserving
+SQLite type and NULL semantics. Global and scoped readers use this same path without
+building full-body covering indexes over the entire upstream timeline.
+
 Staging streams sealed packets and retains each verified packet in an explicitly
 incomplete candidate until final input checks succeed. Publication verifies every
 projection again under the global repair and recovery-bank leases, then uses an atomic
-replacement with compare-and-swap checks. Review-only compaction can clone a complete
-candidate, remove projections already superseded by a verified upstream timeline,
-retain a row/hash pruning manifest, and vacuum the new candidate. It never edits the
-published timeline or the preserved source packets. Proof schema versions remain
-stable across implementation-only changes.
+replacement with compare-and-swap checks. Review-only compaction uses the same
+upstream precedence predicate for both clone-and-vacuum and streaming output. The
+streaming path writes only active projections into a new private catalog and encodes
+JSON while copying, limiting temporary storage. Both paths retain pruning evidence
+and validate source and output proofs before marking a candidate complete.
+An unchanged full-source proof can be reused only in the validating process, keyed
+by the complete source identity and primary pins. A new process replays the source
+proof; saved observations are not a persistent validation attestation.
+
+Reviewed quote reconciliation can restore a prior projection only when an exact
+SHA-bound decision manifest links the current candidate to that source generation.
+The retained witness must regenerate the byte-identical prior projection and pass
+the same known-fact and upstream precedence checks. Omitted quote details remain
+unknown; contradictory known facts remain quarantined. Reconciliation keeps the
+historical conflict ledger and a separate decision manifest. It never edits the
+published timeline or preserved source packets. Proof schema versions remain stable
+across implementation-only changes.
+
+Derived catalog copies use `wechat_completion_clone.py`: macOS retains the existing
+mandatory APFS clone policy. Linux and Windows copy only validated completion catalogs
+through a bounded, hash-checked stream into a private file, then atomically claim an
+absent destination with a hard link. Source/temporary identity checks prevent racing
+replacement and cleanup from touching another file. This adapter does not change raw
+archive, history, or recovery-bank copying. Derived-file flushing uses a writable
+handle on Windows and retains POSIX file and directory durability checks.
 
 Review compaction can encode derived JSON cells through
 `wechat_completion_json_codec.py`. Its closed, length-bound and SHA-256-bound zlib
@@ -1161,8 +1197,8 @@ or change its canonical proof hash.
 
 `wechat_macos_bank_v4_reader.py` preserves read compatibility with retained schema-4
 banks. It verifies the closed schema, journal-inclusive payload digest, native event
-identity, linked revision chain, and the supported monotonic quote, forwarded, and
-app-label completion reasons. Earlier schema-3 banks retain their existing path.
+identity, linked revision chain, and the supported monotonic quote, forwarded, app-label, and quoted-app-label
+completion reasons. Earlier schema-3 banks retain their existing path.
 This adapter does not introduce a reparse writer or accept unknown revision reasons.
 
 `wechat_wcdb_compat.py` delegates only a missing local compression backend to the existing

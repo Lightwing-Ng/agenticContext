@@ -1,6 +1,6 @@
 """Nontext quoted references remain typed and source-scoped without payload reads.
 
-Code version: v1.3.2-codex.0
+Code version: v1.3.3-codex.0
 """
 
 from copy import deepcopy
@@ -104,6 +104,45 @@ def test_exact_original_adds_inert_typed_reference_without_copying_payloads(
     assert "untrusted" not in str(quote["resource"])
     projected = deepcopy(quote)
     assert _run(fixture) == projected
+
+
+@pytest.mark.parametrize(
+    "defect",
+    [None, "owner_path", "traversal", "digest", "archive", "identity", "duplicate"],
+)
+def test_retained_member_inventory_proves_only_its_exact_native_resource(defect):
+    fixture = _fixture()
+    metadata = fixture.snapshots[26]["metadata"]
+    declared = metadata["input_databases"][0]
+    member = {
+        "bytes": 512,
+        "member_path": "Preserved archive/" + declared["path"],
+        "sha256": declared["sha256"],
+    }
+    metadata.update(
+        container_kind="legacy_ios",
+        archive_sha256="b" * 64,
+        identity_sha256="c" * 64,
+        input_databases=[member],
+    )
+    if defect == "owner_path":
+        member["member_path"] = member["member_path"].replace(
+            metadata["account_hash"], "e" * 32
+        )
+    elif defect == "traversal":
+        member["member_path"] = "../" + member["member_path"]
+    elif defect == "digest":
+        member["sha256"] = "e" * 64
+    elif defect in {"archive", "identity"}:
+        metadata.pop(defect + "_sha256")
+    elif defect == "duplicate":
+        metadata["input_databases"].append(deepcopy(member))
+    quote = _run(fixture)
+    if defect is None:
+        assert quote["resource_basis"] == ORIGINAL_BASIS
+        assert quote["resource_original"]["message_id"] == fixture.original.stable_id
+    else:
+        assert "resource" not in quote and "resource_original" not in quote
 
 
 @pytest.mark.parametrize(

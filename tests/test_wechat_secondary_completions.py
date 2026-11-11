@@ -1,17 +1,20 @@
 """Derived completion catalogs preserve originals and serve one consistent timeline.
 
-Code version: v1.0.5-codex.1
+Code version: v1.0.7-codex.2
 """
 
+from contextlib import closing
 from copy import deepcopy
 import hashlib
 import json
 from pathlib import Path
 import sqlite3
+import sys
 
 import pytest
 
 from app.core import wechat_secondary_completions as completions
+from app.core.owner_only_files import owner_only_problem
 from app.core.wechat_archive import (
     WechatArchiveRepository,
     _file_identity,
@@ -365,7 +368,7 @@ def test_completion_metadata_changes_invalidate_the_browser_source_fingerprint(
     _publish(fixture, _stage(fixture))
     after = _inputs(repository)
     path = str(completions.completion_path(fixture["root"]).absolute())
-    assert before[path] is None and after[path] is not None
+    assert path not in before and after[path] is not None
     assert before != after
 
 
@@ -754,7 +757,7 @@ def test_private_compaction_prunes_only_upstream_precedence_and_keeps_cross_owne
         manifest = [json.loads(line) for line in stream]
     assert len(manifest) == 2
     assert manifest[1]["id"] == fixture["image"]["id"]
-    with completions._readonly(fixture["catalog"]) as catalog:
+    with closing(completions._readonly(fixture["catalog"])) as catalog:
         original_row = dict(
             catalog.execute(
                 "SELECT * FROM messages WHERE id=?", (fixture["image"]["id"],)
@@ -762,8 +765,8 @@ def test_private_compaction_prunes_only_upstream_precedence_and_keeps_cross_owne
         )
     assert manifest[1]["original_sha256"] == completions._sha(original_row)
     with (
-        completions._readonly(compacted) as output,
-        completions._readonly(fixture["candidate"]) as source,
+        closing(completions._readonly(compacted)) as output,
+        closing(completions._readonly(fixture["candidate"])) as source,
     ):
         assert output.execute("SELECT COUNT(*) FROM entries").fetchone()[0] == 1
         assert output.execute("SELECT COUNT(*) FROM witnesses").fetchone()[0] == 1
@@ -1376,3 +1379,1013 @@ def test_an_external_post_rename_replacement_cannot_seed_verified_cache(
         target, completions._identity(target), completions._pins(fixture["history"])
     )
     assert key not in completions._CACHE
+
+
+def _legacy_source_receipt(fixture, *, retain_declared_path=False):
+    proof = json.loads(fixture["image"]["provenance"])
+    owner = sender.PRIMARY
+    hashed = hashlib.md5(owner.encode(), usedforsecurity=False).hexdigest()
+    relative = "Documents/" + hashed + "/DB/message_2.sqlite"
+    member = {
+        "bytes": 512,
+        "member_path": "Preserved archive/" + relative,
+        "sha256": proof["source_sha256"],
+    }
+    with sqlite3.connect(fixture["history"]) as history:
+        history.row_factory = sqlite3.Row
+        snapshot = dict(
+            history.execute(
+                "SELECT * FROM source_snapshots WHERE source_id=?", ("ios-" + hashed,)
+            ).fetchone()
+        )
+        metadata = json.loads(snapshot["metadata"])
+        metadata.update(
+            source_id=snapshot["source_id"],
+            backup_id=snapshot["snapshot_id"],
+            container_kind="legacy_ios",
+            archive_sha256="a" * 64,
+            identity_sha256="b" * 64,
+        )
+        if not retain_declared_path:
+            metadata["input_databases"] = [member]
+        raw = json.dumps(metadata)
+        history.execute(
+            "UPDATE source_snapshots SET metadata=? WHERE id=?", (raw, snapshot["id"])
+        )
+    with sqlite3.connect(fixture["catalog"]) as catalog:
+        catalog.execute(
+            "CREATE TABLE IF NOT EXISTS native_resource_sources(source_snapshot_id INTEGER,database_relative_path TEXT,database_sha256 TEXT,account_id TEXT,source_id TEXT,backup_id TEXT,metadata_sha256 TEXT,file_id TEXT,receipt_basis TEXT,proof TEXT)"
+        )
+        catalog.execute(
+            "INSERT INTO native_resource_sources VALUES(?,?,?,?,?,?,?,?,?,?)",
+            (
+                snapshot["id"],
+                relative,
+                proof["source_sha256"],
+                owner,
+                snapshot["source_id"],
+                snapshot["snapshot_id"],
+                hashlib.sha256(raw.encode()).hexdigest(),
+                hashlib.sha1(
+                    ("AppDomain-com.tencent.xin-" + relative).encode()
+                ).hexdigest(),
+                "preservation_manifest",
+                json.dumps(member),
+            ),
+        )
+        catalog.execute(
+            "UPDATE archive_info SET value=? WHERE key='history_file_identity'",
+            (json.dumps(_file_identity(fixture["history"])),),
+        )
+
+
+def test_legacy_snapshot_receipt_recovers_new_rows_and_revalidates_at_publication(
+    completion_fixture,
+):
+    fixture = completion_fixture
+    _legacy_source_receipt(fixture)
+    report = _stage(fixture)
+    assert report["counts"] == {"native_sender": 1, "native_quote": 1}
+    assert report["snapshot_adapter"]["rejected"] == {}
+    with closing(completions._readonly(fixture["candidate"])) as candidate:
+        for row in candidate.execute("SELECT provenance FROM messages"):
+            receipt = json.loads(row[0])["secondary_resource_completion"][
+                "snapshot_receipt_adapter"
+            ]
+            assert receipt["receipt_shape"] == "legacy_archive_member_path"
+            assert len(receipt["catalog_source_receipt_sha256"]) == 64
+    assert _publish(fixture, report)["published"]
+
+
+def test_existing_successful_snapshot_rows_remain_byte_identical(completion_fixture):
+    fixture = completion_fixture
+    _legacy_source_receipt(fixture, retain_declared_path=True)
+    events = completions.iter_secondary_native_events(fixture["packet"])
+    events = list(events)
+    with (
+        completions._readonly(fixture["history"]) as history,
+        completions._readonly(fixture["catalog"]) as catalog,
+    ):
+        declared = completions._snapshot_index(history)
+        adapted = completions._snapshot_resolver(history, catalog)
+        for row in catalog.execute("SELECT * FROM messages"):
+            before = completions._complete_resource(
+                dict(row), fixture["conversation"], events, declared
+            )
+            after = completions._complete_resource(
+                dict(row), fixture["conversation"], events, adapted
+            )
+            assert before == after
+            assert (
+                "snapshot_receipt_adapter"
+                not in json.loads(after[0]["provenance"])[
+                    "secondary_resource_completion"
+                ]
+            )
+
+
+def test_incremental_replay_skips_exact_verified_witnesses_before_projection(
+    completion_fixture, tmp_path, monkeypatch
+):
+    fixture = completion_fixture
+    base = _stage(fixture)
+
+    def unexpected(*_args):
+        raise AssertionError("A completed physical witness must not be reprojected.")
+
+    monkeypatch.setattr(completions, "_complete_resource", unexpected)
+    report = completions.stage_secondary_message_completions(
+        fixture["root"],
+        tmp_path / "incremental.sqlite3",
+        [fixture["packet"]],
+        notice_plans=(),
+        base_candidate_path=fixture["candidate"],
+        base_candidate_sha256=base["candidate_sha256"],
+        only_uncompleted=True,
+    )
+    assert report["incremental"]["same_stored_witness_skipped"] == 2
+    assert report["counts"] == base["counts"]
+
+
+def test_incremental_new_sender_conflict_is_quarantined_and_preserved(
+    completion_fixture, tmp_path
+):
+    fixture = completion_fixture
+    base = _stage(fixture)
+    packet = deepcopy(fixture["packet"])
+    packet["messages"][0].update(
+        sender_id=native.OWNER,
+        sender_label=native.OWNER,
+        direction="sent",
+        real_sender_id=9,
+        sender_proof=native._proof(9, native.OWNER),
+    )
+    report = completions.stage_secondary_message_completions(
+        fixture["root"],
+        tmp_path / "incremental-conflict.sqlite3",
+        [packet],
+        notice_plans=(),
+        base_candidate_path=fixture["candidate"],
+        base_candidate_sha256=base["candidate_sha256"],
+        only_uncompleted=True,
+    )
+    assert report["incremental"]["new_sender_conflicts"] == 1
+    assert report["counts"] == {"native_quote": 1}
+    with completions._readonly(report["candidate"]) as output:
+        assert (
+            output.execute("SELECT id FROM ambiguities").fetchone()[0]
+            == fixture["image"]["id"]
+        )
+        conflict = output.execute(
+            "SELECT * FROM incremental_resource_conflicts"
+        ).fetchone()
+        old = completions.load_json_cell(
+            output.execute(
+                "SELECT message FROM witnesses WHERE id=?",
+                (conflict["prior_witness_key"],),
+            ).fetchone()[0]
+        )
+        new = completions.load_json_cell(
+            output.execute(
+                "SELECT message FROM witnesses WHERE id=?", (conflict["witness_key"],)
+            ).fetchone()[0]
+        )
+        assert old["sender_id"] != new["sender_id"]
+    replay = completions.stage_secondary_message_completions(
+        fixture["root"],
+        tmp_path / "quarantine-replay.sqlite3",
+        [fixture["packet"]],
+        notice_plans=(),
+        base_candidate_path=report["candidate"],
+        base_candidate_sha256=report["candidate_sha256"],
+        only_uncompleted=True,
+    )
+    assert replay["incremental"]["quarantined_rows_skipped"] == 1
+    assert replay["counts"] == {"native_quote": 1}
+
+
+def test_incremental_encoded_successful_rows_keep_storage_and_proof_bytes(
+    completion_fixture, tmp_path
+):
+    fixture = completion_fixture
+    base = _stage(fixture)
+    encoded = completions.compact_secondary_message_completions(
+        fixture["root"],
+        fixture["candidate"],
+        tmp_path / "encoded-only-base.sqlite3",
+        candidate_sha256=base["candidate_sha256"],
+    )
+    packet = deepcopy(fixture["packet"])
+    packet["messages"][0]["local_id"] += 100
+    report = completions.stage_secondary_message_completions(
+        fixture["root"],
+        tmp_path / "incremental-encoded.sqlite3",
+        [packet],
+        notice_plans=(),
+        base_candidate_path=encoded["candidate"],
+        base_candidate_sha256=encoded["candidate_sha256"],
+        only_uncompleted=True,
+    )
+    assert report["incremental"]["new_nonconflicting_witness_observations"] == 1
+    with (
+        completions._readonly(encoded["candidate"]) as before,
+        completions._readonly(report["candidate"]) as after,
+    ):
+        for table, columns in [
+            ("messages", "id,provenance"),
+            ("entries", "id,original_row,projected_sha256"),
+        ]:
+            assert [
+                tuple(row)
+                for row in before.execute(
+                    "SELECT " + columns + " FROM " + table + " ORDER BY id"
+                )
+            ] == [
+                tuple(row)
+                for row in after.execute(
+                    "SELECT " + columns + " FROM " + table + " ORDER BY id"
+                )
+            ]
+
+
+def test_incremental_typed_quote_body_conflict_is_not_hidden_by_existing_entry(
+    completion_fixture, tmp_path
+):
+    fixture = completion_fixture
+    base = _stage(fixture)
+    packet = deepcopy(fixture["packet"])
+    quote = native._message(
+        10,
+        49,
+        sender=sender.PRIMARY,
+        raw="<msg><appmsg><title>A changed literal reply</title><type>57</type><refermsg><type>3</type><svrid>504</svrid><fromusr>"
+        + native.ROOM
+        + "</fromusr><chatusr>"
+        + native.MEMBER
+        + "</chatusr><displayname>Native quoted author</displayname><createtime>1700000004</createtime><content>opaque image metadata</content></refermsg></appmsg></msg>",
+    )
+    quote.update(real_sender_id=9, sender_proof=native._proof(9, sender.PRIMARY))
+    packet["messages"][1] = quote
+    report = completions.stage_secondary_message_completions(
+        fixture["root"],
+        tmp_path / "incremental-body-conflict.sqlite3",
+        [packet],
+        notice_plans=(),
+        base_candidate_path=fixture["candidate"],
+        base_candidate_sha256=base["candidate_sha256"],
+        only_uncompleted=True,
+    )
+    assert report["incremental"]["new_quote_body_conflicts"] == 1
+    assert report["counts"] == {"native_sender": 1}
+
+
+def test_incremental_mode_still_validates_every_packet_before_skipping(
+    completion_fixture, tmp_path
+):
+    fixture = completion_fixture
+    base = _stage(fixture)
+    packet = deepcopy(fixture["packet"])
+    packet.pop("account_binding")
+    with pytest.raises(ValueError, match="account binding"):
+        completions.stage_secondary_message_completions(
+            fixture["root"],
+            tmp_path / "invalid-incremental.sqlite3",
+            [packet],
+            notice_plans=(),
+            base_candidate_path=fixture["candidate"],
+            base_candidate_sha256=base["candidate_sha256"],
+            only_uncompleted=True,
+        )
+
+
+def test_optional_completion_input_omits_absence_but_retains_unavailable_presence(
+    tmp_path, monkeypatch
+):
+    history = tmp_path / "history.sqlite3"
+    catalog = history.with_name(completions.FILENAME)
+    path = str(catalog.absolute())
+    assert completions.completion_input_identities(history) == {}
+    catalog.write_bytes(b"Resident metadata probe; no database payload is read.")
+    original_identity = completions._identity
+    monkeypatch.setattr(
+        Path,
+        "open",
+        lambda *_args, **_kwargs: pytest.fail(
+            "Input identities must not read source payloads."
+        ),
+    )
+    assert completions.completion_input_identities(history)[path] == original_identity(
+        catalog
+    )
+
+    def unavailable(_path, *, optional=False):
+        assert _path == catalog and optional
+        raise ValueError("Synthetic resident source is temporarily unavailable.")
+
+    monkeypatch.setattr(completions, "_identity", unavailable)
+    state = catalog.lstat()
+    assert completions.completion_input_identities(history) == {
+        path: {
+            "unavailable": True,
+            "size": state.st_size,
+            "mtime_ns": state.st_mtime_ns,
+        }
+    }
+
+
+def _same_body_quote_witness(
+    *,
+    actor=native.MEMBER,
+    server="504",
+    typ=3,
+    subtype=6,
+    label="Native quoted author",
+    title="Same inert title",
+    quoted_body="Known quoted body",
+):
+    from xml.sax.saxutils import escape
+
+    content = (
+        quoted_body
+        if typ == 1
+        else escape(
+            "<msg><appmsg><type>"
+            + str(subtype)
+            + "</type><title>"
+            + title
+            + "</title></appmsg></msg>"
+        )
+        if typ == 49
+        else ""
+    )
+    quote = native._message(
+        10,
+        49,
+        sender=sender.PRIMARY,
+        raw="<msg><appmsg><title>Verified reply</title><type>57</type><refermsg><type>"
+        + str(typ)
+        + "</type><svrid>"
+        + server
+        + "</svrid><fromusr>"
+        + native.ROOM
+        + "</fromusr><chatusr>"
+        + actor
+        + "</chatusr><displayname>"
+        + label
+        + "</displayname><createtime>1700000004</createtime><content>"
+        + content
+        + "</content></refermsg></appmsg></msg>",
+    )
+    quote.update(real_sender_id=9, sender_proof=native._proof(9, sender.PRIMARY))
+    if typ == 49:
+        # The strategy consumes sealed parsed facts independently of extractor revisions.
+        quote["native_text"]["quoted_reference"]["app_card_metadata"] = {
+            "schema_version": 1,
+            "appmsg_subtype": subtype,
+            "safe_title": title,
+        }
+    return quote
+
+
+@pytest.mark.parametrize(
+    "initial,change",
+    [
+        ({}, {"actor": "wxid_different_quoted_actor"}),
+        ({}, {"server": "999"}),
+        ({}, {"typ": 43}),
+        ({"typ": 49}, {"typ": 49, "subtype": 5}),
+        ({"typ": 49}, {"typ": 49, "title": "Another explicit quoted title"}),
+    ],
+)
+def test_incremental_same_reply_cannot_hide_conflicting_quoted_reference_facts(
+    completion_fixture, tmp_path, initial, change
+):
+    fixture = completion_fixture
+    fixture["packet"]["messages"][1] = _same_body_quote_witness(**initial)
+    base = _stage(fixture)
+    packet = deepcopy(fixture["packet"])
+    packet["messages"][1] = _same_body_quote_witness(**change)
+    assert packet["messages"][1]["text"] == fixture["packet"]["messages"][1]["text"]
+    report = completions.stage_secondary_message_completions(
+        fixture["root"],
+        tmp_path / "reference-conflict.sqlite3",
+        [packet],
+        notice_plans=(),
+        base_candidate_path=base["candidate"],
+        base_candidate_sha256=base["candidate_sha256"],
+        only_uncompleted=True,
+    )
+    assert report["incremental"]["new_quote_reference_conflicts"] == 1
+    assert report["counts"] == {"native_sender": 1}
+    with completions._readonly(report["candidate"]) as output:
+        conflict = output.execute(
+            "SELECT * FROM incremental_resource_conflicts"
+        ).fetchone()
+        assert conflict["prior_witness_key"] != conflict["witness_key"]
+        assert "quoted-reference" in conflict["reason"]
+    replay = completions.stage_secondary_message_completions(
+        fixture["root"],
+        tmp_path / "retained-reference-quarantine.sqlite3",
+        [fixture["packet"]],
+        notice_plans=(),
+        base_candidate_path=report["candidate"],
+        base_candidate_sha256=report["candidate_sha256"],
+        only_uncompleted=True,
+    )
+    assert replay["incremental"]["quarantined_rows_skipped"] == 1
+    assert replay["counts"] == {"native_sender": 1}
+
+
+@pytest.mark.parametrize(
+    "initial,change",
+    [
+        ({}, {"label": "Another account's alias"}),
+        ({"actor": "", "server": ""}, {}),
+    ],
+)
+def test_incremental_quote_labels_and_unknown_detail_enrichment_keep_encoded_proof(
+    completion_fixture, tmp_path, initial, change
+):
+    fixture = completion_fixture
+    fixture["packet"]["messages"][1] = _same_body_quote_witness(**initial)
+    base = _stage(fixture)
+    encoded = completions.compact_secondary_message_completions(
+        fixture["root"],
+        base["candidate"],
+        tmp_path / "encoded-reference-base.sqlite3",
+        candidate_sha256=base["candidate_sha256"],
+    )
+    packet = deepcopy(fixture["packet"])
+    packet["messages"][1] = _same_body_quote_witness(**change)
+    report = completions.stage_secondary_message_completions(
+        fixture["root"],
+        tmp_path / "compatible-reference.sqlite3",
+        [packet],
+        notice_plans=(),
+        base_candidate_path=encoded["candidate"],
+        base_candidate_sha256=encoded["candidate_sha256"],
+        only_uncompleted=True,
+    )
+    assert report["counts"] == {"native_quote": 1, "native_sender": 1}
+    assert report["incremental"]["new_nonconflicting_witness_observations"] == 1
+    with (
+        completions._readonly(encoded["candidate"]) as before,
+        completions._readonly(report["candidate"]) as after,
+    ):
+        for table, columns in [
+            ("messages", "id,provenance"),
+            ("entries", "id,original_row,projected_sha256"),
+        ]:
+            statement = "SELECT " + columns + " FROM " + table + " ORDER BY id"
+            assert list(map(tuple, before.execute(statement))) == list(
+                map(tuple, after.execute(statement))
+            )
+
+
+def test_incremental_explicit_outer_app_type_conflict_is_not_plain_text_agreement(
+    completion_fixture, tmp_path
+):
+    fixture = completion_fixture
+    base = _stage(fixture)
+    packet = deepcopy(fixture["packet"])
+    novel = native._message(
+        10,
+        49,
+        sender=sender.PRIMARY,
+        raw="<msg><appmsg><type>1</type><title>Verified reply</title></appmsg></msg>",
+    )
+    novel.update(real_sender_id=9, sender_proof=native._proof(9, sender.PRIMARY))
+    assert novel["text"] == packet["messages"][1]["text"]
+    packet["messages"][1] = novel
+    report = completions.stage_secondary_message_completions(
+        fixture["root"],
+        tmp_path / "outer-type-conflict.sqlite3",
+        [packet],
+        notice_plans=(),
+        base_candidate_path=base["candidate"],
+        base_candidate_sha256=base["candidate_sha256"],
+        only_uncompleted=True,
+    )
+    assert report["incremental"]["new_quote_reference_conflicts"] == 1
+    assert report["counts"] == {"native_sender": 1}
+
+
+def _canonical_compaction_tables(path):
+    json_columns = {
+        "messages": {"provenance"},
+        "entries": {"original_row", "conversation_row", "plan"},
+        "sources": {"header"},
+        "witnesses": {"message"},
+    }
+    result = {}
+    with completions._readonly(path) as connection:
+        for table in [
+            "messages",
+            "entries",
+            "sources",
+            "witnesses",
+            "ambiguities",
+            "archive_info",
+            "append_event_heads",
+            "append_event_audit",
+            "incremental_resource_conflicts",
+        ]:
+            rows = []
+            for row in connection.execute('SELECT * FROM "' + table + '" ORDER BY 1'):
+                value = dict(row)
+                for column in json_columns.get(table, ()):
+                    value[column] = completions.decode_json_cell(value[column])
+                rows.append(value)
+            result[table] = rows
+    return result
+
+
+@pytest.mark.parametrize("selection", ["all", "partial", "none"])
+def test_stream_compaction_matches_exact_clone_selection_and_canonical_cells(
+    completion_fixture, tmp_path, monkeypatch, selection
+):
+    fixture = completion_fixture
+    if selection in {"partial", "none"}:
+        _retain_primary_image(fixture)
+    if selection == "none":
+        with sqlite3.connect(fixture["history"]) as history:
+            history.execute(
+                "INSERT INTO messages VALUES("
+                + ",".join("?" for _ in completions.COLUMNS)
+                + ")",
+                tuple(fixture["quote"][column] for column in completions.COLUMNS),
+            )
+        with sqlite3.connect(fixture["catalog"]) as catalog:
+            catalog.execute(
+                "UPDATE archive_info SET value=? WHERE key='history_file_identity'",
+                (json.dumps(_file_identity(fixture["history"])),),
+            )
+    stage = _stage(fixture)
+    source_bytes = fixture["candidate"].read_bytes()
+    normal = completions.compact_secondary_message_completions(
+        fixture["root"],
+        fixture["candidate"],
+        tmp_path / "clone-result.sqlite3",
+        candidate_sha256=stage["candidate_sha256"],
+    )
+    phases = []
+    monkeypatch.setattr(
+        completions,
+        "_clonefile",
+        lambda *_args: pytest.fail("Stream mode must not clone."),
+    )
+    monkeypatch.setattr(
+        completions,
+        "_encode_derived_json",
+        lambda *_args: pytest.fail("Stream mode must encode during copy."),
+    )
+    streamed = completions.compact_secondary_message_completions(
+        fixture["root"],
+        fixture["candidate"],
+        tmp_path / "stream-result.sqlite3",
+        candidate_sha256=stage["candidate_sha256"],
+        stream_compaction=True,
+        progress=phases.append,
+    )
+    assert streamed["compaction_mode"] == "stream"
+    assert normal["retained_counts"] == streamed["retained_counts"]
+    assert (
+        normal["manifest_uncompressed_sha256"]
+        == streamed["manifest_uncompressed_sha256"]
+    )
+    assert _canonical_compaction_tables(
+        normal["candidate"]
+    ) == _canonical_compaction_tables(streamed["candidate"])
+    assert fixture["candidate"].read_bytes() == source_bytes
+    assert "vacuuming_candidate" not in [value["phase"] for value in phases]
+    assert not list(tmp_path.glob(".completion-stream-*"))
+    assert not owner_only_problem(Path(streamed["candidate"]))
+    if sys.platform != "win32":
+        assert Path(streamed["candidate"]).stat().st_mode & 0o777 == 0o600
+
+
+def test_stream_compaction_keeps_quarantined_audit_only_native_witnesses(
+    completion_fixture, tmp_path
+):
+    fixture = completion_fixture
+    base = _stage(fixture)
+    packet = deepcopy(fixture["packet"])
+    packet["messages"][1] = _same_body_quote_witness(
+        actor="wxid_conflicting_quote_actor"
+    )
+    stage = completions.stage_secondary_message_completions(
+        fixture["root"],
+        tmp_path / "quarantined-source.sqlite3",
+        [packet],
+        notice_plans=(),
+        base_candidate_path=base["candidate"],
+        base_candidate_sha256=base["candidate_sha256"],
+        only_uncompleted=True,
+    )
+    assert stage["incremental"]["new_quote_reference_conflicts"] == 1
+    normal = completions.compact_secondary_message_completions(
+        fixture["root"],
+        stage["candidate"],
+        tmp_path / "audit-clone.sqlite3",
+        candidate_sha256=stage["candidate_sha256"],
+    )
+    streamed = completions.compact_secondary_message_completions(
+        fixture["root"],
+        stage["candidate"],
+        tmp_path / "audit-stream.sqlite3",
+        candidate_sha256=stage["candidate_sha256"],
+        stream_compaction=True,
+    )
+    assert _canonical_compaction_tables(
+        normal["candidate"]
+    ) == _canonical_compaction_tables(streamed["candidate"])
+    with completions._readonly(streamed["candidate"]) as result:
+        assert (
+            result.execute(
+                "SELECT COUNT(*) FROM incremental_resource_conflicts"
+            ).fetchone()[0]
+            == 1
+        )
+        assert result.execute("SELECT COUNT(*) FROM witnesses").fetchone()[0] == 3
+        assert result.execute("SELECT COUNT(*) FROM ambiguities").fetchone()[0] == 1
+
+
+def test_stream_compaction_partial_failure_is_not_publishable_and_preserves_source(
+    completion_fixture, tmp_path, monkeypatch
+):
+    from app.core import wechat_completion_stream_copy as copier
+
+    fixture = completion_fixture
+    stage = _stage(fixture)
+    source_bytes = fixture["candidate"].read_bytes()
+    copy = copier._copy_table
+
+    def stop_after_entries(output, table, *args):
+        copy(output, table, *args)
+        if table == "entries":
+            raise ValueError("Injected interruption after a committed partial table.")
+
+    monkeypatch.setattr(copier, "_copy_table", stop_after_entries)
+    target = tmp_path / "partial-stream.sqlite3"
+    with pytest.raises(ValueError, match="Injected interruption"):
+        completions.compact_secondary_message_completions(
+            fixture["root"],
+            fixture["candidate"],
+            target,
+            candidate_sha256=stage["candidate_sha256"],
+            stream_compaction=True,
+        )
+    with completions._readonly(target) as partial:
+        assert (
+            partial.execute(
+                "SELECT value FROM archive_info WHERE key='staging_state'"
+            ).fetchone()[0]
+            == "in_progress"
+        )
+    with pytest.raises(ValueError, match="not completed staging"):
+        completions.publish_secondary_message_completions(
+            fixture["root"],
+            target,
+            candidate_sha256=completions._file_sha(target),
+        )
+    assert fixture["candidate"].read_bytes() == source_bytes
+    assert not completions.completion_path(fixture["root"]).exists()
+
+
+def test_stream_output_reservation_never_overwrites_a_racing_file(
+    completion_fixture, tmp_path
+):
+    fixture = completion_fixture
+    stage = _stage(fixture)
+    target = tmp_path / "racing-stream.sqlite3"
+    payload = b"Independent destination created after the initial absence check."
+
+    def race(value):
+        if value["phase"] == "creating_stream_candidate":
+            target.write_bytes(payload)
+
+    with pytest.raises(FileExistsError):
+        completions.compact_secondary_message_completions(
+            fixture["root"],
+            fixture["candidate"],
+            target,
+            candidate_sha256=stage["candidate_sha256"],
+            stream_compaction=True,
+            progress=race,
+        )
+    assert target.read_bytes() == payload
+    assert not list(tmp_path.glob(".completion-stream-*"))
+
+
+def test_stream_output_replacement_is_never_reset_or_modified_by_failure(
+    completion_fixture, tmp_path
+):
+    fixture = completion_fixture
+    stage = _stage(fixture)
+    target = tmp_path / "replaced-stream.sqlite3"
+    saved = tmp_path / "retained-partial-inode.sqlite3"
+    payload = b"External file must remain untouched."
+
+    def replace(value):
+        if value["phase"] == "checking_input_pins":
+            target.rename(saved)
+            target.write_bytes(payload)
+
+    with pytest.raises(ValueError, match="reserved public inode"):
+        completions.compact_secondary_message_completions(
+            fixture["root"],
+            fixture["candidate"],
+            target,
+            candidate_sha256=stage["candidate_sha256"],
+            stream_compaction=True,
+            progress=replace,
+        )
+    assert target.read_bytes() == payload
+    assert saved.exists()
+    with completions._readonly(saved) as retained:
+        assert (
+            retained.execute(
+                "SELECT value FROM archive_info WHERE key='staging_state'"
+            ).fetchone()[0]
+            == "in_progress"
+        )
+    assert list(tmp_path.glob(".completion-stream-*/catalog.sqlite3"))
+
+
+def test_stream_compaction_rejects_current_overlay_drift(completion_fixture, tmp_path):
+    fixture = completion_fixture
+    stage = _stage(fixture)
+
+    def drift(value):
+        if value["phase"] == "streaming_retained_rows":
+            fixture["history"].with_name("macos_recovery.json").write_text("{}")
+
+    with pytest.raises(ValueError, match="compare-and-swap"):
+        completions.compact_secondary_message_completions(
+            fixture["root"],
+            fixture["candidate"],
+            tmp_path / "drift-stream.sqlite3",
+            candidate_sha256=stage["candidate_sha256"],
+            stream_compaction=True,
+            progress=drift,
+        )
+    assert not completions.completion_path(fixture["root"]).exists()
+
+
+@pytest.mark.parametrize(
+    "body,expected_conflict", [("", False), ("A conflicting literal quote", True)]
+)
+def test_incremental_quoted_content_omission_is_enrichment_but_known_literal_conflicts(
+    completion_fixture, tmp_path, body, expected_conflict
+):
+    fixture = completion_fixture
+    fixture["packet"]["messages"][1] = _same_body_quote_witness(typ=1)
+    base = _stage(fixture)
+    packet = deepcopy(fixture["packet"])
+    packet["messages"][1] = _same_body_quote_witness(typ=1, quoted_body=body)
+    assert packet["messages"][1]["text"] != fixture["packet"]["messages"][1]["text"]
+    report = completions.stage_secondary_message_completions(
+        fixture["root"],
+        tmp_path / "literal-enrichment.sqlite3",
+        [packet],
+        notice_plans=(),
+        base_candidate_path=base["candidate"],
+        base_candidate_sha256=base["candidate_sha256"],
+        only_uncompleted=True,
+    )
+    if expected_conflict:
+        assert report["incremental"]["new_quote_body_conflicts"] == 1
+        assert report["counts"] == {"native_sender": 1}
+    else:
+        assert report["counts"] == {"native_quote": 1, "native_sender": 1}
+        assert report["incremental"]["new_nonconflicting_witness_observations"] == 1
+        assert (
+            _canonical_compaction_tables(base["candidate"])["messages"]
+            == _canonical_compaction_tables(report["candidate"])["messages"]
+        )
+
+
+def test_stream_compaction_crosses_commits_with_all_original_projection_hashes(
+    completion_fixture, tmp_path
+):
+    fixture = completion_fixture
+    initial = fixture["packet"]["messages"][0]
+    rows, events = [], []
+    for index in range(300):
+        row, event = deepcopy(fixture["image"]), deepcopy(initial)
+        row["id"] = hashlib.sha256(("streamed-row-" + str(index)).encode()).hexdigest()
+        row["ordinal"] += index
+        event["local_id"] += index
+        event["server_id"] = str(int(event["server_id"]) + index)
+        proof = json.loads(row["provenance"])
+        proof["record_id"] = row["id"]
+        proof["server_id"] = event["server_id"]
+        proof["locator"]["row_id"] += index
+        proof["locator"]["local_id"] = row["ordinal"]
+        row["provenance"] = json.dumps(proof)
+        rows.append(row)
+        events.append(event)
+    with sqlite3.connect(fixture["catalog"]) as catalog:
+        catalog.execute("DELETE FROM messages")
+        catalog.execute("UPDATE conversations SET message_count=300")
+        catalog.executemany(
+            "INSERT INTO messages VALUES("
+            + ",".join("?" for _ in completions.COLUMNS)
+            + ")",
+            [tuple(row[column] for column in completions.COLUMNS) for row in rows],
+        )
+    fixture["packet"]["messages"] = events
+    stage = _stage(fixture)
+    assert stage["counts"] == {"native_sender": 300}
+    result = completions.compact_secondary_message_completions(
+        fixture["root"],
+        stage["candidate"],
+        tmp_path / "stream-300.sqlite3",
+        candidate_sha256=stage["candidate_sha256"],
+        stream_compaction=True,
+    )
+    with (
+        completions._readonly(stage["candidate"]) as source,
+        completions._readonly(result["candidate"]) as output,
+    ):
+        identifiers = [
+            row[0] for row in source.execute("SELECT id FROM messages ORDER BY rowid")
+        ]
+        assert identifiers != sorted(identifiers)
+        assert output.execute("SELECT COUNT(*) FROM messages").fetchone()[0] == 300
+        assert list(
+            map(
+                tuple,
+                source.execute("SELECT id,projected_sha256 FROM entries ORDER BY id"),
+            )
+        ) == list(
+            map(
+                tuple,
+                output.execute("SELECT id,projected_sha256 FROM entries ORDER BY id"),
+            )
+        )
+        assert [
+            dict(row) for row in source.execute("SELECT * FROM messages ORDER BY id")
+        ] == [
+            completions._decoded_message(row)
+            for row in output.execute("SELECT * FROM messages ORDER BY id")
+        ]
+
+
+def test_stream_compaction_mixed_cells_and_orphans_match_clone(
+    completion_fixture, tmp_path
+):
+    fixture = completion_fixture
+    stage = _stage(fixture)
+    with sqlite3.connect(stage["candidate"]) as source:
+        row = source.execute(
+            "SELECT id,provenance FROM messages ORDER BY id LIMIT 1"
+        ).fetchone()
+        source.execute(
+            "UPDATE messages SET provenance=? WHERE id=?",
+            (completions.encode_json_cell(row[1]), row[0]),
+        )
+        source.execute(
+            "INSERT INTO sources VALUES(?,?,?)", ("orphan", "{}", "unused-orphan")
+        )
+        source.execute(
+            "INSERT INTO witnesses VALUES(?,?,?,?)",
+            ("orphan", "orphan", "{}", "unused-orphan"),
+        )
+    reviewed = completions._file_sha(stage["candidate"])
+    normal = completions.compact_secondary_message_completions(
+        fixture["root"],
+        stage["candidate"],
+        tmp_path / "mixed-clone.sqlite3",
+        candidate_sha256=reviewed,
+    )
+    streamed = completions.compact_secondary_message_completions(
+        fixture["root"],
+        stage["candidate"],
+        tmp_path / "mixed-stream.sqlite3",
+        candidate_sha256=reviewed,
+        stream_compaction=True,
+    )
+    assert _canonical_compaction_tables(
+        normal["candidate"]
+    ) == _canonical_compaction_tables(streamed["candidate"])
+    with completions._readonly(streamed["candidate"]) as output:
+        assert (
+            output.execute("SELECT COUNT(*) FROM sources WHERE id='orphan'").fetchone()[
+                0
+            ]
+            == 0
+        )
+        assert (
+            output.execute(
+                "SELECT COUNT(*) FROM witnesses WHERE id='orphan'"
+            ).fetchone()[0]
+            == 0
+        )
+
+
+def test_stream_compaction_replays_native_witness_integrity_before_copy(
+    completion_fixture, tmp_path
+):
+    fixture = completion_fixture
+    stage = _stage(fixture)
+    with sqlite3.connect(stage["candidate"]) as source:
+        row = source.execute("SELECT id,message FROM witnesses LIMIT 1").fetchone()
+        value = json.loads(row[1])
+        value["sender_id"] = "wxid_unauthorized_native_sender"
+        source.execute(
+            "UPDATE witnesses SET message=? WHERE id=?", (json.dumps(value), row[0])
+        )
+    destination = tmp_path / "tampered-source-stream.sqlite3"
+    with pytest.raises(ValueError, match="native witness changed"):
+        completions.compact_secondary_message_completions(
+            fixture["root"],
+            stage["candidate"],
+            destination,
+            candidate_sha256=completions._file_sha(stage["candidate"]),
+            stream_compaction=True,
+        )
+    assert not destination.exists()
+
+
+@pytest.mark.parametrize(
+    "failed_phase",
+    ["sync", "validating_compacted_candidate", "hashing_compacted_candidate"],
+)
+def test_stream_output_stays_incomplete_if_final_flush_or_verification_fails(
+    completion_fixture, tmp_path, monkeypatch, failed_phase
+):
+    from app.core import wechat_completion_stream_copy as copier
+
+    fixture = completion_fixture
+    stage = _stage(fixture)
+    target = tmp_path / "failed-final-stream.sqlite3"
+    if failed_phase == "sync":
+
+        def fail_sync(_owner):
+            raise ValueError("Injected final stream verification failure.")
+
+        monkeypatch.setattr(copier, "sync_stream_file", fail_sync)
+
+    def fail_phase(value):
+        if value["phase"] == failed_phase:
+            raise ValueError("Injected final stream verification failure.")
+
+    with pytest.raises(ValueError, match="Injected final stream"):
+        completions.compact_secondary_message_completions(
+            fixture["root"],
+            stage["candidate"],
+            target,
+            candidate_sha256=stage["candidate_sha256"],
+            stream_compaction=True,
+            progress=fail_phase,
+        )
+    with completions._readonly(target) as retained:
+        assert (
+            retained.execute(
+                "SELECT value FROM archive_info WHERE key='staging_state'"
+            ).fetchone()[0]
+            == "in_progress"
+        )
+    with pytest.raises(ValueError, match="not completed staging"):
+        completions.publish_secondary_message_completions(
+            fixture["root"], target, candidate_sha256=completions._file_sha(target)
+        )
+
+
+def test_stream_private_permissions_are_enforced_before_opening_sqlite(
+    tmp_path, monkeypatch
+):
+    from app.core import wechat_completion_stream_copy as copier
+
+    observed = []
+    original_connect = copier.sqlite3.connect
+    original_owner = copier.owner_only_files.ensure_owner_only
+
+    def directory_boundary(path):
+        assert path.is_dir() and not list(path.iterdir())
+        path.chmod(0o700)
+        observed.append("directory")
+
+    def file_boundary(path):
+        assert path.stat().st_size == 0 and path.stat().st_nlink == 1
+        original_owner(path)
+        observed.append("file")
+
+    def connect_after_boundaries(*args, **kwargs):
+        assert observed == ["directory", "file"]
+        return original_connect(*args, **kwargs)
+
+    monkeypatch.setattr(
+        copier.owner_only_files,
+        "ensure_owner_only_directory",
+        directory_boundary,
+        raising=False,
+    )
+    monkeypatch.setattr(copier.owner_only_files, "ensure_owner_only", file_boundary)
+    monkeypatch.setattr(copier.sqlite3, "connect", connect_after_boundaries)
+    target = tmp_path / "owner-only-stream.sqlite3"
+    connection, owner = copier.create_stream_output(target)
+    connection.close()
+    copier.release_stream_link(owner, target)
+    assert not copier.owner_only_files.owner_only_problem(target)

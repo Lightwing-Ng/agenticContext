@@ -1,6 +1,6 @@
 """Published source-scoped image quotes keep exact authors and inert card bodies.
 
-Code version: v1.1.0-codex.0
+Code version: v1.2.1-codex.0
 """
 
 from __future__ import annotations
@@ -37,9 +37,11 @@ completion_fixture = completion.completion_fixture
 VIEWER = "Primary account contact remark"
 
 
-@pytest.fixture
-def completed_quote_server(completion_fixture, tmp_path):
+@pytest.fixture(params=["declared", "legacy_member"])
+def completed_quote_server(completion_fixture, tmp_path, request):
     fixture = completion_fixture
+    if request.param == "legacy_member":
+        completion._legacy_source_receipt(fixture)
     partition = fixture["conversation"]["partition_id"]
     owner = completion.sender.PRIMARY
     peer = fixture["conversation"]["peer_id"]
@@ -102,6 +104,7 @@ def completed_quote_server(completion_fixture, tmp_path):
         fixture["candidate"],
         tmp_path / "encoded-completions.sqlite3",
         candidate_sha256=staged["candidate_sha256"],
+        stream_compaction=request.param == "legacy_member",
     )
     completion.completions.publish_secondary_message_completions(
         fixture["root"],

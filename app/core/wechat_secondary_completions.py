@@ -1,6 +1,6 @@
 """Stage and read evidence-checked message completions in one derived SQL catalog.
 
-Code version: v1.0.5-codex.1
+Code version: v1.0.8-codex.0
 
 Original history, resource catalogs, account boundaries, and recovery-bank pins
 remain unchanged. Strategies produce either exact resource-row replacements or
@@ -31,10 +31,16 @@ from .wechat_completion_json_codec import (
     load_json_cell,
     register_json_codec,
 )
-from .wechat_export_merge import _clonefile
+from .wechat_completion_clone import (
+    clone_completion_catalog,
+    sync_completion_file,
+    sync_completion_directory,
+)
 from .wechat_global_guard import global_refresh_guard
 from .wechat_reconcile import native_text_metadata
 from .wechat_resource_sender_evidence import (
+    _HEADER_FIELDS,
+    _MESSAGE_FIELDS,
     match_secondary_native_event,
     recover_native_resource_sender_from_secondary,
     iter_secondary_native_events,
@@ -42,7 +48,7 @@ from .wechat_resource_sender_evidence import (
 from .wechat_text import native_components_text
 
 
-CODE_VERSION = "v1.0.5-codex.1"
+CODE_VERSION = "v1.0.8-codex.0"
 PROOF_VERSION = "v1.0.0-codex.0"
 VERSION = PROOF_VERSION
 FILENAME = "secondary_message_completions.sqlite3"
@@ -91,6 +97,12 @@ CREATE TABLE witnesses (
 CREATE TABLE ambiguities (id TEXT PRIMARY KEY,conversation_id TEXT NOT NULL,reason TEXT NOT NULL);
 CREATE TABLE archive_info (key TEXT PRIMARY KEY,value TEXT NOT NULL);
 """
+
+
+def _clonefile(source, destination):
+    clone_completion_catalog(
+        source, destination, expected_identity=_identity(source)
+    )
 
 
 def _json(value):
@@ -147,7 +159,7 @@ def completion_input_identities(history_path):
             "size": state.st_size,
             "mtime_ns": state.st_mtime_ns,
         }
-    return {str(path.absolute()): value}
+    return {} if value is None else {str(path.absolute()): value}
 
 
 def _readonly(path):
@@ -234,6 +246,30 @@ def _snapshot_index(history):
     return result
 
 
+def _snapshot_resolver(history, catalog):
+    """Use only exact primary declarations or pinned, previously validated catalog receipts."""
+    declared = _snapshot_index(history)
+    if (
+        catalog.execute(
+            "SELECT 1 FROM sqlite_master WHERE name='native_resource_sources' AND type='table'"
+        ).fetchone()
+        is None
+    ):
+        return declared
+    from .wechat_resource_snapshot_adapter import ResourceSnapshotAdapter
+
+    snapshots = [
+        dict(row)
+        for row in history.execute(
+            "SELECT id,snapshot_id,source_id,metadata FROM source_snapshots"
+        )
+    ]
+    receipts = [
+        dict(row) for row in catalog.execute("SELECT * FROM native_resource_sources")
+    ]
+    return ResourceSnapshotAdapter(declared, snapshots, receipts)
+
+
 def _complete_resource(row, conversation, events, snapshots):
     """Reuse typed native projections while retaining every original clock field."""
     exact = match_secondary_native_event(row, conversation, events)
@@ -307,13 +343,21 @@ def _complete_resource(row, conversation, events, snapshots):
         primary["source_relative_path"],
         primary["source_sha256"],
     )
-    snapshot = list(dict.fromkeys(snapshots.get(key, ())))
-    if len(snapshot) != 1:
-        raise ValueError(
-            "A completion needs one independently declared original source snapshot."
+    receipt_proof = None
+    if hasattr(snapshots, "resolve"):
+        resolved = snapshots.resolve(
+            key, existing_source_snapshot=proof.get("source_snapshot")
         )
-    if proof.get("source_snapshot", snapshot[0]) != snapshot[0]:
-        raise ValueError("A completion cannot change its original source snapshot.")
+        snapshot = [resolved["source_snapshot_id"]]
+        receipt_proof = resolved["receipt_proof"]
+    else:
+        snapshot = list(dict.fromkeys(snapshots.get(key, ())))
+        if len(snapshot) != 1:
+            raise ValueError(
+                "A completion needs one independently declared original source snapshot."
+            )
+        if proof.get("source_snapshot", snapshot[0]) != snapshot[0]:
+            raise ValueError("A completion cannot change its original source snapshot.")
     proof["source_snapshot"] = snapshot[0]
     proof["locator"] = {
         **proof["locator"],
@@ -334,6 +378,10 @@ def _complete_resource(row, conversation, events, snapshots):
         "secondary_source": matched["secondary_source"],
         "clock_skew_seconds": matched["clock_skew_seconds"],
     }
+    if receipt_proof is not None:
+        proof["secondary_resource_completion"]["snapshot_receipt_adapter"] = (
+            receipt_proof
+        )
     result["provenance"] = _json(proof)
     return result, matched, "native_quote" if quote else "native_sender"
 
@@ -433,6 +481,16 @@ def _reject_ambiguous(output, identifier, conversation_id, reason):
 
 def _append_tables(output):
     for statement in (
+        "CREATE INDEX IF NOT EXISTS completion_entry_witness_lookup ON entries(witness_key)",
+        "CREATE INDEX IF NOT EXISTS completion_entry_source_lookup ON entries(source_key)",
+        "CREATE INDEX IF NOT EXISTS completion_append_entry_lookup ON entries(id) WHERE operation='append'",
+        "CREATE TABLE IF NOT EXISTS incremental_resource_conflicts(id INTEGER PRIMARY KEY,message_id TEXT NOT NULL,"
+        "prior_row_sha256 TEXT NOT NULL,prior_source_key TEXT NOT NULL,prior_witness_key TEXT NOT NULL,"
+        "source_key TEXT NOT NULL,witness_key TEXT NOT NULL,reason TEXT NOT NULL)",
+        "CREATE INDEX IF NOT EXISTS incremental_conflict_source ON incremental_resource_conflicts(source_key)",
+        "CREATE INDEX IF NOT EXISTS incremental_conflict_witness ON incremental_resource_conflicts(witness_key)",
+        "CREATE INDEX IF NOT EXISTS incremental_conflict_prior_source ON incremental_resource_conflicts(prior_source_key)",
+        "CREATE INDEX IF NOT EXISTS incremental_conflict_prior_witness ON incremental_resource_conflicts(prior_witness_key)",
         "CREATE TABLE IF NOT EXISTS append_event_heads(event_key TEXT PRIMARY KEY,"
         "rank INTEGER NOT NULL,state TEXT NOT NULL,message_id TEXT,business_sha256 TEXT)",
         "CREATE TABLE IF NOT EXISTS append_event_audit(id INTEGER PRIMARY KEY,event_key TEXT NOT NULL,"
@@ -444,6 +502,118 @@ def _append_tables(output):
         "CREATE INDEX IF NOT EXISTS append_audit_dropped_source ON append_event_audit(dropped_source_key)",
     ):
         output.execute(statement)
+
+
+def _known_quoted_reference_facts(native):
+    """Compare explicit quoted facts without turning viewer labels into identity."""
+    if not isinstance(native, dict):
+        return {}
+    result = {}
+    outer_subtype = native.get("appmsg_subtype")
+    if type(outer_subtype) is int and outer_subtype > 0:
+        result["outer_appmsg_subtype"] = outer_subtype
+    reference = native.get("quoted_reference")
+    if not isinstance(reference, dict):
+        return result
+    for name in ("source_sender_id", "source_chat_id"):
+        value = reference.get(name)
+        if isinstance(value, str) and value:
+            result[name] = value
+    kind = reference.get("original_message_type")
+    if type(kind) is int and kind > 0:
+        result["original_message_type"] = kind
+    identifiers = reference.get("source_ids")
+    if isinstance(identifiers, dict):
+        server = identifiers.get("svrid")
+        if (
+            isinstance(server, str)
+            and len(server) <= 20
+            and server.isascii()
+            and server.isdecimal()
+            and 0 < int(server) < 2**64
+        ):
+            result["svrid"] = int(server)
+    card = reference.get("app_card_metadata")
+    if isinstance(card, dict):
+        subtype = card.get("appmsg_subtype")
+        if type(subtype) is int and subtype > 0:
+            result["appmsg_subtype"] = subtype
+        title = card.get("safe_title")
+        if isinstance(title, str) and title:
+            result["safe_title"] = title
+    return result
+
+
+def _quoted_literal_facts(native):
+    """Keep explicit reply and plain quoted literals separate from omitted content."""
+    if not isinstance(native, dict):
+        return {}
+    components = native.get("text_components")
+    if not isinstance(components, list):
+        return {}
+    result = {}
+    for kind in ("reply_text", "quoted_text"):
+        values = [
+            item.get("text")
+            for item in components
+            if isinstance(item, dict)
+            and item.get("kind") == kind
+            and isinstance(item.get("text"), str)
+            and item["text"]
+        ]
+        if len(values) == 1 and (
+            kind == "reply_text"
+            or isinstance(native.get("quoted_reference"), dict)
+            and native["quoted_reference"].get("original_message_type") == 1
+        ):
+            result[kind] = values[0]
+    return result
+
+
+def _quoted_literal_conflicts(retained, incoming):
+    previous = _quoted_literal_facts(retained)
+    novel = _quoted_literal_facts(incoming)
+    return any(previous[key] != novel[key] for key in previous.keys() & novel.keys())
+
+
+def _quoted_reference_conflicts(retained, incoming):
+    previous = _known_quoted_reference_facts(retained)
+    novel = _known_quoted_reference_facts(incoming)
+    return any(previous[key] != novel[key] for key in previous.keys() & novel.keys())
+
+
+def _record_incremental_conflict(output, row, prior, event, reason):
+    """Retain both source coordinates without choosing between contradictory facts."""
+    header, native = _header_event(event)
+    source_key = _sha(header)
+    witness_key = _sha([source_key, native["local_id"], native["content_sha256"]])
+    native_sha = _sha(native)
+    stored = output.execute(
+        "SELECT sha256 FROM witnesses WHERE id=?", (witness_key,)
+    ).fetchone()
+    if stored is not None and stored[0] != native_sha:
+        witness_key = _sha(
+            [
+                "incremental_conflicting_record",
+                source_key,
+                native["local_id"],
+                native["content_sha256"],
+                native_sha,
+            ]
+        )
+    output.execute(
+        "INSERT OR IGNORE INTO sources VALUES(?,?,?)",
+        (source_key, _json(header), source_key),
+    )
+    output.execute(
+        "INSERT OR IGNORE INTO witnesses VALUES(?,?,?,?)",
+        (witness_key, source_key, _json(native), _sha(native)),
+    )
+    output.execute(
+        "INSERT INTO incremental_resource_conflicts(message_id,prior_row_sha256,prior_source_key,prior_witness_key,source_key,witness_key,reason) VALUES(?,?,?,?,?,?,?)",
+        (row["id"], prior[3], prior[1], prior[2], source_key, witness_key, reason),
+    )
+    _reject_ambiguous(output, row["id"], row["conversation_id"], reason)
 
 
 def _append_context(message, conversation, event, strategy):
@@ -711,6 +881,7 @@ def stage_secondary_message_completions(
     native_system_roles=(),
     base_candidate_path=None,
     base_candidate_sha256=None,
+    only_uncompleted=False,
 ):
     """Prepare a reviewable derived catalog without changing any published file."""
     history_path = wechat_archive_path(local_store_root).absolute()
@@ -761,16 +932,21 @@ def stage_secondary_message_completions(
             "report": json.loads(base_info.get("report", "{}")),
         }
     source_hash = _file_sha(history_path.with_name("resource_references.sqlite3"))
+    if base is not None and base_info.get("primary_catalog_sha256") != source_hash:
+        raise ValueError(
+            "The snapshot adapter catalog differs from the reviewed base source hash."
+        )
     counts = Counter()
     rejected = Counter()
     ignored = Counter()
+    incremental = Counter()
     with (
         closing(_readonly(history_path)) as history,
         closing(
             _readonly(history_path.with_name("resource_references.sqlite3"))
         ) as catalog,
     ):
-        snapshots = _snapshot_index(history)
+        snapshots = _snapshot_resolver(history, catalog)
         if base is not None:
             _clonefile(base, candidate)
         elif prior_target is not None:
@@ -781,19 +957,21 @@ def stage_secondary_message_completions(
                     )
             _clonefile(target, candidate)
         else:
-            with sqlite3.connect(candidate) as output:
+            with closing(sqlite3.connect(candidate)) as output, output:
                 output.executescript(_SCHEMA)
         candidate.chmod(0o600)
-        with sqlite3.connect(candidate) as output:
+        with closing(sqlite3.connect(candidate)) as output, output:
             register_json_codec(output)
             output.execute("PRAGMA journal_mode=DELETE")
             output.execute("PRAGMA synchronous=FULL")
+            output.execute("PRAGMA cache_size=-131072")
+            output.execute(
+                "INSERT OR REPLACE INTO archive_info VALUES('staging_state','in_progress')"
+            )
+            output.commit()
             _append_tables(output)
             output.execute(
                 "CREATE TABLE IF NOT EXISTS ambiguities (id TEXT PRIMARY KEY,conversation_id TEXT NOT NULL,reason TEXT NOT NULL)"
-            )
-            output.execute(
-                "INSERT OR REPLACE INTO archive_info VALUES('staging_state','in_progress')"
             )
             output.commit()
             _index_existing_appends(output, history, catalog)
@@ -824,6 +1002,11 @@ def stage_secondary_message_completions(
                 ):
                     ignored["authenticated_groups_without_primary_scope"] += 1
                     continue
+                packet_header = {
+                    key: packet[key] for key in _HEADER_FIELDS if key in packet
+                }
+                packet_source_key = _sha(packet_header)
+                native_hashes = {}
                 lookup = defaultdict(list)
                 for event in events:
                     lookup[
@@ -855,6 +1038,128 @@ def stage_secondary_message_completions(
                         )
                         if not candidates:
                             continue
+                        if only_uncompleted:
+                            if output.execute(
+                                "SELECT 1 FROM ambiguities WHERE id=?", (row["id"],)
+                            ).fetchone():
+                                incremental["quarantined_rows_skipped"] += 1
+                                continue
+                            completed_before = output.execute(
+                                "SELECT e.strategy,e.source_key,e.witness_key,e.projected_sha256,w.sha256 FROM entries e JOIN witnesses w ON w.id=e.witness_key WHERE e.id=? AND e.operation='replace'",
+                                (row["id"],),
+                            ).fetchone()
+                            if completed_before is not None:
+                                incremental["completed_rows_not_reprojected"] += 1
+                                stamp = proof.get("unix_timestamp")
+                                relevant = [
+                                    event
+                                    for event in candidates
+                                    if type(stamp) is int
+                                    and abs(event["create_time"] - stamp)
+                                    <= (
+                                        1
+                                        if completed_before[0] == "native_quote"
+                                        else 0
+                                    )
+                                ]
+                                novel = []
+                                for event in relevant:
+                                    witness_key = _sha(
+                                        [
+                                            packet_source_key,
+                                            event["local_id"],
+                                            event["content_sha256"],
+                                        ]
+                                    )
+                                    if witness_key not in native_hashes:
+                                        native_hashes[witness_key] = _sha(
+                                            {
+                                                key: event[key]
+                                                for key in _MESSAGE_FIELDS
+                                                if key in event
+                                            }
+                                        )
+                                    if (
+                                        packet_source_key == completed_before[1]
+                                        and witness_key == completed_before[2]
+                                        and native_hashes[witness_key]
+                                        == completed_before[4]
+                                    ):
+                                        incremental["same_stored_witness_skipped"] += 1
+                                    else:
+                                        novel.append(event)
+                                if novel:
+                                    known = output.execute(
+                                        "SELECT sender_id,text FROM messages WHERE id=?",
+                                        (row["id"],),
+                                    ).fetchone()
+                                    retained_native = None
+                                    if completed_before[0] == "native_quote":
+                                        retained_native = load_json_cell(
+                                            output.execute(
+                                                "SELECT message FROM witnesses WHERE id=?",
+                                                (completed_before[2],),
+                                            ).fetchone()[0]
+                                        ).get("native_text")
+                                    for event in novel:
+                                        sender = event.get("sender_id")
+                                        sender_conflict = bool(
+                                            sender
+                                            and not sender.endswith(
+                                                ("@chatroom", "@im.chatroom")
+                                            )
+                                            and known[0]
+                                            and sender != known[0]
+                                        )
+                                        native = event.get("native_text")
+                                        quote_conflict = (
+                                            completed_before[0] == "native_quote"
+                                            and isinstance(native, dict)
+                                            and native.get("text_extraction_kind")
+                                            == "quoted_reply"
+                                            and native.get("appmsg_subtype") == 57
+                                            and _quoted_literal_conflicts(
+                                                retained_native, native
+                                            )
+                                        )
+                                        reference_conflict = (
+                                            completed_before[0] == "native_quote"
+                                            and isinstance(native, dict)
+                                            and _quoted_reference_conflicts(
+                                                retained_native, native
+                                            )
+                                        )
+                                        if (
+                                            sender_conflict
+                                            or quote_conflict
+                                            or reference_conflict
+                                        ):
+                                            reason = (
+                                                "New authenticated native sender conflicts with a completed resource."
+                                                if sender_conflict
+                                                else "New authenticated native quote body conflicts with a completed resource."
+                                                if quote_conflict
+                                                else "New authenticated native quoted-reference facts conflict with a completed resource."
+                                            )
+                                            _record_incremental_conflict(
+                                                output,
+                                                row,
+                                                completed_before,
+                                                event,
+                                                reason,
+                                            )
+                                            incremental[
+                                                "new_sender_conflicts"
+                                                if sender_conflict
+                                                else "new_quote_body_conflicts"
+                                                if quote_conflict
+                                                else "new_quote_reference_conflicts"
+                                            ] += 1
+                                            break
+                                        incremental[
+                                            "new_nonconflicting_witness_observations"
+                                        ] += 1
+                                continue
                         try:
                             completed = _complete_resource(
                                 row, conversation, candidates, snapshots
@@ -942,6 +1247,13 @@ def stage_secondary_message_completions(
                                 "packets": packet_count,
                                 "base_candidate": base_receipt,
                                 "append_decisions": append_decisions,
+                                "incremental": dict(incremental),
+                                "snapshot_adapter": {
+                                    "rejected": dict(
+                                        getattr(snapshots, "rejected", {})
+                                    ),
+                                    "ignored": dict(getattr(snapshots, "ignored", {})),
+                                },
                             }
                         ),
                     ),
@@ -959,12 +1271,11 @@ def stage_secondary_message_completions(
         and _identity(base) != base_identity
     ):
         raise ValueError("A published input changed while staging completions.")
-    with sqlite3.connect(candidate) as output:
+    with closing(sqlite3.connect(candidate)) as output, output:
         output.execute(
             "UPDATE archive_info SET value='complete' WHERE key='staging_state'"
         )
-    with candidate.open("rb") as stream:
-        os.fsync(stream.fileno())
+    sync_completion_file(candidate)
     return {
         "version": VERSION,
         "published": False,
@@ -981,6 +1292,11 @@ def stage_secondary_message_completions(
         "packets": packet_count,
         "base_candidate": base_receipt,
         "append_decisions": append_decisions,
+        "incremental": dict(incremental),
+        "snapshot_adapter": {
+            "rejected": dict(getattr(snapshots, "rejected", {})),
+            "ignored": dict(getattr(snapshots, "ignored", {})),
+        },
     }
 
 
@@ -995,7 +1311,7 @@ def _validate_entries(
     validate_append_uniqueness=True,
 ):
     register_json_codec(derived)
-    snapshots = _snapshot_index(history)
+    snapshots = _snapshot_resolver(history, catalog)
     filters, parameters = [], []
     if conversation_id is not None:
         filters.append("conversation_id=?")
@@ -1173,12 +1489,10 @@ def publish_secondary_message_completions(
                     "The prior completion preservation path already exists."
                 )
             _clonefile(target, previous)
+            if _identity(target, optional=True) != expected:
+                raise ValueError("The completion target changed during preservation.")
         os.replace(candidate, target)
-        descriptor = os.open(target.parent, os.O_RDONLY)
-        try:
-            os.fsync(descriptor)
-        finally:
-            os.close(descriptor)
+        sync_completion_directory(target.parent)
         published_identity = _identity(target)
         if any(
             published_identity[field] != before[field]
@@ -1278,6 +1592,10 @@ def compact_secondary_message_completions(
     candidate_sha256,
     dry_run=False,
     progress=None,
+    stream_compaction=False,
+    quote_enrichment_audit_path=None,
+    quote_enrichment_audit_sha256=None,
+    quote_enrichment_source_sha256=None,
 ):
     """Review or compact inactive derived rows without changing any published file.
 
@@ -1309,6 +1627,19 @@ def compact_secondary_message_completions(
             )
 
     notify("checking_source_candidate")
+    replay_options = (
+        quote_enrichment_audit_path,
+        quote_enrichment_audit_sha256,
+        quote_enrichment_source_sha256,
+    )
+    if any(value is not None for value in replay_options) and (
+        not all(value is not None for value in replay_options)
+        or not stream_compaction
+        or dry_run
+    ):
+        raise ValueError(
+            "Reviewed quote reconciliation requires all audit pins and a new streaming candidate."
+        )
     history_path = wechat_archive_path(local_store_root).absolute()
     target = history_path.with_name(FILENAME)
     source = Path(candidate_path).absolute()
@@ -1319,9 +1650,14 @@ def compact_secondary_message_completions(
         Path(compacted_candidate_path).absolute() if compacted_candidate_path else None
     )
     manifest = destination.with_suffix(".pruned.jsonl.gz") if destination else None
+    restoration_manifest = (
+        destination.with_suffix(".quote-enrichment.jsonl.gz")
+        if destination and quote_enrichment_audit_path is not None
+        else None
+    )
     if not dry_run and destination is None:
         raise ValueError("Select a new private compacted candidate path.")
-    for path in (destination, manifest):
+    for path in (destination, manifest, restoration_manifest):
         if path is not None and (
             path
             in {
@@ -1346,6 +1682,9 @@ def compact_secondary_message_completions(
     manifest_digest = hashlib.sha256()
     manifest_bytes = 0
     output = None
+    stream_owner = None
+    enrichment_audit = None
+    enrichment_result = None
     raw_manifest = None
     compressed_manifest = None
 
@@ -1374,15 +1713,46 @@ def compact_secondary_message_completions(
                 raise ValueError(
                     "The completion target changed before private compaction."
                 )
+            if quote_enrichment_audit_path is not None:
+                from .wechat_quote_enrichment_reconcile import prepare_reviewed_audit
+
+                enrichment_audit = prepare_reviewed_audit(
+                    info,
+                    candidate_sha256,
+                    quote_enrichment_audit_path,
+                    quote_enrichment_audit_sha256,
+                    quote_enrichment_source_sha256,
+                )
             notify("validating_source_entries")
-            _validate_entries(
-                derived,
-                history,
-                catalog,
-                progress=lambda count: notify(
-                    "validating_source_entries", validated_entries=count
-                ),
-            )
+            if (
+                _identity(source) != source_identity
+                or _pins(history_path) != pins
+                or _compaction_inputs(history_path) != inputs
+                or _identity(target, optional=True) != expected_target
+            ):
+                raise ValueError("A compaction source changed before proof validation.")
+            with _LOCK:
+                source_validation_reused = (
+                    _validation_cache_key(source, source_identity, pins) in _CACHE
+                )
+            if not source_validation_reused:
+                _validate_entries(
+                    derived,
+                    history,
+                    catalog,
+                    progress=lambda count: notify(
+                        "validating_source_entries", validated_entries=count
+                    ),
+                )
+            if (
+                _identity(source) != source_identity
+                or _pins(history_path) != pins
+                or _compaction_inputs(history_path) != inputs
+                or _identity(target, optional=True) != expected_target
+            ):
+                raise ValueError("A compaction source changed after proof validation.")
+            if not source_validation_reused:
+                _remember_validation(source, source_identity, pins)
             notify("validating_upstream_timeline")
             repository = WechatArchiveRepository(local_store_root)
             _conversations, upstream, status = repository._timeline_tables(
@@ -1405,18 +1775,34 @@ def compact_secondary_message_completions(
                     "GROUP BY CASE WHEN operation='append' THEN 'system_notice' ELSE strategy END"
                 )
             )
+            stored_before_counts = dict(before_counts)
             if not dry_run:
-                notify("cloning_candidate")
-                _clonefile(source, destination)
-                destination.chmod(0o600)
-                output = sqlite3.connect(destination)
+                notify(
+                    "creating_stream_candidate"
+                    if stream_compaction
+                    else "cloning_candidate"
+                )
+                if stream_compaction:
+                    from .wechat_completion_stream_copy import create_stream_output
+
+                    output, stream_owner = create_stream_output(destination)
+                    output.executescript(_SCHEMA)
+                else:
+                    _clonefile(source, destination)
+                    destination.chmod(0o600)
+                    output = sqlite3.connect(destination)
                 output.execute("PRAGMA journal_mode=DELETE")
                 output.execute("PRAGMA synchronous=FULL")
                 output.execute(
                     "INSERT OR REPLACE INTO archive_info VALUES('staging_state','in_progress')"
                 )
                 output.commit()
-                output.execute("CREATE TEMP TABLE prune_ids(id TEXT PRIMARY KEY)")
+                _append_tables(output)
+                output.execute(
+                    "CREATE TEMP TABLE "
+                    + ("retained_ids" if stream_compaction else "prune_ids")
+                    + "(id TEXT PRIMARY KEY)"
+                )
                 descriptor = os.open(
                     manifest, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600
                 )
@@ -1433,14 +1819,30 @@ def compact_secondary_message_completions(
                     "upstream_input_identities": inputs,
                 }
             )
-            notify("selecting_inactive_entries")
-            for entry in history.execute(
-                "SELECT e.id,e.conversation_id,e.operation,e.strategy,e.original_sha256,e.projected_sha256,"
-                "e.source_key,e.witness_key FROM completion_source.entries e WHERE NOT "
-                + _active_predicate(upstream)
-                + " ORDER BY e.id"
-            ):
-                entry = dict(entry)
+            notify(
+                "selecting_active_entries"
+                if stream_compaction
+                else "selecting_inactive_entries"
+            )
+            from .wechat_completion_selection import BoundedActiveSelection
+
+            active_selection = BoundedActiveSelection(history, upstream)
+            retained_selected = 0
+            for entry in active_selection.entries("completion_source.entries"):
+                if entry.pop("is_active"):
+                    if stream_compaction:
+                        retained_selected += 1
+                        if output is not None:
+                            output.execute(
+                                "INSERT INTO retained_ids VALUES(?)", (entry["id"],)
+                            )
+                        if retained_selected % 1000 == 0:
+                            notify(
+                                "selecting_active_entries",
+                                retained_entries=retained_selected,
+                                pruned_entries=sum(reasons.values()),
+                            )
+                    continue
                 reason = (
                     "upstream_precedence"
                     if entry["operation"] == "replace"
@@ -1453,7 +1855,7 @@ def compact_secondary_message_completions(
                     else entry["strategy"]
                 ] += 1
                 record({**entry, "reason": reason})
-                if output is not None:
+                if output is not None and not stream_compaction:
                     output.execute("INSERT INTO prune_ids VALUES(?)", (entry["id"],))
                 if sum(reasons.values()) % 1_000 == 0:
                     notify(
@@ -1461,53 +1863,118 @@ def compact_secondary_message_completions(
                         pruned_entries=sum(reasons.values()),
                     )
             if output is not None:
-                notify("pruning_unreferenced_proofs")
-                previous = ""
-                while identifiers := output.execute(
-                    "SELECT id FROM prune_ids WHERE id>? ORDER BY id LIMIT 1000",
-                    (previous,),
-                ).fetchall():
-                    last = identifiers[-1][0]
-                    for table in ("messages", "entries"):
+                if stream_compaction:
+                    from .wechat_completion_stream_copy import stream_retained_catalog
+
+                    output.commit()
+                    notify("streaming_retained_rows")
+                    stream_stats = stream_retained_catalog(
+                        output,
+                        source,
+                        lambda **counts: notify("streaming_retained_rows", **counts),
+                    )
+                    codec_stats = stream_stats["json_cell_transport"]
+                else:
+                    notify("pruning_unreferenced_proofs")
+                    previous = ""
+                    while identifiers := output.execute(
+                        "SELECT id FROM prune_ids WHERE id>? ORDER BY id LIMIT 1000",
+                        (previous,),
+                    ).fetchall():
+                        last = identifiers[-1][0]
+                        for table in ("messages", "entries"):
+                            output.execute(
+                                "DELETE FROM "
+                                + table
+                                + " WHERE id IN (SELECT id FROM prune_ids WHERE id>? AND id<=?)",
+                                (previous, last),
+                            )
+                        output.commit()
+                        previous = last
+                    audit_present = (
                         output.execute(
-                            "DELETE FROM "
-                            + table
-                            + " WHERE id IN (SELECT id FROM prune_ids WHERE id>? AND id<=?)",
-                            (previous, last),
+                            "SELECT 1 FROM sqlite_master WHERE name='append_event_audit' AND type='table'"
+                        ).fetchone()
+                        is not None
+                    )
+                    incremental_audit = (
+                        output.execute(
+                            "SELECT 1 FROM sqlite_master WHERE name='incremental_resource_conflicts' AND type='table'"
+                        ).fetchone()
+                        is not None
+                    )
+                    output.execute(
+                        "DELETE FROM witnesses WHERE NOT EXISTS(SELECT 1 FROM entries e WHERE e.witness_key=witnesses.id)"
+                        + (
+                            " AND NOT EXISTS(SELECT 1 FROM incremental_resource_conflicts a WHERE a.witness_key=witnesses.id OR a.prior_witness_key=witnesses.id)"
+                            if incremental_audit
+                            else ""
+                        )
+                        + (
+                            " AND NOT EXISTS(SELECT 1 FROM append_event_audit a WHERE a.kept_witness_key=witnesses.id OR a.dropped_witness_key=witnesses.id)"
+                            if audit_present
+                            else ""
+                        )
+                    )
+                    output.execute(
+                        "DELETE FROM sources WHERE NOT EXISTS(SELECT 1 FROM entries e WHERE e.source_key=sources.id)"
+                        + (
+                            " AND NOT EXISTS(SELECT 1 FROM incremental_resource_conflicts a WHERE a.source_key=sources.id OR a.prior_source_key=sources.id)"
+                            if incremental_audit
+                            else ""
+                        )
+                        + (
+                            " AND NOT EXISTS(SELECT 1 FROM append_event_audit a WHERE a.kept_source_key=sources.id OR a.dropped_source_key=sources.id)"
+                            if audit_present
+                            else ""
+                        )
+                    )
+                    if audit_present:
+                        output.execute(
+                            "DELETE FROM append_event_heads WHERE state='active' AND NOT EXISTS(SELECT 1 FROM entries e WHERE e.id=append_event_heads.message_id)"
                         )
                     output.commit()
-                    previous = last
-                audit_present = (
+                    notify("encoding_json_cells")
+                    codec_stats = _encode_derived_json(
+                        output, lambda **counts: notify("encoding_json_cells", **counts)
+                    )
+                if enrichment_audit is not None:
+                    from .wechat_quote_enrichment_reconcile import (
+                        reconcile_reviewed_quotes,
+                    )
+
+                    notify("replaying_reviewed_quote_enrichments")
+                    enrichment_result = reconcile_reviewed_quotes(
+                        derived,
+                        history,
+                        catalog,
+                        output,
+                        audit=enrichment_audit,
+                        manifest_path=restoration_manifest,
+                        upstream=upstream,
+                        active_selection=active_selection,
+                        record_pruned=record,
+                        codec_stats=codec_stats,
+                        progress=lambda **counts: notify(
+                            "replaying_reviewed_quote_enrichments", **counts
+                        ),
+                    )
+                    restored = enrichment_result["counts"]
+                    before_counts["native_quote"] = before_counts.get(
+                        "native_quote", 0
+                    ) + restored.get("verified_prior_projections", 0)
+                    if restored.get("pruned_prior_upstream", 0):
+                        pruned_counts["native_quote"] += restored[
+                            "pruned_prior_upstream"
+                        ]
+                        reasons["upstream_precedence"] += restored[
+                            "pruned_prior_upstream"
+                        ]
+                    codec_stats = enrichment_result["json_cell_transport"]
                     output.execute(
-                        "SELECT 1 FROM sqlite_master WHERE name='append_event_audit' AND type='table'"
-                    ).fetchone()
-                    is not None
-                )
-                output.execute(
-                    "DELETE FROM witnesses WHERE NOT EXISTS(SELECT 1 FROM entries e WHERE e.witness_key=witnesses.id)"
-                    + (
-                        " AND NOT EXISTS(SELECT 1 FROM append_event_audit a WHERE a.kept_witness_key=witnesses.id OR a.dropped_witness_key=witnesses.id)"
-                        if audit_present
-                        else ""
+                        "INSERT OR REPLACE INTO archive_info VALUES('quote_enrichment_reconciliation',?)",
+                        (_json(enrichment_result),),
                     )
-                )
-                output.execute(
-                    "DELETE FROM sources WHERE NOT EXISTS(SELECT 1 FROM entries e WHERE e.source_key=sources.id)"
-                    + (
-                        " AND NOT EXISTS(SELECT 1 FROM append_event_audit a WHERE a.kept_source_key=sources.id OR a.dropped_source_key=sources.id)"
-                        if audit_present
-                        else ""
-                    )
-                )
-                if audit_present:
-                    output.execute(
-                        "DELETE FROM append_event_heads WHERE state='active' AND NOT EXISTS(SELECT 1 FROM entries e WHERE e.id=append_event_heads.message_id)"
-                    )
-                output.commit()
-                notify("encoding_json_cells")
-                codec_stats = _encode_derived_json(
-                    output, lambda **counts: notify("encoding_json_cells", **counts)
-                )
                 original_report = json.loads(info.get("report", "{}"))
                 retained = {
                     key: count - pruned_counts[key]
@@ -1515,6 +1982,18 @@ def compact_secondary_message_completions(
                     if count > pruned_counts[key]
                 }
                 original_report["counts"] = retained
+                if enrichment_result is not None:
+                    original_report["quote_enrichment_reconciliation"] = (
+                        enrichment_result
+                    )
+                    rejected_report = original_report.setdefault("rejected", {})
+                    remaining = enrichment_result["counts"].get(
+                        "remaining_quarantines", 0
+                    )
+                    if remaining:
+                        rejected_report["ambiguous_original_events"] = remaining
+                    else:
+                        rejected_report.pop("ambiguous_original_events", None)
                 output.executemany(
                     "INSERT OR REPLACE INTO archive_info VALUES(?,?)",
                     [
@@ -1531,8 +2010,9 @@ def compact_secondary_message_completions(
                     ],
                 )
                 output.commit()
-                notify("vacuuming_candidate")
-                output.execute("VACUUM")
+                if not stream_compaction:
+                    notify("vacuuming_candidate")
+                    output.execute("VACUUM")
                 if output.execute("PRAGMA quick_check").fetchall() != [("ok",)]:
                     raise ValueError(
                         "The private compacted candidate failed SQLite verification."
@@ -1564,22 +2044,38 @@ def compact_secondary_message_completions(
             or _pins(history_path) != pins
             or _compaction_inputs(history_path) != inputs
             or _identity(target, optional=True) != expected_target
+            or enrichment_audit is not None
+            and _identity(Path(enrichment_audit["path"]))
+            != enrichment_audit["identity"]
         ):
             raise ValueError("A completion compaction compare-and-swap input changed.")
         if output is not None:
-            output.execute(
-                "UPDATE archive_info SET value='complete' WHERE key='staging_state'"
-            )
-            output.commit()
+            if not stream_compaction:
+                output.execute(
+                    "UPDATE archive_info SET value='complete' WHERE key='staging_state'"
+                )
+                output.commit()
             output.close()
             output = None
-            with destination.open("rb") as stream:
-                os.fsync(stream.fileno())
+            verification_path = stream_owner["path"] if stream_owner else destination
+            if stream_owner:
+                from .wechat_completion_stream_copy import stream_file_owned
+
+                if not stream_file_owned(stream_owner, destination):
+                    raise ValueError(
+                        "The streamed candidate lost its reserved public inode."
+                    )
+            if stream_owner:
+                from .wechat_completion_stream_copy import sync_stream_file
+
+                sync_stream_file(stream_owner)
+            else:
+                sync_completion_file(verification_path)
             notify("validating_compacted_candidate")
-            final_identity = _identity(destination)
+            final_identity = _identity(verification_path)
             try:
                 with (
-                    closing(_readonly(destination)) as final,
+                    closing(_readonly(verification_path)) as final,
                     closing(_readonly(history_path)) as current_history,
                     closing(
                         _readonly(history_path.with_name("resource_references.sqlite3"))
@@ -1593,33 +2089,93 @@ def compact_secondary_message_completions(
                             "validating_compacted_candidate", validated_entries=count
                         ),
                     )
+                if stream_owner:
+                    if (
+                        _identity(verification_path) != final_identity
+                        or _identity(destination) != final_identity
+                    ):
+                        raise ValueError(
+                            "The streamed output changed during final proof validation."
+                        )
+                    with closing(
+                        sqlite3.connect(
+                            verification_path.as_uri() + "?mode=rw", uri=True
+                        )
+                    ) as complete:
+                        if not stream_file_owned(stream_owner, verification_path):
+                            raise ValueError(
+                                "The private streamed inode changed before completion."
+                            )
+                        complete.execute(
+                            "UPDATE archive_info SET value='complete' WHERE key='staging_state'"
+                        )
+                        complete.commit()
+                    sync_stream_file(stream_owner)
+                    final_identity = _identity(verification_path)
                 notify("hashing_compacted_candidate")
-                final_sha256 = _file_sha(destination)
+                final_sha256 = _file_sha(verification_path)
                 if (
-                    _identity(destination) != final_identity
+                    _identity(verification_path) != final_identity
+                    or _identity(destination) != final_identity
                     or _pins(history_path) != pins
                     or _compaction_inputs(history_path) != inputs
                     or _identity(target, optional=True) != expected_target
+                    or enrichment_audit is not None
+                    and _identity(Path(enrichment_audit["path"]))
+                    != enrichment_audit["identity"]
                 ):
                     raise ValueError("A final compacted validation input changed.")
+                if stream_owner:
+                    from .wechat_completion_stream_copy import release_stream_link
+
+                    release_stream_link(stream_owner, destination)
+                    stream_owner = None
+                    after_release = _identity(destination)
+                    if any(
+                        after_release[field] != final_identity[field]
+                        for field in ("dev", "ino", "size", "mtime_ns")
+                    ):
+                        raise ValueError(
+                            "The verified streamed inode changed after releasing its private link."
+                        )
+                    final_identity = after_release
                 _remember_validation(destination, final_identity, pins)
             except BaseException:
-                with sqlite3.connect(destination) as incomplete:
-                    incomplete.execute(
-                        "UPDATE archive_info SET value='in_progress' WHERE key='staging_state'"
-                    )
+                reset_path = verification_path
+                if (
+                    not stream_compaction
+                    or stream_owner
+                    and stream_file_owned(stream_owner, reset_path)
+                ):
+                    with closing(
+                        sqlite3.connect(reset_path.as_uri() + "?mode=rw", uri=True)
+                    ) as incomplete:
+                        if stream_owner and not stream_file_owned(
+                            stream_owner, reset_path
+                        ):
+                            raise ValueError(
+                                "The private streamed inode changed before its failure marker."
+                            )
+                        incomplete.execute(
+                            "UPDATE archive_info SET value='in_progress' WHERE key='staging_state'"
+                        )
+                        incomplete.commit()
                 raise
         report = {
             "version": CODE_VERSION,
             "published": False,
             "dry_run": bool(dry_run),
+            "compaction_mode": "stream" if stream_compaction else "clone",
+            "quote_enrichment_reconciliation": enrichment_result,
             "source_candidate": str(source),
             "source_candidate_sha256": candidate_sha256,
             "source_candidate_bytes": source_identity["size"],
+            "source_validation_cache_reused": source_validation_reused,
             "input_identities": pins,
             "upstream_input_identities": inputs,
             "expected_existing_catalog": expected_target,
             "before_counts": before_counts,
+            "stored_before_counts": stored_before_counts,
             "pruned_counts": dict(pruned_counts),
             "pruned_reasons": dict(reasons),
             "retained_counts": {
@@ -1642,6 +2198,9 @@ def compact_secondary_message_completions(
                 manifest_sha256=_file_sha(manifest),
                 manifest_bytes=manifest.stat().st_size,
                 json_cell_transport=codec_stats,
+                stream_copy_rows=stream_stats["copied_rows"]
+                if stream_compaction
+                else None,
                 removed_catalog_bytes=source_identity["size"]
                 - destination.stat().st_size,
             )
@@ -1658,6 +2217,18 @@ def compact_secondary_message_completions(
         if output is not None:
             output.rollback()
             output.close()
+        if stream_owner is not None:
+            from .wechat_completion_stream_copy import (
+                release_stream_link,
+                stream_file_owned,
+            )
+
+            if stream_file_owned(stream_owner, destination):
+                release_stream_link(stream_owner, destination)
+            else:
+                notify(
+                    "private_stream_artifact_retained", path=str(stream_owner["path"])
+                )
 
 
 def completion_message_conversation(history_path, message_id):
@@ -1678,10 +2249,14 @@ def completion_message_conversation(history_path, message_id):
     return row[0] if row is not None else None
 
 
-def _active_predicate(message_table):
+def _active_predicate(message_table, *, membership_table=None):
     """Share the exact upstream precedence predicate with private compaction."""
     if not _SQL.fullmatch(message_table):
         raise ValueError("Unsafe completion timeline table name.")
+    if membership_table is not None and _SQL.fullmatch(membership_table) is None:
+        raise ValueError("Unsafe completion membership table name.")
+    membership = membership_table or message_table
+    server = "b.server_id" if membership_table else "json_extract(b.provenance,'$.server_id')"
     equality = " AND ".join(
         'b."'
         + column
@@ -1698,9 +2273,9 @@ def _active_predicate(message_table):
         + " b WHERE b.id=e.id AND "
         + equality
         + ")) OR (e.operation='append' AND NOT EXISTS(SELECT 1 FROM "
-        + message_table
+        + membership
         + " b WHERE b.conversation_id=e.conversation_id AND "
-        "(b.id=e.id OR json_extract(b.provenance,'$.server_id')=json_extract(_wechat_completion_json_v1(e.plan),'$.event.server_id')))))"
+        "(b.id=e.id OR " + server + "=json_extract(_wechat_completion_json_v1(e.plan),'$.event.server_id')))))"
     )
 
 
@@ -1754,17 +2329,20 @@ def attach_secondary_message_completions(
                 "ATTACH DATABASE ? AS secondary_completions",
                 (target.absolute().as_uri() + "?mode=ro&immutable=1",),
             )
-        scope = " AND e.conversation_id=?" if conversation_id else ""
-        parameters = (conversation_id,) if conversation_id else ()
         connection.execute("DROP TABLE IF EXISTS temp.secondary_completion_active")
         connection.execute(
             "CREATE TEMP TABLE secondary_completion_active(id TEXT PRIMARY KEY)"
         )
-        connection.execute(
-            "INSERT INTO secondary_completion_active SELECT e.id FROM secondary_completions.entries e "
-            "WHERE " + _active_predicate(message_table) + scope,
-            parameters,
-        )
+        from .wechat_completion_selection import BoundedActiveSelection
+
+        with BoundedActiveSelection(connection, message_table) as active_selection:
+            for entry in active_selection.entries(
+                "secondary_completions.entries", conversation_id=conversation_id or None
+            ):
+                if entry["is_active"]:
+                    connection.execute(
+                        "INSERT INTO secondary_completion_active VALUES(?)", (entry["id"],)
+                    )
         connection.execute("DROP VIEW IF EXISTS temp." + MESSAGE_TABLE)
         columns = ",".join('b."' + column + '"' for column in COLUMNS)
         projected = ",".join(
