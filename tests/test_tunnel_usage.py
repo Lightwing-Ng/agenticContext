@@ -1,4 +1,4 @@
-"""Tunnel call accounting and compact badge acceptance. Code version: v1.7.0-codex.0."""
+"""Tunnel call accounting and compact badge acceptance. Code version: v1.7.1-codex.0."""
 
 from __future__ import annotations
 
@@ -868,7 +868,7 @@ def test_agent_status_cards_reuse_cache_status_surface(
         if height == 420:
             scroll_state = tunnel_page.evaluate(
                 """() => {
-                    const sidebar = document.querySelector('#agent_sidebar');
+                    const sidebar = document.querySelector('#agent_sidebar .agent-sidebar-scrollport');
                     return {
                         documentScrolls: document.documentElement.scrollHeight > innerHeight + 1,
                         sidebarScrolls: sidebar.scrollHeight > sidebar.clientHeight + 1,

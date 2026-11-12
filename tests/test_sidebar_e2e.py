@@ -1,6 +1,6 @@
 """Disposable-browser E2E coverage for the responsive sidebar and language boundaries.
 
-Code version: v1.58.4-codex.0
+Code version: v1.58.5-codex.0
 """
 
 from __future__ import annotations
@@ -3313,7 +3313,7 @@ def test_agent_model_and_sidebar_service_triggers_follow_typography_contract(
             "xpath=/html/body/main/div/section/div[2]/article/form/label/span/span/span[1]/button"
         )
         sidebar_button = page.locator(
-            "xpath=/html/body/main/div/aside/form/div[2]/label/div/button"
+            "#agent_runtime_form .agent-session-mode-combobox [data-agent-combobox-trigger]"
         )
         expect(main_button).to_have_count(1)
         expect(sidebar_button).to_have_count(1)
@@ -4431,7 +4431,7 @@ def test_simplified_chinese_language_boundary_runs_in_real_browser(
             wait_until="domcontentloaded",
         )
         session_mode_trigger = page.locator(
-            "xpath=/html/body/main/div/aside/form/div[2]/label/div/button"
+            "#agent_runtime_form .agent-session-mode-combobox [data-agent-combobox-trigger]"
         )
         expect(session_mode_trigger).to_have_count(1)
         # Keep the production session-list shape while isolating the language
