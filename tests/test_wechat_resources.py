@@ -1,6 +1,6 @@
 """Resource presentation and Finder routes retain account and host boundaries.
 
-Code version: v1.1.0-codex.0
+Code version: v1.1.1-codex.0
 """
 
 from __future__ import annotations
@@ -24,6 +24,8 @@ from app.core.wechat_resources import (
 from app.web.app import create_app
 from app.web.config_store import SavedConfigStore
 from tests.test_wechat_archive import make_archive
+from tests.test_wechat_browser_read import _done
+from tests.wechat_browser_markup import get_verified_browser_page, parse_browser_markup
 
 
 OWNER = "wxid_fixture_owner"
@@ -564,8 +566,15 @@ def test_unavailable_resource_index_is_explicit_on_the_conversation_index(
 ):
     page = query_chat_history(resource_app.config["TEST_STORE_ROOT"], source="wechat")
     page.messaging["resource_index_status"] = status
+    client = resource_app.test_client()
+    address = "/browser?view=text&source=wechat"
     with patch("app.web.local_resource_routes.query_chat_history", return_value=page):
-        response = resource_app.test_client().get("/browser?view=text&source=wechat")
+        response = client.get(address)
+        shell = parse_browser_markup(response.data).find(".//*[@data-wechat-read-pending]")
+        if shell is not None and shell.get("data-state") == "running":
+            service = resource_app.extensions["wechat_browser_read"]
+            assert _done(service, shell.get("data-task-id"))["state"] == "failed"
+            response = client.get(address)
     assert response.status_code == 200
     assert "Media and file references need refreshing" in response.get_data(
         as_text=True
@@ -583,8 +592,9 @@ def test_an_old_account_without_resource_metadata_is_not_presented_as_complete(
     page = query_chat_history(store, source="wechat", session=session.stable_id)
     page.messaging.update(resource_index_status="ready", resource_index_accounts=())
     with patch("app.web.local_resource_routes.query_chat_history", return_value=page):
-        response = resource_app.test_client().get(
-            "/browser?view=text&source=wechat&session=" + session.stable_id
+        response = get_verified_browser_page(
+            resource_app.test_client(),
+            "/browser?view=text&source=wechat&session=" + session.stable_id,
         )
     assert response.status_code == 200
     assert (

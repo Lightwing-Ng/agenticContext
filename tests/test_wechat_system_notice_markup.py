@@ -1,6 +1,6 @@
 """Known WeChat notice links display as text without rewriting source evidence.
 
-Code version: v1.3.0-codex.0
+Code version: v1.3.1-codex.0
 """
 
 from __future__ import annotations
@@ -29,6 +29,7 @@ from app.web.config_store import SavedConfigStore
 from tests.test_wechat_archive import make_archive
 from tests.test_wechat_reconcile import merge, record, source
 from tests.test_wechat_system_profile_templates import _admin_xml, _remark_xml
+from tests.wechat_browser_markup import get_verified_browser_page
 
 
 HREF = "weixin://findfriend/verifycontact"
@@ -228,7 +229,8 @@ def test_decoded_known_link_label_is_escaped_by_the_actual_notice_template(tmp_p
             agent_external_operations_enabled=False,
         )
     app.config.update(TESTING=True)
-    response = app.test_client().get(
+    response = get_verified_browser_page(
+        app.test_client(),
         "/browser",
         query_string={"view": "text", "source": "wechat", "session": session},
     )
@@ -388,7 +390,8 @@ def test_system_template_member_label_is_escaped_by_the_actual_notice_template(
     )
     fixture = _system_template_fixture(tmp_path, notice_text=raw)
     with fixture.app.test_client() as client:
-        response = client.get(
+        response = get_verified_browser_page(
+            client,
             "/browser",
             query_string={
                 "view": "text",
@@ -419,7 +422,8 @@ def test_admin_notice_profile_and_action_title_remain_inert_in_the_actual_templa
     raw = TEMPLATE_ROOM + ":\n" + xml
     fixture = _system_template_fixture(tmp_path, notice_text=raw)
     with fixture.app.test_client() as client:
-        response = client.get(
+        response = get_verified_browser_page(
+            client,
             "/browser",
             query_string={
                 "view": "text",
