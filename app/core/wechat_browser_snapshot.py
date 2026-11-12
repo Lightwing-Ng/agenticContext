@@ -1,6 +1,6 @@
 """Persist authenticated raw conversation summaries after full timeline validation.
 
-Code version: v1.0.2-codex.0
+Code version: v1.0.3-codex.0
 """
 
 from __future__ import annotations
@@ -184,10 +184,17 @@ def _code_files():
     return sorted(Path(__file__).parent.glob("wechat*.py"))
 
 
+def _code_state(path):
+    identity = _state(path.lstat())
+    if os.name == "nt":
+        return (*identity, file_change_time(path))
+    return identity
+
+
 def _code_fingerprint():
     global _CODE_DIGEST
     paths = _code_files()
-    identities = tuple((path.name, _state(path.lstat())) for path in paths)
+    identities = tuple((path.name, _code_state(path)) for path in paths)
     with _LOCK:
         if _CODE_DIGEST is not None and _CODE_DIGEST[0] == identities:
             return _CODE_DIGEST[1]
@@ -200,7 +207,7 @@ def _code_fingerprint():
         if total > MAX_CODE_BYTES:
             raise _CacheUnavailable("WeChat reader code exceeds its fingerprint budget.")
         digest.update(path.name.encode("utf-8") + b"\0" + data + b"\0")
-    if tuple((path.name, _state(path.lstat())) for path in _code_files()) != identities:
+    if tuple((path.name, _code_state(path)) for path in _code_files()) != identities:
         raise _CacheUnavailable("WeChat reader code changed during fingerprinting.")
     value = digest.hexdigest()
     with _LOCK:
@@ -211,9 +218,21 @@ def _code_fingerprint():
 def _pin(repository, history_identity):
     from .wechat_conversation_events import _inputs
 
+    inputs = _inputs(repository, history_identity)
+    if os.name == "nt":
+        # Windows pathname ctime can be creation time. Pin native mutation
+        # metadata as Unix nanoseconds so restored mtimes cannot mask edits.
+        native = {
+            name: {**identity, "ctime_ns": (file_change_time(Path(name)) - 116_444_736_000_000_000) * 100}
+            for name, identity in inputs.items()
+            if isinstance(identity, dict) and "ctime_ns" in identity
+        }
+        if _inputs(repository, history_identity) != inputs:
+            raise _CacheUnavailable("Saved sources changed during snapshot identity collection.")
+        inputs.update(native)
     return {
         "version": VERSION,
-        "inputs": _inputs(repository, history_identity),
+        "inputs": inputs,
         "code": _code_fingerprint(),
     }
 

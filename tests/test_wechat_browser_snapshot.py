@@ -1,6 +1,6 @@
 """Authenticated raw overviews survive reloads without reusing changed evidence.
 
-Code version: v1.0.2-codex.0
+Code version: v1.0.3-codex.0
 """
 
 from collections import OrderedDict
@@ -123,7 +123,7 @@ def test_same_size_and_mtime_source_change_still_invalidates(snapshot_store):
     fixture = snapshot_store
     assert _load(fixture)[0] is not None
     before = fixture.registry.stat()
-    with sqlite3.connect(fixture.registry) as connection:
+    with closing(sqlite3.connect(fixture.registry)) as connection, connection:
         connection.execute("DELETE FROM sender_bindings")
     assert fixture.registry.stat().st_size == before.st_size
     os.utime(fixture.registry, ns=(before.st_atime_ns, before.st_mtime_ns))
@@ -383,7 +383,7 @@ def _load_previous(fixture):
 
 def _add_completion_input(fixture):
     completion = fixture.repository.path.with_name(FILENAME)
-    with sqlite3.connect(completion) as connection:
+    with closing(sqlite3.connect(completion)) as connection, connection:
         connection.execute("CREATE TABLE completion_fixture (value TEXT)")
     return completion
 
@@ -409,7 +409,7 @@ def previous_snapshot(snapshot_store):
 
 
 def _change_completion_input(completion):
-    with sqlite3.connect(completion) as connection:
+    with closing(sqlite3.connect(completion)) as connection, connection:
         connection.execute("INSERT INTO completion_fixture VALUES ('updated')")
 
 
