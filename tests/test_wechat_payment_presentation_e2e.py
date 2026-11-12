@@ -1,6 +1,6 @@
 """Localized payment cards share bubble geometry without activating payment links.
 
-Code version: v1.2.1-codex.0
+Code version: v1.2.2-codex.0
 """
 
 from __future__ import annotations
@@ -85,11 +85,13 @@ def test_payment_cards_reuse_literal_bubbles_for_all_native_roles(
             ),
             wait_until="domcontentloaded",
         )
+        disclosures = page.locator("details.wechat-forwarded")
+        expect(disclosures).to_have_count(2)
         page.evaluate("() => document.fonts.ready")
         sidebar = page.locator("#sidebar_toggle")
         if sidebar.get_attribute("aria-expanded") == "true":
             sidebar.click()
-        for disclosure in page.locator("details.wechat-forwarded").all():
+        for disclosure in disclosures.all():
             if disclosure.get_attribute("open") is None:
                 disclosure.locator(":scope > summary").click()
         cards = page.locator(
@@ -322,11 +324,13 @@ def test_localized_payment_copy_keeps_literal_notes_and_embedded_roles(
             ),
             wait_until="domcontentloaded",
         )
+        disclosures = page.locator("details.wechat-forwarded")
+        expect(disclosures).to_have_count(2)
         page.evaluate("() => document.fonts.ready")
         sidebar = page.locator("#sidebar_toggle")
         if sidebar.get_attribute("aria-expanded") == "true":
             sidebar.click()
-        for disclosure in page.locator("details.wechat-forwarded").all():
+        for disclosure in disclosures.all():
             if disclosure.get_attribute("open") is None:
                 disclosure.locator(":scope > summary").click()
         cards = page.locator(".wechat-payment")

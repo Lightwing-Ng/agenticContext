@@ -1,6 +1,6 @@
 """Timestamp rails choose complete containment or complete separation.
 
-Code version: v1.0.0-codex.0
+Code version: v1.0.1-codex.0
 """
 
 from __future__ import annotations
@@ -126,6 +126,7 @@ def _open(page, fixture, *, source="wechat", account=""):
         wait_until="domcontentloaded",
     )
     assert response.status == 200
+    expect(page.locator(".wechat-message-row").first).to_be_attached()
     toggle = page.locator("#sidebar_toggle")
     if toggle.get_attribute("aria-expanded") == "true":
         toggle.click()
