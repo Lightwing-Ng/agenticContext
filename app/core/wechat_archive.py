@@ -1,6 +1,6 @@
 """Source-separated, text-only WeChat archive import and indexed local queries."""
 
-# Code version: v1.10.1-codex.0
+# Code version: v1.10.4-codex.0
 
 from __future__ import annotations
 
@@ -1332,6 +1332,16 @@ class WechatArchiveRepository:
             self, parameters, lambda: self._query_uncached(**parameters)
         )
 
+    def query_previous_conversations(self, *, account, kind, sort, page, page_size):
+        """Read a previous verified conversation list without using the current page cache."""
+        try:
+            return self._query_uncached(
+                account=account, kind=kind, sort=sort, page=page, page_size=page_size,
+                previous_snapshot=True,
+            )
+        except (OSError, ValueError, sqlite3.DatabaseError):
+            return None
+
     def _query_uncached(
         self,
         *,
@@ -1343,6 +1353,7 @@ class WechatArchiveRepository:
         page=1,
         page_size=100,
         persist_event_cache=True,
+        previous_snapshot=False,
     ):
         kind = kind if kind in WECHAT_KINDS else "all"
         empty = {
@@ -1364,7 +1375,7 @@ class WechatArchiveRepository:
             "resource_index_accounts": None,
         }
         if not self.path.is_file():
-            return empty
+            return None if previous_snapshot else empty
         history_identity = _file_identity(self.path)
         connection = sqlite3.connect(
             self.path.resolve().as_uri() + "?mode=ro&immutable=1", uri=True
@@ -1372,7 +1383,13 @@ class WechatArchiveRepository:
         connection.row_factory = sqlite3.Row
         try:
             snapshot = None
-            if not session and not str(query or "").strip():
+            if previous_snapshot:
+                from .wechat_browser_snapshot import load_previous_conversation_snapshot
+
+                snapshot = load_previous_conversation_snapshot(self, connection, history_identity)
+                if snapshot is None:
+                    return None
+            elif not session and not str(query or "").strip():
                 from .wechat_browser_snapshot import load_conversation_snapshot
 
                 snapshot = load_conversation_snapshot(self, connection, history_identity)
@@ -1389,7 +1406,7 @@ class WechatArchiveRepository:
                     status_conversation_id=session or None,
                 )
             empty["resource_index_status"] = resource_status
-            if resource_status == "ready" and self._native_resource_scope(
+            if not previous_snapshot and resource_status == "ready" and self._native_resource_scope(
                 connection, session or None, conversation_table=conversation_table
             ):
                 empty["resource_index_accounts"] = (
@@ -1498,21 +1515,38 @@ class WechatArchiveRepository:
                     "page": safe_page,
                     "pages": pages,
                 }
-            from .wechat_conversation_events import cache_only_summaries
+            if terms:
+                for term in terms:
+                    filters += (
+                        " AND (instr(lower(c.title),?)>0 OR EXISTS(SELECT 1 FROM "
+                        + message_table
+                        + " m WHERE m.conversation_id=c.id AND instr(m.search_text,?)>0))"
+                    )
+                    params.extend((term, term))
+                # All three page queries share one exact conversation membership scan.
+                connection.execute(
+                    "CREATE TEMP TABLE wechat_search_matches(id TEXT PRIMARY KEY) WITHOUT ROWID"
+                )
+                connection.execute(
+                    "INSERT INTO temp.wechat_search_matches SELECT c.id" + join + filters,
+                    params,
+                )
+                join += " JOIN temp.wechat_search_matches s ON s.id=c.id "
+                filters = ""
+                params = []
+            if not previous_snapshot:
+                from .wechat_conversation_events import cache_only_summaries
 
-            summaries = cache_only_summaries(self, history_identity)
-            connection.execute(
-                "CREATE TEMP TABLE conversation_event_counts("
-                "session_id TEXT PRIMARY KEY,delta INTEGER NOT NULL) WITHOUT ROWID"
-            )
-            connection.executemany(
-                "INSERT INTO temp.conversation_event_counts VALUES(?,?)",
-                summaries.items(),
-            )
-            join += " LEFT JOIN temp.conversation_event_counts e ON e.session_id=c.id "
-            for term in terms:
-                filters += f" AND (instr(lower(c.title),?)>0 OR EXISTS(SELECT 1 FROM {message_table} m WHERE m.conversation_id=c.id AND instr(m.search_text,?)>0))"
-                params.extend((term, term))
+                summaries = cache_only_summaries(self, history_identity)
+                connection.execute(
+                    "CREATE TEMP TABLE conversation_event_counts("
+                    "session_id TEXT PRIMARY KEY,delta INTEGER NOT NULL) WITHOUT ROWID"
+                )
+                connection.executemany(
+                    "INSERT INTO temp.conversation_event_counts VALUES(?,?)",
+                    summaries.items(),
+                )
+                join += " LEFT JOIN temp.conversation_event_counts e ON e.session_id=c.id "
             total = connection.execute(
                 "SELECT COUNT(*)" + join + filters, params
             ).fetchone()[0]
@@ -1537,14 +1571,19 @@ class WechatArchiveRepository:
                     [*params, page_size, (safe_page - 1) * page_size],
                 )
             ]
-            for conversation in conversations:
-                conversation["message_count"] -= summaries.get(conversation["id"], 0)
-            message_count = connection.execute(
-                "SELECT COALESCE(SUM(c.message_count-COALESCE(e.delta,0)),0)"
-                + join
-                + filters,
-                params,
-            ).fetchone()[0]
+            message_count = 0
+            if previous_snapshot:
+                if _file_identity(self.path) != history_identity:
+                    return None
+            else:
+                for conversation in conversations:
+                    conversation["message_count"] -= summaries.get(conversation["id"], 0)
+                message_count = connection.execute(
+                    "SELECT COALESCE(SUM(c.message_count-COALESCE(e.delta,0)),0)"
+                    + join
+                    + filters,
+                    params,
+                ).fetchone()[0]
             return {
                 **empty,
                 "accounts": accounts,

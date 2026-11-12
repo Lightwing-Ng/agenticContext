@@ -1,4 +1,4 @@
-{# Code version: v1.0.0-codex.0 #}
+{# Code version: v1.1.4-codex.0 #}
 {% set is_wechat_text = filters.view == 'text' and filters.source == 'wechat' %}
 {% set is_zhihu_text = filters.view == 'text' and filters.source == 'zhihu' %}
 {% set is_session_index = filters.view == 'media' and filters.session_index %}
@@ -153,7 +153,7 @@
                             {% if retained_account %}
                             <option value="{{ filters.account }}" hidden selected>{{ retained_account.viewer_name or retained_account.name }}</option>
                             {% else %}
-                            <option value="{{ filters.account }}" selected>Unavailable source account</option>
+                            <option value="{{ filters.account }}" selected>{{ "Selected source account" if wechat_read_job else "Unavailable source account" }}</option>
                             {% endif %}
                             {% endif %}
                             {% for account in wechat_account_options %}

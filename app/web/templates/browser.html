@@ -1,4 +1,4 @@
-<!-- Code version: v1.112.1-codex.0 -->
+<!-- Code version: v1.114.7-codex.0 -->
 <!doctype html>
 <html lang="en-US">
 <head>
@@ -19,10 +19,11 @@
     <script defer src="{{ url_for('static', filename='browser-sidebar-filters.js', v='browser-sidebar-filters-v1.1.0-codex.0') }}"></script>
     {% if filters.view == 'text' and filters.source == 'wechat' %}
     <link rel="stylesheet" href="{{ url_for('static', filename='wechat-kind-badge.css', v='wechat-kind-badge-v1.0.0-codex.0') }}">
-    <link rel="stylesheet" href="{{ url_for('static', filename='browser-messaging.css', v='browser-messaging-v1.19.1-codex.0') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='browser-messaging.css', v='browser-messaging-v1.22.3-codex.0') }}">
     <link rel="stylesheet" href="{{ url_for('static', filename='wechat-exchange.css', v='wechat-exchange-v1.2.3-codex.0') }}">
     <script defer src="{{ url_for('static', filename='wechat-exchange.js', v='wechat-exchange-v1.2.2-codex.0') }}"></script>
     <script defer src="{{ url_for('static', filename='wechat-refresh.js', v='wechat-refresh-v1.0.0-codex.0') }}"></script>
+    <script defer src="{{ url_for('static', filename='wechat-browser-read.js', v='wechat-browser-read-v1.1.1-codex.0') }}"></script>
     <script defer src="{{ url_for('static', filename='wechat-contact-navigation.js', v='wechat-contact-navigation-v1.1.2-codex.0') }}"></script>
     <script defer src="{{ url_for('static', filename='disclosure-motion.js', v='disclosure-motion-v1.1.0-codex.0') }}"></script>
     <script defer src="{{ url_for('static', filename='browser-messaging.js', v='browser-messaging-v1.14.0-codex.0') }}"></script>
@@ -46,6 +47,8 @@
 {% from "_notice_banner.html" import render_notice_banner %}
 {% set is_zhihu_text = filters.view == "text" and filters.source == "zhihu" %}
 {% set is_wechat_text = filters.view == "text" and filters.source == "wechat" %}
+{% set wechat_read_loading = is_wechat_text and wechat_read_job and wechat_read_job.state != "failed" and wechat_read_job.status_url %}
+{% set is_text_session_shell = filters.view == "text" and (text_page.session_detail or (is_wechat_text and wechat_read_job and filters.session)) %}
 {% set no_project_filter = "__no_project__" %}
 {% set is_no_project = filters.project == no_project_filter %}
 {% set project_search_copy = "Press Enter to search chats without a project." if is_no_project else ("Press Enter to search this project." if filters.project else "Press Enter to search all cached text.") %}
@@ -105,7 +108,7 @@
         href="{{ target_url }}"
     >{{ label }}</a>
 {% endmacro %}
-<main class="page{% if is_wechat_text and text_page.session_detail %} browser-wechat-session{% endif %}">
+<main class="page{% if is_wechat_text and is_text_session_shell %} browser-wechat-session{% endif %}">
     <div class="ambient ambient-left" aria-hidden="true"></div>
     <div class="ambient ambient-right" aria-hidden="true"></div>
 
@@ -144,7 +147,7 @@
                             {% if filters.view == "text" and text_page.session_detail %}
                             <h2 class="report-heading" lang="zh-CN">{{ text_page.current_session.conversation_title }}</h2>
                             {% elif is_wechat_text %}
-                            <h2 class="report-heading">WeChat conversations</h2>
+                            <h2 class="report-heading">{{ "WeChat conversation" if is_text_session_shell else "WeChat conversations" }}</h2>
                             {% elif is_zhihu_text %}
                             <h2 class="report-heading">Zhihu answerers</h2>
                             {% else %}
@@ -155,10 +158,10 @@
                 </div>
                 <div class="report-card workspace-content-card browser-content-card{% if filters.view == 'text' %} browser-text-summary-card{% endif %}" data-layout-role="content-scrollport">
                     <div class="browser-content-toolbar">
-                        {% if is_wechat_text and text_page.session_detail %}
+                        {% if is_wechat_text and is_text_session_shell %}
                         <a class="circular-icon-button browser-session-control-button browser-session-neighbor-button wechat-conversation-back" href="{{ url_for('local_resources.browser', view='text', source='wechat', account=filters.account, chat_kind=filters.chat_kind, sort=filters.sort, page=filters.session_page) }}" aria-label="All conversations" title="Back to all conversations"><span class="icon browser-session-neighbor-prev-icon" aria-hidden="true"></span></a>
                         {% endif %}
-                        <div class="browser-session-detail-actions browser-local-resources-header-actions{% if filters.view == 'text' and text_page.session_detail %} browser-session-detail-actions--session{% endif %}" data-browser-local-resources-header-actions>
+                        <div class="browser-session-detail-actions browser-local-resources-header-actions{% if is_text_session_shell %} browser-session-detail-actions--session{% endif %}" data-browser-local-resources-header-actions>
                             {% if filters.view == "text" and text_page.session_detail and not is_wechat_text %}
                             <a class="secondary-button browser-session-back-link" href="{{ url_for('local_resources.browser', view='text', source=filters.source, project=filters.project, answerer=('' if is_zhihu_text else filters.answerer), q=filters.q, sort=filters.sort, session_view='1', page=filters.session_page) }}">{{ "Back to all answerers" if is_zhihu_text else ("Back to No project" if is_no_project else ("Back to project sessions" if filters.project else "Back to all sessions")) }}</a>
                             <nav class="browser-session-neighbor-nav" aria-label="{{ 'Answerer navigation' if is_zhihu_text else 'Session navigation' }}">
@@ -242,7 +245,7 @@
                                 {% endif %}
                             </div>
                             {% endif %}
-                            {% if is_wechat_text and not text_page.session_detail and filters.account %}
+                            {% if is_wechat_text and not is_text_session_shell and filters.account and not wechat_read_job %}
                             <button
                                 type="button"
                                 class="circular-icon-button global-quick-action-button wechat-exchange-import-button"
@@ -252,11 +255,13 @@
                                 aria-controls="wechat_exchange_import_dialog"
                                 data-wechat-exchange-import-trigger
                             ><span class="icon wechat-exchange-import-icon" aria-hidden="true"></span></button>
+                            {% elif wechat_read_loading and not is_text_session_shell and filters.account %}
+                            <span class="wechat-exchange-import-button" aria-hidden="true" data-wechat-read-placeholder></span>
                             {% endif %}
                             <div class="field browser-filter-field browser-search-field" data-browser-search>
                                 <div class="browser-search-control">
                                     <span class="icon browser-search-icon" aria-hidden="true"></span>
-                                    {% if filters.view == "text" and text_page.session_detail %}
+                                    {% if is_text_session_shell %}
                                     <span class="browser-prompt-tag browser-search-session-tag" data-browser-session-tag>
                                         <span>{{ text_page.current_session.latest_author_label if is_zhihu_text else "This session" }}</span>
                                         <button type="button" class="browser-prompt-tag-remove" data-browser-session-scope-remove aria-label="{{ 'Search all cached Zhihu answers' if is_zhihu_text else ('Search chats without a project' if is_no_project else ('Search this project' if filters.project else 'Search all cached text')) }}" title="{{ 'Remove answerer scope' if is_zhihu_text else 'Remove session filter' }}">×</button>
@@ -280,10 +285,10 @@
                                         aria-label="{{ 'Search cached media' if filters.view == 'media' else 'Search cached text' }}"
                                         placeholder="{{ 'Search cached media' if filters.view == 'media' else 'Search cached text' }}"
                                         data-browser-search-input
-                                        data-browser-search-global-scope="{{ 'true' if filters.view == 'text' and not text_page.session_detail else 'false' }}"
-                                        data-browser-search-scope="{{ 'answerer' if is_zhihu_text and text_page.session_detail else ('session' if filters.view == 'text' and text_page.session_detail else 'global') }}"
+                                        data-browser-search-global-scope="{{ 'true' if filters.view == 'text' and not is_text_session_shell else 'false' }}"
+                                        data-browser-search-scope="{{ 'answerer' if is_zhihu_text and text_page.session_detail else ('session' if is_text_session_shell else 'global') }}"
                                         data-browser-search-global-submit-copy="{{ 'Press Enter to search all cached Zhihu answers.' if is_zhihu_text else project_search_copy }}"
-                                        data-browser-search-submit-copy="{{ 'Press Enter to search this answerer’s answers.' if is_zhihu_text and text_page.session_detail else ('Press Enter to search this session.' if filters.view == 'text' and text_page.session_detail else (project_search_copy if filters.view == 'text' else 'Press Enter to search this cache.')) }}"
+                                        data-browser-search-submit-copy="{{ 'Press Enter to search this answerer’s answers.' if is_zhihu_text and text_page.session_detail else ('Press Enter to search this session.' if is_text_session_shell else (project_search_copy if filters.view == 'text' else 'Press Enter to search this cache.')) }}"
                                     >
                                     <div
                                         class="browser-search-suggestions"
@@ -295,8 +300,8 @@
                                     ></div>
                                 </div>
                             </div>
-                            {% if is_wechat_text and text_page.session_detail %}
-                            {% if wechat_refresh_available|default(false) %}
+                            {% if is_wechat_text and is_text_session_shell and (not wechat_read_job or wechat_read_loading) %}
+                            {% if not wechat_read_job and wechat_refresh_available|default(false) %}
                             <button
                                 type="button"
                                 class="circular-icon-button global-quick-action-button browser-session-refresh-button wechat-conversation-refresh"
@@ -306,8 +311,14 @@
                                 aria-label="Refresh chat history"
                                 title="Refresh chat history"
                             ><span class="icon wechat-conversation-refresh-icon" aria-hidden="true"></span></button>
+                            {% else %}
+                            <span class="wechat-conversation-refresh" aria-hidden="true"{% if wechat_read_loading %} data-wechat-read-placeholder{% endif %}></span>
                             {% endif %}
+                            {% if wechat_read_loading %}
+                            <span class="wechat-exchange-actions" aria-hidden="true" data-wechat-read-placeholder></span>
+                            {% else %}
                             {% include "_wechat_exchange_actions.html" %}
+                            {% endif %}
                             {% endif %}
                         </div>
                     </div>
@@ -365,7 +376,8 @@
                         </div>
                     </div>
                     {% else %}
-                    <div class="metric-grid browser-metric-grid browser-text-metric-grid{% if is_zhihu_text %} browser-zhihu-metric-grid{% endif %}" aria-label="{{ 'Zhihu answerer totals' if is_zhihu_text and text_page.session_detail else ('Zhihu answer totals' if is_zhihu_text else 'Cached text totals') }}">
+                    {% if not wechat_read_preview and (not wechat_read_job or wechat_read_loading) %}
+                    <div class="metric-grid browser-metric-grid browser-text-metric-grid{% if is_zhihu_text %} browser-zhihu-metric-grid{% endif %}"{% if wechat_read_loading %} data-wechat-read-placeholder aria-hidden="true"{% else %} aria-label="{{ 'Zhihu answerer totals' if is_zhihu_text and text_page.session_detail else ('Zhihu answer totals' if is_zhihu_text else 'Cached text totals') }}"{% endif %}>
                         {% if is_zhihu_text %}
                         <div class="metric-card foundation-metric-card metric-card-accent{% if text_page.session_detail %} browser-zhihu-answerer-metric{% endif %}">
                             <span class="metric-label">{{ "Answerer" if text_page.session_detail else "Answerers" }}</span>
@@ -376,19 +388,20 @@
                             <strong data-numeric-display-value="{{ '{:,}'.format(text_page.current_session.message_count if text_page.session_detail else text_page.total_count) }}">{{ "{:,}".format(text_page.current_session.message_count if text_page.session_detail else text_page.total_count) }}</strong>
                         </div>
                         {% elif is_wechat_text %}
+                        {% if not wechat_read_loading %}
+                        {% set account_sources = text_page.messaging.accounts|selectattr('key', 'equalto', filters.account)|list if filters.account else text_page.messaging.accounts %}
+                        {% set metric_values = (text_page.conversation_count, text_page.messaging.message_count, account_sources|length) %}
+                        {% endif %}
+                        {% for label in ("Conversations", "Messages", "Account sources") %}
                         <div class="metric-card foundation-metric-card metric-card-accent">
-                            <span class="metric-label">Conversations</span>
-                            <strong>{{ '{:,}'.format(text_page.conversation_count) }}</strong>
+                            <span class="metric-label">{{ label }}</span>
+                            {% if wechat_read_loading %}
+                            <strong><span class="navigation-skeleton-line wechat-read-line wechat-read-metric"></span></strong>
+                            {% else %}
+                            <strong>{{ '{:,}'.format(metric_values[loop.index0]) }}</strong>
+                            {% endif %}
                         </div>
-                        <div class="metric-card foundation-metric-card metric-card-accent">
-                            <span class="metric-label">Messages</span>
-                            <strong>{{ '{:,}'.format(text_page.messaging.message_count) }}</strong>
-                        </div>
-                        <div class="metric-card foundation-metric-card metric-card-accent">
-                            <span class="metric-label">Account sources</span>
-                            {% set account_sources = text_page.messaging.accounts|selectattr('key', 'equalto', filters.account)|list if filters.account else text_page.messaging.accounts %}
-                            <strong>{{ '{:,}'.format(account_sources|length) }}</strong>
-                        </div>
+                        {% endfor %}
                         {% else %}
                         <div class="metric-card foundation-metric-card metric-card-accent">
                             <span class="metric-label">Sessions</span>
@@ -404,6 +417,7 @@
                         </div>
                         {% endif %}
                     </div>
+                    {% endif %}
                     {% endif %}
 
                     {% if filters.view == "media" and (media_page.items or is_session_index) %}
@@ -856,7 +870,11 @@
                         </div>
                     </div>
                     {% elif is_wechat_text %}
+                    {% if wechat_read_job %}
+                    {% include "_wechat_read_pending.html" %}
+                    {% else %}
                     {% include "_wechat_browser.html" %}
+                    {% endif %}
                     {% elif filters.view == "text" and (text_page.session_detail or (not filters.session_view and text_page.items)) %}
                     {% if text_page.items and not is_zhihu_text %}
                     <div class="browser-chat-pane" data-browser-chat-pane>
@@ -1192,7 +1210,7 @@
                             )
                         )
                     ) %}
-                    {% if not browser_has_result %}
+                    {% if not browser_has_result and not wechat_read_job %}
                     {% if filters.view == "prompts" and has_any_prompts %}
                     <div class="browser-empty-state" role="status">
                         <span class="browser-empty-icon browser-empty-icon-text" aria-hidden="true"></span>
@@ -1256,8 +1274,14 @@
                     {% if filters.view == "prompts" %}
                     {{ render_browser_pagination(prompt_page, 'Saved prompts', 'prompts', filters, 'prompts') }}
                     {% endif %}
-                    {% if filters.view == "text" %}
-                    {{ render_browser_pagination(text_page, ('Answer pages' if text_page.session_detail else 'Answerers') if is_zhihu_text else ('Message pages' if text_page.session_detail else ('Sessions' if filters.session_view else 'Text pages')), 'text', filters, ('answers' if text_page.session_detail else 'answerers') if is_zhihu_text else ('messages' if text_page.session_detail else ('sessions' if filters.session_view else 'pages'))) }}
+                    {% if (wechat_read_loading and not wechat_read_preview) or (is_wechat_text and not wechat_read_job and (text_page.session_detail or text_page.sessions) and not text_page.pagination_items) %}
+                    <div class="browser-pagination wechat-read-pagination" aria-hidden="true"{% if wechat_read_loading %} data-wechat-read-placeholder{% endif %}>
+                        {% if wechat_read_loading %}
+                        {% for _ in range(4) %}<span class="navigation-skeleton-line wechat-read-line"></span>{% endfor %}
+                        {% endif %}
+                    </div>
+                    {% elif filters.view == "text" and (not wechat_read_job or wechat_read_preview) %}
+                    {{ render_browser_pagination(text_page, ('Answer pages' if text_page.session_detail else 'Answerers') if is_zhihu_text else ('Message pages' if text_page.session_detail else ('Sessions' if filters.session_view else 'Text pages')), 'text', filters, ('answers' if text_page.session_detail else 'answerers') if is_zhihu_text else ('messages' if text_page.session_detail else ('sessions' if filters.session_view else 'pages')), read_preview=wechat_read_preview|default(false)) }}
                     {% endif %}
                 </div>
             </div>
@@ -1333,7 +1357,7 @@
     </div>
 </dialog>
 
-{% if is_wechat_text %}{% include "_wechat_exchange_import.html" %}{% endif %}
+{% if is_wechat_text and not wechat_read_job %}{% include "_wechat_exchange_import.html" %}{% endif %}
 {% include "_waiting_modal.html" %}
 <script type="application/json" id="browser_media_data">{{ media_payload|tojson }}</script>
 <script src="{{ url_for('static', filename='sidebar.js', v='sidebar-v1.31.0-codex.0') }}"></script>

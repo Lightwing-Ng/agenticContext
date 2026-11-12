@@ -1,6 +1,6 @@
 # Visual Style Reference
 
-Documentation version: `v1.33.0-codex.0`
+Documentation version: `v1.38.8-codex.0`
 
 ## Authority
 
@@ -28,6 +28,16 @@ browser behavior. The template loads this adapter before the contact-return hand
 so it clears its waiting and busy state before their pagehide checkpoints run. A
 persisted pageshow also clears that state. Closing the waiting card or pressing Escape
 dismisses its feedback without cancelling the committed document navigation.
+
+Cold WeChat list, search, and conversation requests use inline skeletons while a
+bounded read task verifies the saved page. Pending and verified views share the
+search toolbar, metric grid, list note and table, or conversation badge and
+transcript. Empty slots reserve the width of optional actions and the height of
+pagination. Pending views expose a live status and keep placeholders out of the
+accessibility tree. Verified results replace the skeleton through one matching
+reload. An eligible previously verified conversation list can provide rows and pagination
+during validation, with a visible status and unavailable message totals. Failed or
+timed-out status polling exposes an inline retry.
 
 Before changing a shared UI component, also read
 `docs/SHARED_UI_WORKFLOW.md` and the central ledger at

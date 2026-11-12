@@ -1,5 +1,5 @@
-{# Code version: v1.7.1-codex.0 #}
-{% macro render_browser_pagination(page, aria_label, view, filters, range_unit="pages") %}
+{# Code version: v1.7.2-codex.0 #}
+{% macro render_browser_pagination(page, aria_label, view, filters, range_unit="pages", read_preview=false) %}
 {% set is_zhihu_text = view == "text" and filters.source == "zhihu" %}
 {% set text_detail_label = "Answer" if is_zhihu_text else "Message" %}
 {% set text_group_label = "Conversation" if filters.source == "wechat" else ("Answerer" if is_zhihu_text else "Session") %}
@@ -8,6 +8,7 @@
 <nav
     class="browser-pagination local-store-pagination local-store-pagination--floating is-animated"
     data-layout-role="pagination"
+    {% if read_preview %}data-wechat-read-placeholder{% endif %}
     aria-label="{{ aria_label }}"
     style="--local-store-pagination-slots: {{ pagination_items|length }};"
 >

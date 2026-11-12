@@ -1,6 +1,6 @@
 # Architecture guide
 
-Documentation version: `v1.77.2-codex.0`
+Documentation version: `v1.77.3-codex.0`
 
 ## Runtime flow
 
@@ -849,6 +849,13 @@ The existing `query_chat_history` entrypoint dispatches WeChat to `wechat_histor
 That adapter reuses the shared page/session/message contracts with optional messaging context.
 Queries enforce account and conversation-type scope for both details and exports, and paginate
 directly in read-only SQLite. Passive page reads never import archives or download media.
+The saved-view reader runs one conversation worker and one list and search worker under a shared
+task and result budget. List pages recheck published conversation-count proofs before and after
+reading. A successful Mac recovery bank validation writes an owner-private, authenticated
+receipt for the exact bank, input identities, reader code, and runtime. Conversation binding
+and shadow checks still run at their original scope. The contact registry is checked once per
+published file identity. A conversation search computes the matching IDs once for its rows,
+pagination, and totals.
 The Web layer continues to use the storage facade. Its Local resources source registry includes
 WeChat without adding a Cache execution page or media/prompt source.
 

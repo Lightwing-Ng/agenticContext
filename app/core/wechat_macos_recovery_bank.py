@@ -1,6 +1,6 @@
 """Stage indexed, source-bound Mac recovery without rewriting the original archive.
 
-Code version: v1.6.0-codex.0
+Code version: v1.6.1-codex.0
 """
 
 from __future__ import annotations
@@ -30,7 +30,7 @@ from .wechat_resource_index import _APP_LABEL_FIELDS as _LINK_LABEL_FIELDS, _KIN
 from .wechat_text import is_native_pat_projection, native_components_text
 
 
-CODE_VERSION = "v1.6.0-codex.0"
+CODE_VERSION = "v1.6.1-codex.0"
 VERSION = "v1.4.0-codex.0"
 MAX_PACKET_BYTES = 128 * 1024**2
 MAX_PACKET_MESSAGES = 100_000
@@ -1700,11 +1700,24 @@ def _attach(connection, history):
             metadata = pending.result()
         else:
             try:
-                with closing(
-                    sqlite3.connect(path.resolve().as_uri() + "?mode=ro&immutable=1", uri=True)
-                ) as verifier:
-                    metadata = _validate_bank(verifier, history, inputs)
-                if _identity(path) != identity or _inputs(Path(history)) != inputs:
+                from . import wechat_macos_bank_validation_cache as proof_cache
+
+                directory = path.parent / "browser_cache"
+                pin = proof_cache.proof_pin(path, history, identity, inputs)
+
+                def unchanged():
+                    return _identity(path) == identity and _inputs(Path(history)) == inputs
+
+                metadata = proof_cache.read_proof(directory, pin, unchanged)
+                if metadata is None:
+                    with closing(
+                        sqlite3.connect(path.resolve().as_uri() + "?mode=ro&immutable=1", uri=True)
+                    ) as verifier:
+                        metadata = _validate_bank(verifier, history, inputs)
+                    if not unchanged():
+                        raise ValueError("The Mac recovery bank changed during validation.")
+                    proof_cache.write_proof(directory, pin, metadata, unchanged)
+                if not unchanged():
                     raise ValueError("The Mac recovery bank changed during validation.")
                 with _LOCK:
                     if len(_VALIDATED) >= 4:
