@@ -1,9 +1,10 @@
 """Inspect the rendered WeChat page with standard-library HTML parsing.
 
-Code version: v1.0.0-codex.0
+Code version: v1.1.0-codex.0
 """
 
 from html.parser import HTMLParser
+import time
 from xml.etree.ElementTree import Element, SubElement
 
 
@@ -53,3 +54,31 @@ def parse_browser_markup(data: bytes) -> Element:
     parser.feed(data.decode("utf-8"))
     parser.close()
     return parser.root
+
+
+def get_verified_browser_page(client, path, **kwargs):
+    """Follow one saved-view task to render the HTML a browser would display."""
+    response = client.get(path, **kwargs)
+    assert response.status_code == 200
+    if b"data-wechat-read-pending" not in response.data:
+        return response
+
+    shell = parse_browser_markup(response.data).find(".//*[@data-wechat-read-pending]")
+    assert shell is not None and shell.get("data-state") == "running"
+    deadline = time.monotonic() + 3
+    while True:
+        poll = client.get(shell.get("data-status-url"))
+        assert poll.status_code == 200
+        status = poll.get_json()
+        assert status["task_id"] == shell.get("data-task-id")
+        assert status["generation"] == int(shell.get("data-generation"))
+        if status["state"] != "running":
+            break
+        assert time.monotonic() < deadline, "The saved-view task did not finish."
+        time.sleep(0.01)
+    assert status["state"] == "succeeded", status["message"]
+
+    response = client.get(path, **kwargs)
+    assert response.status_code == 200
+    assert b"data-wechat-read-pending" not in response.data
+    return response

@@ -1,6 +1,6 @@
 """Account and conversation-type filters share desktop and narrow UI contracts.
 
-Code version: v1.8.1-codex.0
+Code version: v1.8.2-codex.0
 """
 
 from __future__ import annotations
@@ -420,21 +420,27 @@ def test_filters_pagination_and_human_message_variants(
             const share = element.getBoundingClientRect();
             const icon = element.querySelector('.icon').getBoundingClientRect();
             const theme = document.querySelector('#global_theme_toggle').getBoundingClientRect();
+            const row = element.closest('[data-browser-local-resources-header-actions]').getBoundingClientRect();
+            const search = document.querySelector('.browser-search-control').getBoundingClientRect();
             const title = document.querySelector('.browser-heading-copy').getBoundingClientRect();
             return {
                 size: [share.width, share.height],
                 iconSize: [icon.width, icon.height],
-                centerDifference: Math.abs(share.top + share.height / 2 - theme.top - theme.height / 2),
-                gap: theme.left - share.right,
-                titleClearsActions: title.right <= share.left + 1,
+                rowCenterDifference: Math.abs(share.top + share.height / 2 - row.top - row.height / 2),
+                rightDifference: Math.abs(share.right - theme.right),
+                searchGap: share.left - search.right,
+                rowsSeparate: theme.bottom <= share.top,
+                titleClearsTheme: title.right <= theme.left + 1,
             };
         }""")
         assert share_geometry["size"] == [32, 32], share_geometry
         assert share_geometry["iconSize"] == [18, 18], share_geometry
-        assert share_geometry["centerDifference"] <= 1, share_geometry
-        assert share_geometry["gap"] == pytest.approx(10, abs=1), share_geometry
-        assert share_geometry["titleClearsActions"], share_geometry
-        page.locator("#global_theme_toggle").focus()
+        assert share_geometry["rowCenterDifference"] <= 1, share_geometry
+        assert share_geometry["rightDifference"] <= 1, share_geometry
+        assert share_geometry["searchGap"] >= 8, share_geometry
+        assert share_geometry["rowsSeparate"], share_geometry
+        assert share_geometry["titleClearsTheme"], share_geometry
+        page.locator("#browser_search_input").focus()
         page.keyboard.press("Tab")
         expect(share).to_be_focused()
         expect(
@@ -977,6 +983,9 @@ def test_conversation_back_stays_before_search_within_desktop_toolbar(
         if toggle.get_attribute("aria-expanded") == "true":
             toggle.click()
         page.get_by_role("link", name="Same title", exact=True).click()
+        # The Back link also exists in the pending view, which reloads when the
+        # saved transcript is ready. Measure focus and geometry in the final view.
+        expect(page.locator("[data-chat-scrollport] .wechat-message").first).to_be_visible()
         back = page.get_by_role("link", name="All conversations", exact=True)
         expect(
             page.locator(".browser-content-toolbar > .wechat-conversation-back")

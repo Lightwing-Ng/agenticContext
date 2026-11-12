@@ -1,4 +1,4 @@
-"""Isolated message ruler behavior and geometry. Code version: v1.1.1-codex.0."""
+"""Isolated message ruler behavior and geometry. Code version: v1.1.2-codex.0."""
 
 from collections.abc import Iterator
 from pathlib import Path
@@ -395,7 +395,9 @@ def test_message_ruler_keeps_touch_spacing_without_hover_magnification(
     try:
         page.goto(f"{seeded_ruler_browser_server_url}/browser?view=text&source=chatgpt&session_view=1")
         page.locator(".browser-session-index-table .browser-session-table-title").first.click()
-        markers = page.locator("[data-chat-marker]")
+        ruler = page.get_by_role("navigation", name="Message navigation", exact=True)
+        expect(ruler).to_be_visible()
+        markers = ruler.locator("[data-chat-marker]")
         expect(markers).to_have_count(7)
         _assert_message_badges(page)
         expect(page.locator("article.browser-chat-message").first.locator(".browser-session-message-time")).to_have_count(1)
