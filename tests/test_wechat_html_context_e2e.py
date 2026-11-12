@@ -1,6 +1,6 @@
 """Verified HTML forwarded quotes retain literal envelopes and shared geometry.
 
-Code version: v1.1.0-codex.0
+Code version: v1.1.1-codex.0
 """
 
 from __future__ import annotations
@@ -29,6 +29,7 @@ from app.web.app import create_app
 from app.web.config_store import SavedConfigStore
 from tests import test_sidebar_e2e
 from tests.test_wechat_contacts import _make_forwarded_html_store
+from tests.wechat_browser_markup import get_verified_browser_page
 
 
 disposable_browser = test_sidebar_e2e.disposable_browser
@@ -139,15 +140,14 @@ def html_context_server(tmp_path_factory):
         )
     app.config.update(TESTING=True)
     with app.test_client() as client:
-        response = client.get(
-            "/browser?"
-            + urlencode(
-                {
-                    "view": "text",
-                    "source": "wechat",
-                    "session": request["conversation_id"],
-                }
-            )
+        response = get_verified_browser_page(
+            client,
+            "/browser",
+            query_string={
+                "view": "text",
+                "source": "wechat",
+                "session": request["conversation_id"],
+            },
         )
         assert response.status_code == 200
         assert b"Quoted message" in response.data
