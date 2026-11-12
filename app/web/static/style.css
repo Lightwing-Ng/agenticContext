@@ -1,4 +1,4 @@
-/* Code version: v2.159.2-codex.0 */
+/* Code version: v2.159.3-codex.0 */
 /*
  * Standalone faces are extracted from the approved TTC by scripts/build_web_fonts.py.
  * Collection URL fragments are not reliable face selectors in Chromium.
@@ -3208,8 +3208,9 @@ a.ghost-link[href$="/settings"] {
 }
 
 .notice-floating-banner-global {
+    --notice-floating-banner-top: max(var(--page-edge-pad), env(safe-area-inset-top, 0px));
     position: fixed;
-    top: max(var(--page-edge-pad), env(safe-area-inset-top, 0px));
+    top: var(--notice-floating-banner-top);
     left: 50%;
     transform: translate3d(-50%, 0, 0);
     margin: 0;
@@ -3220,12 +3221,25 @@ a.ghost-link[href$="/settings"] {
 }
 
 .notice-floating-banner-global + .notice-floating-banner-global {
-    top: calc(max(var(--page-edge-pad), env(safe-area-inset-top, 0px)) + 88px);
+    top: calc(var(--notice-floating-banner-top) + 88px);
 }
 
 .notice-floating-banner-global[data-dismissible-notice] {
     animation: noticeFloatingBannerDropIn 720ms both;
     animation-timing-function: var(--motion-overshoot);
+}
+
+/* Below 1081px the notice overlaps the sidebar column, including its entry scale. */
+@media (min-width: 901px) and (max-width: 1080px) {
+    .notice-floating-banner-global {
+        --notice-floating-banner-top: calc(
+            var(--layout-global-anchor-top)
+            + (var(--circular-icon-button-size) / 2)
+            + (var(--circular-icon-button-hit-size) / 2)
+            + 4px
+            + 28px
+        );
+    }
 }
 
 .notice-floating-banner-icon {
@@ -3809,7 +3823,7 @@ html.sidebar-memory-collapsed .app-shell ~ .sidebar-dock {
     }
 
     .notice-floating-banner-global {
-        top: max(8px, env(safe-area-inset-top, 0px));
+        --notice-floating-banner-top: max(8px, env(safe-area-inset-top, 0px));
         width: calc(100vw - 16px);
         max-width: calc(100vw - 16px);
     }
@@ -3846,6 +3860,15 @@ html.sidebar-memory-collapsed .app-shell ~ .sidebar-dock {
 .agent-sidebar {
     display: flex;
     flex-direction: column;
+    overflow: hidden;
+}
+
+.agent-sidebar-scrollport {
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow-y: auto;
+    overflow-x: hidden;
+    scroll-padding-bottom: var(--layout-edge-gap);
 }
 
 .agent-response-status {
@@ -6715,7 +6738,7 @@ html.sidebar-memory-collapsed .app-shell .sidebar {
     }
 
     .notice-floating-banner-global {
-        top: calc(var(--sidebar-overlay-inset-top) + 52px);
+        --notice-floating-banner-top: calc(var(--sidebar-overlay-inset-top) + 52px + 28px);
     }
 
     .sidebar-dock {

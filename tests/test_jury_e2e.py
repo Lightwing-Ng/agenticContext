@@ -1,6 +1,6 @@
 """Rendered Jury readiness, review evidence, and one-question session behavior.
 
-Code version: v1.3.10-codex.0
+Code version: v1.3.11-codex.0
 """
 
 from copy import deepcopy
@@ -256,7 +256,7 @@ def test_jury_recent_sessions_reuses_agent_disclosure_style(
 
         agent_style = disclosure_style(
             agent_page,
-            "aside#agent_sidebar > details.agent-session-collapse",
+            "aside#agent_sidebar .agent-sidebar-scrollport > details.agent-session-collapse",
         )
         jury_style = disclosure_style(
             jury_page,

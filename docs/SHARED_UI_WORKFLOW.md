@@ -1,13 +1,25 @@
 # Shared UI workflow
 
-Documentation version: `v1.4.3-codex.0`
+Documentation version: `v1.4.4-codex.0`
 
 ## Shared pagination range selection
 
-The central layout contract v1.21.4 defines an inclusive range destination as
+The central layout contract v1.22.3 defines an inclusive range destination as
 `clamp(current_page, range_start, range_end)`. Text, Media, and Prompts link
 targets and Agent conversation history buttons apply that rule for pointer and
 keyboard activation. Range labels and five-page grouping remain unchanged.
+
+## Global notice hit area
+
+At widths through 1080px, the centered global notice ends at the 90px top
+offset. Its existing 28px upward entry starts at 62px, clearing the 44px
+sidebar and theme hit regions. Stacked notices share that top offset and add
+88px per banner. The Chromium touch regression samples the entry animation,
+then taps both sidebar states, the theme action, and the dismiss control.
+
+The Agent sidebar keeps its full-height glass shell and fixed Dock. Its inner
+scrollport clips controls above the Dock and lets the last session row scroll
+into an unobstructed position before activation.
 
 ## Shared Circular icon button
 
