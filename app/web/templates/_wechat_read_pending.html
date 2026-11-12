@@ -1,0 +1,61 @@
+{# Code version: v1.1.3-codex.0 #}
+{% from "_wechat_view_layout.html" import conversation_transcript, conversation_table, conversation_list_note %}
+{% if not wechat_read_preview %}
+<section class="wechat-resources" aria-label="WeChat text archive" data-wechat-resources>
+{% endif %}
+<div class="{{ 'wechat-resources' if wechat_read_preview else 'wechat-read-view' }}" data-wechat-read-pending data-state="{{ 'running' if wechat_read_loading else 'failed' }}"
+    data-status-url="{{ wechat_read_job.status_url }}"
+    data-retry-url="{{ wechat_read_job.retry_url }}"
+    data-task-id="{{ wechat_read_job.task_id }}"
+    data-generation="{{ wechat_read_job.generation }}">
+    <div class="wechat-read-status" role="status" aria-live="polite">
+        <h3 data-wechat-read-title{% if wechat_read_loading %} hidden{% endif %}>Saved view is unavailable</h3>
+        <p class="wechat-source-note" data-wechat-read-copy>{{ "Showing the last verified conversations while the archive is checked." if wechat_read_preview else wechat_read_job.message }}</p>
+    </div>
+    {% if is_text_session_shell and wechat_read_loading %}
+    <header class="wechat-conversation-context" data-wechat-read-placeholder aria-hidden="true">
+        <div class="wechat-conversation-labels">
+            <span class="wechat-kind-badge wechat-read-kind navigation-skeleton-line">&nbsp;</span>
+        </div>
+    </header>
+    {% elif wechat_read_loading and not wechat_read_preview %}
+    {{ conversation_list_note(pending=true) }}
+    {% endif %}
+    <button type="button" class="secondary-button wechat-read-retry" data-wechat-read-retry{% if wechat_read_loading %} hidden{% endif %}>Try again</button>
+    {% if wechat_read_preview %}
+    {% include "_wechat_browser.html" %}
+    {% elif wechat_read_loading %}
+    <div class="wechat-read-skeleton" role="region" aria-label="Saved chat history" aria-busy="true" data-wechat-read-placeholder>
+        {% if is_text_session_shell %}
+        {% call conversation_transcript(pending=true) %}
+            {% for variant in ('received', 'sent', 'received', 'received', 'sent', 'received') %}
+            <div class="browser-chat-message wechat-message wechat-message--{{ variant }} wechat-read-bubble">
+                <span class="navigation-skeleton-line wechat-read-line"></span>
+                <span class="navigation-skeleton-line wechat-read-line"></span>
+            </div>
+            {% endfor %}
+        {% endcall %}
+        {% else %}
+        {% call conversation_table(pending=true) %}
+            {% for _ in range(8) %}
+            <tr>
+                <td><span class="navigation-skeleton-line wechat-read-line wechat-read-row-number"></span></td>
+                <td>
+                    <span class="navigation-skeleton-line wechat-read-line wechat-read-row-title"></span>
+                    <span class="wechat-conversation-kind"><span class="navigation-skeleton-line wechat-read-line wechat-read-kind"></span></span>
+                </td>
+                <td>
+                    <span class="navigation-skeleton-line wechat-read-line wechat-read-row-title"></span>
+                    <span class="wechat-source-label"><span class="navigation-skeleton-line wechat-read-line"></span></span>
+                </td>
+                <td><span class="navigation-skeleton-line wechat-read-line wechat-read-row-number"></span></td>
+            </tr>
+            {% endfor %}
+        {% endcall %}
+        {% endif %}
+    </div>
+    {% endif %}
+</div>
+{% if not wechat_read_preview %}
+</section>
+{% endif %}

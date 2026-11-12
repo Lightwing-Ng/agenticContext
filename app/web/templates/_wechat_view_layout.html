@@ -1,0 +1,29 @@
+{# Code version: v1.1.0-codex.0 #}
+{% macro conversation_transcript(kind='', label='', pending=false) %}
+    <div class="browser-chat-pane"{% if not pending %} data-browser-chat-pane{% endif %}>
+        {% if not pending %}<div class="browser-chat-effects" data-chat-effects aria-hidden="true" inert></div>{% endif %}
+        <div class="browser-chat-list local-store-pagination-host wechat-message-list{% if kind %} wechat-chat--{{ kind }}{% endif %}"{% if pending %} aria-hidden="true" inert{% else %} data-chat-scrollport tabindex="0" aria-label="{{ label }}"{% endif %}>
+            {{ caller() }}
+        </div>
+    </div>
+{% endmacro %}
+{% macro conversation_list_note(pending=false) %}
+    <p class="wechat-source-note" data-wechat-conversation-list-note{% if pending %} data-wechat-read-placeholder{% endif %}>Source accounts stay separate. Counts include each source independently; overlapping exports are preserved. Unknown account owners and uncertain conversation types are labeled explicitly.</p>
+{% endmacro %}
+{% macro conversation_columns() %}<colgroup><col class="wechat-col-number"><col><col class="wechat-col-account"><col class="wechat-col-count"></colgroup>{% endmacro %}
+{% macro conversation_table(pending=false) %}
+    <div class="scrollable-data-table wechat-conversations" data-scrollable-table{% if pending %} aria-hidden="true" inert{% endif %}>
+        <div class="scrollable-data-table-header" data-table-header>
+            <table class="events-table browser-session-table wechat-conversation-table" aria-label="WeChat conversation headings">
+                {{ conversation_columns() }}
+                <thead><tr><th scope="col">No.</th><th scope="col">Conversation</th><th scope="col">Source account</th><th scope="col">Messages</th></tr></thead>
+            </table>
+        </div>
+        <div class="events-table-scroll scrollable-data-table-scroll" data-table-scroll>
+            <table class="events-table browser-session-table wechat-conversation-table" data-table-body aria-label="WeChat conversations">
+                {{ conversation_columns() }}
+                <tbody>{{ caller() }}</tbody>
+            </table>
+        </div>
+    </div>
+{% endmacro %}

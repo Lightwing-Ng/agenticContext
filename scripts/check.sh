@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-# Code version: v1.8.1-codex.0
+# Code version: v1.8.2-codex.0
 
 set -euo pipefail
 
@@ -54,7 +54,7 @@ if (( JS_FILE_COUNT == 0 )); then
 fi
 
 echo "[5/6] JavaScript unit tests"
-node --test tests/test_agent_optimization.mjs tests/test_beta_engines.mjs tests/test_browser_chat_ruler.mjs tests/test_numeric_display.mjs tests/test_pagination_boundaries.mjs tests/test_select_controller.mjs
+node --test tests/test_agent_optimization.mjs tests/test_beta_engines.mjs tests/test_browser_chat_ruler.mjs tests/test_numeric_display.mjs tests/test_pagination_boundaries.mjs tests/test_select_controller.mjs tests/test_wechat_browser_read_timeout.mjs
 
 echo "[6/6] Python tests with branch coverage"
 SHARD_COVERAGE_MINIMUM="$COVERAGE_MINIMUM"

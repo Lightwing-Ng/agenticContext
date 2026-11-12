@@ -1,6 +1,6 @@
 """Build lightweight Local resources navigation around nested detail pages.
 
-Code version: v1.0.1-codex.0
+Code version: v1.0.2-codex.0
 """
 
 from __future__ import annotations
@@ -11,7 +11,11 @@ import stat
 from types import SimpleNamespace
 from urllib.parse import parse_qs, urlsplit
 
-from app.core.storage import WechatDisplayNames, normalize_browser_filters, wechat_archive_path
+from app.core.storage import (
+    WechatDisplayNames,
+    normalize_browser_filters,
+    wechat_archive_path,
+)
 from app.web.cache_sources import CACHE_SOURCE_VIEWS, LOCAL_RESOURCE_TEXT_SOURCE_VIEWS
 
 
@@ -84,6 +88,12 @@ def _wechat_account_navigation(local_store_root):
         return (), ()
 
 
+def wechat_navigation_messaging(local_store_root):
+    """Provide account filters independently of conversation and message results."""
+    accounts, options = _wechat_account_navigation(local_store_root)
+    return {"accounts": accounts, "account_options": options}
+
+
 def wechat_contact_sidebar_context(local_store_root, return_url):
     """Retain the sanitized browser origin independently of contact-result filters."""
     values = parse_qs(urlsplit(return_url).query, keep_blank_values=True)
@@ -104,12 +114,11 @@ def wechat_contact_sidebar_context(local_store_root, return_url):
         account=first("account"),
         chat_kind=first("chat_kind"),
     )
-    accounts, options = _wechat_account_navigation(local_store_root)
     return {
         **local_resource_source_context(),
         "filters": filters,
         "text_page": SimpleNamespace(
-            messaging={"accounts": accounts, "account_options": options},
+            messaging=wechat_navigation_messaging(local_store_root),
             project_options=(),
             answerer_options=(),
             session_detail=False,

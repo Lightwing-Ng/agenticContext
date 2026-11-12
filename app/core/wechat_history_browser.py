@@ -1,6 +1,6 @@
 """Adapt indexed human conversations to the shared Local resources page model."""
 
-# Code version: v1.33.0-codex.0
+# Code version: v1.33.1-codex.0
 
 from __future__ import annotations
 
@@ -817,6 +817,7 @@ def query_wechat_history(
     page_size=100,
     session="",
     persist_event_cache=True,
+    previous_snapshot=False,
 ):
     """Reuse page and session contracts while retaining human-message semantics."""
     from .chat_history_browser import (
@@ -830,16 +831,20 @@ def query_wechat_history(
         safe_size = min(1_000_000, max(1, int(page_size)))
     except (TypeError, ValueError):
         safe_page, safe_size = 1, 100
-    result = WechatArchiveRepository(local_store_root).query(
-        account=account,
-        kind=chat_kind,
-        query=query,
-        sort=sort,
-        page=safe_page,
-        page_size=safe_size,
-        session=session,
-        persist_event_cache=persist_event_cache,
+    repository = WechatArchiveRepository(local_store_root)
+    list_parameters = dict(
+        account=account, kind=chat_kind, sort=sort, page=safe_page, page_size=safe_size,
     )
+    if previous_snapshot:
+        if session or str(query or "").strip():
+            return None
+        result = repository.query_previous_conversations(**list_parameters)
+        if result is None:
+            return None
+    else:
+        result = repository.query(
+            **list_parameters, query=query, session=session, persist_event_cache=persist_event_cache,
+        )
 
     display_names = WechatDisplayNames(local_store_root)
     text_observations = WechatTextObservations(local_store_root)
@@ -891,10 +896,10 @@ def query_wechat_history(
             conversation_id=row["id"],
             conversation_url="",
             conversation_title=row["title"],
-            message_count=row["message_count"],
+            message_count=0 if previous_snapshot else row["message_count"],
             first_seen_at=row["first_time"],
             last_seen_at=row["last_time"],
-            latest_message=row["latest_text"],
+            latest_message="" if previous_snapshot else row["latest_text"],
             latest_role="",
             latest_author_label="",
             model_label="",

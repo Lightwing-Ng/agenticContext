@@ -1,6 +1,6 @@
 """Expose account-scoped local WeChat refresh jobs without exposing credentials.
 
-Code version: v1.0.0-codex.0
+Code version: v1.0.1-codex.0
 """
 
 from __future__ import annotations
@@ -10,7 +10,7 @@ import re
 from flask import current_app, jsonify, request, url_for
 
 from app.core.agent import is_loopback_address
-from app.core.wechat_contacts import classify_wechat_identifier
+from app.core.storage import classify_wechat_identifier
 
 
 WECHAT_REFRESH_EXTENSION = "wechat_mac_refresh"

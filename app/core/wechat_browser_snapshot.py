@@ -1,6 +1,6 @@
 """Persist authenticated raw conversation summaries after full timeline validation.
 
-Code version: v1.0.0-codex.0
+Code version: v1.0.1-codex.0
 """
 
 from __future__ import annotations
@@ -97,12 +97,7 @@ def _read_private(path, limit):
     return data, _state(before)
 
 
-def _storage(repository):
-    directory = repository.path.parent / "browser_cache"
-    try:
-        directory.mkdir(mode=0o700)
-    except FileExistsError:
-        pass
+def _directory_identity(directory):
     value = directory.lstat()
     if (
         not stat.S_ISDIR(value.st_mode)
@@ -110,6 +105,26 @@ def _storage(repository):
         or os.name != "nt" and stat.S_IMODE(value.st_mode) != 0o700
     ):
         raise _CacheUnavailable("The browser cache directory must be owner-private.")
+    return _state(value)
+
+
+def _read_signing_key(path):
+    key, identity = _read_private(path, 32)
+    if len(key) != 32:
+        raise _CacheUnavailable("The browser cache signing key has an invalid length.")
+    return key, identity
+
+
+def _storage(repository):
+    return _cache_storage(repository.path.parent / "browser_cache")
+
+
+def _cache_storage(directory):
+    try:
+        directory.mkdir(mode=0o700)
+    except FileExistsError:
+        pass
+    _directory_identity(directory)
     path = directory / "signing.key"
     flags = (
         os.O_WRONLY | os.O_CREAT | os.O_EXCL
@@ -124,9 +139,7 @@ def _storage(repository):
             stream.write(secrets.token_bytes(32))
             stream.flush()
             os.fsync(stream.fileno())
-    key, identity = _read_private(path, 32)
-    if len(key) != 32:
-        raise _CacheUnavailable("The browser cache signing key has an invalid length.")
+    key, identity = _read_signing_key(path)
     return directory, key, identity
 
 
@@ -215,19 +228,23 @@ def _unique(pairs):
     return value
 
 
-def _read_snapshot(directory, key, pin):
-    try:
-        encoded, _identity = _read_private(directory / "conversations.snapshot", MAX_SNAPSHOT_BYTES)
-    except FileNotFoundError:
-        return None
+def _decode_snapshot(encoded, key):
     if not encoded.startswith(_MAGIC):
         return None
     signature, separator, payload = encoded[len(_MAGIC):].partition(b"\n")
     expected = hmac.new(key, payload, hashlib.sha256).hexdigest().encode("ascii")
     if not separator or not hmac.compare_digest(signature, expected):
         return None
+    return json.loads(payload, object_pairs_hook=_unique)
+
+
+def _read_snapshot(directory, key, pin):
     try:
-        value = json.loads(payload, object_pairs_hook=_unique)
+        encoded, _identity = _read_private(directory / "conversations.snapshot", MAX_SNAPSHOT_BYTES)
+    except FileNotFoundError:
+        return None
+    try:
+        value = _decode_snapshot(encoded, key)
         return value if _valid_payload(value, pin) else None
     except (ValueError, TypeError, KeyError, RecursionError):
         return None
@@ -239,13 +256,18 @@ def _write_snapshot(directory, key, payload, unchanged):
     encoded = _MAGIC + signature + b"\n" + encoded
     if len(encoded) > MAX_SNAPSHOT_BYTES:
         return False
-    target = directory / "conversations.snapshot"
+    return _write_private_cache(
+        directory / "conversations.snapshot", encoded, unchanged, prefix=".conversation-"
+    )
+
+
+def _write_private_cache(target, encoded, unchanged, *, prefix):
     try:
         if not _private_file(target.lstat()):
-            raise _CacheUnavailable("The existing browser snapshot is not owner-private.")
+            raise _CacheUnavailable("The existing browser cache is not owner-private.")
     except FileNotFoundError:
         pass
-    descriptor, name = tempfile.mkstemp(prefix=".conversation-", suffix=".tmp", dir=directory)
+    descriptor, name = tempfile.mkstemp(prefix=prefix, suffix=".tmp", dir=target.parent)
     temporary = Path(name)
     try:
         with os.fdopen(descriptor, "wb") as stream:
@@ -398,6 +420,84 @@ def load_conversation_snapshot(repository, connection, history_identity):
             connection.execute("DROP TABLE temp." + _TABLE)
             return None
     except (OSError, ValueError, TypeError):
+        connection.execute("DROP TABLE temp." + _TABLE)
+        return None
+    return result
+
+
+def _completion_identity(value):
+    return (
+        isinstance(value, dict)
+        and value.keys() == {"dev", "ino", "size", "mtime_ns", "ctime_ns"}
+        and all(type(field) is int for field in value.values())
+        and value["size"] > 0
+    )
+
+
+def _preview_pin_matches(previous, current, completion_path):
+    if (
+        not isinstance(previous, dict)
+        or previous.keys() != current.keys()
+        or previous["version"] != current["version"]
+        or not isinstance(previous["code"], str)
+        or not previous["code"]
+    ):
+        return False
+    old_inputs = previous["inputs"]
+    new_inputs = current["inputs"]
+    if old_inputs == new_inputs:
+        return previous["code"] != current["code"]
+    return (
+        isinstance(old_inputs, dict)
+        and old_inputs.keys() | {completion_path} == new_inputs.keys()
+        and (completion_path not in old_inputs or _completion_identity(old_inputs[completion_path]))
+        and _completion_identity(new_inputs.get(completion_path))
+        and old_inputs.get(completion_path) != new_inputs[completion_path]
+        and all(
+            identity == new_inputs[path]
+            for path, identity in old_inputs.items()
+            if path != completion_path
+        )
+    )
+
+
+def load_previous_conversation_snapshot(repository, connection, history_identity):
+    """Install a verified preview after a reader or secondary completion change."""
+    from .wechat_secondary_completions import FILENAME
+
+    directory = repository.path.parent / "browser_cache"
+    key_path = directory / "signing.key"
+    snapshot_path = directory / "conversations.snapshot"
+    completion_path = str(repository.path.with_name(FILENAME).absolute())
+    try:
+        pin = _pin(repository, history_identity)
+        directory_identity = _directory_identity(directory)
+        key, key_identity = _read_signing_key(key_path)
+        encoded, snapshot_identity = _read_private(snapshot_path, MAX_SNAPSHOT_BYTES)
+        payload = _decode_snapshot(encoded, key)
+        previous = payload.get("pin") if isinstance(payload, dict) else None
+        if not _preview_pin_matches(previous, pin, completion_path) or not _valid_payload(
+            payload, previous
+        ):
+            return None
+    except (OSError, ValueError, TypeError, KeyError, RecursionError):
+        return None
+
+    def unchanged():
+        try:
+            return (
+                _pin(repository, history_identity) == pin
+                and _directory_identity(directory) == directory_identity
+                and _state(key_path.lstat()) == key_identity
+                and _state(snapshot_path.lstat()) == snapshot_identity
+            )
+        except (OSError, ValueError, TypeError):
+            return False
+
+    if not unchanged():
+        return None
+    result = _install(connection, payload)
+    if not unchanged():
         connection.execute("DROP TABLE temp." + _TABLE)
         return None
     return result

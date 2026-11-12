@@ -1,6 +1,6 @@
 """Authenticated raw overviews survive reloads without reusing changed evidence.
 
-Code version: v1.0.0-codex.0
+Code version: v1.0.1-codex.0
 """
 
 from collections import OrderedDict
@@ -14,6 +14,7 @@ import pytest
 
 from app.core import wechat_browser_snapshot as snapshots
 from app.core.wechat_archive import WechatTimelineProjectionError, _file_identity
+from app.core.wechat_secondary_completions import FILENAME
 from tests import test_wechat_conversation_events as fixtures
 
 
@@ -322,3 +323,134 @@ def test_code_digest_detects_source_change_with_restored_mtime(tmp_path, monkeyp
     path.write_text("value = 2\n", encoding="utf-8")
     os.utime(path, ns=(before.st_atime_ns, before.st_mtime_ns))
     assert snapshots._code_fingerprint() != first
+
+
+def _load_previous(fixture):
+    path = fixture.repository.path
+    with closing(sqlite3.connect(path.as_uri() + "?mode=ro&immutable=1", uri=True)) as connection:
+        result = snapshots.load_previous_conversation_snapshot(
+            fixture.repository, connection, _file_identity(path)
+        )
+        table = connection.execute(
+            "SELECT name FROM sqlite_temp_master WHERE type='table' AND name=?",
+            ("browser_snapshot_conversations",),
+        ).fetchone()
+        rows = connection.execute("SELECT * FROM " + table[0]).fetchall() if table else []
+    return result, rows
+
+
+def _add_completion_input(fixture):
+    completion = fixture.repository.path.with_name(FILENAME)
+    with sqlite3.connect(completion) as connection:
+        connection.execute("CREATE TABLE completion_fixture (value TEXT)")
+    return completion
+
+
+@pytest.fixture
+def previous_snapshot(snapshot_store):
+    fixture = snapshot_store
+    repository = fixture.repository
+    completion = _add_completion_input(fixture)
+    directory, key, _identity = snapshots._storage(repository)
+    pin = snapshots._pin(repository, _file_identity(repository.path))
+    with closing(sqlite3.connect(repository.path)) as connection:
+        rows = connection.execute("SELECT * FROM main.conversations").fetchall()
+    assert len(rows) == 1
+    payload = {
+        "pin": pin,
+        "rows": [list(row) for row in rows],
+        "resource_status": "ready",
+        "resource_index_accounts": [rows[0][2]],
+    }
+    assert snapshots._write_snapshot(directory, key, payload, lambda: True)
+    return fixture, completion, rows
+
+
+def _change_completion_input(completion):
+    with sqlite3.connect(completion) as connection:
+        connection.execute("INSERT INTO completion_fixture VALUES ('updated')")
+
+
+def test_previous_snapshot_reads_only_signed_summary(previous_snapshot, monkeypatch):
+    fixture, completion, rows = previous_snapshot
+    _change_completion_input(completion)
+    monkeypatch.setattr(snapshots, "_code_fingerprint", lambda: "reader-code-v2")
+
+    def unexpected_write(*_args):
+        pytest.fail("The previous snapshot loader must only read existing cache files.")
+
+    for name in ("_storage", "_build", "_write_snapshot"):
+        monkeypatch.setattr(snapshots, name, unexpected_write)
+    directory = _directory(fixture)
+    before = {path: snapshots._state(path.lstat()) for path in directory.iterdir()}
+    assert _load_previous(fixture) == (
+        ("browser_snapshot_conversations", "ready", (rows[0][2],)), rows,
+    )
+    assert {path: snapshots._state(path.lstat()) for path in directory.iterdir()} == before
+    assert fixture.snapshot_calls == []
+    assert not snapshots._PENDING and not snapshots._SNAPSHOTS
+
+
+def test_previous_snapshot_accepts_an_unchanged_archive_after_reader_update(
+    previous_snapshot, monkeypatch
+):
+    fixture, _completion, rows = previous_snapshot
+    monkeypatch.setattr(snapshots, "_code_fingerprint", lambda: "updated-reader-code")
+
+    assert _load_previous(fixture) == (
+        ("browser_snapshot_conversations", "ready", (rows[0][2],)), rows,
+    )
+
+
+def test_previous_snapshot_does_not_create_storage(snapshot_store):
+    assert _load_previous(snapshot_store) == (None, [])
+    assert not _directory(snapshot_store).exists()
+
+
+def test_previous_snapshot_allows_first_completion_publication(snapshot_store):
+    verified = _load(snapshot_store)
+    assert verified[0] is not None
+    _add_completion_input(snapshot_store)
+    assert _load_previous(snapshot_store) == verified
+
+
+@pytest.mark.parametrize(
+    "drift",
+    ("unchanged", "missing", "unavailable", "registry", "tampered"),
+)
+def test_previous_snapshot_requires_only_stable_completion_input_change(previous_snapshot, drift):
+    fixture, completion, _rows = previous_snapshot
+    if drift == "missing":
+        completion.unlink()
+    elif drift == "unavailable":
+        completion.with_name(completion.name + "-wal").touch()
+    elif drift == "registry":
+        _change_completion_input(completion)
+        before = fixture.registry.stat()
+        os.utime(fixture.registry, ns=(before.st_atime_ns, before.st_mtime_ns + 1_000_000_000))
+    elif drift == "tampered":
+        _change_completion_input(completion)
+        snapshot = _directory(fixture) / "conversations.snapshot"
+        snapshot.write_bytes(snapshot.read_bytes() + b" ")
+    assert _load_previous(fixture) == (None, [])
+
+
+@pytest.mark.parametrize("name", ("signing.key", "conversations.snapshot"))
+def test_previous_snapshot_discards_summary_if_cache_path_changes(
+    previous_snapshot, monkeypatch, name
+):
+    fixture, completion, _rows = previous_snapshot
+    _change_completion_input(completion)
+    install = snapshots._install
+
+    def drift_after_install(connection, payload):
+        result = install(connection, payload)
+        path = _directory(fixture) / name
+        replacement = path.with_suffix(".replacement")
+        replacement.write_bytes(path.read_bytes())
+        replacement.chmod(0o600)
+        replacement.replace(path)
+        return result
+
+    monkeypatch.setattr(snapshots, "_install", drift_after_install)
+    assert _load_previous(fixture) == (None, [])

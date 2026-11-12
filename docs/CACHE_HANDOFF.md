@@ -1,6 +1,6 @@
 # Cache handoff and operating runbook
 
-Documentation version: `v1.32.1-codex.0`
+Documentation version: `v1.32.2-codex.0`
 
 This is the authoritative handoff document for the second Dock item, `Cache`.
 Read it before changing Cache routes, source switching, Text/Media behavior, local
@@ -54,7 +54,11 @@ where a source sync is started. Its text source filter accepts `all`, `chatgpt`,
 ### WeChat text archives
 
 Open `/browser?view=text&source=wechat` from Local resources. The account selector separates
-verified native account IDs from unconfirmed export sources. Private chats, group chats, and
+verified native account IDs from unconfirmed export sources. Account options remain available
+while the selected view is checked if the archive metadata is readable. Conversation lists
+without a search query can display authenticated previous summaries after a reader change or
+a secondary completion publication when all other input identities match. The labeled
+preview omits message totals until the current view is verified. Private chats, group chats, and
 unclassified conversations have separate filters and presentation variants. A spreadsheet's
 `Group Name` column alone does not prove that its conversations are groups. Matching sender
 names or overlapping messages do not establish the export owner's account.
