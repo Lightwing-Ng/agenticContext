@@ -1,6 +1,6 @@
 """Windows ChangeTime and cross-API identity preserve exact media hashing.
 
-Code version: v1.0.1-codex.0
+Code version: v1.0.2-codex.0
 """
 
 from __future__ import annotations
@@ -22,7 +22,7 @@ def native_api(monkeypatch):
     class Info(ctypes.Structure):
         _fields_ = [("ChangeTime", ctypes.c_longlong), ("FileAttributes", ctypes.c_uint32)]
 
-    state = SimpleNamespace(created=[], closed=[], attributes=0, valid=True, handle=42)
+    state = SimpleNamespace(created=[], closed=[], attributes=0, valid=True, handle=42, error=5)
 
     class Kernel:
         def CreateFileW(self, *args):
@@ -43,7 +43,7 @@ def native_api(monkeypatch):
             return getattr(ctypes, name)
 
         def get_last_error(self):
-            return 5
+            return state.error
 
         def WinError(self, code):
             return OSError(code, "Synthetic native metadata failure")
@@ -66,6 +66,24 @@ def test_existing_descriptor_is_borrowed_without_closing_its_owner(native_api, t
     monkeypatch.setitem(sys.modules, "msvcrt", SimpleNamespace(get_osfhandle=lambda fd: 99))
     assert metadata.file_change_time(tmp_path / "media.png", descriptor=7) == 123456789
     assert native_api.created == native_api.closed == []
+
+
+def test_windows_writer_probe_checks_data_sharing_and_closes_its_handle(native_api, tmp_path):
+    assert metadata.has_file_writers(tmp_path / "history.sqlite3") is False
+    _path, access, sharing, _security, creation, flags, _template = native_api.created[0]
+    assert access == 0x80000000
+    assert sharing == 5
+    assert creation == 3
+    assert flags & 0x00200000
+    assert native_api.closed == [42]
+
+    native_api.handle = ctypes.c_void_p(-1).value
+    native_api.error = 32
+    assert metadata.has_file_writers(tmp_path / "history.sqlite3") is True
+    native_api.error = 5
+    with pytest.raises(OSError):
+        metadata.has_file_writers(tmp_path / "history.sqlite3")
+    assert native_api.closed == [42]
 
 
 @pytest.mark.parametrize("failure", ["open", "query", "reparse", "directory"])

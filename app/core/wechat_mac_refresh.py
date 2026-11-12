@@ -1,11 +1,10 @@
 """Run explicit, bounded Mac WeChat conversation refreshes in background workers.
 
-Code version: v1.0.0-codex.0
+Code version: v1.0.1-codex.0
 """
 
 from __future__ import annotations
 
-import os
 from pathlib import Path
 import secrets
 import shutil
@@ -15,6 +14,7 @@ import time
 from threading import Event, RLock, Thread
 
 from . import wechat_macos_recovery_bank as bank
+from .owner_only_files import ensure_owner_only_directory
 from .wechat_archive import WechatArchiveRepository, wechat_archive_path
 from .wechat_mac_refresh_projection import prepare_packet, resolve_scope
 from .wechat_mac_refresh_source import KeyRegistry, RefreshError, read_database
@@ -151,7 +151,7 @@ class WechatMacRefreshService:
         with tempfile.TemporaryDirectory(
             prefix=".mac-refresh-", dir=history.parent
         ) as directory:
-            os.chmod(directory, 0o700)
+            ensure_owner_only_directory(Path(directory))
             candidate = Path(directory) / "candidate.sqlite3"
             receipt = bank.stage_mac_recovery_bank(
                 self.root,

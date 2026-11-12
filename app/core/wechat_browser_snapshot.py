@@ -1,6 +1,6 @@
 """Persist authenticated raw conversation summaries after full timeline validation.
 
-Code version: v1.0.1-codex.0
+Code version: v1.0.2-codex.0
 """
 
 from __future__ import annotations
@@ -20,6 +20,14 @@ import sqlite3
 import stat
 import tempfile
 from threading import RLock
+
+from .owner_only_files import (
+    ensure_owner_only,
+    ensure_owner_only_directory,
+    owner_only_directory_problem,
+    owner_only_problem,
+)
+from .windows_file_metadata import file_change_time
 
 
 VERSION = "v1.0.0-codex.0"
@@ -52,11 +60,11 @@ def _json(value):
     ).encode("utf-8")
 
 
-def _state(value):
+def _state(value, *, change_field="ctime_ns"):
     return tuple(
         getattr(value, "st_" + name, 0)
         for name in ("dev", "ino", "mode", "nlink", "uid", "size",
-                     "mtime_ns", "ctime_ns", "flags")
+                     "mtime_ns", change_field, "flags")
     )
 
 
@@ -64,13 +72,32 @@ def _owned(value):
     return os.name == "nt" or value.st_uid == os.getuid()
 
 
-def _private_file(value):
+def _private_file(path, value):
     return (
         stat.S_ISREG(value.st_mode)
         and value.st_nlink == 1
         and _owned(value)
-        and (os.name == "nt" or stat.S_IMODE(value.st_mode) == 0o600)
+        and (
+            not owner_only_problem(path)
+            if os.name == "nt"
+            else stat.S_IMODE(value.st_mode) == 0o600
+        )
         and not getattr(value, "st_flags", 0) & 0x40000000
+    )
+
+
+def _cache_file_state(path, *, descriptor=None):
+    value = path.lstat() if descriptor is None else os.fstat(descriptor)
+    if not _private_file(path, value):
+        raise _CacheUnavailable("The browser cache file must be owner-private.")
+    if os.name != "nt":
+        return _state(value)
+    # Windows path stat and descriptor stat expose different ctime values.
+    if not hasattr(value, "st_birthtime_ns"):
+        raise _CacheUnavailable("Windows browser caches require creation metadata.")
+    return (
+        *_state(value, change_field="birthtime_ns"),
+        file_change_time(path, descriptor=descriptor),
     )
 
 
@@ -79,22 +106,23 @@ def _read_private(path, limit):
         os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0)
         | getattr(os, "O_NONBLOCK", 0)
     )
+    identity = _cache_file_state(path)
     with os.fdopen(os.open(path, flags), "rb") as stream:
         before = os.fstat(stream.fileno())
         if (
-            not _private_file(before)
-            or _state(path.lstat()) != _state(before)
+            _cache_file_state(path, descriptor=stream.fileno()) != identity
+            or _cache_file_state(path) != identity
             or before.st_size > limit
         ):
             raise _CacheUnavailable("The browser cache file is not private and bounded.")
         data = stream.read(limit + 1)
         if (
             len(data) != before.st_size
-            or _state(os.fstat(stream.fileno())) != _state(before)
-            or _state(path.lstat()) != _state(before)
+            or _cache_file_state(path, descriptor=stream.fileno()) != identity
+            or _cache_file_state(path) != identity
         ):
             raise _CacheUnavailable("The browser cache changed during reading.")
-    return data, _state(before)
+    return data, identity
 
 
 def _directory_identity(directory):
@@ -102,7 +130,11 @@ def _directory_identity(directory):
     if (
         not stat.S_ISDIR(value.st_mode)
         or not _owned(value)
-        or os.name != "nt" and stat.S_IMODE(value.st_mode) != 0o700
+        or (
+            owner_only_directory_problem(directory)
+            if os.name == "nt"
+            else stat.S_IMODE(value.st_mode) != 0o700
+        )
     ):
         raise _CacheUnavailable("The browser cache directory must be owner-private.")
     return _state(value)
@@ -124,6 +156,9 @@ def _cache_storage(directory):
         directory.mkdir(mode=0o700)
     except FileExistsError:
         pass
+    else:
+        if os.name == "nt":
+            ensure_owner_only_directory(directory)
     _directory_identity(directory)
     path = directory / "signing.key"
     flags = (
@@ -136,6 +171,8 @@ def _cache_storage(directory):
         pass
     else:
         with os.fdopen(descriptor, "wb") as stream:
+            if os.name == "nt":
+                ensure_owner_only(path)
             stream.write(secrets.token_bytes(32))
             stream.flush()
             os.fsync(stream.fileno())
@@ -263,14 +300,15 @@ def _write_snapshot(directory, key, payload, unchanged):
 
 def _write_private_cache(target, encoded, unchanged, *, prefix):
     try:
-        if not _private_file(target.lstat()):
-            raise _CacheUnavailable("The existing browser cache is not owner-private.")
+        _cache_file_state(target)
     except FileNotFoundError:
         pass
     descriptor, name = tempfile.mkstemp(prefix=prefix, suffix=".tmp", dir=target.parent)
     temporary = Path(name)
     try:
         with os.fdopen(descriptor, "wb") as stream:
+            if os.name == "nt":
+                ensure_owner_only(temporary)
             stream.write(encoded)
             stream.flush()
             os.fsync(stream.fileno())
@@ -325,7 +363,7 @@ def _unchanged(repository, history_identity, pin, directory, key_identity):
     try:
         return (
             _pin(repository, history_identity) == pin
-            and _state((directory / "signing.key").lstat()) == key_identity
+            and _cache_file_state(directory / "signing.key") == key_identity
         )
     except (OSError, ValueError, TypeError):
         return False
@@ -488,8 +526,8 @@ def load_previous_conversation_snapshot(repository, connection, history_identity
             return (
                 _pin(repository, history_identity) == pin
                 and _directory_identity(directory) == directory_identity
-                and _state(key_path.lstat()) == key_identity
-                and _state(snapshot_path.lstat()) == snapshot_identity
+                and _cache_file_state(key_path) == key_identity
+                and _cache_file_state(snapshot_path) == snapshot_identity
             )
         except (OSError, ValueError, TypeError):
             return False

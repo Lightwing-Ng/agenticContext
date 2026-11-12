@@ -1,6 +1,6 @@
 # Testing guide
 
-Documentation version: `v1.51.0-codex.0`
+Documentation version: `v1.51.1-codex.0`
 
 ## Supported commands
 
@@ -80,6 +80,12 @@ Full-source proof cache reuse is process-local, requires the exact global source
 identity/input key after metadata gates, and rechecks every input before and after
 reuse. A scoped cache entry cannot stand in for full validation; clearing the
 process cache requires a fresh complete replay.
+
+Signed browser summaries and recovery-bank validation receipts retain the same
+owner-only boundary on both platforms. On Windows, tests check the native
+access-control list and compare the same file creation and change metadata
+through the path and open handle. A shared cache file or changed identity
+cannot authorize reuse.
 
 Retained-bank compatibility checks keep the published schema-4 table contract,
 four known monotone revision policies, exact source/row digests, historical

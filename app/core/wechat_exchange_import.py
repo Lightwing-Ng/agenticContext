@@ -1,6 +1,6 @@
 """Import portable WeChat observations without trusting foreign identity claims.
 
-Code version: v1.0.1-codex.0
+Code version: v1.0.2-codex.0
 """
 
 from __future__ import annotations
@@ -25,6 +25,7 @@ import tempfile
 import zlib
 
 from .job_lock import CACHE_TASK_LOCK_NAME, CacheMaintenanceLock, CacheTaskLock
+from .owner_only_files import ensure_owner_only
 from .wechat_archive import (
     _SCHEMA,
     _file_identity,
@@ -33,6 +34,10 @@ from .wechat_archive import (
     wechat_history_partition_fingerprint,
 )
 from .wechat_export_merge import _clonefile, _manifest
+from .wechat_completion_clone import (
+    sync_completion_directory as _sync_directory,
+    sync_completion_file as _sync,
+)
 from .wechat_exchange_rows import MAX_ROW_BYTES, encode_typed_row, typed_cell
 from .wechat_shared_storage import shared_storage_installed
 
@@ -443,6 +448,14 @@ def _space(directory, minimum, reserve):
 
 
 def _no_input_writers(path):
+    if os.name == "nt":
+        from .windows_file_metadata import has_file_writers
+
+        if has_file_writers(path):
+            raise RuntimeError(
+                "A process currently owns an exchange publication input for writing."
+            )
+        return
     result = subprocess.run(
         ["lsof", "+c", "0", "-nP", "-Fpcfa", "--", str(path)],
         capture_output=True,
@@ -470,10 +483,10 @@ def _clone(path, prefix):
     )
     os.close(descriptor)
     candidate = Path(name)
-    candidate.unlink()
-    before = _resident(path)
     try:
+        before = _resident(path)
         if sys.platform == "darwin":
+            candidate.unlink()
             try:
                 _clonefile(path, candidate)
             except ValueError as error:
@@ -482,12 +495,13 @@ def _clone(path, prefix):
                 ) from error
         else:
             # Other filesystems need a separately budgeted, exact full copy.
+            ensure_owner_only(candidate)
             shutil.copyfile(path, candidate)
             if _file_sha256(candidate) != _file_sha256(path):
                 raise ValueError(
                     "The complete exchange rollback copy failed its hash readback."
                 )
-        candidate.chmod(0o600)
+        ensure_owner_only(candidate)
         if _resident(path) != before or candidate.stat().st_dev != path.stat().st_dev:
             raise ValueError(
                 "A database changed while making its same-volume APFS clone."
@@ -504,19 +518,6 @@ def _file_sha256(path):
         while chunk := stream.read(1024**2):
             digest.update(chunk)
     return digest.hexdigest()
-
-
-def _sync(path):
-    with path.open("rb") as stream:
-        os.fsync(stream.fileno())
-
-
-def _sync_directory(path):
-    descriptor = os.open(path, os.O_RDONLY)
-    try:
-        os.fsync(descriptor)
-    finally:
-        os.close(descriptor)
 
 
 def _guards(connection):
@@ -1268,8 +1269,8 @@ def _stage(verified, target, report):
         )
         os.close(descriptor)
         stage = Path(name)
-        stage.chmod(0o600)
     try:
+        ensure_owner_only(stage)
         with closing(sqlite3.connect(stage)) as connection:
             connection.row_factory = sqlite3.Row
             connection.execute("PRAGMA journal_mode=DELETE")
@@ -1652,8 +1653,8 @@ def import_package(
                     "A publication input changed before exchange replacement."
                 )
             verified.assert_unchanged()
-            published = True
             os.replace(stage, target)
+            published = True
             for path, candidate in side_stages.items():
                 os.replace(candidate, path)
             _sync_directory(target.parent)

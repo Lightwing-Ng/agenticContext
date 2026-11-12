@@ -1,6 +1,6 @@
 """Read configured Mac WeChat sources into authenticated memory-only snapshots.
 
-Code version: v1.0.0-codex.0
+Code version: v1.0.1-codex.0
 """
 
 from __future__ import annotations
@@ -15,6 +15,7 @@ import sqlite3
 import stat
 
 from . import wechat_mac_refresh_cipher as cipher
+from .owner_only_files import owner_only_problem
 
 
 MAX_DATABASE_BYTES = 1024**3
@@ -86,16 +87,7 @@ def identity(path, *, optional=False):
 def read_stable(path, maximum, *, private=False):
     path = _checked_path(path)
     before = identity(path)
-    info = path.stat()
-    if (
-        before[2] > maximum
-        or private
-        and (
-            stat.S_IMODE(info.st_mode) & 0o077
-            or hasattr(os, "getuid")
-            and info.st_uid != os.getuid()
-        )
-    ):
+    if before[2] > maximum or private and owner_only_problem(path):
         raise RefreshError("The configured key file must be bounded and owner-only.")
     descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
     with os.fdopen(descriptor, "rb") as stream:
@@ -103,7 +95,7 @@ def read_stable(path, maximum, *, private=False):
         if (opened.st_dev, opened.st_ino) != before[:2]:
             raise RefreshError("A source changed before it could be read.")
         raw = stream.read(maximum + 1)
-    if len(raw) > maximum or identity(path) != before:
+    if len(raw) > maximum or identity(path) != before or private and owner_only_problem(path):
         raise RefreshError("A source changed while it was being read.")
     return raw
 

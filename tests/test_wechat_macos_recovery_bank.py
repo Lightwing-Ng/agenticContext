@@ -1,11 +1,12 @@
 """Indexed Mac recovery keeps authenticated scopes, literal roles and original bytes.
 
-Code version: v1.0.0-codex.0
+Code version: v1.0.1-codex.0
 """
 
 from copy import deepcopy
 import hashlib
 import json
+import os
 import sqlite3
 import stat
 from types import SimpleNamespace
@@ -15,6 +16,7 @@ import pytest
 
 from app.core import wechat_macos_recovery as legacy
 from app.core import wechat_macos_recovery_bank as bank
+from app.core.owner_only_files import owner_only_problem
 from app.core.wechat_archive import WechatArchiveRepository, _identifier, _time_fields
 from app.core.wechat_history_browser import query_wechat_history
 from app.core.wechat_text import extract_wechat_text
@@ -235,7 +237,9 @@ def test_bank_adds_authenticated_direct_and_group_events_without_changing_histor
     assert not fixture.bank_path.exists()
     assert fixture.history.read_bytes() == original
     bank.publish_mac_recovery_bank(fixture.root, candidate, receipt)
-    assert stat.S_IMODE(fixture.bank_path.stat().st_mode) == 0o600
+    assert owner_only_problem(fixture.bank_path) == ""
+    if os.name != "nt":
+        assert stat.S_IMODE(fixture.bank_path.stat().st_mode) == 0o600
     assert fixture.history.read_bytes() == original
     assert _detail(fixture, fixture.direct_session)["count"] == 7
     group = _detail(fixture, fixture.group_session)

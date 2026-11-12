@@ -1,6 +1,6 @@
 """Reuse the complete Mac recovery bank proof across browser restarts.
 
-Code version: v1.0.0-codex.0
+Code version: v1.0.1-codex.0
 """
 
 import hmac
@@ -10,13 +10,13 @@ import sqlite3
 import sys
 
 from .wechat_browser_snapshot import (
+    _cache_file_state,
     _cache_storage,
     _code_fingerprint,
     _directory_identity,
     _json,
     _read_private,
     _read_signing_key,
-    _state,
     _unique,
     _write_private_cache,
 )
@@ -57,7 +57,7 @@ def _directory_pin(directory):
 def _unchanged(directory, identity, key_identity, pin, sources_unchanged):
     return (
         _directory_pin(directory) == identity
-        and _state((directory / "signing.key").lstat()) == key_identity
+        and _cache_file_state(directory / "signing.key") == key_identity
         and _code_fingerprint() == pin["code"]
         and sources_unchanged()
     )
@@ -82,7 +82,7 @@ def read_proof(directory, pin, sources_unchanged):
             or value["pin"] != pin
             or not isinstance(value["metadata"], dict)
             or not _unchanged(directory, identity, key_identity, pin, sources_unchanged)
-            or _state(path.lstat()) != proof_identity
+            or _cache_file_state(path) != proof_identity
         ):
             return None
         return value["metadata"]
