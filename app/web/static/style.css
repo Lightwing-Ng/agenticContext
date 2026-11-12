@@ -1,4 +1,4 @@
-/* Code version: v2.159.3-codex.0 */
+/* Code version: v2.159.4-codex.0 */
 /*
  * Standalone faces are extracted from the approved TTC by scripts/build_web_fonts.py.
  * Collection URL fragments are not reliable face selectors in Chromium.
@@ -6482,6 +6482,7 @@ body.has-settings-directory-browser {
 
     .app-shell,
     .sidebar,
+    .workspace-summary-card,
     .sidebar-toggle {
         transition: none !important;
     }

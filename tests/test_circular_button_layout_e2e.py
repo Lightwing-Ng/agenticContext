@@ -1,4 +1,4 @@
-"""Round-action sizing and shared-shell anchor checks. Code version: v1.1.1-codex.0."""
+"""Round-action sizing and shared-shell anchor checks. Code version: v1.1.2-codex.0."""
 
 import pytest
 from playwright.sync_api import expect
@@ -89,6 +89,8 @@ def test_circular_actions_keep_size_and_shell_anchors(
         page.goto(f"{sidebar_server_url}{route}", wait_until="domcontentloaded")
         toggle = page.locator('[data-layout-role="sidebar-toggle"]')
         theme = page.locator('[data-layout-role="global-theme-anchor"]')
+        title_rail = page.locator('[data-layout-role="title-rail"]')
+        expect(title_rail).to_have_css("transition-property", "none")
         expected_size = 32
         for control in (toggle, theme):
             expect(control).to_have_css("width", f"{expected_size}px")
