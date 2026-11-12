@@ -1,6 +1,6 @@
 """Contact navigation keeps return destinations local and source links precise.
 
-Code version: v1.2.0-codex.0
+Code version: v1.2.1-codex.0
 """
 
 from __future__ import annotations
@@ -18,6 +18,7 @@ from app.web.config_store import SavedConfigStore
 from app.web.local_resource_routes import _wechat_contact_return_url
 from tests import test_wechat_contact_analysis as fixtures
 from tests import test_wechat_forwarded_contact_analysis as forwarded_fixtures
+from tests.wechat_browser_markup import get_verified_browser_page
 
 
 CID = fixtures.CID
@@ -229,7 +230,7 @@ def test_forwarded_contact_row_links_to_its_original_account_and_nested_card(
     assert location.fragment == item["anchor_id"]
     assert query["account"] == [item["account_key"]]
     assert query["session"] == [item["conversation_id"]]
-    source = client.get(response.headers["Location"]).get_data(as_text=True)
+    source = get_verified_browser_page(client, response.headers["Location"]).get_data(as_text=True)
     assert 'id="' + item["anchor_id"] + '"' in source
     assert "TARGET-NESTED-own reply only" in source
 

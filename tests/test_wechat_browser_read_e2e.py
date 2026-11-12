@@ -1,6 +1,6 @@
 """Pending saved views retain honest content and bounded document navigation.
 
-Code version: v1.3.2-codex.0
+Code version: v1.3.3-codex.0
 """
 
 from __future__ import annotations
@@ -195,7 +195,8 @@ def _open_pending(browser, fixture, *, width=1280, detail=False, scenario=None):
     expect(page.locator("#cache_wait_modal")).to_be_hidden()
     page.wait_for_function("window.__wechatReadProbe.states.length >= 1")
     assert page.evaluate("window.__wechatReadProbe.attempts") == 1
-    assert fixture.controlled.phase.entered.is_set()
+    # The status route can answer before the independent loader starts.
+    assert fixture.controlled.phase.entered.wait(1), "The synthetic saved-view loader did not start."
     return SimpleNamespace(
         context=context, page=page, scenario=scenario,
         documents=documents, errors=errors, original_url=page.url,
@@ -461,7 +462,7 @@ def test_failed_read_requires_manual_retry_and_then_starts_a_fresh_task(
         expect(page.locator("[data-wechat-read-pending]")).not_to_have_attribute(
             "data-task-id", original_task
         )
-        assert next_phase.entered.is_set()
+        assert next_phase.entered.wait(1), "The retried saved-view loader did not start."
         assert len([method for method, _url in scenario.requests if method == "POST"]) == 1
         assert opened.documents == [opened.original_url, opened.original_url]
         assert opened.errors == []
