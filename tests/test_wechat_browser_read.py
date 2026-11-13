@@ -1,6 +1,6 @@
 """Cold pages remain responsive while exact verified results are built once.
 
-Code version: v1.0.1-codex.0
+Code version: v1.0.3-codex.0
 """
 
 from threading import Event
@@ -277,8 +277,9 @@ def test_pending_account_shows_previous_conversations_until_current_page_is_read
         assert shell.get("data-state") == "running"
         assert client.get(shell.get("data-status-url")).json["state"] == "running"
         copy = shell.find(".//*[@data-wechat-read-copy]")
-        assert "last verified conversations" in "".join(copy.itertext())
+        assert not "".join(copy.itertext()).strip()
         preview = pending.find(".//*[@data-wechat-read-preview]")
+        assert "Message counts are from the last verified snapshot" not in "".join(preview.itertext())
         rows = preview.findall(".//tr[@data-chat-session-id]")
         assert len(rows) == 2
         assert {row.get("data-wechat-account") for row in rows} == {account}
