@@ -1,6 +1,6 @@
 """A native child's source clock reaches chat, contact ordering, and CSV output.
 
-Code version: v1.0.1-codex.0
+Code version: v1.0.2-codex.0
 """
 
 from __future__ import annotations
@@ -18,6 +18,7 @@ from app.core.wechat_contact_analysis import query_contact_analysis
 from app.web.app import create_app
 from app.web.config_store import SavedConfigStore
 from tests import test_wechat_contact_native_embedded as native
+from tests.wechat_browser_markup import get_verified_browser_page
 
 
 native_activity_store = native.native_activity_store
@@ -92,7 +93,8 @@ def test_child_source_clock_is_consistent_across_chat_contact_and_csv(
         )
     app.config.update(TESTING=True)
     client = app.test_client()
-    chat = client.get(
+    chat = get_verified_browser_page(
+        client,
         "/browser",
         query_string={
             "view": "text",

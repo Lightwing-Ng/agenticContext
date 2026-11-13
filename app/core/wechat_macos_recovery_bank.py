@@ -1,6 +1,6 @@
 """Stage indexed, source-bound Mac recovery without rewriting the original archive.
 
-Code version: v1.6.1-codex.0
+Code version: v1.6.2-codex.0
 """
 
 from __future__ import annotations
@@ -23,14 +23,16 @@ from threading import RLock
 from . import wechat_macos_recovery as legacy
 from . import wechat_macos_bank_v4_reader as schema4_reader
 from .compute_resources import resolve_cpu_process_workers
+from .owner_only_files import ensure_owner_only, owner_only_problem
 from .platform_lock import lock_file, unlock_file
 from .wechat_archive import _identifier, _time_fields, wechat_archive_path
+from .wechat_completion_clone import sync_completion_file
 from .wechat_reconcile import _TEXT_METADATA_FIELDS, native_text_metadata
 from .wechat_resource_index import _APP_LABEL_FIELDS as _LINK_LABEL_FIELDS, _KINDS, _LABELS, _app_label
 from .wechat_text import is_native_pat_projection, native_components_text
 
 
-CODE_VERSION = "v1.6.1-codex.0"
+CODE_VERSION = "v1.6.2-codex.0"
 VERSION = "v1.4.0-codex.0"
 MAX_PACKET_BYTES = 128 * 1024**2
 MAX_PACKET_MESSAGES = 100_000
@@ -1154,6 +1156,15 @@ def stage_mac_recovery_bank(
     }
     processed_scopes, source_scopes, types = set(), set(), Counter()
     catalog_hashes = {}
+    descriptor = os.open(
+        candidate, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600,
+    )
+    os.close(descriptor)
+    try:
+        ensure_owner_only(candidate)
+    except OSError:
+        candidate.unlink(missing_ok=True)
+        raise
     with (
         closing(
             sqlite3.connect(
@@ -1508,7 +1519,6 @@ def stage_mac_recovery_bank(
             ).fetchone()[0],
         )
         report["added_total"] = report["total"] - report["upgraded_total"]
-    os.chmod(candidate, 0o600)
     if _inputs(history) != inputs:
         raise ValueError("A source archive changed during Mac recovery bank staging.")
     return {
@@ -1656,10 +1666,11 @@ def publish_mac_recovery_bank(
             )
         ) as connection:
             _validate_bank(connection, history)
-        if stat.S_IMODE(candidate.stat().st_mode) != 0o600:
+        if owner_only_problem(candidate) or (
+            os.name != "nt" and stat.S_IMODE(candidate.stat().st_mode) != 0o600
+        ):
             raise ValueError("The reviewed Mac bank candidate must remain owner-only.")
-        with candidate.open("rb") as stream:
-            os.fsync(stream.fileno())
+        sync_completion_file(candidate)
         if (
             _identity(candidate) != candidate_identity
             or _inputs(history) != receipt["input_identities"]

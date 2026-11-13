@@ -1,6 +1,6 @@
 """Preferred conversation events share pagination, source jumps, and CSV rows.
 
-Code version: v1.0.0-codex.0
+Code version: v1.0.1-codex.0
 """
 
 from __future__ import annotations
@@ -70,7 +70,7 @@ def resolved_event_store(tmp_path, monkeypatch):
     with sqlite3.connect(registry) as connection:
         initialize_contact_registry(connection)
 
-    def projection(repository, connection, session, current, message_table, identity):
+    def projection(repository, connection, session, current, message_table, identity, *, persist=True):
         assert session == conversation["id"]
         return {
             "status": "ready",

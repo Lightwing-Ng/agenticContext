@@ -1,6 +1,6 @@
 """Pending saved views retain honest content and bounded document navigation.
 
-Code version: v1.3.1-codex.0
+Code version: v1.3.3-codex.0
 """
 
 from __future__ import annotations
@@ -195,7 +195,8 @@ def _open_pending(browser, fixture, *, width=1280, detail=False, scenario=None):
     expect(page.locator("#cache_wait_modal")).to_be_hidden()
     page.wait_for_function("window.__wechatReadProbe.states.length >= 1")
     assert page.evaluate("window.__wechatReadProbe.attempts") == 1
-    assert fixture.controlled.phase.entered.is_set()
+    # The status route can answer before the independent loader starts.
+    assert fixture.controlled.phase.entered.wait(1), "The synthetic saved-view loader did not start."
     return SimpleNamespace(
         context=context, page=page, scenario=scenario,
         documents=documents, errors=errors, original_url=page.url,
@@ -379,6 +380,8 @@ def test_successful_read_reloads_into_the_same_layout_with_validated_records(
         ".browser-text-summary-card > .browser-pagination",
     )
     try:
+        # Fallback fonts can change the normal line height of metric labels.
+        page.evaluate("document.fonts.ready")
         pending_boxes = [page.locator(selector).bounding_box() for selector in layout]
         task = page.locator("[data-wechat-read-pending]").get_attribute("data-task-id")
         read_server.controlled.phase.release.set()
@@ -400,6 +403,7 @@ def test_successful_read_reloads_into_the_same_layout_with_validated_records(
         expect(page.get_by_role("navigation", name="Message pages")).to_have_count(
             1 if paginated_detail else 0
         )
+        page.evaluate("document.fonts.ready")
         for selector, pending in zip(layout, pending_boxes, strict=True):
             ready = page.locator(selector).bounding_box()
             assert pending is not None and ready is not None, selector
@@ -458,7 +462,7 @@ def test_failed_read_requires_manual_retry_and_then_starts_a_fresh_task(
         expect(page.locator("[data-wechat-read-pending]")).not_to_have_attribute(
             "data-task-id", original_task
         )
-        assert next_phase.entered.is_set()
+        assert next_phase.entered.wait(1), "The retried saved-view loader did not start."
         assert len([method for method, _url in scenario.requests if method == "POST"]) == 1
         assert opened.documents == [opened.original_url, opened.original_url]
         assert opened.errors == []

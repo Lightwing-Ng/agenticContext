@@ -1,11 +1,12 @@
 """Global publication leases remain process-scoped and preserve the lock inode.
 
-Code version: v1.0.0-codex.0
+Code version: v1.0.1-codex.0
 """
 
 from contextlib import contextmanager
 import json
 import multiprocessing
+import os
 
 import pytest
 
@@ -57,13 +58,24 @@ def test_global_merge_guard_is_cross_process_and_persists_one_lock_inode(tmp_pat
         assert guard.global_refresh_busy(root) is True
         assert guard.global_refresh_busy(root) is True
         inode = path.stat().st_ino
-        assert json.loads(path.read_text()) == {
-            "schema_version": 1,
-            "purpose": "global_chat_repair_final_merge",
-        }
-        assert str(root) not in path.read_text()
+        # Windows enforces the exclusive byte lease against foreign reads.
+        if os.name == "nt":
+            with pytest.raises(PermissionError):
+                path.read_text()
+        else:
+            _assert_fixed_metadata(path, root)
     assert path.stat().st_ino == inode
     assert guard.global_refresh_busy(root) is False
+    _assert_fixed_metadata(path, root)
+
+
+def _assert_fixed_metadata(path, root):
+    contents = path.read_text()
+    assert json.loads(contents) == {
+        "schema_version": 1,
+        "purpose": "global_chat_repair_final_merge",
+    }
+    assert str(root) not in contents
 
 
 def test_stale_ordinary_lock_file_does_not_report_a_running_repair(tmp_path):

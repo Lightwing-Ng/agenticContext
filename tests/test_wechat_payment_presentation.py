@@ -1,6 +1,6 @@
 """Typed payment cards localize provider copy while retaining literal source records.
 
-Code version: v1.1.0-codex.0
+Code version: v1.1.1-codex.0
 """
 
 from __future__ import annotations
@@ -28,6 +28,7 @@ from app.core.wechat_text import extract_wechat_text
 from app.web.app import create_app
 from app.web.config_store import SavedConfigStore
 from tests.test_wechat_reconcile import merge, record, source
+from tests.wechat_browser_markup import get_verified_browser_page
 
 
 LITERAL_MEMO = "  dinner\n\n<script>window.paymentScript=true</script> & snacks  "
@@ -373,7 +374,8 @@ def test_actual_payment_template_is_inert_escaped_and_uses_common_component(
     payment_store,
 ):
     fixture = payment_store
-    response = fixture.app.test_client().get(
+    response = get_verified_browser_page(
+        fixture.app.test_client(),
         "/browser",
         query_string={
             "view": "text",

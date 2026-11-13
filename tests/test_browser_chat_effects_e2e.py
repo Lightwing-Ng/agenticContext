@@ -1,4 +1,4 @@
-"""Compact chat padding and contained external shadows. Code version: v1.1.4-codex.0."""
+"""Compact chat padding and contained external shadows. Code version: v1.1.5-codex.0."""
 
 from io import BytesIO
 import math
@@ -52,11 +52,24 @@ def _wait_for_effect_sync(page: Page) -> None:
 
 
 def _set_effect_layer_visibility(page: Page, visibility: str) -> None:
-    """Wait for a presented frame; a running scroll timeline keeps the effect layer composited."""
-    page.locator(".browser-chat-effects").evaluate("""(node, visibility) => new Promise(resolve => {
+    """Wait for inherited visibility to settle before capturing the composited layer."""
+    layer = page.locator(".browser-chat-effects")
+    layer.evaluate("""(node, visibility) => {
         node.style.visibility = visibility;
+    }""", visibility)
+    page.wait_for_function("""expected => {
+        const layer = document.querySelector('.browser-chat-effects');
+        if (!layer) return false;
+        const effects = layer.querySelectorAll('.browser-chat-effect:not([hidden])');
+        const track = layer.querySelector('.browser-chat-effect-track');
+        return track && effects.length > 0 && [layer, track, ...effects].every(node =>
+            getComputedStyle(node).visibility === expected
+            && node.getAnimations().every(animation => animation.transitionProperty !== 'visibility')
+        );
+    }""", arg=visibility or "visible")
+    layer.evaluate("""() => new Promise(resolve => {
         requestAnimationFrame(() => requestAnimationFrame(resolve));
-    })""", visibility)
+    })""")
 
 
 def _chat_geometry(page: Page) -> dict:

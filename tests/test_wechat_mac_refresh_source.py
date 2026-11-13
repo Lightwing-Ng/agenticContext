@@ -1,6 +1,6 @@
 """Configured keys and memory-only snapshots remain scoped and fail closed.
 
-Code version: v1.0.0-codex.0
+Code version: v1.0.1-codex.0
 """
 
 from dataclasses import replace
@@ -13,6 +13,7 @@ import pytest
 
 from app.core import wechat_mac_refresh_cipher as cipher
 from app.core import wechat_mac_refresh_source as source
+from app.core.owner_only_files import write_owner_only_text
 from tests.test_wechat_mac_refresh_cipher import KEY, encrypt_page, plain_page
 
 
@@ -46,8 +47,7 @@ def registry(tmp_path, monkeypatch):
         "enc_key": KEY.hex(),
         "verification": "synthetic-page-one-authenticated",
     }
-    vault.write_text(json.dumps(row) + "\n")
-    vault.chmod(0o600)
+    write_owner_only_text(vault, json.dumps(row) + "\n")
     return (
         source.KeyRegistry(key_root=tmp_path / "Keys", native_root=native),
         vault,

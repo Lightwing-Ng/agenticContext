@@ -1,6 +1,6 @@
 """Exercise source isolation, exact foreign rows, and reversible publication.
 
-Code version: v1.0.1-codex.0
+Code version: v1.0.2-codex.0
 """
 
 from contextlib import closing
@@ -9,6 +9,7 @@ import json
 import shutil
 import sqlite3
 import sys
+from types import SimpleNamespace
 import zipfile
 
 import pytest
@@ -51,12 +52,24 @@ def test_publication_rejects_writers_and_failed_ownership_inspection(
     result = exchange.subprocess.CompletedProcess(
         args=[], returncode=returncode, stdout=stdout, stderr=stderr
     )
+    monkeypatch.setattr(exchange, "os", SimpleNamespace(name="posix"))
     monkeypatch.setattr(exchange.subprocess, "run", lambda *args, **kwargs: result)
     if allowed:
         exchange._no_input_writers(tmp_path / "history.sqlite3")
     else:
         with pytest.raises(RuntimeError):
             exchange._no_input_writers(tmp_path / "history.sqlite3")
+
+
+def test_publication_admits_a_readonly_handle_and_rejects_a_writer(tmp_path):
+    path = tmp_path / "history.sqlite3"
+    path.write_bytes(b"synthetic")
+    with path.open("rb"):
+        exchange._no_input_writers(path)
+    with path.open("r+b"):
+        with pytest.raises(RuntimeError, match="owns an exchange publication input"):
+            exchange._no_input_writers(path)
+    assert path.read_bytes() == b"synthetic"
 
 
 def _rows(root, table):
@@ -330,6 +343,28 @@ def test_publication_repins_all_current_resource_sidecars_without_changing_rows(
                 assert json.loads(info["canonical_file_identity"]) == _file_identity(
                     paths[0]
                 )
+
+
+def test_blocked_first_replacement_keeps_original_archive_and_sidecar_identity(
+    tmp_path, monkeypatch
+):
+    package = _package(tmp_path)
+    target = tmp_path / "target"
+    _seed(target)
+    history = wechat_archive_path(target)
+    sidecar = _sidecar(target, "resource_references.sqlite3")
+    before = {path: (path.read_bytes(), _file_identity(path)) for path in (history, sidecar)}
+    replace = exchange.os.replace
+
+    def reject_first_replace(source, destination):
+        if destination == history and source.name.startswith(".wechat-exchange-stage-"):
+            raise PermissionError("Synthetic target sharing violation")
+        return replace(source, destination)
+
+    monkeypatch.setattr(exchange.os, "replace", reject_first_replace)
+    with pytest.raises(PermissionError, match="Synthetic target sharing violation"):
+        _import(target, package)
+    assert {path: (path.read_bytes(), _file_identity(path)) for path in before} == before
 
 
 def test_failed_published_readback_rolls_back_every_original_and_resource_pin(

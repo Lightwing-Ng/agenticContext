@@ -1,6 +1,6 @@
 """Published HTML forwarding reuses the collapsed transcript and message rows.
 
-Code version: v1.3.1-codex.0
+Code version: v1.3.2-codex.0
 """
 
 from __future__ import annotations
@@ -32,6 +32,7 @@ from app.web.app import create_app
 from app.web.config_store import SavedConfigStore
 from tests import test_sidebar_e2e
 from tests.test_wechat_contacts import _make_forwarded_html_store, insert_contact
+from tests.wechat_browser_markup import reload_browser_after_verification
 
 
 disposable_browser = test_sidebar_e2e.disposable_browser
@@ -192,7 +193,7 @@ def html_forwarded_server(tmp_path_factory):
         thread.join(timeout=5)
 
 
-def _open_html_forwarded(page, fixture):
+def _open_html_forwarded(page, fixture, *, manual_read_reload=False):
     page.goto(
         fixture.url
         + "/browser?"
@@ -206,13 +207,15 @@ def _open_html_forwarded(page, fixture):
         ),
         wait_until="domcontentloaded",
     )
+    if manual_read_reload:
+        reload_browser_after_verification(page)
+    card = page.locator("#wechat_message_" + fixture.parent_id)
+    disclosure = card.locator(":scope > details.wechat-forwarded")
+    expect(disclosure).to_have_count(1)
     page.evaluate("() => document.fonts.ready")
     sidebar = page.locator("#sidebar_toggle")
     if sidebar.get_attribute("aria-expanded") == "true":
         sidebar.click()
-    card = page.locator("#wechat_message_" + fixture.parent_id)
-    disclosure = card.locator(":scope > details.wechat-forwarded")
-    expect(disclosure).to_have_count(1)
     expect(disclosure.locator(":scope > summary")).to_have_text("Chat history")
     caption = card.locator(":scope > .wechat-history-source-text")
     expect(caption).to_have_text("Group chat")
@@ -422,7 +425,7 @@ def test_html_forwarded_details_remain_usable_without_javascript(
     context = disposable_browser.new_context(java_script_enabled=False)
     page = context.new_page()
     try:
-        _, disclosure = _open_html_forwarded(page, fixture)
+        _, disclosure = _open_html_forwarded(page, fixture, manual_read_reload=True)
         expect(disclosure.locator(".wechat-forwarded-body")).not_to_be_visible()
         disclosure.locator(":scope > summary").press("Enter")
         expect(disclosure.locator(".wechat-forwarded-body")).to_be_visible()

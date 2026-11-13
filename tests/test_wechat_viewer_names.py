@@ -1,6 +1,6 @@
 """Viewer names project across native identities without rewriting source evidence.
 
-Code version: v1.5.3-codex.0
+Code version: v1.5.4-codex.0
 """
 
 from __future__ import annotations
@@ -39,6 +39,7 @@ from app.web.app import create_app
 from app.web.config_store import SavedConfigStore
 from tests import test_sidebar_e2e
 from tests.test_wechat_archive import make_archive
+from tests.wechat_browser_markup import get_verified_browser_page
 
 
 OWNER_A = "wxid_account_a"
@@ -437,7 +438,8 @@ def test_native_owner_alias_unifies_raw_names_across_pages_search_and_export(
     for label in raw_names:
         assert f'- Source display name: "{label}"' in exported
     client = _application(fixture).test_client()
-    html = client.get(
+    html = get_verified_browser_page(
+        client,
         "/browser",
         query_string={"source": "wechat", "session": session},
     ).get_data(as_text=True)
@@ -497,7 +499,7 @@ def test_viewer_names_render_as_text_and_exports_keep_source_evidence(viewer_arc
         "chat_kind": "direct",
         "session": session.stable_id,
     }
-    response = client.get("/browser", query_string=query)
+    response = get_verified_browser_page(client, "/browser", query_string=query)
     assert response.status_code == 200
     html = response.get_data(as_text=True)
     assert "Local &lt;viewer&gt; &amp; 昵称" in html
@@ -562,7 +564,9 @@ def test_corroborated_sources_share_only_viewer_labels_and_keep_export_provenanc
     assert sum(row["key"] == account for row in index.messaging["accounts"]) == 3
     assert sum(row["key"] == account for row in index.messaging["account_options"]) == 1
     client = _application(fixture).test_client()
-    response = client.get("/browser", query_string={"view": "text", "source": "wechat"})
+    response = get_verified_browser_page(
+        client, "/browser", query_string={"view": "text", "source": "wechat"}
+    )
     html = response.get_data(as_text=True)
     assert response.status_code == 200
     assert html.count(f'<option value="{account}"') == 1
@@ -587,7 +591,8 @@ def test_corroborated_sources_share_only_viewer_labels_and_keep_export_provenanc
             == "unverified_export_field"
         )
         assert not page.items[0].messaging.get("viewer_display_name")
-        detail = client.get(
+        detail = get_verified_browser_page(
+            client,
             "/browser",
             query_string={
                 "source": "wechat",
@@ -675,7 +680,9 @@ def test_trusted_accounts_group_without_aliases_and_keep_all_source_records(
     ]
     assert {row["key"] for row in same_names} == {account, f"account:{OWNER_B}"}
     client = _application(fixture).test_client()
-    rendered = client.get("/browser", query_string={"view": "text", "source": "wechat"})
+    rendered = get_verified_browser_page(
+        client, "/browser", query_string={"view": "text", "source": "wechat"}
+    )
     assert rendered.status_code == 200
     html = rendered.get_data(as_text=True)
     assert re.findall(rf'<option value="{account}"[^>]*>(.*?)</option>', html) == [
@@ -842,7 +849,9 @@ def test_corroborated_only_options_keep_sources_variants_and_exports(viewer_arch
         fixture.export_sessions
     )
     client = _application(fixture).test_client()
-    rendered = client.get("/browser", query_string={"view": "text", "source": "wechat"})
+    rendered = get_verified_browser_page(
+        client, "/browser", query_string={"view": "text", "source": "wechat"}
+    )
     html = rendered.get_data(as_text=True)
     assert rendered.status_code == 200
     assert re.findall(rf'<option value="{account}"[^>]*>(.*?)</option>', html) == [
@@ -938,13 +947,14 @@ def test_hidden_account_option_preserves_old_links_search_exports_and_raw_record
     ]
     assert build_chat_history_markdown(detail) == expected_export
     client = _application(fixture).test_client()
-    normal_html = client.get(
-        "/browser", query_string={"view": "text", "source": "wechat"}
+    normal_html = get_verified_browser_page(
+        client, "/browser", query_string={"view": "text", "source": "wechat"}
     ).get_data(as_text=True)
     assert f'<option value="{account}"' not in normal_html
     assert re.search(r"Account sources</span>\s*<strong>6</strong>", normal_html)
     for extra in ({}, {"session": fixture.unknown_session}):
-        response = client.get(
+        response = get_verified_browser_page(
+            client,
             "/browser",
             query_string={
                 "view": "text",
@@ -968,7 +978,8 @@ def test_hidden_account_option_preserves_old_links_search_exports_and_raw_record
     )
     assert exported.status_code == 200
     assert exported.get_data(as_text=True) == expected_export
-    unavailable = client.get(
+    unavailable = get_verified_browser_page(
+        client,
         "/browser",
         query_string={"view": "text", "source": "wechat", "account": "source:missing"},
     ).get_data(as_text=True)
@@ -1012,15 +1023,11 @@ def test_hiding_one_partition_keeps_a_shared_account_selectable(
     assert options[0]["partition_id"] != hidden_source
     assert options[0]["viewer_name"] == ALIAS + " · ount_a"
     assert len(page.sessions) == 4
-    html = (
-        _application(fixture)
-        .test_client()
-        .get(
-            "/browser",
-            query_string={"view": "text", "source": "wechat", "account": account},
-        )
-        .get_data(as_text=True)
-    )
+    html = get_verified_browser_page(
+        _application(fixture).test_client(),
+        "/browser",
+        query_string={"view": "text", "source": "wechat", "account": account},
+    ).get_data(as_text=True)
     options = re.findall(rf'<option value="{account}"([^>]*)>', html)
     assert len(options) == 1
     assert "selected" in options[0]

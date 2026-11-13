@@ -1,6 +1,6 @@
 """Service orchestration and Flask contract tests.
 
-Code version: v1.8.17-codex.0
+Code version: v1.8.18-codex.0
 """
 
 from __future__ import annotations
@@ -30,6 +30,16 @@ NEW_BLUEPRINT_ENDPOINTS = frozenset(
         "local_resources.wechat_message_source",
         "local_resources.reveal_wechat_resource",
         "local_resources.browser_wechat_session_csv",
+        "local_resources.browser_wechat_exchange_cancel",
+        "local_resources.browser_wechat_exchange_download",
+        "local_resources.browser_wechat_exchange_export_start",
+        "local_resources.browser_wechat_exchange_export_status",
+        "local_resources.browser_wechat_exchange_import",
+        "local_resources.browser_wechat_exchange_preview",
+        "local_resources.browser_wechat_read_status",
+        "local_resources.browser_wechat_refresh",
+        "local_resources.browser_wechat_refresh_status",
+        "local_resources.browser_wechat_session_exchange",
         "local_resources.remove_browser_prompt",
         "local_resources.restore_browser_prompt",
         "settings.choose_native_tunnel_directory_route",

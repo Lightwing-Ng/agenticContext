@@ -1,6 +1,6 @@
 """Authenticated raw overviews survive reloads without reusing changed evidence.
 
-Code version: v1.0.1-codex.0
+Code version: v1.0.3-codex.0
 """
 
 from collections import OrderedDict
@@ -8,10 +8,13 @@ from concurrent.futures import Future, ThreadPoolExecutor
 from contextlib import closing
 import os
 import sqlite3
+import stat
 from threading import Event
+from types import SimpleNamespace
 
 import pytest
 
+from app.core import owner_only_files
 from app.core import wechat_browser_snapshot as snapshots
 from app.core.wechat_archive import WechatTimelineProjectionError, _file_identity
 from app.core.wechat_secondary_completions import FILENAME
@@ -56,6 +59,16 @@ def _directory(fixture):
     return fixture.repository.path.parent / "browser_cache"
 
 
+def _expose_fixture(path, *, directory=False):
+    if os.name == "nt":
+        security = owner_only_files._windows_security()
+        owner = security.current_user_sid()
+        inherit = "OICI" if directory else ""
+        security.set_protected_dacl(str(path), f"D:P(A;{inherit};FA;;;{owner})(A;;FR;;;WD)")
+    else:
+        path.chmod(0o755 if directory else 0o644)
+
+
 def test_process_reload_reads_signed_snapshot_without_rebuilding(snapshot_store):
     fixture = snapshot_store
     first, rows = _load(fixture)
@@ -65,9 +78,36 @@ def test_process_reload_reads_signed_snapshot_without_rebuilding(snapshot_store)
     assert _load(fixture) == (first, rows)
     assert len(fixture.snapshot_calls) == 1
     directory = _directory(fixture)
-    assert directory.stat().st_mode & 0o777 == 0o700
-    assert (directory / "signing.key").stat().st_mode & 0o777 == 0o600
-    assert (directory / "conversations.snapshot").stat().st_mode & 0o777 == 0o600
+    assert owner_only_files.owner_only_directory_problem(directory) == ""
+    for name in ("signing.key", "conversations.snapshot"):
+        path = directory / name
+        assert owner_only_files.owner_only_problem(path) == ""
+        if os.name != "nt":
+            assert path.stat().st_mode & 0o777 == 0o600
+
+
+def test_windows_cache_pin_compares_the_same_native_change_clock(monkeypatch):
+    fields = dict(
+        st_dev=1, st_ino=2, st_mode=stat.S_IFREG | 0o666, st_nlink=1,
+        st_size=32, st_mtime_ns=20, st_birthtime_ns=10,
+    )
+    named = SimpleNamespace(st_ctime_ns=30, **fields)
+    opened = SimpleNamespace(st_ctime_ns=10, **fields)
+    path = SimpleNamespace(lstat=lambda: named)
+    native_clock = {None: 30, 7: 30}
+    monkeypatch.setattr(snapshots, "os", SimpleNamespace(name="nt", fstat=lambda _fd: opened))
+    monkeypatch.setattr(snapshots, "owner_only_problem", lambda _path: "")
+    monkeypatch.setattr(
+        snapshots, "file_change_time", lambda _path, *, descriptor=None: native_clock[descriptor]
+    )
+
+    pin = snapshots._cache_file_state(path)
+    assert snapshots._cache_file_state(path, descriptor=7) == pin
+    native_clock[7] += 1
+    assert snapshots._cache_file_state(path, descriptor=7) != pin
+    monkeypatch.setattr(snapshots, "owner_only_problem", lambda _path: "shared access")
+    with pytest.raises(ValueError, match="owner-private"):
+        snapshots._cache_file_state(path, descriptor=7)
 
 
 def test_changed_history_rebuilds_raw_summary(snapshot_store):
@@ -83,7 +123,7 @@ def test_same_size_and_mtime_source_change_still_invalidates(snapshot_store):
     fixture = snapshot_store
     assert _load(fixture)[0] is not None
     before = fixture.registry.stat()
-    with sqlite3.connect(fixture.registry) as connection:
+    with closing(sqlite3.connect(fixture.registry)) as connection, connection:
         connection.execute("DELETE FROM sender_bindings")
     assert fixture.registry.stat().st_size == before.st_size
     os.utime(fixture.registry, ns=(before.st_atime_ns, before.st_mtime_ns))
@@ -177,7 +217,7 @@ def test_nonprivate_storage_is_an_optional_miss(snapshot_store, target):
     assert _load(fixture)[0] is not None
     directory = _directory(fixture)
     path = directory if target == "directory" else directory / target
-    path.chmod(0o755 if target == "directory" else 0o644)
+    _expose_fixture(path, directory=target == "directory")
     assert _load(fixture) == (None, [])
 
 
@@ -185,11 +225,13 @@ def test_nonprivate_snapshot_is_reverified_without_trusting_its_bytes(snapshot_s
     fixture = snapshot_store
     expected = _load(fixture)
     path = _directory(fixture) / "conversations.snapshot"
-    path.chmod(0o644)
+    _expose_fixture(path)
     snapshots._SNAPSHOTS.clear()
     assert _load(fixture) == expected
     assert len(fixture.snapshot_calls) == 2
-    assert path.stat().st_mode & 0o777 == 0o644
+    assert owner_only_files.owner_only_problem(path)
+    if os.name != "nt":
+        assert path.stat().st_mode & 0o777 == 0o644
 
 
 def test_symlinked_signing_key_is_not_followed(snapshot_store, tmp_path):
@@ -198,7 +240,7 @@ def test_symlinked_signing_key_is_not_followed(snapshot_store, tmp_path):
     key_path = _directory(fixture) / "signing.key"
     target = tmp_path / "unrelated-key"
     target.write_bytes(key_path.read_bytes())
-    target.chmod(0o600)
+    owner_only_files.ensure_owner_only(target)
     key_path.unlink()
     key_path.symlink_to(target)
     assert _load(fixture) == (None, [])
@@ -341,7 +383,7 @@ def _load_previous(fixture):
 
 def _add_completion_input(fixture):
     completion = fixture.repository.path.with_name(FILENAME)
-    with sqlite3.connect(completion) as connection:
+    with closing(sqlite3.connect(completion)) as connection, connection:
         connection.execute("CREATE TABLE completion_fixture (value TEXT)")
     return completion
 
@@ -367,7 +409,7 @@ def previous_snapshot(snapshot_store):
 
 
 def _change_completion_input(completion):
-    with sqlite3.connect(completion) as connection:
+    with closing(sqlite3.connect(completion)) as connection, connection:
         connection.execute("INSERT INTO completion_fixture VALUES ('updated')")
 
 
@@ -448,7 +490,7 @@ def test_previous_snapshot_discards_summary_if_cache_path_changes(
         path = _directory(fixture) / name
         replacement = path.with_suffix(".replacement")
         replacement.write_bytes(path.read_bytes())
-        replacement.chmod(0o600)
+        owner_only_files.ensure_owner_only(replacement)
         replacement.replace(path)
         return result
 

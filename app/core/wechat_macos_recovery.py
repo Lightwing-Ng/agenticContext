@@ -1,6 +1,6 @@
 """Project authenticated Mac message receipts without changing original archives.
 
-Code version: v1.1.2-codex.0
+Code version: v1.1.3-codex.0
 """
 
 from __future__ import annotations
@@ -17,6 +17,7 @@ import stat
 import tempfile
 from threading import RLock
 
+from .owner_only_files import ensure_owner_only
 from .wechat_archive import (
     _file_identity,
     _identifier,
@@ -536,10 +537,10 @@ def publish_mac_recovery(local_store_root, staged):
         temporary = Path(temporary)
         try:
             with os.fdopen(descriptor, "wb") as stream:
+                ensure_owner_only(temporary)
                 stream.write(raw)
                 stream.flush()
                 os.fsync(stream.fileno())
-            os.chmod(temporary, 0o600)
             latest_base = _read(path)[1] if path.exists() or path.is_symlink() else None
             if (
                 latest_base != staged["base_sha256"]

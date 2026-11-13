@@ -1,6 +1,6 @@
 """Production waiting-notice and catalog reference parity.
 
-Code version: v1.2.1-codex.0
+Code version: v1.2.2-codex.0
 """
 
 from __future__ import annotations
@@ -478,13 +478,15 @@ def _access_snapshot(surface: Locator) -> dict:
                 width: box.width, height: box.height};
         };
         const probe = document.createElement('div');
-        probe.style.cssText = 'position:absolute;pointer-events:none;'
+        probe.style.cssText = 'position:absolute;pointer-events:none;display:flex;justify-content:flex-end;'
             + 'background:var(--frosted-glass-notice-background);'
             + 'border:var(--frosted-glass-notice-border);'
             + 'box-shadow:var(--frosted-glass-notice-shadow);'
             + 'backdrop-filter:var(--frosted-glass-notice-blur)';
         surface.append(probe);
         const canonical = material(probe);
+        // Chromium may serialize the authored flex-end keyword as flow-end.
+        const canonicalActionJustification = getComputedStyle(probe).justifyContent;
         probe.remove();
         const overlayProbe = document.createElement('div');
         overlayProbe.className = 'workspace-modal-overlay';
@@ -509,7 +511,8 @@ def _access_snapshot(surface: Locator) -> dict:
             formDisplay: getComputedStyle(form).display,
             formGap: getComputedStyle(form).gap,
             formMargin: getComputedStyle(form).marginTop,
-            actionJustification: getComputedStyle(actions).justifyContent,
+            actionJustification: getComputedStyle(actions).justifyContent, canonicalActionJustification,
+            actionRow: rect(actions), submit: rect(actions.querySelector('button[type="submit"]')),
             titleSize: getComputedStyle(title).fontSize,
             titleWeight: getComputedStyle(title).fontWeight,
             extraLayer: getComputedStyle(surface, '::after').content,
@@ -703,7 +706,9 @@ def test_agent_access_retains_its_form_adapter_and_uses_the_approved_material(
         assert snapshot["formDisplay"] == "grid", snapshot
         assert snapshot["formGap"] == "16px", snapshot
         assert snapshot["formMargin"] == "22px", snapshot
-        assert snapshot["actionJustification"] == "flex-end", snapshot
+        assert snapshot["actionJustification"] == snapshot["canonicalActionJustification"], snapshot
+        assert snapshot["submit"]["right"] == pytest.approx(snapshot["actionRow"]["right"], abs=0.5), snapshot
+        assert snapshot["submit"]["left"] > snapshot["actionRow"]["left"], snapshot
         assert (snapshot["titleSize"], snapshot["titleWeight"]) == ("20px", "600"), (
             snapshot
         )

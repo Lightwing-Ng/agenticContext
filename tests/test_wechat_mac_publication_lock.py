@@ -1,9 +1,10 @@
 """Serialize synthetic bank publishers without discarding another session's data.
 
-Code version: v1.0.1-codex.0
+Code version: v1.0.2-codex.0
 """
 
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import closing
 from copy import deepcopy
 import hashlib
 import multiprocessing
@@ -86,7 +87,7 @@ def test_concurrent_publisher_cannot_replace_another_sessions_new_bank(bank_arch
             bank.publish_mac_recovery_bank(fixture.root, stale_candidate, stale_receipt)
         assert fixture.bank_path.read_bytes() == published
         assert fixture.history.read_bytes() == history_before
-        with sqlite3.connect(fixture.bank_path) as connection:
+        with closing(sqlite3.connect(fixture.bank_path)) as connection:
             scopes = [
                 row[0] for row in connection.execute("SELECT id FROM conversations")
             ]
@@ -194,7 +195,7 @@ def test_lock_patch_keeps_existing_schema_three_bank_and_other_scope(bank_archiv
         fixture, packets=[fixture.group], name="old-schema-three"
     )
     bank.publish_mac_recovery_bank(fixture.root, first, first_receipt)
-    with sqlite3.connect(fixture.bank_path) as connection:
+    with closing(sqlite3.connect(fixture.bank_path)) as connection, connection:
         connection.execute(
             "UPDATE archive_info SET value=? WHERE key='code_version'",
             ("v1.2.0-codex.0",),
@@ -207,7 +208,7 @@ def test_lock_patch_keeps_existing_schema_three_bank_and_other_scope(bank_archiv
         fixture, packets=[fixture.direct], name="merged-schema-three"
     )
     bank.publish_mac_recovery_bank(fixture.root, candidate, receipt)
-    with sqlite3.connect(fixture.bank_path) as connection:
+    with closing(sqlite3.connect(fixture.bank_path)) as connection:
         assert (
             connection.execute(
                 "SELECT id,text,provenance FROM messages WHERE conversation_id=? ORDER BY id",

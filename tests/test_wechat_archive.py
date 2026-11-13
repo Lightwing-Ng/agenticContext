@@ -1,6 +1,6 @@
 """Account boundaries, source integrity, and human-chat rendering stay explicit.
 
-Code version: v1.2.0-codex.0
+Code version: v1.2.1-codex.0
 """
 
 from __future__ import annotations
@@ -24,6 +24,7 @@ from app.core.wechat_archive import import_wechat_archive, wechat_archive_path
 from app.web.app import create_app
 from app.web.cache_sources import CACHE_SOURCE_BY_KEY
 from app.web.config_store import SavedConfigStore
+from tests.wechat_browser_markup import get_verified_browser_page
 
 
 def make_archive(root: Path, *, repeated=1) -> Path:
@@ -275,7 +276,8 @@ def test_local_resources_reuses_filters_escapes_messages_and_exports_origin(impo
         "snapshot",
         side_effect=AssertionError("WeChat must not enumerate media"),
     ):
-        response = client.get(
+        response = get_verified_browser_page(
+            client,
             "/browser",
             query_string={
                 "view": "text",
@@ -295,7 +297,8 @@ def test_local_resources_reuses_filters_escapes_messages_and_exports_origin(impo
     session = query_chat_history(
         store, source="wechat", account=account, chat_kind="group"
     ).sessions[0]
-    response = client.get(
+    response = get_verified_browser_page(
+        client,
         "/browser",
         query_string={
             "source": "wechat",
@@ -384,7 +387,7 @@ def test_kind_badges_use_native_peers_without_rewriting_source_identity(
     application.config.update(TESTING=True)
     client = application.test_client()
     query = {"view": "text", "source": "wechat", "account": account, "chat_kind": kind}
-    index = client.get("/browser", query_string=query)
+    index = get_verified_browser_page(client, "/browser", query_string=query)
     assert index.status_code == 200
     row = re.search(
         rf'<tr data-chat-session-id="{re.escape(original.stable_id)}"[^>]*>.*?</tr>',
@@ -394,8 +397,8 @@ def test_kind_badges_use_native_peers_without_rewriting_source_identity(
     assert f'<span class="wechat-kind-badge">{expected}</span>' in row
     assert f'data-wechat-conversation-kind="{kind}"' in row
     assert f'data-wechat-account="{account}"' in row
-    rendered = client.get(
-        "/browser", query_string={**query, "session": original.stable_id}
+    rendered = get_verified_browser_page(
+        client, "/browser", query_string={**query, "session": original.stable_id}
     )
     assert rendered.status_code == 200
     html = rendered.get_data(as_text=True)

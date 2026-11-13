@@ -1,10 +1,11 @@
 """Mac text observations add quote context without rewriting native message rows.
 
-Code version: v1.1.1-codex.0
+Code version: v1.1.2-codex.0
 """
 
 from __future__ import annotations
 
+from contextlib import closing
 import json
 import sqlite3
 from threading import Thread
@@ -17,6 +18,7 @@ from playwright.sync_api import expect
 from werkzeug.serving import make_server
 
 from app.core.config import CrawlConfig
+from app.core.wechat_archive import _file_identity, wechat_history_partition_fingerprint
 from app.web.app import create_app
 from app.web.config_store import SavedConfigStore
 from tests import test_sidebar_e2e
@@ -36,11 +38,34 @@ def text_observation_server(tmp_path_factory):
     evidence = make_observation_fixture(store)
     history = evidence["history_path"]
     preserved = history.read_bytes()
-    with sqlite3.connect(history) as connection:
+    with closing(sqlite3.connect(history)) as connection:
         primary_count = connection.execute(
             "SELECT COUNT(*) FROM messages WHERE conversation_id=?",
             (evidence["session_id"],),
         ).fetchone()[0]
+        fingerprint = wechat_history_partition_fingerprint(connection)
+    # Browser reads require a published resource index. The unit fixture's
+    # deliberately stale metadata remains useful for testing exact quote pins.
+    with closing(sqlite3.connect(evidence["resource_path"])) as resources, resources:
+        resource_rows = resources.execute(
+            "SELECT time_sort,timestamp_value,text FROM messages ORDER BY time_sort,ordinal,id"
+        ).fetchall()
+        first_sort, first_time, _ = resource_rows[0]
+        last_sort, last_time, latest_text = resource_rows[-1]
+        resources.execute(
+            "UPDATE conversations SET message_count=?,first_sort=?,last_sort=?,"
+            "first_time=?,last_time=?,latest_text=?",
+            (len(resource_rows), first_sort, last_sort, first_time, last_time, latest_text),
+        )
+        resources.execute("DELETE FROM archive_info WHERE key='history_fingerprint'")
+        resources.executemany(
+            "INSERT INTO archive_info VALUES(?,?)",
+            (
+                ("schema_version", "1"),
+                ("history_file_identity", json.dumps(_file_identity(history))),
+                ("history_partitions_sha256", fingerprint),
+            ),
+        )
     with patch(
         "app.web.app.SavedConfigStore.load",
         return_value=SavedConfigStore(CrawlConfig()),

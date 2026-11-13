@@ -1,6 +1,6 @@
 """Known native system templates reuse the centered notice and clock rail.
 
-Code version: v1.1.0-codex.0
+Code version: v1.1.1-codex.0
 """
 
 from __future__ import annotations
@@ -84,14 +84,14 @@ def test_known_native_template_is_a_centered_plain_notice_with_original_clock(
             ),
             wait_until="domcontentloaded",
         )
+        identifier = fixture.identifiers["template-notice"]
+        row = page.locator("#wechat_message_" + identifier)
+        expect(row).to_have_class("wechat-system-message-row")
         toggle = page.locator("#sidebar_toggle")
         if toggle.get_attribute("aria-expanded") == "true":
             toggle.click()
         page.evaluate("() => document.fonts.ready")
-        identifier = fixture.identifiers["template-notice"]
-        row = page.locator("#wechat_message_" + identifier)
         row.scroll_into_view_if_needed()
-        expect(row).to_have_class("wechat-system-message-row")
         expect(row).to_have_attribute("role", "note")
         expect(row.locator(".wechat-system-notice")).to_have_text(fixture.display_text)
         expect(row.locator("time")).to_have_text("7 Aug 2021 18:59:03")

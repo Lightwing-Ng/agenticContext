@@ -1,6 +1,6 @@
 """Keep local conversation refresh jobs scoped and credentials out of HTTP.
 
-Code version: v1.0.0-codex.0
+Code version: v1.0.1-codex.0
 """
 
 from types import SimpleNamespace
@@ -16,6 +16,7 @@ from app.web.wechat_refresh_routes import (
 )
 from tests import test_wechat_session_csv
 from tests.test_wechat_resource_timeline import _session
+from tests.wechat_browser_markup import get_verified_browser_page
 
 
 SESSION = "wechat:" + "a" * 64
@@ -213,14 +214,17 @@ def test_refresh_button_eligibility_is_rendered_from_host_state(session_app):
     client = app.test_client()
     session = _session(root, kind="group")
     address = "/browser?view=text&source=wechat&session=" + session["id"]
-    visible = client.get(address)
-    assert visible.status_code == 200
-    assert b"data-wechat-conversation-refresh" in visible.data
-    service.available = lambda *scope: False
-    hidden = client.get(address)
-    assert b"data-wechat-conversation-refresh" not in hidden.data
-    service.available = lambda *scope: True
-    remote = client.get(address, environ_overrides={"REMOTE_ADDR": "192.168.1.9"})
-    assert remote.status_code == 302
-    assert "/agent" in remote.headers["Location"]
-    assert b"data-wechat-conversation-refresh" not in remote.data
+
+    try:
+        visible = get_verified_browser_page(client, address)
+        assert b"data-wechat-conversation-refresh" in visible.data
+        service.available = lambda *scope: False
+        hidden = get_verified_browser_page(client, address)
+        assert b"data-wechat-conversation-refresh" not in hidden.data
+        service.available = lambda *scope: True
+        remote = client.get(address, environ_overrides={"REMOTE_ADDR": "192.168.1.9"})
+        assert remote.status_code == 302
+        assert "/agent" in remote.headers["Location"]
+        assert b"data-wechat-conversation-refresh" not in remote.data
+    finally:
+        app.extensions["runtime_shutdown"]()

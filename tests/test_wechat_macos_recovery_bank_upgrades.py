@@ -1,8 +1,9 @@
 """Monotone App-stub shadows retain source files, native identity and stable anchors.
 
-Code version: v1.0.1-codex.0
+Code version: v1.0.2-codex.0
 """
 
+from contextlib import closing
 from copy import deepcopy
 import hashlib
 import json
@@ -67,7 +68,7 @@ def app_stubs(bank_archive, tmp_path):
         json.dumps({"snapshot_id": "b" * 64, "selected_files": []})
     )
     source = database_root / "message_1.sqlite"
-    with sqlite3.connect(source) as connection:
+    with closing(sqlite3.connect(source)) as connection, connection:
         for packet in (direct, group):
             table = (
                 "Chat_"
@@ -98,7 +99,7 @@ def app_stubs(bank_archive, tmp_path):
     report = build_resource_index(fixture.root, snapshot, account_ids=(OWNER,))
     assert report["messages"] == 3
     catalog = resource_index_path(fixture.root)
-    with sqlite3.connect(catalog) as connection:
+    with closing(sqlite3.connect(catalog)) as connection:
         connection.row_factory = sqlite3.Row
         originals = {
             json.loads(row["provenance"])["server_id"]: dict(row)
@@ -135,7 +136,7 @@ def _detail(fixture, session):
 
 def _change_original(fixture, message, *, text=None, sender=None, proof_change=None):
     identifier = fixture.originals[message["server_id"]]["id"]
-    with sqlite3.connect(fixture.catalog) as connection:
+    with closing(sqlite3.connect(fixture.catalog)) as connection, connection:
         if text is not None:
             connection.execute(
                 "UPDATE messages SET text=? WHERE id=?", (text, identifier)
@@ -198,7 +199,7 @@ def test_quote_forward_and_payment_shadows_keep_ids_counts_and_all_original_byte
     assert fixture.history.read_bytes() == history
     assert fixture.catalog.read_bytes() == catalog
     assert fixture.source.read_bytes() == source
-    with sqlite3.connect(fixture.fixture.bank_path) as connection:
+    with closing(sqlite3.connect(fixture.fixture.bank_path)) as connection:
         connection.row_factory = sqlite3.Row
         shadows = [
             dict(row) for row in connection.execute("SELECT * FROM shadow_replacements")
@@ -278,7 +279,7 @@ def test_non_monotone_or_nonempty_originals_are_retained_as_conflicts(
         _change_original(fixture, message, sender="wxid_another_native_sender")
     elif change == "direction":
         identifier = fixture.originals[message["server_id"]]["id"]
-        with sqlite3.connect(fixture.catalog) as connection:
+        with closing(sqlite3.connect(fixture.catalog)) as connection, connection:
             connection.execute(
                 "UPDATE messages SET direction='received' WHERE id=?", (identifier,)
             )
@@ -377,7 +378,7 @@ def test_published_shadow_fails_closed_when_its_original_catalog_changes(app_stu
     assert "macos_recovery" not in json.loads(row["provenance"])
     assert row["text"] == "An original catalog changed after review"
     repository = WechatArchiveRepository(fixture.root)
-    with sqlite3.connect(fixture.history) as connection:
+    with closing(sqlite3.connect(fixture.history)) as connection:
         connection.row_factory = sqlite3.Row
         with pytest.raises(WechatTimelineProjectionError):
             repository._timeline_tables(
@@ -389,7 +390,7 @@ def test_published_shadow_fails_closed_when_its_original_catalog_changes(app_stu
 def test_main_archive_app_placeholders_are_never_shadowed(app_stubs):
     fixture = app_stubs
     original = fixture.originals[fixture.quote["server_id"]]
-    with sqlite3.connect(fixture.history) as connection:
+    with closing(sqlite3.connect(fixture.history)) as connection, connection:
         connection.execute(
             "INSERT INTO messages VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             tuple(original.values()),
@@ -429,7 +430,7 @@ def test_two_visible_originals_with_one_server_id_are_not_guessed(app_stubs):
     proof["record_id"] = duplicate["id"]
     proof["locator"].update(local_id=999, row_id=999)
     duplicate["provenance"] = _json(proof)
-    with sqlite3.connect(fixture.catalog) as connection:
+    with closing(sqlite3.connect(fixture.catalog)) as connection, connection:
         connection.execute(
             "INSERT INTO messages VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             tuple(duplicate.values()),
@@ -452,7 +453,7 @@ def test_two_visible_originals_with_one_server_id_are_not_guessed(app_stubs):
 
 def _freeze_v1_bank(path):
     """Serialize the prior closed schema as a compatibility fixture."""
-    with sqlite3.connect(path) as connection:
+    with closing(sqlite3.connect(path)) as connection, connection:
         connection.execute("DROP TABLE shadow_replacements")
         connection.execute(
             "UPDATE archive_info SET value='1' WHERE key='schema_version'"
@@ -503,7 +504,7 @@ def test_v1_bank_migrates_only_in_candidate_and_preserves_existing_event(app_stu
     )
     assert receipt["added"] == 0 and receipt["upgraded"] == 3
     assert fixture.fixture.bank_path.read_bytes() == old_bank
-    with sqlite3.connect(candidate) as connection:
+    with closing(sqlite3.connect(candidate)) as connection:
         metadata = dict(connection.execute("SELECT key,value FROM archive_info"))
         assert metadata["schema_version"] == "3"
         assert (

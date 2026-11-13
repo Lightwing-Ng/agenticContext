@@ -1,6 +1,6 @@
 """Native embedded author references retain roles, source clocks, and bounded hints.
 
-Code version: v1.1.2-codex.0
+Code version: v1.1.3-codex.0
 """
 
 from __future__ import annotations
@@ -29,6 +29,7 @@ from app.web.app import create_app
 from app.web.config_store import SavedConfigStore
 from tests.test_wechat_contacts import bind, insert_contact, observe
 from tests.test_wechat_reconcile import merge, record, source
+from tests.wechat_browser_markup import get_verified_browser_page
 
 
 PARENT = "a" * 64
@@ -1208,8 +1209,11 @@ def test_quote_only_native_parent_renders_and_keeps_source_jump_anchor(
     assert redirect.status_code == 302
     destination = urlsplit(redirect.headers["Location"])
     assert destination.fragment == reference["anchor_id"]
-    response = client.get(destination.path + "?" + destination.query)
-    assert response.status_code == 200
+    address = destination.path + "?" + destination.query
+    try:
+        response = get_verified_browser_page(client, address)
+    finally:
+        app.extensions["runtime_shutdown"]()
 
     class SourceBubble(HTMLParser):
         def __init__(self):

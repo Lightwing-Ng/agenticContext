@@ -1,17 +1,19 @@
 """Authenticated Mac recovery preserves source boundaries and original archive bytes.
 
-Code version: v1.0.0-codex.0
+Code version: v1.0.1-codex.0
 """
 
 from copy import deepcopy
 import hashlib
 import json
+import os
 import sqlite3
 import stat
 
 import pytest
 
 from app.core import wechat_macos_recovery as recovery
+from app.core.owner_only_files import owner_only_problem
 from app.core.wechat_archive import (
     WechatArchiveRepository,
     _SCHEMA,
@@ -172,9 +174,10 @@ def test_five_mac_events_are_additive_searchable_and_idempotent(mac_archive):
     assert not history.with_name("macos_recovery.json").exists()
     report = recovery.publish_mac_recovery(root, staged)
     assert report["added"] == 5
-    assert (
-        stat.S_IMODE(history.with_name("macos_recovery.json").stat().st_mode) == 0o600
-    )
+    overlay = history.with_name("macos_recovery.json")
+    assert owner_only_problem(overlay) == ""
+    if os.name != "nt":
+        assert stat.S_IMODE(overlay.stat().st_mode) == 0o600
     repository = WechatArchiveRepository(root)
     detail = repository.query(session=session, persist_event_cache=False)
     assert (

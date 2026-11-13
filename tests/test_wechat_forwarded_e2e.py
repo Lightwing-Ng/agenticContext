@@ -1,6 +1,6 @@
 """Forwarded transcripts reuse native message bubbles without duplicating bodies.
 
-Code version: v1.1.0-codex.0
+Code version: v1.1.1-codex.0
 """
 
 from __future__ import annotations
@@ -22,6 +22,7 @@ from app.web.app import create_app
 from app.web.config_store import SavedConfigStore
 from tests import test_sidebar_e2e
 from tests.test_wechat_reconcile import merge, record, source
+from tests.wechat_browser_markup import reload_browser_after_verification
 
 
 disposable_browser = test_sidebar_e2e.disposable_browser
@@ -143,13 +144,13 @@ def open_forwarded(page, fixture):
         ),
         wait_until="domcontentloaded",
     )
+    card = page.locator("#wechat_message_" + fixture.parent_id)
+    disclosure = card.locator(":scope > details.wechat-forwarded")
+    expect(disclosure).to_have_count(1)
     page.evaluate("() => document.fonts.ready")
     sidebar = page.locator("#sidebar_toggle")
     if sidebar.get_attribute("aria-expanded") == "true":
         sidebar.click()
-    card = page.locator("#wechat_message_" + fixture.parent_id)
-    disclosure = card.locator(":scope > details.wechat-forwarded")
-    expect(disclosure).to_have_count(1)
     return card, disclosure
 
 
@@ -264,6 +265,7 @@ def test_forwarded_details_remain_keyboard_operable_without_javascript(
             ),
             wait_until="domcontentloaded",
         )
+        reload_browser_after_verification(page)
         disclosure = page.locator(
             "#wechat_message_" + fixture.parent_id + " > details.wechat-forwarded"
         )
