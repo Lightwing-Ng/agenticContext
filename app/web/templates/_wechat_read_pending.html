@@ -1,16 +1,16 @@
-{# Code version: v1.1.3-codex.0 #}
+{# Code version: v1.1.4-codex.0 #}
 {% from "_wechat_view_layout.html" import conversation_transcript, conversation_table, conversation_list_note %}
 {% if not wechat_read_preview %}
 <section class="wechat-resources" aria-label="WeChat text archive" data-wechat-resources>
 {% endif %}
-<div class="{{ 'wechat-resources' if wechat_read_preview else 'wechat-read-view' }}" data-wechat-read-pending data-state="{{ 'running' if wechat_read_loading else 'failed' }}"
+<div class="wechat-read-view{% if wechat_read_preview %} wechat-resources{% endif %}" data-wechat-read-pending data-state="{{ 'running' if wechat_read_loading else 'failed' }}"
     data-status-url="{{ wechat_read_job.status_url }}"
     data-retry-url="{{ wechat_read_job.retry_url }}"
     data-task-id="{{ wechat_read_job.task_id }}"
     data-generation="{{ wechat_read_job.generation }}">
     <div class="wechat-read-status" role="status" aria-live="polite">
         <h3 data-wechat-read-title{% if wechat_read_loading %} hidden{% endif %}>Saved view is unavailable</h3>
-        <p class="wechat-source-note" data-wechat-read-copy>{{ "Showing the last verified conversations while the archive is checked." if wechat_read_preview else wechat_read_job.message }}</p>
+        <p class="wechat-source-note" data-wechat-read-copy>{% if not (wechat_read_preview and wechat_read_loading) %}{{ wechat_read_job.message }}{% endif %}</p>
     </div>
     {% if is_text_session_shell and wechat_read_loading %}
     <header class="wechat-conversation-context" data-wechat-read-placeholder aria-hidden="true">
