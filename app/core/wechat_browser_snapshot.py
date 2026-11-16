@@ -1,6 +1,6 @@
-"""Persist authenticated raw conversation summaries after full timeline validation.
+"""Persist authenticated conversation summaries after full timeline validation.
 
-Code version: v1.0.3-codex.0
+Code version: v1.1.0-codex.0
 """
 
 from __future__ import annotations
@@ -341,13 +341,14 @@ def _write_private_cache(target, encoded, unchanged, *, prefix):
 
 def _build(repository, history_identity, pin):
     from .wechat_archive import WechatTimelineProjectionError
+    from .wechat_group_names import latest_group_titles
 
     with closing(sqlite3.connect(
         repository.path.resolve().as_uri() + "?mode=ro&immutable=1", uri=True
     )) as connection:
         connection.row_factory = sqlite3.Row
         try:
-            table, _messages, status = repository._timeline_tables(
+            table, messages, status = repository._timeline_tables(
                 connection, history_identity, strict=True
             )
         except WechatTimelineProjectionError:
@@ -355,10 +356,12 @@ def _build(repository, history_identity, pin):
         if status not in {"ready", "absent"} or not _SQL_TABLE.fullmatch(table):
             return None
         columns = ",".join('"' + column + '"' for column in _COLUMNS)
-        rows, byte_count = [], 0
+        rows, groups, byte_count = [], [], 0
         for row in connection.execute(
             "SELECT " + columns + " FROM " + table + " LIMIT ?", (MAX_ROWS + 1,)
         ):
+            if row["kind"] == "group":
+                groups.append(row)
             row = list(row)
             if not _valid_row(row):
                 return None
@@ -366,6 +369,10 @@ def _build(repository, history_identity, pin):
             if len(rows) >= MAX_ROWS or byte_count > MAX_SNAPSHOT_BYTES:
                 return None
             rows.append(row)
+        titles = latest_group_titles(connection, messages, groups)
+        title_column = _COLUMNS.index("title")
+        for row in rows:
+            row[title_column] = titles.get(row[0], row[title_column])
         accounts = repository._resource_index_accounts(connection) if status == "ready" else None
     payload = {
         "pin": pin,
@@ -405,7 +412,7 @@ def _install(connection, payload):
 
 
 def load_conversation_snapshot(repository, connection, history_identity):
-    """Reuse authenticated raw summaries; an unavailable optional cache is a miss."""
+    """Reuse authenticated summaries; an unavailable optional cache is a miss."""
     try:
         pin = _pin(repository, history_identity)
         directory, key, key_identity = _storage(repository)

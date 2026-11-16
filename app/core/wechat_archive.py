@@ -1,6 +1,6 @@
 """Source-separated, text-only WeChat archive import and indexed local queries."""
 
-# Code version: v1.10.4-codex.0
+# Code version: v1.11.0-codex.0
 
 from __future__ import annotations
 
@@ -17,6 +17,8 @@ from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
 from threading import RLock
 from typing import Any, Protocol
+
+from .wechat_group_names import group_name_projections, latest_group_titles
 
 
 WECHAT_SOURCE = "wechat"
@@ -1459,6 +1461,12 @@ class WechatArchiveRepository:
                     connection, message_table, events
                 )
                 current["message_count"] -= events["count_delta"]
+                group_name = group_name_projections(
+                    connection, message_table, (current,)
+                ).get(session)
+                if group_name:
+                    current["title"] = group_name["title"] or current["title"]
+                    current["group_name_history"] = group_name
                 connection.execute(
                     "CREATE TEMP TABLE conversation_event_links("
                     "id TEXT PRIMARY KEY,preferred_id TEXT NOT NULL) WITHOUT ROWID"
@@ -1534,6 +1542,25 @@ class WechatArchiveRepository:
                 join += " JOIN temp.wechat_search_matches s ON s.id=c.id "
                 filters = ""
                 params = []
+            titles = {}
+            title_order = "c.title"
+            if snapshot is None and kind in {"all", "group"}:
+                group_filter = " AND " if filters else " WHERE "
+                groups = connection.execute(
+                    "SELECT c.id,c.peer_id,c.kind" + join + filters
+                    + group_filter + "c.kind='group'",
+                    params,
+                )
+                titles = latest_group_titles(connection, message_table, groups)
+                if titles and sort == "name":
+                    connection.execute(
+                        "CREATE TEMP TABLE wechat_group_titles(id TEXT PRIMARY KEY,title TEXT NOT NULL)"
+                    )
+                    connection.executemany(
+                        "INSERT INTO temp.wechat_group_titles VALUES(?,?)", titles.items()
+                    )
+                    join += " LEFT JOIN temp.wechat_group_titles g ON g.id=c.id "
+                    title_order = "COALESCE(g.title,c.title)"
             if not previous_snapshot:
                 from .wechat_conversation_events import cache_only_summaries
 
@@ -1553,7 +1580,7 @@ class WechatArchiveRepository:
             pages = max(1, math.ceil(total / page_size))
             safe_page = min(pages, max(1, int(page)))
             ordering = (
-                "c.title COLLATE NOCASE,c.id"
+                title_order + " COLLATE NOCASE,c.id"
                 if sort == "name"
                 else "(c.last_sort=0),c.last_sort "
                 + ("ASC" if sort == "oldest" else "DESC")
@@ -1578,6 +1605,7 @@ class WechatArchiveRepository:
             else:
                 for conversation in conversations:
                     conversation["message_count"] -= summaries.get(conversation["id"], 0)
+                    conversation["title"] = titles.get(conversation["id"], conversation["title"])
                 message_count = connection.execute(
                     "SELECT COALESCE(SUM(c.message_count-COALESCE(e.delta,0)),0)"
                     + join

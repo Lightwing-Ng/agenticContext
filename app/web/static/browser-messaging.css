@@ -1,4 +1,4 @@
-/* Code version: v1.22.3-codex.0 */
+/* Code version: v1.23.0-codex.0 */
 /* Human-message variants consume the existing Local resources primitives. */
 .wechat-conversation-share {
     position: fixed;
@@ -74,6 +74,16 @@
 .wechat-source-label,
 .wechat-source-note { color: var(--theme-muted); font-size: 0.85em; }
 .wechat-source-note { margin: 0; }
+
+.wechat-group-name-history { flex: 0 0 auto; }
+.wechat-group-name-history > .ui-collapse-body {
+    max-block-size: min(25vh, 12rem);
+    overflow: auto;
+    overflow-wrap: anywhere;
+}
+.wechat-group-name-history ul { margin: 0; padding-inline-start: 1.5em; }
+.wechat-group-name-history li + li { margin-block-start: 4px; }
+.wechat-group-name-history a > span { white-space: pre-wrap; }
 
 .wechat-read-view,
 .wechat-read-skeleton {
