@@ -1,6 +1,6 @@
 """Indexed Mac recovery keeps authenticated scopes, literal roles and original bytes.
 
-Code version: v1.0.1-codex.0
+Code version: v1.0.2-codex.0
 """
 
 from copy import deepcopy
@@ -304,6 +304,28 @@ def test_bank_preserves_text_system_forwarded_and_metadata_only_resource_roles(
         "WeChat for Mac local database" in item.messaging["source_file"]
         for item in recovered.values()
     )
+
+
+def test_latest_group_name_includes_the_verified_mac_recovery_timeline(bank_archive):
+    fixture = bank_archive
+    original = fixture.history.read_bytes()
+    old_title = query_wechat_history(fixture.root, chat_kind="group").sessions[0]
+    assert old_title.conversation_title == "Synthetic group"
+    fixture.group["messages"].append(
+        _message(57, 10000, raw='You changed the group name to "Recovered group name"')
+    )
+    _publish(fixture)
+    new_title = query_wechat_history(fixture.root, chat_kind="group").sessions[0]
+    assert new_title.conversation_title == "Recovered group name"
+    assert new_title.stable_id == old_title.stable_id == fixture.group_session
+    detail = query_wechat_history(fixture.root, session=fixture.group_session)
+    assert detail.current_session.conversation_title == new_title.conversation_title
+    changes = detail.current_session.messaging["group_name_history"]["changes"]
+    assert len(changes) == 1
+    notice = next(item for item in detail.items if item.stable_id == changes[0]["message_id"])
+    assert notice.content_text == fixture.group["messages"][-1]["text"]
+    assert notice.messaging["is_system_notice"]
+    assert fixture.history.read_bytes() == original
 
 
 def test_replay_keeps_bubble_counts_and_new_snapshot_retains_another_occurrence(

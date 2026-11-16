@@ -1,4 +1,4 @@
-{# Code version: v1.34.3-codex.0 #}
+{# Code version: v1.35.0-codex.0 #}
 {% from "_wechat_conversation_kind.html" import conversation_kind_label, conversation_kind_badge %}
 {% from "_wechat_view_layout.html" import conversation_transcript, conversation_table, conversation_list_note %}
 {% macro resource_card(resource, message_id='', embedded=false) %}
@@ -152,6 +152,21 @@
         <p class="wechat-source-note" role="status">Media and file references are unavailable in this source archive.</p>
         {% endif %}
     </header>
+    {% if origin.group_name_history is defined %}
+    <details class="ui-collapse wechat-group-name-history">
+        <summary>Group name history</summary>
+        <div class="ui-collapse-body">
+            {% if not origin.group_name_history.title %}
+            <p class="wechat-source-note">The latest notices record different names at the same time.</p>
+            {% endif %}
+            <ul>
+                {% for change in origin.group_name_history.changes %}
+                <li><a href="{{ url_for('local_resources.wechat_message_source', message_id=change.message_id) }}"><span lang="zh-CN">{{ change.title }}</span> · <time datetime="{{ change.timestamp_value }}">{{ change.timestamp_label }}</time></a></li>
+                {% endfor %}
+            </ul>
+        </div>
+    </details>
+    {% endif %}
     {% call conversation_transcript(origin.kind, conversation_kind_label(origin) ~ " messages") %}
         {% for message in text_page.items %}
         {{ message_row(message) }}

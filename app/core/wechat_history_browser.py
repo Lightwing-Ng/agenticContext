@@ -1,6 +1,6 @@
 """Adapt indexed human conversations to the shared Local resources page model."""
 
-# Code version: v1.33.1-codex.0
+# Code version: v1.34.0-codex.0
 
 from __future__ import annotations
 
@@ -890,6 +890,9 @@ def query_wechat_history(
         }
 
     def conversation(row):
+        messaging = context(row)
+        if group_name_history := row.get("group_name_history"):
+            messaging["group_name_history"] = group_name_history
         return ChatHistorySession(
             stable_id=row["id"],
             source="wechat",
@@ -904,7 +907,7 @@ def query_wechat_history(
             latest_author_label="",
             model_label="",
             source_links=(),
-            messaging=context(row),
+            messaging=messaging,
         )
 
     current = conversation(result["current"]) if result["current"] else None
