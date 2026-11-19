@@ -1,6 +1,6 @@
 """Read supplied SQLCipher 4 bytes using authenticated pages and committed WAL.
 
-Code version: v1.0.0-codex.0. Python 3.13+; AES uses macOS CommonCrypto only.
+Code version: v1.1.0-codex.0. Python 3.13+; AES uses macOS CommonCrypto only.
 Derived from the locally verified mac_sqlcipher_read_v1 v1.0.1 reader.
 This module performs no file, database, process, network, or key discovery I/O.
 Callers must provide a stable main/WAL snapshot. Raw 32-byte keys are accepted;
@@ -14,7 +14,7 @@ import hmac
 import struct
 import sys
 
-__version__ = "1.0.0-codex.0"
+__version__ = "1.1.0-codex.0"
 PAGE_SIZE = 4096
 MAX_DATABASE_BYTES = 2 * 1024 * 1024 * 1024
 MAX_WAL_BYTES = 64 * 1024 * 1024
@@ -125,6 +125,12 @@ def decrypt_page(key32, encrypted4096, page_number, db_salt16):
     Page one restores the SQLite signature. The 80 codec-reserved bytes are
     zeroed. The salt must come from the stable main database's first 16 bytes.
     """
+    return _decrypt_page(key32, encrypted4096, page_number, db_salt16)
+
+
+def _decrypt_page(
+    key32, encrypted4096, page_number, db_salt16, *, authentication_key=None
+):
     _valid_key(key32)
     _require_bytes(encrypted4096, "encrypted page")
     _require_bytes(db_salt16, "database salt")
@@ -136,9 +142,14 @@ def decrypt_page(key32, encrypted4096, page_number, db_salt16):
         raise RecoveryError("Invalid database page number")
     if page_number == 1 and encrypted4096[:16] != db_salt16:
         raise RecoveryError("Page-one salt does not match the database salt")
-    _authenticate_page(
-        _authentication_key(key32, db_salt16), encrypted4096, page_number
-    )
+    if authentication_key is None:
+        authentication_key = _authentication_key(key32, db_salt16)
+    _authenticate_page(authentication_key, encrypted4096, page_number)
+    return _decrypt_authenticated_page(key32, encrypted4096, page_number)
+
+
+def _decrypt_authenticated_page(key32, encrypted4096, page_number):
+    """Decrypt a content page after its caller has checked the HMAC."""
     start = 16 if page_number == 1 else 0
     plaintext = _aes_cbc(key32, encrypted4096[4016:4032], encrypted4096[start:4016], 1)
     prefix = _SQLITE_HEADER if page_number == 1 else b""
@@ -337,14 +348,17 @@ def decrypt_database(
         if check_cancel is not None and (page_number - 1) % 64 == 0:
             check_cancel()
         if page_number in overlay:
-            encrypted_page = overlay[page_number]
+            # Each committed frame was authenticated before selecting its contents.
+            plaintext = _decrypt_authenticated_page(key32, overlay[page_number], page_number)
         elif page_number <= main_reusable_pages:
             start = (page_number - 1) * PAGE_SIZE
             encrypted_page = mainbytes[start : start + PAGE_SIZE]
             used_main_pages += 1
+            plaintext = _decrypt_page(
+                key32, encrypted_page, page_number, salt, authentication_key=authentication_key,
+            )
         else:
             raise RecoveryError("Committed database growth has a missing page")
-        plaintext = decrypt_page(key32, encrypted_page, page_number, salt)
         if page_number == 1:
             _validate_plaintext_header(plaintext)
             header_pages = struct.unpack(">I", plaintext[28:32])[0]

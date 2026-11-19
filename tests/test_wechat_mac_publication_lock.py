@@ -1,6 +1,6 @@
 """Serialize synthetic bank publishers without discarding another session's data.
 
-Code version: v1.0.2-codex.0
+Code version: v1.0.3-codex.0
 """
 
 from concurrent.futures import ThreadPoolExecutor
@@ -132,14 +132,14 @@ def test_cancellation_during_publication_hash_preserves_existing_bank(bank_archi
     entered, release, cancelled, callback_called = (Event() for _ in range(4))
     original_hash = bank._file_sha
 
-    def gated_hash(path):
+    def gated_hash(path, **options):
         if Path(path) == candidate:
             entered.set()
             if not release.wait(15):
                 raise TimeoutError(
                     "The synthetic publication hash gate was not released."
                 )
-        return original_hash(path)
+        return original_hash(path, **options)
 
     def check_running():
         callback_called.set()
@@ -173,6 +173,23 @@ def test_cancellation_during_publication_hash_preserves_existing_bank(bank_archi
     assert candidate.exists()
     # A cancelled final callback releases both locks so a later explicit retry can publish.
     bank.publish_mac_recovery_bank(fixture.root, candidate, receipt)
+
+
+def test_final_callback_cannot_publish_against_changed_inputs(bank_archive):
+    fixture = bank_archive
+    fixtures._publish(fixture, name="before-callback-change")
+    baseline = fixture.bank_path.read_bytes()
+    candidate, receipt = fixtures._stage(fixture, name="callback-change")
+
+    def change_input():
+        fixture.history.with_name("media_events.sqlite3").touch()
+
+    with pytest.raises(ValueError, match="staged Mac bank input changed immediately"):
+        bank.publish_mac_recovery_bank(
+            fixture.root, candidate, receipt, before_replace=change_input,
+        )
+    assert fixture.bank_path.read_bytes() == baseline
+    assert candidate.is_file()
 
 
 def test_publication_refuses_a_redirected_lock_without_touching_target(bank_archive):

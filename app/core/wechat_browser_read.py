@@ -1,6 +1,6 @@
 """Build exact, source-pinned browser pages outside document requests.
 
-Code version: v1.1.1-codex.0
+Code version: v1.2.0-codex.0
 """
 
 from collections import OrderedDict, deque
@@ -15,6 +15,8 @@ import stat
 import sys
 from threading import Condition, Event, Lock, Thread
 import time
+
+from .wechat_archive import WechatResourceTimelineProjectionError
 
 
 MAX_TASKS = 16
@@ -63,14 +65,15 @@ def _result_size(value):
 class WechatBrowserReadService:
     """Retain one-use verified results; status never opens a database or waits."""
 
-    def __init__(self, root, *, loader=None, pin=None, validator=None):
+    def __init__(self, root, *, loader=None, pin=None, validator=None, query_history=None):
         self.root = Path(root)
         base = self.root / "messaging" / "wechat"
         self._history_required = any((base / name).exists() for name in (
             "history.sqlite3", "contacts.sqlite3", "resource_references.sqlite3",
             "resource_revalidated.sqlite3", "macos_recovery.sqlite3",
         ))
-        self.loader = loader
+        self._query_history = query_history
+        self.loader = self._load if loader is None else loader
         self._pin_override = pin
         self.validator = validator or self._validate
         self._condition = Condition()
@@ -191,6 +194,16 @@ class WechatBrowserReadService:
                     conversation_id=parameters.get("session") or None, strict=True,
                 )
         self._validate_contacts(repository.path.with_name("contacts.sqlite3"))
+
+    def _load(self, parameters, *, strict_timeline=False):
+        query_history = self._query_history
+        if query_history is None:
+            from .chat_history_browser import query_chat_history
+
+            query_history = query_chat_history
+        return query_history(
+            self.root, source="wechat", strict_wechat_timeline=strict_timeline, **parameters,
+        )
 
     @staticmethod
     def _contacts_identity(path):
@@ -360,18 +373,23 @@ class WechatBrowserReadService:
             try:
                 if self._pin() != task["pin"]:
                     raise ValueError("Saved-view inputs changed before checking.")
-                self.validator(task["parameters"])
+                parameters = task["parameters"]
+                loader = self._load if self.loader is None else self.loader
+                strict_timeline = (
+                    bool(parameters.get("session"))
+                    and loader == self._load and self.validator == self._validate
+                )
+                if strict_timeline:
+                    self._validate_contacts(self.root / "messaging" / "wechat" / "contacts.sqlite3")
+                else:
+                    self.validator(parameters)
                 with self._condition:
                     if self._closing:
                         raise RuntimeError("The saved-view reader is shutting down.")
                 # A conversation read may publish counts while a list page is built.
-                list_proofs = self._proofs() if not task["parameters"].get("session") else None
-                if self.loader is None:
-                    from .chat_history_browser import query_chat_history
-
-                    page = query_chat_history(self.root, source="wechat", **task["parameters"])
-                else:
-                    page = self.loader(task["parameters"])
+                list_proofs = self._proofs() if not parameters.get("session") else None
+                # Build the strict timeline on the connection that reads the conversation.
+                page = self._load(parameters, strict_timeline=True) if strict_timeline else loader(parameters)
                 metadata = page.messaging or {}
                 if metadata.get("resource_index_status") in {"stale", "invalid"}:
                     raise _UnverifiedResourceIndex
@@ -397,7 +415,7 @@ class WechatBrowserReadService:
                     self._result_bytes += size
                     task.update(result=page, size=size, proofs=proofs, finished=time.monotonic(),
                                 state="succeeded", message="Saved records are ready.")
-            except _UnverifiedResourceIndex:
+            except (_UnverifiedResourceIndex, WechatResourceTimelineProjectionError):
                 with self._condition:
                     task.update(state="failed", message=_RESOURCE_INDEX_WARNING)
             except Exception:

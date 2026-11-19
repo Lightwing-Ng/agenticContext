@@ -1,11 +1,15 @@
 """The durable Mac bank proof is authenticated and never grants scope authority.
 
-Code version: v1.0.0-codex.0
+Code version: v1.1.0-codex.0
 """
 
 from contextlib import closing
+from copy import deepcopy
+import errno
+import hashlib
 import os
 import sqlite3
+import sys
 from types import SimpleNamespace
 
 import pytest
@@ -28,6 +32,103 @@ def _attach(fixture):
 
 def _proof(fixture):
     return fixture.history.with_name("browser_cache") / proof_cache._FILENAME
+
+
+def test_bank_payload_digest_keeps_the_existing_order_and_bytes(bank_archive):
+    fixture = bank_archive
+    fixtures._publish(fixture)
+    with closing(sqlite3.connect(fixture.bank_path)) as connection:
+        canonical = hashlib.sha256()
+        for table in (
+            "sources", "conversation_proofs", "event_keys", "occurrences", "gaps",
+            "messages", "conversations", "shadow_replacements",
+        ):
+            canonical.update(table.encode())
+            for row in connection.execute(f"SELECT * FROM {table} ORDER BY 1,2"):
+                canonical.update(bank._json(tuple(row)).encode())
+                canonical.update(b"\n")
+        assert bank._rows_digest(connection) == canonical.hexdigest()
+
+
+def test_publication_preserves_a_signed_proof_for_a_fresh_reader(bank_archive, monkeypatch):
+    fixture = bank_archive
+    candidate, receipt = fixtures._stage(fixture)
+    bank.publish_mac_recovery_bank(fixture.root, candidate, receipt, reuse_validation=True)
+    assert _proof(fixture).is_file()
+    bank._VALIDATED.clear()
+
+    def reject(*args, **kwargs):
+        pytest.fail("A fresh reader repeated the complete publication proof.")
+
+    monkeypatch.setattr(bank, "_validate_bank", reject)
+    assert _attach(fixture)["schema_version"] == "3"
+
+
+def test_publication_cannot_persist_a_proof_under_changed_code(bank_archive, monkeypatch):
+    fixture = bank_archive
+    candidate, receipt = fixtures._stage(fixture)
+    monkeypatch.setattr(proof_cache, "_code_fingerprint", lambda: "original")
+
+    def change_code():
+        monkeypatch.setattr(proof_cache, "_code_fingerprint", lambda: "changed")
+
+    bank.publish_mac_recovery_bank(
+        fixture.root, candidate, receipt, reuse_validation=True, before_replace=change_code,
+    )
+    assert fixture.bank_path.is_file() and not _proof(fixture).exists()
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="Requires the macOS clone syscall.")
+@pytest.mark.parametrize("unsupported_volume", [False, True])
+def test_optional_clone_preserves_baseline_and_retains_backup_fallback(
+    bank_archive, monkeypatch, tmp_path, unsupported_volume,
+):
+    fixture = bank_archive
+    fixtures._publish(fixture)
+    baseline = fixture.bank_path.read_bytes()
+    packet = deepcopy(fixture.group)
+    packet["messages"].append(fixtures._message(57, 1, raw="Private staged candidate message"))
+    fallback, reference = fixtures._stage(fixture, packets=[packet], name="backup-candidate")
+    workspace = tmp_path / "private"
+    workspace.mkdir(mode=0o700)
+    candidate = workspace / "clone-candidate.sqlite3"
+    clone = bank._clone_verified_bank
+    observed = []
+    attempted = []
+
+    def verify_clone(*args):
+        cloned = clone(*args)
+        observed.append(cloned)
+        if cloned:
+            assert candidate.read_bytes() == baseline
+            assert candidate.stat().st_ino != fixture.bank_path.stat().st_ino
+        else:
+            assert not candidate.exists()
+        return cloned
+
+    monkeypatch.setattr(bank, "_clone_verified_bank", verify_clone)
+    if unsupported_volume:
+        def unsupported(*args):
+            attempted.append(args)
+            bank.ctypes.set_errno(errno.ENOTSUP)
+            return -1
+
+        monkeypatch.setattr(bank.ctypes, "CDLL", lambda *args, **kwargs: SimpleNamespace(
+            fclonefileat=unsupported,
+        ))
+
+    receipt = bank.stage_mac_recovery_bank(
+        fixture.root, [packet], candidate, account_ids=(fixtures.OWNER,),
+        conversation_id=fixture.group_session, clone_baseline=True,
+    )
+    if not unsupported_volume and observed == [False]:
+        pytest.skip("The temporary workspace does not admit APFS clones.")
+    assert observed == [not unsupported_volume]
+    assert len(attempted) == int(unsupported_volume)
+    assert receipt["added"] == reference["added"] == 1
+    with closing(sqlite3.connect(candidate)) as staged, closing(sqlite3.connect(fallback)) as copied:
+        assert bank._rows_digest(staged) == bank._rows_digest(copied)
+    assert fixture.bank_path.read_bytes() == baseline
 
 
 def test_restart_reuses_whole_bank_validation_but_still_checks_scope(

@@ -1,6 +1,6 @@
 """Read cached text sessions for the local browser."""
 
-# Code version: v1.29.0-codex.0
+# Code version: v1.29.1-codex.0
 
 from __future__ import annotations
 
@@ -826,6 +826,7 @@ def query_chat_history(
     project: str = "",
     account: str = "",
     chat_kind: str = "all",
+    strict_wechat_timeline: bool = False,
 ) -> ChatHistoryPage:
     """Read cached text sessions, global search results, or one session's complete history."""
     normalized_source = normalize_chat_history_source(source)
@@ -835,6 +836,7 @@ def query_chat_history(
         return query_wechat_history(
             local_store_root, account=account, chat_kind=chat_kind, query=query,
             sort=sort, page=page, page_size=page_size, session=session,
+            strict_timeline=strict_wechat_timeline,
         )
     normalized_query = str(query or "").strip()[:120].casefold()
     query_terms = tuple(normalized_query.split())

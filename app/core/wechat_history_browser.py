@@ -1,6 +1,6 @@
 """Adapt indexed human conversations to the shared Local resources page model."""
 
-# Code version: v1.34.0-codex.0
+# Code version: v1.34.1-codex.0
 
 from __future__ import annotations
 
@@ -818,6 +818,7 @@ def query_wechat_history(
     session="",
     persist_event_cache=True,
     previous_snapshot=False,
+    strict_timeline=False,
 ):
     """Reuse page and session contracts while retaining human-message semantics."""
     from .chat_history_browser import (
@@ -844,6 +845,7 @@ def query_wechat_history(
     else:
         result = repository.query(
             **list_parameters, query=query, session=session, persist_event_cache=persist_event_cache,
+            strict_timeline=strict_timeline,
         )
 
     display_names = WechatDisplayNames(local_store_root)
