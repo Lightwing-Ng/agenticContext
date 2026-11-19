@@ -1,6 +1,6 @@
 """Decode bounded WeChat WCDB text without opening media or attachment files.
 
-Code version: v1.0.0-codex.0
+Code version: v1.1.0-codex.0
 
 Plaintext works on Python 3.13. Compressed cells require Python 3.14's optional
 ``compression.zstd`` standard-library backend and, when applicable, the exact
@@ -73,6 +73,11 @@ def get_wcdb_dictionary_id(value: bytes | bytearray | memoryview) -> int:
     raw = _blob(value)
     backend = _zstd_backend()
     return _frame_info(backend, raw).dictionary_id
+
+
+def get_wcdb_frame_size(value: bytes) -> int | None:
+    """Read a compressed frame's declared output size for a bounded decode."""
+    return _frame_info(_zstd_backend(), value).decompressed_size
 
 
 def decode_wcdb_text(

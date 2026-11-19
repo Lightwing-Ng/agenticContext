@@ -1,6 +1,6 @@
 """Stage indexed, source-bound Mac recovery without rewriting the original archive.
 
-Code version: v1.6.2-codex.0
+Code version: v1.7.0-codex.0
 """
 
 from __future__ import annotations
@@ -9,7 +9,9 @@ from collections import Counter
 from concurrent.futures import Future, ProcessPoolExecutor
 from concurrent.futures.process import BrokenProcessPool
 from contextlib import closing, contextmanager
+import ctypes
 from datetime import datetime
+import errno
 import hashlib
 import json
 from multiprocessing import get_context
@@ -18,12 +20,13 @@ from pathlib import Path
 import re
 import sqlite3
 import stat
+import sys
 from threading import RLock
 
 from . import wechat_macos_recovery as legacy
 from . import wechat_macos_bank_v4_reader as schema4_reader
 from .compute_resources import resolve_cpu_process_workers
-from .owner_only_files import ensure_owner_only, owner_only_problem
+from .owner_only_files import ensure_owner_only, owner_only_directory_problem, owner_only_problem
 from .platform_lock import lock_file, unlock_file
 from .wechat_archive import _identifier, _time_fields, wechat_archive_path
 from .wechat_completion_clone import sync_completion_file
@@ -32,7 +35,7 @@ from .wechat_resource_index import _APP_LABEL_FIELDS as _LINK_LABEL_FIELDS, _KIN
 from .wechat_text import is_native_pat_projection, native_components_text
 
 
-CODE_VERSION = "v1.6.2-codex.0"
+CODE_VERSION = "v1.7.0-codex.0"
 VERSION = "v1.4.0-codex.0"
 MAX_PACKET_BYTES = 128 * 1024**2
 MAX_PACKET_MESSAGES = 100_000
@@ -43,6 +46,7 @@ _VALIDATED = {}
 _VALIDATING = {}
 _MIN_PARALLEL_SHADOW_ROWS = 1_024
 _MAX_VALIDATION_WORKERS = 3
+_CLONE_NOOWNERCOPY = 0x0002
 _SCHEMA_CONTRACT = {}
 _SHADOW_VALIDATED = {}
 _SHADOW_VALIDATING = {}
@@ -141,10 +145,12 @@ def _sha(value):
     return hashlib.sha256(_json(value).encode()).hexdigest()
 
 
-def _file_sha(path):
+def _file_sha(path, *, check_cancel=None):
     digest = hashlib.sha256()
     with Path(path).open("rb") as stream:
         while block := stream.read(4 * 1024**2):
+            if check_cancel is not None:
+                check_cancel()
             digest.update(block)
     return digest.hexdigest()
 
@@ -823,8 +829,9 @@ def _row(packet, message):
     return projected
 
 
-def _rows_digest(connection):
+def _rows_digest(connection, *, check_cancel=None):
     digest = hashlib.sha256()
+    encode_row = json.JSONEncoder(ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode
     tables = [
         "sources",
         "conversation_proofs",
@@ -842,9 +849,10 @@ def _rows_digest(connection):
         tables.append("projection_revisions")
     for table in tables:
         digest.update(table.encode())
-        for row in connection.execute(f"SELECT * FROM {table} ORDER BY 1,2"):
-            digest.update(_json(tuple(row)).encode())
-            digest.update(b"\n")
+        for index, row in enumerate(connection.execute(f"SELECT * FROM {table} ORDER BY 1,2")):
+            if check_cancel is not None and index % 256 == 0:
+                check_cancel()
+            digest.update(encode_row(tuple(row)).encode() + b"\n")
     return digest.hexdigest()
 
 
@@ -1118,8 +1126,93 @@ def _upgrade_stub(stub, packet, message):
     }
 
 
+def _clone_verified_bank(history, target, candidate, inputs, check_cancel):
+    """Clone a sealed, private bank from an exact source descriptor before opening it writable."""
+    parents = (candidate.parent, candidate.parent.parent)
+    if (
+        sys.platform != "darwin" or owner_only_problem(target)
+        or stat.S_IMODE(target.lstat().st_mode) != 0o600
+        or any(os.path.lexists(str(target) + suffix) for suffix in ("-wal", "-shm", "-journal"))
+        or any(owner_only_directory_problem(parent) for parent in parents)
+    ):
+        return False
+    try:
+        clone = ctypes.CDLL("/usr/lib/libSystem.B.dylib", use_errno=True).fclonefileat
+    except (AttributeError, OSError):
+        return False
+    clone.argtypes = (ctypes.c_int, ctypes.c_int, ctypes.c_char_p, ctypes.c_int)
+    clone.restype = ctypes.c_int
+    identity = inputs[target.name]
+    flags = os.O_RDONLY | os.O_NOFOLLOW
+    with os.fdopen(os.open(target, flags), "rb") as source:
+        directory_fd = os.open(candidate.parent, flags | os.O_DIRECTORY)
+        try:
+            directory = os.fstat(directory_fd)
+            if directory.st_dev != identity["dev"]:
+                return False
+
+            def unchanged():
+                observed = os.fstat(source.fileno())
+                return (
+                    all(getattr(observed, "st_" + key) == value for key, value in identity.items())
+                    and _inputs(history) == inputs
+                )
+
+            _validated_bank_metadata(target, history, identity, inputs)
+            if check_cancel is not None:
+                check_cancel()
+            if not unchanged():
+                raise ValueError("The original Mac bank changed before cloning.")
+            if clone(source.fileno(), directory_fd, os.fsencode(candidate.name), _CLONE_NOOWNERCOPY) != 0:
+                code = ctypes.get_errno()
+                if (
+                    code in {errno.ENOSYS, errno.ENOTSUP, errno.EOPNOTSUPP, errno.EXDEV}
+                    and not os.path.lexists(candidate)
+                ):
+                    return False
+                raise OSError(code, "Could not clone the verified Mac recovery bank.")
+            result = _identity(candidate)
+            directory_entry = os.stat(candidate.name, dir_fd=directory_fd, follow_symlinks=False)
+            if (
+                not unchanged()
+                or (result["dev"], result["ino"]) != (directory_entry.st_dev, directory_entry.st_ino)
+                or result["ino"] == identity["ino"]
+                or any(result[key] != identity[key] for key in ("dev", "size", "mtime_ns"))
+                or owner_only_problem(candidate)
+                or stat.S_IMODE(directory_entry.st_mode) != 0o600
+                or any(owner_only_directory_problem(parent) for parent in parents)
+            ):
+                raise ValueError("The cloned Mac bank did not retain its verified baseline.")
+            if check_cancel is not None:
+                check_cancel()
+            return True
+        finally:
+            os.close(directory_fd)
+
+
+@contextmanager
+def _cancellable_sqlite(connection, check_cancel):
+    if check_cancel is None:
+        yield
+        return
+
+    def check_progress():
+        check_cancel()
+        return 0
+
+    connection.set_progress_handler(check_progress, 10_000)
+    try:
+        yield
+    except sqlite3.OperationalError:
+        check_cancel()
+        raise
+    finally:
+        connection.set_progress_handler(None, 0)
+
+
 def stage_mac_recovery_bank(
-    local_store_root, packets, candidate_path, *, account_ids, progress=None
+    local_store_root, packets, candidate_path, *, account_ids, progress=None,
+    conversation_id=None, check_cancel=None, clone_baseline=False,
 ):
     """Build a new indexed candidate from explicit authenticated per-peer packets."""
     from .wechat_archive import WechatArchiveRepository, _file_identity
@@ -1156,10 +1249,17 @@ def stage_mac_recovery_bank(
     }
     processed_scopes, source_scopes, types = set(), set(), Counter()
     catalog_hashes = {}
-    descriptor = os.open(
-        candidate, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600,
+    if check_cancel is not None:
+        check_cancel()
+    cloned = (
+        clone_baseline is True and inputs[target.name] is not None
+        and _clone_verified_bank(history, target, candidate, inputs, check_cancel)
     )
-    os.close(descriptor)
+    if not cloned:
+        descriptor = os.open(
+            candidate, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600,
+        )
+        os.close(descriptor)
     try:
         ensure_owner_only(candidate)
     except OSError:
@@ -1171,18 +1271,24 @@ def stage_mac_recovery_bank(
                 history.resolve().as_uri() + "?mode=ro&immutable=1", uri=True
             )
         ) as original,
-        closing(sqlite3.connect(candidate)) as output,
+        closing(sqlite3.connect(candidate.absolute().as_uri() + "?mode=rw", uri=True)) as output,
+        _cancellable_sqlite(original, check_cancel),
+        _cancellable_sqlite(output, check_cancel),
     ):
         original.row_factory = sqlite3.Row
         original.execute("PRAGMA temp_store=MEMORY")
-        if target.exists():
-            with closing(
-                sqlite3.connect(
-                    target.resolve().as_uri() + "?mode=ro&immutable=1", uri=True
-                )
-            ) as previous:
-                _validate_bank(previous, history, inputs)
-                previous.backup(output)
+        if inputs[target.name] is not None:
+            if not cloned:
+                with closing(sqlite3.connect(
+                    target.resolve().as_uri() + "?mode=ro&immutable=1", uri=True,
+                )) as previous:
+                    with _cancellable_sqlite(previous, check_cancel):
+                        _validate_bank(previous, history, inputs, check_cancel=check_cancel)
+                    if check_cancel is None:
+                        previous.backup(output)
+                    else:
+                        check_cancel()
+                        previous.backup(output, pages=1024, progress=lambda *_: check_cancel())
             if (
                 output.execute(
                     "SELECT 1 FROM sqlite_master WHERE name='shadow_replacements'"
@@ -1206,7 +1312,7 @@ def stage_mac_recovery_bank(
         )
         repository = WechatArchiveRepository(local_store_root)
         _conversations, message_table, status = repository._timeline_tables(
-            original, _file_identity(history), strict=True
+            original, _file_identity(history), conversation_id=conversation_id, strict=True
         )
         if status not in {"ready", "absent"}:
             raise ValueError(
@@ -1216,12 +1322,16 @@ def stage_mac_recovery_bank(
             _validate_packet(packet, accounts)
             conversation = _binding(original, packet)
             session = packet["session_id"]
+            if conversation_id is not None and session != conversation_id:
+                raise ValueError("A staged Mac bank packet crossed its selected conversation.")
             if session not in processed_scopes:
                 count = 0
                 for observed in original.execute(
                     f"SELECT * FROM {message_table} WHERE conversation_id=?", (session,)
                 ):
                     count += 1
+                    if check_cancel is not None and count % 256 == 0:
+                        check_cancel()
                     if count > MAX_SCOPE_MESSAGES:
                         raise ValueError(
                             "Mac comparison scope exceeds its bounded row budget."
@@ -1279,7 +1389,9 @@ def stage_mac_recovery_bank(
             output.execute(
                 "INSERT OR IGNORE INTO selected_scopes VALUES(?)", (session,)
             )
-            for message in packet["messages"]:
+            for index, message in enumerate(packet["messages"]):
+                if check_cancel is not None and index % 256 == 0:
+                    check_cancel()
                 projected = _row(packet, message)
                 canonical = dict(zip(message_columns, projected, strict=True))
                 signature = _event_signature(canonical)
@@ -1498,18 +1610,14 @@ def stage_mac_recovery_bank(
                 {key: value for key, value in inputs.items() if key != target.name}
             ),
             "account_ids": _json(retained_accounts),
-            "payload_sha256": _rows_digest(output),
+            "payload_sha256": _rows_digest(output, check_cancel=check_cancel),
         }
         output.executemany(
             "INSERT OR REPLACE INTO archive_info VALUES(?,?)", metadata.items()
         )
         output.commit()
-        if output.execute("PRAGMA integrity_check").fetchall() != [("ok",)]:
-            # sqlite3.Row equality differs from tuple equality.
-            if [row[0] for row in output.execute("PRAGMA integrity_check")] != ["ok"]:
-                raise ValueError(
-                    "The staged Mac recovery bank failed full integrity checking."
-                )
+        if [row[0] for row in output.execute("PRAGMA integrity_check")] != ["ok"]:
+            raise ValueError("The staged Mac recovery bank failed full integrity checking.")
         report.update(
             total=output.execute("SELECT COUNT(*) FROM messages").fetchone()[0],
             scopes=output.execute("SELECT COUNT(*) FROM conversations").fetchone()[0],
@@ -1519,19 +1627,21 @@ def stage_mac_recovery_bank(
             ).fetchone()[0],
         )
         report["added_total"] = report["total"] - report["upgraded_total"]
-    if _inputs(history) != inputs:
+    candidate_identity = _identity(candidate)
+    candidate_sha256 = _file_sha(candidate, check_cancel=check_cancel)
+    if _inputs(history) != inputs or _identity(candidate) != candidate_identity:
         raise ValueError("A source archive changed during Mac recovery bank staging.")
     return {
         **report,
         "candidate_path": str(candidate),
-        "candidate_sha256": _file_sha(candidate),
-        "candidate_identity": _identity(candidate),
+        "candidate_sha256": candidate_sha256,
+        "candidate_identity": candidate_identity,
         "input_identities": inputs,
         "account_ids": list(accounts),
     }
 
 
-def _validate_bank(connection, history, current_inputs=None):
+def _validate_bank(connection, history, current_inputs=None, *, check_cancel=None):
     global _SCHEMA_CONTRACT
     metadata = dict(connection.execute("SELECT key,value FROM archive_info"))
     schema_version = metadata.get("schema_version")
@@ -1577,7 +1687,7 @@ def _validate_bank(connection, history, current_inputs=None):
         raise ValueError(
             "The Mac recovery bank is stale against its original timeline inputs."
         )
-    if metadata.get("payload_sha256") != _rows_digest(connection):
+    if metadata.get("payload_sha256") != _rows_digest(connection, check_cancel=check_cancel):
         raise ValueError(
             "The Mac recovery bank payload differs from its sealed manifest."
         )
@@ -1627,7 +1737,7 @@ def _publication_lock(history):
             ) from None
         try:
             verify()
-            yield
+            yield verify
         finally:
             unlock_file(handle)
 
@@ -1640,18 +1750,21 @@ def mac_recovery_publication_guard(local_store_root):
 
 
 def publish_mac_recovery_bank(
-    local_store_root, candidate_path, receipt, *, before_replace=None
+    local_store_root, candidate_path, receipt, *, before_replace=None,
+    reuse_validation=False, check_cancel=None,
 ):
     """Recheck staged inputs and optional cancellation before the atomic publication."""
+    from . import wechat_macos_bank_validation_cache as proof_cache
+
     history = wechat_archive_path(local_store_root)
     candidate = Path(candidate_path)
     target = mac_recovery_bank_path(local_store_root)
-    with _LOCK, _publication_lock(history):
+    with _LOCK, _publication_lock(history) as verify_lock:
         candidate_identity = _identity(candidate)
         if (
             str(candidate) != receipt["candidate_path"]
             or candidate_identity != receipt["candidate_identity"]
-            or _file_sha(candidate) != receipt["candidate_sha256"]
+            or _file_sha(candidate, check_cancel=check_cancel) != receipt["candidate_sha256"]
         ):
             raise ValueError(
                 "The Mac recovery bank candidate differs from its staging receipt."
@@ -1660,27 +1773,41 @@ def publish_mac_recovery_bank(
             raise ValueError(
                 "Mac recovery bank source identities changed before publication."
             )
+        if _identity(candidate) != candidate_identity:
+            raise ValueError("The Mac recovery bank candidate changed during its byte proof.")
+        validation_pin = proof_cache.proof_pin(
+            target, history, candidate_identity, receipt["input_identities"],
+        ) if reuse_validation else None
         with closing(
             sqlite3.connect(
                 candidate.resolve().as_uri() + "?mode=ro&immutable=1", uri=True
             )
         ) as connection:
-            _validate_bank(connection, history)
+            with _cancellable_sqlite(connection, check_cancel):
+                metadata = _validate_bank(
+                    connection, history, receipt["input_identities"], check_cancel=check_cancel,
+                )
         if owner_only_problem(candidate) or (
             os.name != "nt" and stat.S_IMODE(candidate.stat().st_mode) != 0o600
         ):
             raise ValueError("The reviewed Mac bank candidate must remain owner-only.")
         sync_completion_file(candidate)
+        if before_replace is not None:
+            before_replace()
+        if check_cancel is not None:
+            check_cancel()
+        verify_lock()
         if (
             _identity(candidate) != candidate_identity
             or _inputs(history) != receipt["input_identities"]
+            or owner_only_problem(candidate)
         ):
             raise ValueError(
                 "A staged Mac bank input changed immediately before publication."
             )
-        if before_replace is not None:
-            before_replace()
         os.replace(candidate, target)
+        if reuse_validation:
+            _remember_published_bank(target, history, candidate_identity, receipt, metadata, validation_pin)
         return {
             **receipt,
             "bank_path": str(target),
@@ -1688,17 +1815,50 @@ def publish_mac_recovery_bank(
         }
 
 
-def _attach(connection, history):
-    path = Path(history).with_name("macos_recovery.sqlite3")
-    identity = _identity(path, optional=True)
-    if identity is None:
-        return None
-    inputs = _inputs(Path(history))
-    connection.execute(
-        "ATTACH DATABASE ? AS macos_recovery_bank",
-        (path.resolve().as_uri() + "?mode=ro&immutable=1",),
-    )
-    key = (str(path.resolve()), _json(identity), _json(inputs))
+def _validation_key(path, identity, inputs):
+    return str(path.resolve()), _json(identity), _json(inputs)
+
+
+def _remember_validated_bank(key, metadata):
+    with _LOCK:
+        if key not in _VALIDATED and len(_VALIDATED) >= 4:
+            _VALIDATED.pop(next(iter(_VALIDATED)))
+        _VALIDATED[key] = metadata
+
+
+def _remember_published_bank(target, history, candidate_identity, receipt, metadata, validation_pin):
+    """Retain the complete proof only for the exact published candidate bytes."""
+    from . import wechat_macos_bank_validation_cache as proof_cache
+
+    try:
+        published = _identity(target)
+        if owner_only_problem(target) or any(
+            published[key] != candidate_identity[key] for key in ("dev", "ino", "size", "mtime_ns")
+        ):
+            return
+        inputs = {**receipt["input_identities"], target.name: published}
+
+        def unchanged():
+            return _inputs(history) == inputs
+
+        if not unchanged():
+            return
+        if published != candidate_identity and _file_sha(target) != receipt["candidate_sha256"]:
+            return
+        if not unchanged():
+            return
+        _remember_validated_bank(_validation_key(target, published, inputs), metadata)
+        if validation_pin is not None:
+            pin = proof_cache.proof_pin(target, history, published, inputs)
+            if pin == {**validation_pin, "identity": published, "inputs": inputs}:
+                proof_cache.write_proof(target.parent / "browser_cache", pin, metadata, unchanged)
+    except (OSError, ValueError):
+        # Publication is already complete. A later reader can verify independently.
+        return
+
+
+def _validated_bank_metadata(path, history, identity, inputs):
+    key = _validation_key(path, identity, inputs)
     with _LOCK:
         metadata = _VALIDATED.get(key)
         pending = _VALIDATING.get(key) if metadata is None else None
@@ -1731,9 +1891,7 @@ def _attach(connection, history):
                 if not unchanged():
                     raise ValueError("The Mac recovery bank changed during validation.")
                 with _LOCK:
-                    if len(_VALIDATED) >= 4:
-                        _VALIDATED.pop(next(iter(_VALIDATED)))
-                    _VALIDATED[key] = metadata
+                    _remember_validated_bank(key, metadata)
                     _VALIDATING.pop(key, None)
                 pending.set_result(metadata)
             except BaseException as error:
@@ -1744,6 +1902,19 @@ def _attach(connection, history):
     if _identity(path) != identity or _inputs(Path(history)) != inputs:
         raise ValueError("The Mac recovery bank changed during validation.")
     return metadata
+
+
+def _attach(connection, history):
+    path = Path(history).with_name("macos_recovery.sqlite3")
+    identity = _identity(path, optional=True)
+    if identity is None:
+        return None
+    inputs = _inputs(Path(history))
+    connection.execute(
+        "ATTACH DATABASE ? AS macos_recovery_bank",
+        (path.resolve().as_uri() + "?mode=ro&immutable=1",),
+    )
+    return _validated_bank_metadata(path, history, identity, inputs)
 
 
 def _validate_shadow_rows(connection, alias, name, *, rowid_range=None):

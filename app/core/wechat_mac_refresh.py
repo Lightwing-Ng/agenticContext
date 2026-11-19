@@ -1,6 +1,6 @@
 """Run explicit, bounded Mac WeChat conversation refreshes in background workers.
 
-Code version: v1.0.1-codex.0
+Code version: v1.1.0-codex.0
 """
 
 from __future__ import annotations
@@ -15,8 +15,17 @@ from threading import Event, RLock, Thread
 
 from . import wechat_macos_recovery_bank as bank
 from .owner_only_files import ensure_owner_only_directory
-from .wechat_archive import WechatArchiveRepository, wechat_archive_path
-from .wechat_mac_refresh_projection import prepare_packet, resolve_scope
+from .wechat_archive import (
+    WechatArchiveRepository,
+    WechatTimelineProjectionError,
+    wechat_archive_path,
+)
+from .wechat_mac_refresh_projection import (
+    ConversationComparison,
+    native_projection_executor,
+    prepare_packet,
+    resolve_scope,
+)
 from .wechat_mac_refresh_source import KeyRegistry, RefreshError, read_database
 
 
@@ -127,11 +136,10 @@ class WechatMacRefreshService:
         if self._shutdown.is_set():
             raise RefreshError("The local refresh was interrupted before publication.")
 
-    def _publish(self, packets, owner, baseline):
+    def _publish(self, packets, packet_bytes, scope, baseline):
         history = wechat_archive_path(self.root)
         target = bank.mac_recovery_bank_path(self.root)
         bank_bytes = target.stat().st_size if target.exists() else 0
-        packet_bytes = sum(len(bank._json(packet).encode()) for packet in packets)
         if bank_bytes > MAX_BANK_BYTES or packet_bytes > MAX_PACKET_BYTES:
             raise RefreshError(
                 "This refresh exceeds the bounded temporary storage budget."
@@ -151,14 +159,20 @@ class WechatMacRefreshService:
         with tempfile.TemporaryDirectory(
             prefix=".mac-refresh-", dir=history.parent
         ) as directory:
-            ensure_owner_only_directory(Path(directory))
-            candidate = Path(directory) / "candidate.sqlite3"
+            workspace = Path(directory)
+            ensure_owner_only_directory(workspace)
+            staging = workspace / "staged"
+            staging.mkdir(mode=0o700)
+            ensure_owner_only_directory(staging)
+            candidate = staging / "candidate.sqlite3"
             receipt = bank.stage_mac_recovery_bank(
                 self.root,
                 packets,
                 candidate,
-                account_ids=[owner],
-                progress=lambda _progress: self._check_running(),
+                account_ids=[scope.account_id],
+                conversation_id=scope.session_id,
+                clone_baseline=True,
+                check_cancel=self._check_running,
             )
             self._check_running()
             if receipt["input_identities"] != baseline:
@@ -166,7 +180,12 @@ class WechatMacRefreshService:
                     "The archive changed before refresh staging. Try again shortly."
                 )
             return bank.publish_mac_recovery_bank(
-                self.root, candidate, receipt, before_replace=self._check_running
+                self.root,
+                candidate,
+                receipt,
+                before_replace=self._check_running,
+                reuse_validation=True,
+                check_cancel=self._check_running,
             )
 
     def _run(self, token, scope):
@@ -192,46 +211,59 @@ class WechatMacRefreshService:
             partial = bool(self.registry.missing_database_count(references))
             packets = []
             checked = 0
-            for reference in references:
-                self._check_running()
-                database = read_database(reference, check_cancel=self._check_running)
-                try:
-                    packet, counts = prepare_packet(
-                        self.root, scope, database, check_cancel=self._check_running
-                    )
-                    checked += counts["total"]
-                    partial = partial or database.partial or bool(counts["excluded"])
-                    if packet is not None:
-                        packets.append(packet)
-                    if (
-                        sum(len(bank._json(value).encode()) for value in packets)
-                        > MAX_PACKET_BYTES
-                    ):
-                        raise RefreshError(
-                            "This refresh exceeds its bounded message budget."
+            packet_bytes = 0
+            comparison = ConversationComparison(history, scope, baseline)
+            with native_projection_executor() as (executor, in_flight):
+                for reference in references:
+                    self._check_running()
+                    database = read_database(reference, check_cancel=self._check_running)
+                    try:
+                        packet, counts = prepare_packet(
+                            self.root,
+                            scope,
+                            database,
+                            check_cancel=self._check_running,
+                            comparison=comparison,
+                            projection_executor=executor,
+                            projection_in_flight=in_flight,
                         )
-                finally:
-                    database.close()
-                self._update(token, checked=checked, partial=partial)
+                        checked += counts["total"]
+                        partial = partial or database.partial or bool(counts["excluded"])
+                        if packet is not None:
+                            packet_bytes += len(bank._json(packet).encode())
+                            if packet_bytes > MAX_PACKET_BYTES:
+                                raise RefreshError(
+                                    "This refresh exceeds its bounded message budget."
+                                )
+                            packets.append(packet)
+                    finally:
+                        database.close()
+                    self._update(token, checked=checked, partial=partial)
             self._check_running()
-            if bank._inputs(history) != baseline:
-                raise RefreshError(
-                    "The archive changed during refresh. Try again shortly."
-                )
+            comparison.require_current(history, scope)
+            del comparison
             added = 0
             if packets:
-                receipt = self._publish(packets, scope.account_id, baseline)
+                receipt = self._publish(packets, packet_bytes, scope, baseline)
                 added = receipt["added"]
                 partial = partial or bool(receipt["conflicts"] or receipt["variants"])
                 self._update(token, added=added)
             self._check_running()
-            current = WechatArchiveRepository(self.root).query(
+            repository = WechatArchiveRepository(self.root)
+            selection = dict(
                 account="account:" + scope.account_id,
                 kind=scope.kind,
                 session=scope.session_id,
                 page_size=1,
-                persist_event_cache=False,
             )
+            try:
+                current = repository.query(
+                    **selection,
+                    strict_timeline=bool(packets),
+                    persist_event_cache=bool(packets),
+                )
+            except WechatTimelineProjectionError:
+                current = repository.query(**selection, persist_event_cache=False)
             if current["current"] is None:
                 raise RefreshError(
                     "The refreshed conversation is temporarily unavailable."

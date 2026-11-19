@@ -1,6 +1,6 @@
 """Relative and absolute callers share proof caches without bypassing input checks.
 
-Code version: v1.0.1-codex.0
+Code version: v1.1.0-codex.0
 """
 
 from pathlib import Path
@@ -9,7 +9,7 @@ import sqlite3
 import pytest
 
 from app.core import wechat_conversation_events as events
-from app.core.wechat_archive import WechatArchiveRepository
+from app.core.wechat_archive import WechatArchiveRepository, WechatTimelineProjectionError
 from tests import test_wechat_conversation_events as fixtures
 
 
@@ -85,6 +85,69 @@ def test_warm_cache_crosses_root_spelling_without_rescanning_source_bodies(
     assert events.cache_only_summaries(f.repository) == {fixtures.SESSION: 3}
     assert path.read_bytes() == original
     assert path.stat().st_mtime_ns == original_mtime
+
+
+def test_strict_selected_readback_publishes_the_browser_event_proof(event_store, monkeypatch):
+    fixture = event_store
+    cache = events._cache_path(fixture.repository, fixtures.SESSION)
+    before = fixture.repository.path.read_bytes(), fixture.registry.read_bytes()
+    query = {
+        "account": "account:" + fixtures.OWNER,
+        "kind": "direct",
+        "session": fixtures.SESSION,
+        "page_size": 1,
+    }
+    timeline = fixture.repository._timeline_tables
+    validated = []
+
+    def observe_scope(*args, **options):
+        validated.append((options["conversation_id"], options["strict"]))
+        return timeline(*args, **options)
+
+    monkeypatch.setattr(fixture.repository, "_timeline_tables", observe_scope)
+    readback = fixture.repository.query(**query, strict_timeline=True)
+    assert validated == [(fixtures.SESSION, True)]
+    assert readback["count"] == readback["message_count"] == 3
+    assert readback["event_projection"]["count_delta"] == 3
+    assert [item["id"] for item in readback["messages"]] == [fixture.ids[0][1]]
+    cache_state = cache.read_bytes(), cache.stat().st_mtime_ns
+
+    monkeypatch.setattr(
+        events, "_scan", lambda *_args: pytest.fail("Browser must reuse the verified event proof.")
+    )
+    browser = WechatArchiveRepository(fixture.store)
+    assert browser.query(**query) == readback
+    assert events.cache_only_summaries(browser) == {fixtures.SESSION: 3}
+    assert (cache.read_bytes(), cache.stat().st_mtime_ns) == cache_state
+    assert (fixture.repository.path.read_bytes(), fixture.registry.read_bytes()) == before
+
+
+def test_failed_strict_readback_leaves_the_tolerant_source_unpublished(event_store):
+    fixture = event_store
+    with sqlite3.connect(fixture.repository.path) as connection:
+        connection.execute(
+            "UPDATE conversations SET partition_id=? WHERE id=?",
+            (fixtures.NATIVE, fixtures.SESSION),
+        )
+    index = fixture.repository.path.with_name("resource_references.sqlite3")
+    index.write_bytes(b"Synthetic invalid native resource index")
+    cache = events._cache_path(fixture.repository, fixtures.SESSION)
+    query = {
+        "account": "account:" + fixtures.OWNER,
+        "kind": "direct",
+        "session": fixtures.SESSION,
+        "page_size": 1,
+    }
+    with pytest.raises(WechatTimelineProjectionError) as error:
+        fixture.repository.query(**query, strict_timeline=True)
+    assert error.value.status == "invalid"
+    assert not cache.exists()
+
+    fallback = fixture.repository.query(**query, persist_event_cache=False)
+    assert fallback["current"]["id"] == fixtures.SESSION
+    assert fallback["resource_index_status"] == "invalid"
+    assert fallback["count"] == fallback["message_count"] == 6
+    assert not cache.exists()
 
 
 def test_unavailable_optional_keys_are_canonical_only_after_original_validation(

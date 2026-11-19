@@ -1,6 +1,6 @@
 """Explicit refresh preserves canonical scope, idempotency, totals and cancellation.
 
-Code version: v1.0.0-codex.0
+Code version: v1.1.0-codex.0
 """
 
 from datetime import datetime
@@ -223,10 +223,10 @@ def test_missing_dictionary_is_explicitly_excluded_without_inventing_text(
     native = _database(scope, records)
     decode = projection.decode_wcdb_text
 
-    def unavailable(value, marker):
+    def unavailable(value, marker, **kwargs):
         if value == "New literal message":
             raise projection.WCDBDecodeError("Synthetic unavailable dictionary")
-        return decode(value, marker)
+        return decode(value, marker, **kwargs)
 
     monkeypatch.setattr(projection, "decode_wcdb_text", unavailable)
     try:

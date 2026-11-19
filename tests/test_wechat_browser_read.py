@@ -1,6 +1,6 @@
 """Cold pages remain responsive while exact verified results are built once.
 
-Code version: v1.0.3-codex.0
+Code version: v1.1.0-codex.0
 """
 
 from threading import Event
@@ -196,6 +196,7 @@ def test_shutdown_stops_queued_work_without_waiting_for_blocked_validation(tmp_p
 
 @pytest.mark.parametrize("detail", (False, True))
 def test_real_route_returns_pending_shell_and_safe_poll_while_loader_blocked(session_app, monkeypatch, detail):
+    from app.core.wechat_archive import WechatArchiveRepository
     from app.web import local_resource_routes as routes
     from tests.test_wechat_resource_timeline import _session
 
@@ -210,11 +211,20 @@ def test_real_route_returns_pending_shell_and_safe_poll_while_loader_blocked(ses
 
     monkeypatch.setattr(routes, "query_chat_history", blocked)
     service = app.extensions["wechat_browser_read"]
+    detail_attaches = []
+    timeline = WechatArchiveRepository._timeline_tables
+
+    def observe_timeline(repository, *args, **options):
+        detail_attaches.append((options.get("conversation_id"), options.get("strict")))
+        return timeline(repository, *args, **options)
+
     try:
         started = time.monotonic()
         address = "/browser?view=text&source=wechat&session_view=1"
         if detail:
-            address += "&session=" + _session(source_root, kind="group")["id"]
+            session = _session(source_root, kind="group")["id"]
+            address += "&session=" + session
+            monkeypatch.setattr(WechatArchiveRepository, "_timeline_tables", observe_timeline)
         response = app.test_client().get(address)
         assert response.status_code == 200 and time.monotonic() - started < 1
         assert entered.wait(1)
@@ -236,8 +246,33 @@ def test_real_route_returns_pending_shell_and_safe_poll_while_loader_blocked(ses
         ready = app.test_client().get(address)
         assert ready.status_code == 200 and b"data-wechat-read-pending" not in ready.data
         assert b"WeChat conversations" in ready.data if not detail else b"data-chat-message-id" in ready.data
+        if detail:
+            assert detail_attaches == [(session, True)]
     finally:
         release.set()
+        app.extensions["runtime_shutdown"]()
+
+
+def test_selected_native_resource_failure_retains_refresh_guidance(session_app):
+    from tests.test_wechat_resource_timeline import _session
+
+    app, root = session_app
+    session = _session(root, kind="group")["id"]
+    index = root / "messaging" / "wechat" / "resource_references.sqlite3"
+    index.write_bytes(b"Synthetic invalid native resource index")
+    service = app.extensions["wechat_browser_read"]
+    address = "/browser?view=text&source=wechat&session=" + session
+    client = app.test_client()
+    try:
+        assert client.get(address).status_code == 200
+        token = next(iter(service._tasks))
+        failed = _done(service, token)
+        assert failed["state"] == "failed"
+        assert failed["message"] == "Media and file references need refreshing after the archive changed."
+        document = client.get(address)
+        assert b'Media and file references need refreshing' in document.data
+        assert b'data-chat-message-id' not in document.data
+    finally:
         app.extensions["runtime_shutdown"]()
 
 

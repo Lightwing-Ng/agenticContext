@@ -1,6 +1,6 @@
 """Source-separated, text-only WeChat archive import and indexed local queries."""
 
-# Code version: v1.11.0-codex.0
+# Code version: v1.12.0-codex.0
 
 from __future__ import annotations
 
@@ -34,6 +34,10 @@ class WechatTimelineProjectionError(ValueError):
     def __init__(self, status: str) -> None:
         super().__init__("The scoped WeChat timeline is incomplete.")
         self.status = status
+
+
+class WechatResourceTimelineProjectionError(WechatTimelineProjectionError):
+    """Identify a failure in the selected conversation's native resource index."""
 
 
 _SCHEMA = """
@@ -1316,10 +1320,13 @@ class WechatArchiveRepository:
         page=1,
         page_size=100,
         persist_event_cache=True,
+        strict_timeline=False,
     ):
         """Reuse bounded source-pinned list pages; details retain live validation."""
         from .wechat_browser_cache import conversation_page
 
+        if strict_timeline and not session:
+            raise ValueError("Strict archive queries need an exact conversation.")
         parameters = {
             "account": account,
             "kind": kind,
@@ -1329,6 +1336,7 @@ class WechatArchiveRepository:
             "page": page,
             "page_size": page_size,
             "persist_event_cache": persist_event_cache,
+            "strict_timeline": strict_timeline,
         }
         return conversation_page(
             self, parameters, lambda: self._query_uncached(**parameters)
@@ -1356,6 +1364,7 @@ class WechatArchiveRepository:
         page_size=100,
         persist_event_cache=True,
         previous_snapshot=False,
+        strict_timeline=False,
     ):
         kind = kind if kind in WECHAT_KINDS else "all"
         empty = {
@@ -1403,10 +1412,14 @@ class WechatArchiveRepository:
                     connection,
                     history_identity,
                     conversation_id=(session or None)
-                    if not persist_event_cache or self.path.with_name("resource_revalidated.sqlite3").exists()
+                    if strict_timeline or not persist_event_cache
+                    or self.path.with_name("resource_revalidated.sqlite3").exists()
                     else None,
                     status_conversation_id=session or None,
+                    strict=strict_timeline,
                 )
+                if strict_timeline and resource_status not in {"ready", "absent"}:
+                    raise WechatResourceTimelineProjectionError(resource_status)
             empty["resource_index_status"] = resource_status
             if not previous_snapshot and resource_status == "ready" and self._native_resource_scope(
                 connection, session or None, conversation_table=conversation_table

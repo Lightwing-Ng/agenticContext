@@ -1,23 +1,39 @@
 """Project only an authenticated requested peer into the existing Mac bank contract.
 
-Code version: v1.1.0-codex.0
+Code version: v1.2.0-codex.0
 """
 
 from __future__ import annotations
 
+from collections import deque
+from concurrent.futures import ProcessPoolExecutor, wait
+from concurrent.futures.process import BrokenProcessPool
+from contextlib import contextmanager
+from copy import deepcopy
 from dataclasses import dataclass
 from datetime import datetime
 import hashlib
+from itertools import chain
 import json
+from multiprocessing import get_context
 import re
 import sqlite3
 
 from . import wechat_macos_recovery_bank as bank
+from .compute_resources import discover_compute_resources
 from .wechat_archive import WechatArchiveRepository, _file_identity, wechat_archive_path
 from .wechat_mac_refresh_source import MAX_NAMES, RefreshError
 from .wechat_resource_index import _APP_LABEL_FIELDS, _KINDS, _LABELS, _app_metadata
 from .wechat_text import extract_wechat_text
-from .wechat_wcdb import WCDBBackendUnavailableError, WCDBDecodeError, decode_wcdb_text
+from .wechat_secondary_completions import completion_input_identities
+from .wechat_wcdb import (
+    MAX_TEXT_BYTES,
+    MissingDictionaryError,
+    WCDBBackendUnavailableError,
+    WCDBDecodeError,
+    decode_wcdb_text,
+    get_wcdb_frame_size,
+)
 
 
 _SESSION = re.compile(r"wechat:[0-9a-f]{64}")
@@ -31,6 +47,10 @@ _SOURCE_BINDING_FIELDS = (
 )
 MAX_ARCHIVE_ANCHOR_ROWS = 1_000_000
 MAX_NATIVE_TABLES = 10_000
+_PROJECTION_BATCH_ROWS = 512
+_PROJECTION_BATCH_BYTES = 16 * 1024**2
+_PROJECTION_IN_FLIGHT = 4
+_MAX_NATIVE_PROJECTION_WORKERS = 16
 
 
 @dataclass(frozen=True)
@@ -39,6 +59,53 @@ class ConversationScope:
     account_id: str
     peer_id: str
     kind: str
+
+
+class ConversationComparison:
+    """Keep one read-only archive comparison for a single conversation refresh."""
+
+    def __init__(self, history_path, scope, baseline):
+        self._history_path = history_path.absolute()
+        self._scope = scope
+        self._baseline = deepcopy(baseline)
+        self._overlay_inputs = None
+        self._indexes = None
+
+    def require_current(self, history_path, scope):
+        if history_path.absolute() != self._history_path or scope != self._scope:
+            raise RefreshError("The archive comparison belongs to another conversation.")
+        if bank._inputs(history_path) != self._baseline:
+            raise RefreshError("The archive changed during refresh. Try again shortly.")
+        overlay_inputs = completion_input_identities(history_path)
+        if self._overlay_inputs is None:
+            self._overlay_inputs = overlay_inputs
+        elif overlay_inputs != self._overlay_inputs:
+            raise RefreshError("The archive changed during refresh. Try again shortly.")
+
+    def indexes(self, local_store_root, history_path, history, scope, check_cancel):
+        if self._indexes is None:
+            indexes = _archive_comparison_indexes(
+                local_store_root, history_path, history, scope, check_cancel
+            )
+            self.require_current(history_path, scope)
+            self._indexes = indexes
+        return self._indexes
+
+
+def projection_exclusion_reason(error):
+    """Classify failures without returning exception text or source content."""
+    if isinstance(error, MissingDictionaryError):
+        return "row_missing_zstd_dictionary"
+    if isinstance(error, WCDBBackendUnavailableError):
+        return "row_compressed_text_backend_unavailable"
+    if isinstance(error, WCDBDecodeError):
+        return "row_wcdb_decode_failure"
+    return {
+        "A native message body has an unsupported storage class.": "row_unsupported_storage_class",
+        "A native event has no supported server identifier.": "row_unsupported_server_identifier",
+        "A native message has no authenticated sender.": "row_missing_authenticated_sender",
+        "The native text cannot be projected faithfully.": "row_unsupported_typed_projection",
+    }.get(str(error), "row_projection_rejected")
 
 
 def resolve_scope(local_store_root, session_id):
@@ -90,6 +157,43 @@ def _comparison_signature(row):
     return bank._event_signature({**dict(row), "provenance": json.dumps(proof)})
 
 
+def _archive_comparison_indexes(local_store_root, history_path, history, scope, check_cancel):
+    history.execute("PRAGMA temp_store=MEMORY")
+    repository = WechatArchiveRepository(local_store_root)
+    _conversations, message_table, status = repository._timeline_tables(
+        history,
+        _file_identity(history_path),
+        strict=True,
+    )
+    if status not in {"ready", "absent"}:
+        raise RefreshError("The existing conversation timeline is temporarily unavailable.")
+    known = {}
+    for index, existing in enumerate(history.execute(
+        f"SELECT * FROM {message_table} WHERE conversation_id=?",
+        (scope.session_id,),
+    )):
+        if index >= MAX_ARCHIVE_ANCHOR_ROWS:
+            raise RefreshError("The existing conversation exceeds its bounded row budget.")
+        check_cancel()
+        proof = json.loads(existing["provenance"])
+        known.setdefault(str(proof.get("server_id")), set()).add(
+            _comparison_signature(existing)
+        )
+    archive = {}
+    for index, row in enumerate(history.execute(
+        "SELECT id,sender_id,direction,text,timestamp_value,provenance"
+        " FROM main.messages WHERE conversation_id=?",
+        (scope.session_id,),
+    )):
+        check_cancel()
+        if index >= MAX_ARCHIVE_ANCHOR_ROWS:
+            raise RefreshError("The original conversation exceeds its bounded anchor budget.")
+        proof = json.loads(row["provenance"])
+        if proof.get("message_type") == 1:
+            archive.setdefault(str(proof.get("server_id")), []).append(row)
+    return known, archive
+
+
 def _native_rows(connection, table, *, local_id=None):
     layout = list(connection.execute('PRAGMA table_info("' + table + '")'))
     columns = [row[1] for row in layout]
@@ -134,7 +238,7 @@ def _server(value):
     return value
 
 
-def _project_message(row, owner, kind, names):
+def _project_message(row, owner, kind, names, *, text_limit=MAX_TEXT_BYTES):
     typ = row["local_type"] & 0xFFFFFFFF
     sender_row = names.get(row["real_sender_id"])
     sender = sender_row["user_name"] if sender_row else ""
@@ -162,7 +266,7 @@ def _project_message(row, owner, kind, names):
         message["sender_proof"] = _name_proof(sender_row)
     projection = None
     if typ in {1, 49, 10000, 10002}:
-        decoded = decode_wcdb_text(raw, row["compression_marker"])
+        decoded = decode_wcdb_text(raw, row["compression_marker"], limit=text_limit)
         if kind == "group" and sender and sender != owner:
             for prefix in (sender + ":\r\n", sender + ":\n"):
                 if decoded.startswith(prefix):
@@ -197,6 +301,193 @@ def _project_message(row, owner, kind, names):
                         }
                     )
     return message
+
+
+def _project_native_row(row, names, scope, *, text_limit=MAX_TEXT_BYTES):
+    try:
+        return _project_message(
+            row, scope.account_id, scope.kind, names, text_limit=text_limit,
+        ), None
+    except (WCDBDecodeError, WCDBBackendUnavailableError, RefreshError) as error:
+        return None, projection_exclusion_reason(error)
+
+
+def _native_comparison_signature(packet, message):
+    projected = bank._row(packet, message)
+    return _comparison_signature({
+        "sender_id": projected[3],
+        "direction": projected[5],
+        "text": projected[6],
+        "timestamp_value": projected[8],
+        "provenance": projected[11],
+    })
+
+
+def _project_native_batch(rows, limits, names, scope, packet):
+    result = []
+    for row, limit in zip(rows, limits, strict=True):
+        message, reason = _project_native_row(row, names, scope, text_limit=limit)
+        signature = _native_comparison_signature(packet, message) if reason is None else None
+        result.append((message, reason, signature))
+    return result
+
+
+def _projectable_rows(rows, check_cancel):
+    for index, row in enumerate(rows):
+        check_cancel()
+        if index >= bank.MAX_PACKET_MESSAGES:
+            raise RefreshError("This conversation exceeds its bounded native refresh budget.")
+        yield row
+
+
+def _projection_row_cost(row, names):
+    server = row["server_id"]
+    sender_id = row["real_sender_id"]
+    if (
+        not (type(server) is int or isinstance(server, str) and len(server) <= 19)
+        or any(type(row[field]) is not int for field in ("local_id", "local_type", "create_time"))
+        or sender_id is not None and type(sender_id) is not int
+        or row["compression_marker"] is not None and type(row["compression_marker"]) is not int
+    ):
+        return None
+    sender = names.get(sender_id)
+    name_bytes = 0
+    if sender is not None:
+        name = sender["user_name"]
+        if not isinstance(name, str) or type(sender["is_session"]) not in (int, type(None)):
+            return None
+        name_bytes = 4 * len(name)
+    value = row["message_content"]
+    size = 4 * len(value) if isinstance(value, (str, bytes)) else 0
+    limit = MAX_TEXT_BYTES
+    if (
+        isinstance(value, bytes) and row["compression_marker"] in (2, 3, 4, 5)
+        and row["local_type"] & 0xFFFFFFFF in {1, 49, 10000, 10002}
+    ):
+        try:
+            declared = get_wcdb_frame_size(value)
+        except (WCDBDecodeError, WCDBBackendUnavailableError):
+            return None
+        if declared is None or declared > MAX_TEXT_BYTES:
+            return None
+        # Enforce the declared size during decoding, not only during scheduling.
+        limit = declared
+        size = max(size, 4 * limit)
+    return 1024 + size + name_bytes, limit
+
+
+def _projection_batches(rows, names):
+    batch, limits, cost = [], [], 0
+    for row in rows:
+        budget = _projection_row_cost(row, names)
+        if batch and (budget is None or cost + budget[0] > _PROJECTION_BATCH_BYTES):
+            yield batch, limits
+            batch, limits, cost = [], [], 0
+        if budget is None or budget[0] > _PROJECTION_BATCH_BYTES:
+            # Unusual or oversized SQLite fields stay in the owning process.
+            yield [row], None
+            continue
+        size, limit = budget
+        batch.append(row)
+        limits.append(limit)
+        cost += size
+        if len(batch) == _PROJECTION_BATCH_ROWS:
+            yield batch, limits
+            batch, limits, cost = [], [], 0
+    if batch:
+        yield batch, limits
+
+
+@contextmanager
+def native_projection_executor():
+    """Scale this bounded CPU stage independently of the general worker pool."""
+    resources = discover_compute_resources()
+    cores = resources.physical_cpu_count or resources.logical_cpu_count
+    workers = max(1, min(
+        _MAX_NATIVE_PROJECTION_WORKERS, cores - 2,
+        resources.max_in_flight_bytes // _PROJECTION_BATCH_BYTES,
+    ))
+    if workers == 1 or not hasattr(ProcessPoolExecutor, "terminate_workers"):
+        yield None, 1
+        return
+    try:
+        executor = ProcessPoolExecutor(max_workers=workers, mp_context=get_context("spawn"))
+    except OSError:
+        yield None, 1
+        return
+    try:
+        yield executor, workers
+    except BaseException:
+        executor.terminate_workers()
+        raise
+    else:
+        executor.shutdown()
+
+
+def _ordered_native_projection(
+    rows, names, scope, executor, check_cancel, *, packet, in_flight=_PROJECTION_IN_FLIGHT,
+):
+    """Decode bounded batches in a process pool and consume them in native order."""
+    rows = _projectable_rows(rows, check_cancel)
+    header = {key: value for key, value in packet.items() if key != "messages"}
+    if executor is None or len(bank._json(header).encode()) > 64 * 1024:
+        for row in rows:
+            yield row, *_project_native_row(row, names, scope), None
+        return
+
+    batches = _projection_batches(rows, names)
+    first, second = next(batches, None), next(batches, None)
+    if second is None:
+        for row in first[0] if first else ():
+            yield row, *_project_native_row(row, names, scope), None
+        return
+    pending = deque()
+    in_flight = max(1, min(in_flight, _MAX_NATIVE_PROJECTION_WORKERS))
+
+    def submit(batch, limits):
+        nonlocal executor
+        if limits is None or executor is None or len(batch) < max(1, _PROJECTION_BATCH_ROWS // 8):
+            return batch, None
+        selected_names = {
+            identifier: names[identifier] for row in batch
+            if (identifier := row["real_sender_id"]) in names
+        }
+        try:
+            future = executor.submit(
+                _project_native_batch, [dict(row) for row in batch], limits, selected_names, scope, header,
+            )
+        except BrokenProcessPool:
+            executor = None
+            future = None
+        return batch, future
+
+    def consume(batch, future):
+        nonlocal executor
+        if future is not None:
+            while not future.done():
+                check_cancel()
+                wait((future,), timeout=0.1)
+            check_cancel()
+            try:
+                output = future.result()
+            except BrokenProcessPool:
+                executor = None
+            else:
+                for index, (row, result) in enumerate(zip(batch, output, strict=True)):
+                    if index % 64 == 0:
+                        check_cancel()
+                    yield row, *result
+                return
+        for row in batch:
+            check_cancel()
+            yield row, *_project_native_row(row, names, scope), None
+
+    for batch, limits in chain((first, second), batches):
+        pending.append(submit(batch, limits))
+        if len(pending) == in_flight:
+            yield from consume(*pending.popleft())
+    while pending:
+        yield from consume(*pending.popleft())
 
 
 def _archive_anchor(archived, row, message, peer, peer_row):
@@ -386,7 +677,17 @@ def _global_binding(
     )
 
 
-def prepare_packet(local_store_root, scope, database, *, check_cancel=None):
+def prepare_packet(
+    local_store_root,
+    scope,
+    database,
+    *,
+    check_cancel=None,
+    comparison=None,
+    projection_executor=None,
+    projection_in_flight=_PROJECTION_IN_FLIGHT,
+    on_excluded=None,
+):
     """Return only new or changed target events; identical replay creates no new bank copy."""
     check_cancel = check_cancel if check_cancel is not None else lambda: None
     check_cancel()
@@ -432,87 +733,65 @@ def prepare_packet(local_store_root, scope, database, *, check_cancel=None):
         "messages": [],
     }
     history_path = wechat_archive_path(local_store_root)
+    if comparison is not None:
+        comparison.require_current(history_path, scope)
     history = sqlite3.connect(
         history_path.resolve().as_uri() + "?mode=ro&immutable=1", uri=True
     )
     history.row_factory = sqlite3.Row
     try:
-        history.execute("PRAGMA temp_store=MEMORY")
-        repository = WechatArchiveRepository(local_store_root)
-        _conversations, message_table, status = repository._timeline_tables(
-            history,
-            _file_identity(history_path),
-            strict=True,
-        )
-        if status not in {"ready", "absent"}:
-            raise RefreshError(
-                "The existing conversation timeline is temporarily unavailable."
+        if comparison is None:
+            known, archive = _archive_comparison_indexes(
+                local_store_root, history_path, history, scope, check_cancel
             )
-        known = {}
-        for index, existing in enumerate(
-            history.execute(
-                f"SELECT * FROM {message_table} WHERE conversation_id=?",
-                (scope.session_id,),
+        else:
+            known, archive = comparison.indexes(
+                local_store_root, history_path, history, scope, check_cancel
             )
-        ):
-            if index >= MAX_ARCHIVE_ANCHOR_ROWS:
-                raise RefreshError(
-                    "The existing conversation exceeds its bounded row budget."
-                )
-            check_cancel()
-            proof = json.loads(existing["provenance"])
-            known.setdefault(str(proof.get("server_id")), set()).add(
-                _comparison_signature(existing)
-            )
-        archive = {}
-        for index, row in enumerate(
-            history.execute(
-                "SELECT * FROM main.messages WHERE conversation_id=?",
-                (scope.session_id,),
-            )
-        ):
-            check_cancel()
-            if index >= MAX_ARCHIVE_ANCHOR_ROWS:
-                raise RefreshError(
-                    "The original conversation exceeds its bounded anchor budget."
-                )
-            proof = json.loads(row["provenance"])
-            archive.setdefault(str(proof.get("server_id")), []).append(row)
         local_anchors = {}
         counts = {"total": 0, "existing": 0, "excluded": 0}
-        for row in _native_rows(native, table):
-            check_cancel()
+        def record_exclusion(row, reason):
+            counts["excluded"] += 1
+            if on_excluded is not None:
+                on_excluded({
+                    "reason": reason,
+                    "account_id": scope.account_id,
+                    "session_id": scope.session_id,
+                    "source_id": source["source_id"],
+                    "snapshot_id": source["snapshot_id"],
+                    "database_relative_path": source["database_relative_path"],
+                    "table": table,
+                    "local_id": row["local_id"] if type(row["local_id"]) is int else None,
+                    "message_type": row["local_type"] & 0xFFFFFFFF if type(row["local_type"]) is int else None,
+                })
+
+        for row, message, reason, signature in _ordered_native_projection(
+            _native_rows(native, table), names, scope, projection_executor,
+            check_cancel, packet=packet, in_flight=projection_in_flight,
+        ):
             counts["total"] += 1
-            if counts["total"] > bank.MAX_PACKET_MESSAGES:
-                raise RefreshError(
-                    "This conversation exceeds the bounded native refresh budget."
-                )
+            if reason is not None:
+                record_exclusion(row, reason)
+                continue
             try:
-                message = _project_message(row, scope.account_id, scope.kind, names)
                 for original in archive.get(message["server_id"], ()):
                     anchor = _archive_anchor(
                         original, row, message, scope.peer_id, peer_rows[scope.peer_id]
                     )
                     if anchor:
                         local_anchors[message["server_id"]] = anchor
-                projected = bank._row(packet, message)
-                signature = _comparison_signature(
-                    {
-                        "sender_id": projected[3],
-                        "direction": projected[5],
-                        "text": projected[6],
-                        "timestamp_value": projected[8],
-                        "provenance": projected[11],
-                    }
-                )
+                if signature is None:
+                    signature = _native_comparison_signature(packet, message)
                 if signature in known.get(message["server_id"], ()):
                     counts["existing"] += 1
                     continue
                 # Validate every candidate with the established packet validator below.
                 packet["messages"].append(message)
-            except (WCDBDecodeError, WCDBBackendUnavailableError, RefreshError):
-                counts["excluded"] += 1
+            except (WCDBDecodeError, WCDBBackendUnavailableError, RefreshError) as error:
+                record_exclusion(row, projection_exclusion_reason(error))
         if not packet["messages"]:
+            if comparison is not None:
+                comparison.require_current(history_path, scope)
             return None, counts
         if len(local_anchors) >= 2:
             packet["anchors"] = [
@@ -538,6 +817,8 @@ def prepare_packet(local_store_root, scope, database, *, check_cancel=None):
             )
         bank._validate_packet(packet, (scope.account_id,))
         bank._binding(history, packet)
+        if comparison is not None:
+            comparison.require_current(history_path, scope)
         return packet, counts
     finally:
         history.close()

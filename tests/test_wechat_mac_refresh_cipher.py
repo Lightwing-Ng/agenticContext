@@ -1,6 +1,6 @@
 """Synthetic-only tests for mac_sqlcipher_read_v1; no secret or database I/O.
 
-Code version: v1.0.0-codex.0. All fixtures use synthetic keys and pages.
+Code version: v1.1.0-codex.0. All fixtures use synthetic keys and pages.
 """
 
 import hashlib
@@ -195,6 +195,37 @@ class ReadTests(unittest.TestCase):
         self.assertEqual(metadata["committed_frame_count"], 0)
         plaintext, _metadata = reader.decrypt_database(self.main, wal, KEY)
         self.assertEqual(plaintext, b"".join(self.pages))
+
+    def test_snapshot_derives_one_key_and_authenticates_every_consumed_page(self):
+        latest = plain_page(2, 44)
+        wal = make_wal([
+            (2, 3, self.encrypted[1]),
+            (2, 3, encrypt_page(latest, 2)),
+        ])
+        with (
+            patch.object(reader, "_authentication_key", wraps=reader._authentication_key) as derive,
+            patch.object(reader, "_authenticate_page", wraps=reader._authenticate_page) as verify,
+        ):
+            plaintext, metadata = reader.decrypt_database(self.main, wal, KEY)
+        self.assertEqual(plaintext, self.pages[0] + latest + self.pages[2])
+        self.assertEqual(metadata["authenticated_committed_frame_count"], 2)
+        self.assertEqual(metadata["output_page_count"], 3)
+        derive.assert_called_once_with(KEY, SALT)
+        self.assertEqual([call.args[2] for call in verify.call_args_list], [2, 2, 1, 3])
+
+    def test_snapshot_cancellation_precedes_decryption(self):
+        def cancel():
+            raise InterruptedError("Cancelled before page decryption")
+
+        wal = make_wal([(2, 3, self.encrypted[1])])
+        for input_wal in (b"", wal):
+            with (
+                self.subTest(wal=bool(input_wal)),
+                patch.object(reader, "_aes_cbc", wraps=reader._aes_cbc) as native_aes,
+            ):
+                with self.assertRaisesRegex(InterruptedError, "Cancelled"):
+                    reader.decrypt_database(self.main, input_wal, KEY, check_cancel=cancel)
+                native_aes.assert_not_called()
 
     def test_commit_resize_truncates_and_does_not_resurrect_old_main_pages(self):
         second = encrypt_page(plain_page(2, 77), 2)
