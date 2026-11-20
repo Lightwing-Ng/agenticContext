@@ -1,6 +1,6 @@
 """Indexed Mac recovery keeps authenticated scopes, literal roles and original bytes.
 
-Code version: v1.0.3-codex.0
+Code version: v1.0.4-codex.0
 """
 
 from copy import deepcopy
@@ -24,6 +24,7 @@ from app.core.wechat_contacts import (
 )
 from app.core.wechat_history_browser import query_wechat_history
 from app.core.wechat_text import extract_wechat_text
+from tests.test_wechat_contacts import bind, insert_contact, observe
 from tests import test_wechat_macos_recovery as recovery_fixtures
 
 
@@ -428,6 +429,50 @@ def test_latest_group_name_includes_the_verified_mac_recovery_timeline(bank_arch
     assert notice.content_text == fixture.group["messages"][-1]["text"]
     assert notice.messaging["is_system_notice"]
     assert fixture.history.read_bytes() == original
+
+
+@pytest.mark.parametrize("conflicting_nickname", [False, True])
+def test_mac_group_sender_uses_complete_exact_nickname_scope(bank_archive, conflicting_nickname):
+    fixture = bank_archive
+    _publish(fixture)
+    partition = "ios-" + hashlib.md5(OWNER.encode(), usedforsecurity=False).hexdigest()
+    registry = contact_registry_path(fixture.root)
+    nickname = "Verified group sender"
+    with sqlite3.connect(registry) as connection:
+        initialize_contact_registry(connection)
+        contact = insert_contact(connection, MEMBER)
+        bind(connection, contact, source=partition, sender=MEMBER)
+        for index in range(65):
+            observe(
+                connection, contact, "source_sender_label", f"Recovered sender {index}",
+                source=partition, owner=OWNER, room=ROOM,
+            )
+        for snapshot in ("older-verified-contacts", "later-verified-contacts"):
+            observe(
+                connection, contact, "nickname", nickname,
+                source=partition, owner=OWNER, snapshot=snapshot,
+            )
+        observe(connection, contact, "nickname", "Different account's nickname", source=partition)
+        observe(
+            connection, contact, "nickname", "Different partition's nickname", owner=OWNER,
+        )
+        observe(
+            connection, contact, "nickname", "Room label", source=partition, owner=OWNER, room=ROOM,
+        )
+        if conflicting_nickname:
+            observe(
+                connection, contact, "nickname", "Another exact nickname", source=partition, owner=OWNER,
+            )
+
+    before = fixture.history.read_bytes(), registry.read_bytes()
+    page = query_wechat_history(fixture.root, session=fixture.group_session)
+    message = next(item for item in page.items if item.content_text.startswith("Group line"))
+    context = message.messaging["contact"]
+    assert context["observations_truncated"] is True
+    assert context["identity_status"] == "verified"
+    assert message.messaging.get("viewer_display_name") == (None if conflicting_nickname else nickname)
+    assert message.author_label == context["source_display_name"] == MEMBER
+    assert (fixture.history.read_bytes(), registry.read_bytes()) == before
 
 
 def test_replay_keeps_bubble_counts_and_new_snapshot_retains_another_occurrence(

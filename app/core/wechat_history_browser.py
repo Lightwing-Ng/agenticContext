@@ -1,6 +1,6 @@
 """Adapt indexed human conversations to the shared Local resources page model."""
 
-# Code version: v1.45.5-codex.0
+# Code version: v1.45.6-codex.0
 
 from __future__ import annotations
 
@@ -76,16 +76,40 @@ _MACOS_QUOTE_SOURCE_FIELDS = (
 )
 
 
-def _scoped_native_profile_name(contact, sender, account, partition, *, allow_remark=False):
+def _scoped_native_profile_name(
+    repository, display_names, contact, sender, context, scoped_cache, *, allow_remark=False,
+):
     """Read one account-wide label from exact native contact observations."""
-    if (
-        contact.get("identity_status") != "verified"
-        or contact.get("observations_truncated")
-    ):
+    if contact.get("identity_status") != "verified":
         return ""
+    account = context["account_id"]
+    partition = context["partition_id"]
+    scoped = None
+    if contact.get("observations_truncated"):
+        if (
+            not display_names.account_owner(context)
+            or classify_wechat_identifier(sender)["kind"] not in {"wechat_account", "wechat_identity"}
+        ):
+            return ""
+        try:
+            contact_id = canonical_contact_id(sender, authority="native_message_sender")
+        except ValueError:
+            return ""
+        if contact.get("id") != contact_id:
+            return ""
+        key = contact_id, partition, account
+        if key not in scoped_cache:
+            observed = repository.query_observations(
+                contact_id, page_size=256, source_id=partition, owner_account_id=account, room_id="",
+            )
+            rows = observed["items"]
+            scoped_cache[key] = rows if len(rows) == observed["total_count"] else ()
+        scoped = scoped_cache[key]
     kinds = ("remark", "nickname") if allow_remark else ("nickname",)
     for kind in kinds:
-        observations = contact.get("remarks" if kind == "remark" else "names", ())
+        observations = scoped if scoped is not None else contact.get(
+            "remarks" if kind == "remark" else "names", (),
+        )
         labels = {
             observation["value"]
             for observation in observations
@@ -319,6 +343,7 @@ def _resolve_macos_recovery_quoted_contacts(items, repository, display_names, *,
         return
     requests, quotes, expected_contacts = [], {}, {}
     literal_requests, remarks = {}, {}
+    scoped_profiles = {}
     by_server = _macos_quote_originals(items, originals)
     for item in items:
         receipt = _macos_recovery_receipt(item)
@@ -417,7 +442,7 @@ def _resolve_macos_recovery_quoted_contacts(items, repository, display_names, *,
             profile_name = ""
             if not name and _is_exact_direct_peer(display_names, context, contact, sender):
                 profile_name = _scoped_native_profile_name(
-                    contact, sender, context["account_id"], context["partition_id"],
+                    repository, display_names, contact, sender, context, scoped_profiles,
                     allow_remark=True,
                 )
             remark = ""
@@ -1428,6 +1453,7 @@ def query_wechat_history(
                 forwarded_requests[offset : offset + 400]
             )
         )
+    scoped_profiles = {}
     for item in items:
         contact = contacts[item.stable_id]
         if contact.get("identity_status") != "verified":
@@ -1480,7 +1506,7 @@ def query_wechat_history(
             )
             if item.messaging["kind"] == "group" or direct_peer:
                 profile_name = _scoped_native_profile_name(
-                    contact, sender, item.messaging["account_id"], item.messaging["partition_id"],
+                    contact_repository, display_names, contact, sender, item.messaging, scoped_profiles,
                     allow_remark=direct_peer,
                 )
                 if profile_name:
