@@ -1,6 +1,6 @@
 # Operations guide
 
-Documentation version: `v1.53.3-codex.0`
+Documentation version: `v1.53.4-codex.0`
 
 ## iPhone
 
@@ -997,6 +997,52 @@ Maintaining the client when OpenAI changes it:
    keep it only if its removal breaks readiness (`/readyz`), the `dev proxy` round trip, or a live
    ChatGPT call. Update `MCP_LEGACY_PROTOCOL_VERSIONS` and `MCP_STATELESS_PROTOCOL_VERSION` in
    `app/core/tunnel_mcp.py` the same way.
+
+#### Recover ChatGPT Tunnel forwarding on macOS
+
+Use this procedure when forwarded `tools/call` requests receive `upstream_status: 401` from
+local `/mcp` after previously working. A folder missing the bearer, PID, and health URL files
+can indicate that a running client outlived its supervised generation. Use the saved Tunnel ID
+and API key.
+
+1. In macOS Terminal, inspect the status and list client processes by executable name. Record
+   `state`, `problem_code`, and `message`. Compare client PIDs with `tunnel-client.pid` and check
+   their parent processes to identify any client left by an earlier service instance.
+
+   ```bash
+   curl -fsS 'http://127.0.0.1:8666/api/agent/tunnel/status?platform=chatgpt' |
+     python3 -c '
+   import json
+   import sys
+
+   status = json.load(sys.stdin)
+   fields = ("state", "problem_code", "message", "configured", "generation")
+   print(json.dumps({field: status.get(field) for field in fields}, indent=2))
+   '
+   ps -ax -o pid=,ppid=,lstart=,ucomm= | awk '$NF == "tunnel-client"'
+   ```
+
+2. Select **Retry/Reconnect** on the ChatGPT Tunnel card or run the following command in Terminal.
+   The new generation stops clients owned by this runtime and issues a fresh bearer. The request
+   can return while the client is still starting. Poll the status until it settles.
+
+   ```bash
+   curl -fsS -X POST 'http://127.0.0.1:8666/api/agent/tunnel/connect' -o /dev/null
+   ```
+
+3. If status reports `runtime_state_unwritable` or the client continues to fail or retry, stop the
+   service cleanly and wait for it to exit. Use Ctrl+C in its launcher Terminal, or send SIGTERM
+   to the supervisor. Start it again using the normal [launch command](#launch). If the same
+   runtime-state error persists and points to a client log, stop the service again and move the
+   affected `tunnel-client.log` files to a private backup location before relaunching.
+4. Confirm that status is `ready` and `configured` is `true`. In
+   `~/Library/Application Support/agenticContext/tunnel/`, check for `mcp-authorization`,
+   `tunnel-client.pid`, and `tunnel-client-health.url`. The PID file should match the new
+   supervised client, and any previous client PID should be gone. Check for a fresh
+   `tunnel-client started` log entry followed by zero new upstream HTTP 401 warnings. Keep
+   the bearer file and raw credential data out of diagnostic output.
+5. In ChatGPT, go to Settings → Apps → AgenticContext → Refresh/Scan Tools. Start a new
+   conversation and run a read-only tool call to verify forwarding from ChatGPT.
 
 ### Gemini Custom App connection
 
