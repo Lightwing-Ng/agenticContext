@@ -1,6 +1,6 @@
 """Native resource catalogs preserve accounts, source bytes, and undecoded records.
 
-Code version: v1.0.2-codex.0
+Code version: v1.1.0-codex.0
 """
 
 from __future__ import annotations
@@ -17,7 +17,11 @@ import pytest
 
 from app.core.owner_only_files import owner_only_problem
 from app.core.wechat_archive import import_wechat_archive, wechat_archive_path
-from app.core.wechat_resource_index import build_resource_index, resource_index_path
+from app.core.wechat_resource_index import (
+    _app_metadata,
+    build_resource_index,
+    resource_index_path,
+)
 from tests.test_wechat_archive import make_archive
 
 
@@ -149,6 +153,263 @@ def _rows(fixture):
                 "SELECT * FROM messages ORDER BY conversation_id,ordinal"
             )
         ]
+
+
+@pytest.mark.parametrize("app_info_location", ["root", "appmsg"])
+@pytest.mark.parametrize(
+    "prefix", ["", "wxid_source_sender:\n", "wxid_source_sender:\r\n"]
+)
+def test_initial_index_preserves_literal_app_title_and_source_roles(
+    resources, app_info_location, prefix
+):
+    fixture = resources
+    app_info = "<appinfo><appname>Literal source app</appname></appinfo>"
+    payload = (
+        prefix + "<msg><appmsg><type>5</type><title>Literal &amp; source title</title>"
+        "<sourcedisplayname>Literal publisher</sourcedisplayname>"
+        "<url>https://example.invalid/opaque-article</url><aeskey>opaque-aes-value</aeskey>"
+        + (app_info if app_info_location == "appmsg" else "")
+        + "</appmsg>"
+        + (app_info if app_info_location == "root" else "")
+        + "</msg>"
+    )
+    peer = "peer-group" if prefix else "peer-direct"
+    with closing(sqlite3.connect(fixture.source)) as connection, connection:
+        connection.execute(
+            f'INSERT OR REPLACE INTO "{_table(peer)}" VALUES(?,?,?,?,?,?,?)',
+            (NOW + 3, 1, 13, payload, SERVER - 3, 49, 0),
+        )
+    before = fixture.source.read_bytes(), fixture.history.read_bytes()
+    build_resource_index(fixture.store, fixture.snapshot)
+    row = next(
+        row
+        for row in _rows(fixture)
+        if row["ordinal"] == 13
+        and json.loads(row["provenance"])["resource_reference"]["peer_id"] == peer
+    )
+    reference = json.loads(row["provenance"])["resource_reference"]
+    assert reference["kind"] == "app"
+    assert reference["app_subtype"] == "5"
+    assert reference["safe_title"] == "Literal & source title"
+    assert reference["publisher_name"] == "Literal publisher"
+    assert reference["publisher_name_source"] == "appmsg/sourcedisplayname"
+    assert reference["app_name"] == "Literal source app"
+    assert reference["app_name_source"] == (
+        "appmsg/appinfo/appname" if app_info_location == "appmsg" else "appinfo/appname"
+    )
+    assert row["sender_id"] == ("wxid_source_sender" if prefix else peer)
+    encoded = resource_index_path(fixture.store).read_bytes()
+    assert b"https://example.invalid/opaque-article" not in encoded
+    assert b"opaque-aes-value" not in encoded
+    assert before == (fixture.source.read_bytes(), fixture.history.read_bytes())
+
+
+@pytest.mark.parametrize(
+    ("marker", "subtype", "details", "labels"),
+    [
+        (
+            4,
+            "51",
+            "<finderFeed><desc>两行 &amp; 原文\n第二行</desc>"
+            "<nickname>原始作者</nickname></finderFeed>",
+            {
+                "channels_description": "两行 & 原文\n第二行",
+                "channels_nickname": "原始作者",
+            },
+        ),
+        (
+            5,
+            "5",
+            "<sourcedisplayname>原始发布者</sourcedisplayname>",
+            {"publisher_name": "原始发布者"},
+        ),
+    ],
+)
+def test_initial_index_preserves_source_labels_from_normal_zstd_app_cells(
+    resources, marker, subtype, details, labels
+):
+    zstd = pytest.importorskip("compression.zstd")
+    peer = "peer-group"
+    payload = (
+        f"wxid_source_sender:\n<msg><appmsg><type>{subtype}</type>"
+        "<title>Literal &amp; source title</title>"
+        "<url>https://example.invalid/private-card</url>"
+        f"{details}</appmsg></msg>"
+    )
+    with closing(sqlite3.connect(resources.source)) as connection, connection:
+        connection.execute(
+            f'INSERT INTO "{_table(peer)}" VALUES(?,?,?,?,?,?,?)',
+            (NOW + 3, 1, 13, zstd.compress(payload.encode()), SERVER - 3, 49, marker),
+        )
+    before = resources.source.read_bytes(), resources.history.read_bytes()
+
+    build_resource_index(resources.store, resources.snapshot)
+
+    row = next(
+        row
+        for row in _rows(resources)
+        if row["ordinal"] == 13
+        and json.loads(row["provenance"])["resource_reference"]["peer_id"] == peer
+    )
+    reference = json.loads(row["provenance"])["resource_reference"]
+    assert reference["kind"] == "app"
+    assert reference["app_subtype"] == subtype
+    assert reference["safe_title"] == "Literal & source title"
+    assert {key: reference[key] for key in labels} == labels
+    assert row["sender_id"] == "wxid_source_sender"
+    assert b"https://example.invalid/private-card" not in resource_index_path(
+        resources.store
+    ).read_bytes()
+    assert before == (resources.source.read_bytes(), resources.history.read_bytes())
+
+
+@pytest.mark.parametrize("case", ["trailing-data", "unknown-marker", "oversized", "missing-dictionary"])
+def test_unsupported_compressed_app_cells_keep_generic_index_references(resources, case):
+    zstd = pytest.importorskip("compression.zstd")
+    plaintext = b"<appmsg><type>5</type><title>Never recovered</title></appmsg>"
+    marker = 4
+    payload = zstd.compress(plaintext)
+    if case == "trailing-data":
+        payload += b"invalid trailing bytes"
+    elif case == "unknown-marker":
+        marker = 6
+    elif case == "oversized":
+        payload = zstd.compress(plaintext + b" " * (256 * 1024))
+    else:
+        dictionary = zstd.train_dict(
+            [plaintext + f" Sample {number}".encode() for number in range(200)], 1024
+        )
+        payload = zstd.compress(plaintext, zstd_dict=dictionary)
+        marker = 2
+    with closing(sqlite3.connect(resources.source)) as connection, connection:
+        connection.execute(
+            f'UPDATE "{_table("peer-direct")}" SET Message=?, WCDB_CT_Message=? WHERE MesLocalID=13',
+            (payload, marker),
+        )
+
+    build_resource_index(resources.store, resources.snapshot)
+
+    row = next(row for row in _rows(resources) if row["ordinal"] == 13)
+    reference = json.loads(row["provenance"])["resource_reference"]
+    assert row["text"] == "[App message]"
+    assert reference["kind"] == "app"
+    assert {"app_subtype", "safe_title", "app_metadata_version"}.isdisjoint(reference)
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        "<sourcedisplayname>First</sourcedisplayname><sourcedisplayname>Second</sourcedisplayname>",
+        "<sourcedisplayname><b>Structured publisher</b></sourcedisplayname>",
+        "<refermsg><sourcedisplayname>Quoted publisher</sourcedisplayname></refermsg>",
+        "<sourceusername>gh_identifier_is_not_a_display_name</sourceusername>",
+        "<url>https://example.invalid/not-a-publisher</url>",
+    ],
+)
+def test_initial_app_metadata_does_not_guess_an_ambiguous_or_indirect_publisher(
+    content,
+):
+    metadata = _app_metadata(
+        "<msg><appmsg><type>5</type><title>Literal title</title>"
+        + content
+        + "</appmsg><appinfo><appname>Fallback app</appname></appinfo></msg>",
+        False,
+        False,
+    )
+    assert metadata["safe_title"] == "Literal title"
+    assert metadata["app_name"] == "Fallback app"
+    assert "publisher_name" not in metadata
+    assert "publisher_name_source" not in metadata
+
+
+@pytest.mark.parametrize(
+    ("type_fields", "subtype", "kind"),
+    [
+        ("<type>5</type><type>6</type>", "5", "app"),
+        ("<type>5</type><type>5</type>", "5", "app"),
+        ("<type>5<extra/></type>", "5", "app"),
+        ("<type>6</type><type>5</type>", "6", "file"),
+    ],
+)
+def test_explicit_app_subtype_requires_one_direct_literal_leaf(
+    type_fields, subtype, kind
+):
+    metadata = _app_metadata(
+        "<msg><appmsg>" + type_fields + "<title>Retained title</title></appmsg></msg>",
+        False,
+        False,
+    )
+    assert "app_subtype" not in metadata
+    assert metadata["subtype"] == subtype
+    assert metadata["kind"] == kind
+    assert "safe_title" not in metadata
+
+
+def test_quoted_type_does_not_make_a_direct_app_subtype_ambiguous():
+    metadata = _app_metadata(
+        "<msg><appmsg><type>5</type><refermsg><type>6</type></refermsg>"
+        "<title>Retained title</title></appmsg></msg>",
+        False,
+        False,
+    )
+    assert metadata["app_subtype"] == "5"
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        b"\xff<msg><appmsg><title>Invalid bytes</title></appmsg></msg>",
+        '<!DOCTYPE msg [<!ENTITY x "Secret">]><msg><appmsg><title>&x;</title></appmsg></msg>',
+        "<msg><appmsg><type>5</type><title>Broken",
+        "<msg><appmsg><title>Too many elements</title>"
+        + "<node/>" * 4096
+        + "</appmsg></msg>",
+        "<msg><appmsg><title>" + "x" * 262_144 + "</title></appmsg></msg>",
+        "<msg><appmsg><title>First card</title></appmsg><appmsg><title>Second card</title></appmsg></msg>",
+        "<msg><appmsg><title>Control &#x1f; character</title></appmsg></msg>",
+    ],
+)
+def test_initial_app_metadata_preserves_xml_and_size_guards(payload):
+    assert _app_metadata(payload, False, False) == {}
+
+
+@pytest.mark.parametrize("length", [1024, 1025])
+def test_initial_app_label_length_boundary_is_not_relaxed(length):
+    metadata = _app_metadata(
+        "<msg><appmsg><type>5</type><title>"
+        + "x" * length
+        + "</title><sourcedisplayname>Known publisher</sourcedisplayname></appmsg></msg>",
+        False,
+        False,
+    )
+    assert ("safe_title" in metadata) is (length == 1024)
+    assert metadata["publisher_name"] == "Known publisher"
+
+
+def test_group_app_body_colon_and_newline_are_not_a_sender_prefix():
+    metadata = _app_metadata(
+        "<msg><appmsg><type>5</type><title>Literal:\nsecond line</title></appmsg></msg>",
+        True,
+        True,
+    )
+    assert metadata["safe_title"] == "Literal:\nsecond line"
+    assert "sender_id" not in metadata
+
+
+@pytest.mark.parametrize(
+    "envelope",
+    [
+        "<type>5</type><finderFeed><desc>Wrong subtype</desc></finderFeed>",
+        "<type>51</type><finderFeed><desc>First</desc></finderFeed>"
+        "<finderFeed><nickname>Wrong feed</nickname></finderFeed>",
+        "<type>51</type><finderFeed><desc>First</desc><desc>Second</desc>"
+        "<nickname><part>Nested value</part></nickname></finderFeed>",
+    ],
+)
+def test_channels_labels_require_the_exact_subtype_and_unambiguous_literal_fields(envelope):
+    metadata = _app_metadata(f"<appmsg>{envelope}</appmsg>", False, False)
+    assert "channels_description" not in metadata
+    assert "channels_nickname" not in metadata
 
 
 def test_native_types_and_real_times_become_metadata_placeholders_without_payload_reads(

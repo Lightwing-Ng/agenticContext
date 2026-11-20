@@ -1,4 +1,4 @@
-{# Code version: v1.35.0-codex.0 #}
+{# Code version: v1.35.1-codex.0 #}
 {% from "_wechat_conversation_kind.html" import conversation_kind_label, conversation_kind_badge %}
 {% from "_wechat_view_layout.html" import conversation_transcript, conversation_table, conversation_list_note %}
 {% macro resource_card(resource, message_id='', embedded=false) %}
@@ -6,10 +6,17 @@
 {% set resource_feedback_id = 'wechat_resource_feedback_' ~ message_id %}
 {% set resource_is_link = resource.is_link|default(false) %}
 {% set resource_publisher = resource.publisher_name|default('') %}
-{% set resource_show_status = not resource_is_link %}
-<div class="wechat-resource" data-wechat-resource-kind="{{ resource.kind }}" data-wechat-resource-status="{{ resource.status }}"{% if resource_is_link %} data-wechat-resource-link="true"{% endif %}>
+{% set resource_platform = resource.platform_label|default('') %}
+{% set show_platform = resource_platform and resource.label != resource_platform %}
+{% set resource_show_status = not resource_is_link or resource.status != 'metadata_only' %}
+<div class="wechat-resource" data-wechat-resource-kind="{{ resource.kind }}" data-wechat-resource-status="{{ resource.status }}"{% if resource_is_link %} data-wechat-resource-link="true"{% endif %}{% if resource_platform %} data-wechat-resource-platform="{{ resource_platform }}"{% endif %}>
     <span class="wechat-resource-icon" aria-hidden="true"></span>
-    <span class="wechat-resource-copy"><span class="wechat-resource-label">{{ resource.label }}</span>{% if resource_publisher or resource_show_status %}<span class="wechat-resource-status"{% if resource_can_reveal %} id="{{ resource_feedback_id }}"{% endif %} data-wechat-resource-feedback aria-live="polite">{% if resource_publisher %}<span class="wechat-resource-publisher">{{ resource_publisher }}</span>{% if resource_show_status %} · {% endif %}{% endif %}{% if resource_show_status %}{{ resource.status_label }}{% endif %}</span>{% endif %}</span>
+    <span class="wechat-resource-copy">
+        <span class="wechat-resource-label{% if resource_platform %} wechat-message-text{% endif %}">{{ resource.label }}</span>
+        {% if resource_publisher or show_platform or resource_show_status %}
+        <span class="wechat-resource-status"{% if resource_can_reveal %} id="{{ resource_feedback_id }}"{% endif %} data-wechat-resource-feedback aria-live="polite">{% if resource_publisher %}<span class="wechat-resource-publisher">{{ resource_publisher }}</span>{% endif %}{% if resource_publisher and show_platform %} · {% endif %}{% if show_platform %}{{ resource_platform }}{% endif %}{% if resource_show_status %}{% if resource_publisher or show_platform %} · {% endif %}{{ resource.status_label }}{% endif %}</span>
+        {% endif %}
+    </span>
     {% if resource_can_reveal %}<button type="button" class="circular-icon-button wechat-resource-reveal" data-wechat-resource-reveal="{{ url_for('local_resources.reveal_wechat_resource', message_id=message_id) }}" title="{{ resource.action_label }}" aria-label="{{ resource.label }}: {{ resource.action_label }}" aria-describedby="{{ resource_feedback_id }}"><span class="icon browser-media-reveal-icon" aria-hidden="true"></span></button>{% endif %}
 </div>
 {% endmacro %}

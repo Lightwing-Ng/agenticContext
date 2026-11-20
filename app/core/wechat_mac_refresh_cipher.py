@@ -1,6 +1,6 @@
 """Read supplied SQLCipher 4 bytes using authenticated pages and committed WAL.
 
-Code version: v1.1.0-codex.0. Python 3.13+; AES uses macOS CommonCrypto only.
+Code version: v1.2.0-codex.0. Python 3.13+; AES uses macOS CommonCrypto only.
 Derived from the locally verified mac_sqlcipher_read_v1 v1.0.1 reader.
 This module performs no file, database, process, network, or key discovery I/O.
 Callers must provide a stable main/WAL snapshot. Raw 32-byte keys are accepted;
@@ -14,8 +14,9 @@ import hmac
 import struct
 import sys
 
-__version__ = "1.1.0-codex.0"
+__version__ = "1.2.0-codex.0"
 PAGE_SIZE = 4096
+LOCK_BYTE_PAGE_NUMBER = 0x40000000 // PAGE_SIZE + 1
 MAX_DATABASE_BYTES = 2 * 1024 * 1024 * 1024
 MAX_WAL_BYTES = 64 * 1024 * 1024
 _SQLITE_HEADER = b"SQLite format 3\x00"
@@ -156,6 +157,21 @@ def _decrypt_authenticated_page(key32, encrypted4096, page_number):
     return prefix + plaintext + bytes(80)
 
 
+def _decrypt_main_page(
+    key32, encrypted4096, page_number, db_salt16, *, authentication_key=None
+):
+    """Preserve only SQLite's fixed all-zero main-file lock-byte page."""
+    if page_number == LOCK_BYTE_PAGE_NUMBER:
+        _require_bytes(encrypted4096, "lock-byte page")
+        if encrypted4096 != bytes(PAGE_SIZE):
+            raise RecoveryError("Unsupported nonzero or incomplete lock-byte page")
+        return encrypted4096, 1
+    return _decrypt_page(
+        key32, encrypted4096, page_number, db_salt16,
+        authentication_key=authentication_key,
+    ), 0
+
+
 def _checksum(data, byte_order, seed=(0, 0)):
     """Compute SQLite's paired-word rolling WAL checksum."""
     if len(data) % 8:
@@ -230,6 +246,8 @@ def _scan_wal(walbytes, max_database_bytes, max_wal_bytes):
             raise RecoveryError(
                 "WAL frame page number or commit size exceeds the limit"
             )
+        if page_number == LOCK_BYTE_PAGE_NUMBER:
+            raise RecoveryError("WAL frames cannot target the SQLite lock-byte page")
         page = walbytes[offset + 24 : offset + _FRAME_SIZE]
         next_checksum = _checksum(frame_header[:8], byte_order, checksum)
         next_checksum = _checksum(page, byte_order, next_checksum)
@@ -308,8 +326,10 @@ def decrypt_database(
 
     Every valid WAL frame through the last commit is HMAC-authenticated, even
     if a later committed frame overwrites it. Uncommitted frame HMACs are not
-    needed. Main pages selected into the result are authenticated. Earlier
-    committed truncation prevents stale main-file pages from reappearing on
+    needed. Main content pages selected into the result are authenticated. Only
+    the fixed all-zero SQLite lock-byte page is preserved without authentication
+    and counted separately; nonzero lock-byte pages and WAL writes there fail.
+    Earlier committed truncation prevents stale main-file pages from reappearing on
     later growth. Missing pages fail rather than being filled with invented data.
     A nonzero valid page-one size must agree with the final WAL commit size.
     The complete flag describes the WAL tail only; callers must independently
@@ -344,19 +364,23 @@ def decrypt_database(
     )
     result = bytearray()
     used_main_pages = 0
+    lock_byte_pages = 0
     for page_number in range(1, final_pages + 1):
         if check_cancel is not None and (page_number - 1) % 64 == 0:
             check_cancel()
         if page_number in overlay:
-            # Each committed frame was authenticated before selecting its contents.
+            # The overlay contains only frames authenticated above, even
+            # when a later committed frame superseded an earlier one.
             plaintext = _decrypt_authenticated_page(key32, overlay[page_number], page_number)
         elif page_number <= main_reusable_pages:
             start = (page_number - 1) * PAGE_SIZE
             encrypted_page = mainbytes[start : start + PAGE_SIZE]
             used_main_pages += 1
-            plaintext = _decrypt_page(
-                key32, encrypted_page, page_number, salt, authentication_key=authentication_key,
+            plaintext, excluded = _decrypt_main_page(
+                key32, encrypted_page, page_number, salt,
+                authentication_key=authentication_key,
             )
+            lock_byte_pages += excluded
         else:
             raise RecoveryError("Committed database growth has a missing page")
         if page_number == 1:
@@ -383,7 +407,10 @@ def decrypt_database(
                 )
         result.extend(plaintext)
     metadata.update(
-        encrypted_pages_authenticated=True,
+        encrypted_pages_authenticated=lock_byte_pages == 0,
+        content_pages_authenticated=True,
+        lock_byte_page_count=lock_byte_pages,
+        authenticated_output_page_count=final_pages - lock_byte_pages,
         authenticated_committed_frame_count=len(committed_frames),
         main_page_count=main_pages,
         selected_main_page_count=used_main_pages,
