@@ -14,6 +14,7 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from app.core.owner_only_files import ensure_owner_only, owner_only_problem
 from app.core.wechat_resource_detail_repair import (
     publish_resource_detail_repair, stage_resource_detail_repair,
 )
@@ -41,16 +42,21 @@ def _read(path):
     before = path.lstat()
     if (
         not stat.S_ISREG(before.st_mode) or path.is_symlink()
-        or before.st_mode & 0o077 or before.st_size > MAX_PACKET_FILE_BYTES
+        or owner_only_problem(path) or before.st_size > MAX_PACKET_FILE_BYTES
         or getattr(before, "st_flags", 0) & 0x40000000
     ):
         raise ValueError("Selected repair evidence must be bounded, private and resident.")
-    descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+    descriptor = os.open(
+        path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_BINARY", 0),
+    )
     with os.fdopen(descriptor, "rb") as stream:
+        opened = os.fstat(stream.fileno())
+        if (opened.st_dev, opened.st_ino) != (before.st_dev, before.st_ino):
+            raise ValueError("Selected repair evidence changed before opening.")
         raw = stream.read(MAX_PACKET_FILE_BYTES + 1)
     after = path.lstat()
     if (
-        len(raw) > MAX_PACKET_FILE_BYTES
+        len(raw) > MAX_PACKET_FILE_BYTES or owner_only_problem(path)
         or tuple(getattr(before, key) for key in ("st_dev", "st_ino", "st_size", "st_mtime_ns", "st_ctime_ns"))
         != tuple(getattr(after, key) for key in ("st_dev", "st_ino", "st_size", "st_mtime_ns", "st_ctime_ns"))
     ):
@@ -59,11 +65,19 @@ def _read(path):
 
 
 def _write(path, value):
-    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-    with os.fdopen(descriptor, "w") as stream:
-        json.dump(value, stream, ensure_ascii=False, sort_keys=True, indent=2)
-        stream.flush()
-        os.fsync(stream.fileno())
+    descriptor = os.open(
+        path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0),
+        0o600,
+    )
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+            ensure_owner_only(path)
+            json.dump(value, stream, ensure_ascii=False, sort_keys=True, indent=2)
+            stream.flush()
+            os.fsync(stream.fileno())
+    except BaseException:
+        path.unlink(missing_ok=True)
+        raise
 
 
 def main(argv=None):

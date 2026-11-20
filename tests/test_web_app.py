@@ -1,6 +1,6 @@
 """Focused regression tests for the local web console."""
 
-# Code version: v1.156.10-codex.0
+# Code version: v1.156.11-codex.0
 
 from __future__ import annotations
 
@@ -103,6 +103,25 @@ def _asset_version_key(filename: str) -> str:
 
 
 class WebAppTests(unittest.TestCase):
+    def test_application_root_opens_x_cache(self) -> None:
+        with TemporaryDirectory() as raw_root:
+            root = Path(raw_root)
+            app = create_app(
+                root / "store",
+                computer_use_settings_path=root / "settings.json",
+                computer_use_runtime_root=root / "runtime",
+                agent_external_operations_enabled=False,
+            )
+            try:
+                with app.test_client() as client:
+                    response = client.get("/?content_mode=text&route_probe=a%2Bb")
+            finally:
+                app.extensions["runtime_shutdown"]()
+        self.assertEqual(response.status_code, 302)
+        path, _, query = response.headers["Location"].partition("?")
+        self.assertEqual(path.split("/")[:3], ["", "cache", "x"])
+        self.assertEqual(query, "content_mode=text&route_probe=a%2Bb")
+
     def test_runtime_shutdown_callback_stops_browser_services_once(self) -> None:
         """Signals and atexit share one idempotent browser cleanup callback."""
         events: list[str] = []

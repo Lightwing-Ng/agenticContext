@@ -1,6 +1,6 @@
 """Review and atomically publish bounded native resource-detail batches.
 
-Code version: v1.2.0-codex.0
+Code version: v1.2.1-codex.0
 """
 
 from collections import Counter, defaultdict
@@ -11,17 +11,17 @@ import json
 import os
 from pathlib import Path
 import re
-import shutil
 import sqlite3
 import stat
 import tempfile
 
 from . import wechat_macos_recovery_bank as bank
+from .owner_only_files import ensure_owner_only, owner_only_problem
 from .wechat_archive import WechatArchiveRepository, _file_identity
 from .wechat_conversation_events import _inputs
 from .wechat_global_guard import global_refresh_guard
 from .wechat_resource_details import (
-    FILENAME, MAX_BYTES, MAX_ENTRIES, encode_registry, load_registry,
+    FILENAME, MAX_BYTES, MAX_ENTRIES, _metadata_pin, encode_registry, load_registry,
     make_entry, project_resource_details, registry_identity, row_sha256,
 )
 from .wechat_resource_sender_evidence import iter_secondary_native_events
@@ -47,24 +47,38 @@ def _candidate_bytes(path):
     before = path.lstat()
     if (
         not stat.S_ISREG(before.st_mode) or path.is_symlink()
-        or before.st_size > MAX_BYTES or before.st_mode & 0o077
+        or before.st_size > MAX_BYTES or owner_only_problem(path)
         or getattr(before, "st_flags", 0) & 0x40000000
     ):
         raise ValueError("A detail candidate must be bounded, private and resident.")
-    descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+    expected = _metadata_pin(path, before)
+    descriptor = os.open(
+        path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_BINARY", 0),
+    )
     with os.fdopen(descriptor, "rb") as stream:
-        opened = os.fstat(stream.fileno())
-        if (opened.st_dev, opened.st_ino) != (before.st_dev, before.st_ino):
+        if _metadata_pin(path, os.fstat(descriptor), descriptor=descriptor) != expected:
             raise ValueError("The resource detail candidate changed before opening.")
         raw = stream.read(MAX_BYTES + 1)
-    after = path.lstat()
+        if _metadata_pin(path, os.fstat(descriptor), descriptor=descriptor) != expected:
+            raise ValueError("The resource detail candidate changed while reading.")
     if (
         len(raw) > MAX_BYTES
-        or tuple(getattr(before, key) for key in ("st_dev", "st_ino", "st_size", "st_mtime_ns", "st_ctime_ns"))
-        != tuple(getattr(after, key) for key in ("st_dev", "st_ino", "st_size", "st_mtime_ns", "st_ctime_ns"))
+        or _metadata_pin(path, path.lstat()) != expected
+        or owner_only_problem(path)
     ):
         raise ValueError("The resource detail candidate changed while reading.")
     return raw
+
+
+def _write_private(path, raw):
+    descriptor = os.open(
+        path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0), 0o600,
+    )
+    with os.fdopen(descriptor, "wb") as stream:
+        ensure_owner_only(path)
+        stream.write(raw)
+        stream.flush()
+        os.fsync(stream.fileno())
 
 
 def _quarantined(connection):
@@ -341,12 +355,7 @@ def stage_resource_detail_repair(
     if _inputs(repository) != pins or registry_identity(repository.path) != prior_identity:
         raise ValueError("A resource repair input changed during staging.")
     encoded = encode_registry([new_entries[key] for key in sorted(new_entries)])
-    descriptor = os.open(candidate, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-    with os.fdopen(descriptor, "wb") as stream:
-        stream.write(encoded)
-        stream.flush()
-        os.fsync(stream.fileno())
-    candidate.chmod(0o600)
+    _write_private(candidate, encoded)
     return {
         "version": VERSION, "published": False, "candidate": str(candidate),
         "candidate_sha256": _sha(encoded), "candidate_bytes": len(encoded),
@@ -384,16 +393,13 @@ def publish_resource_detail_repair(local_store_root, report, *, rollback_path):
             return {**report, "published": False, "unchanged": True}
         prior = target.read_bytes() if target.exists() else None
         if prior is not None:
-            with rollback.open("xb") as stream:
-                stream.write(prior)
-                stream.flush()
-                os.fsync(stream.fileno())
-            rollback.chmod(0o600)
+            _write_private(rollback, prior)
         descriptor, name = tempfile.mkstemp(prefix=".resource-details-", suffix=".json", dir=target.parent)
         temporary = Path(name)
         installed = False
         try:
             with os.fdopen(descriptor, "wb") as stream:
+                ensure_owner_only(temporary)
                 stream.write(raw)
                 stream.flush()
                 os.fsync(stream.fileno())
@@ -409,18 +415,18 @@ def publish_resource_detail_repair(local_store_root, report, *, rollback_path):
                 k: v for k, v in report["input_identities"].items() if k != key
             }:
                 raise ValueError("An original source changed during detail publication.")
-            parent = os.open(target.parent, os.O_RDONLY)
-            try:
-                os.fsync(parent)
-            finally:
-                os.close(parent)
+            if os.name != "nt":
+                parent = os.open(target.parent, os.O_RDONLY)
+                try:
+                    os.fsync(parent)
+                finally:
+                    os.close(parent)
         except BaseException:
             if installed and target.is_file() and target.read_bytes() == raw:
                 if prior is None:
                     target.unlink()
                 else:
-                    shutil.copyfile(rollback, temporary)
-                    temporary.chmod(0o600)
+                    _write_private(temporary, prior)
                     os.replace(temporary, target)
             raise
         finally:

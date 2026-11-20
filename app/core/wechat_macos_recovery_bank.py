@@ -1,6 +1,6 @@
 """Stage indexed, source-bound Mac recovery without rewriting the original archive.
 
-Code version: v1.15.2-codex.0
+Code version: v1.15.3-codex.0
 """
 
 from __future__ import annotations
@@ -29,8 +29,10 @@ from . import wechat_macos_bank_v4_reader as schema4_reader
 from . import wechat_macos_recovery as legacy
 from . import wechat_macos_reparse as reparse
 from .compute_resources import resolve_cpu_process_workers
+from .owner_only_files import ensure_owner_only, owner_only_problem
 from .platform_lock import lock_file, unlock_file
 from .wechat_archive import _identifier, _time_fields, wechat_archive_path
+from .wechat_completion_clone import sync_completion_file
 from .wechat_group_membership import valid_native_membership
 from .wechat_reconcile import _TEXT_METADATA_FIELDS, native_text_metadata
 from .wechat_resource_index import (
@@ -39,7 +41,7 @@ from .wechat_resource_index import (
 from .wechat_text import is_native_pat_projection, native_components_text
 
 
-CODE_VERSION = "v1.15.2-codex.0"
+CODE_VERSION = "v1.15.3-codex.0"
 WRITER_VERSION = "v1.5.1-codex.0"
 VERSION = WRITER_VERSION
 MAX_PACKET_BYTES = 128 * 1024**2
@@ -1223,7 +1225,13 @@ def _baseline_copy_file(path, target):
 
 
 def _no_baseline_copy_handles(path):
-    """Reject every open handle; an unavailable inspection grants no reuse credit."""
+    """Exclude open handles for POSIX reuse and conflicting writers on Windows."""
+    if os.name == "nt":
+        from .windows_file_metadata import has_file_writers
+
+        if has_file_writers(path):
+            raise ValueError("The bank candidate has an open writer.")
+        return
     executable = shutil.which("lsof")
     if executable is None:
         raise ValueError("Open-file inspection is required before baseline reuse.")
@@ -1278,8 +1286,8 @@ def _publication_candidate_file(path):
     identity = _identity(path)
     value = path.lstat()
     if (
-        not hasattr(os, "getuid") or value.st_uid != os.getuid()
-        or value.st_nlink != 1 or stat.S_IMODE(value.st_mode) != 0o600
+        owner_only_problem(path)
+        or (os.name != "nt" and stat.S_IMODE(value.st_mode) != 0o600)
         or any(os.path.lexists(str(path) + suffix) for suffix in ("-wal", "-shm", "-journal"))
     ):
         raise ValueError("The reviewed Mac bank candidate must remain independently owner-only.")
@@ -1473,8 +1481,18 @@ def _require_baseline_copy(capability, history, candidate, guard, *, allow_rebin
 @contextmanager
 def _staging_output(candidate, history, baseline_copy, publication_guard, *, cloned=False):
     if baseline_copy is None:
-        path = candidate.absolute().as_uri() + "?mode=rw" if cloned else candidate
-        with closing(sqlite3.connect(path, uri=cloned)) as output:
+        if not cloned:
+            flags = (
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL
+                | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
+            )
+            os.close(os.open(candidate, flags, 0o600))
+            try:
+                ensure_owner_only(candidate)
+            except OSError:
+                candidate.unlink(missing_ok=True)
+                raise
+        with closing(sqlite3.connect(candidate.absolute().as_uri() + "?mode=rw", uri=True)) as output:
             yield output
         return
     cap = _require_baseline_copy(baseline_copy, history, candidate, publication_guard)
@@ -2099,7 +2117,7 @@ def stage_mac_recovery_bank(
             ).fetchone()[0],
         )
         report["added_total"] = report["total"] - report["upgraded_total"]
-    os.chmod(candidate, 0o600)
+    _publication_candidate_file(candidate)
     cancel()
     if _inputs(history) != inputs:
         raise ValueError("A source archive changed during Mac recovery bank staging.")
@@ -2482,8 +2500,7 @@ def publish_mac_recovery_bank(
                     raise
                 candidate_identity = rebound
         _publication_candidate_file(candidate)
-        with candidate.open("rb") as stream:
-            os.fsync(stream.fileno())
+        sync_completion_file(candidate)
         candidate_identity = _candidate_storage_rebind(
             candidate, storage_target, candidate_identity, receipt["candidate_sha256"],
             history=history, guard=active_guard, inputs=receipt["input_identities"],

@@ -1,6 +1,6 @@
 """Project scoped forwarded references without copying bodies or opening media.
 
-Code version: v1.6.0-codex.0
+Code version: v1.6.1-codex.0
 """
 
 from __future__ import annotations
@@ -647,7 +647,7 @@ def _native_owner(row):
         isinstance(owner, str)
         and bool(owner)
         and row["account_key"] == row["partition_account_key"] == "account:" + owner
-        and row["partition_id"] == "ios-" + hashlib.md5(owner.encode()).hexdigest()
+        and row["partition_id"] == "ios-" + hashlib.md5(owner.encode(), usedforsecurity=False).hexdigest()
         and row["identity_status"] == "Verified archive ID"
     )
 

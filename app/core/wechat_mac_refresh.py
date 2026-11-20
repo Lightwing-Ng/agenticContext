@@ -1,6 +1,6 @@
 """Run explicit, bounded Mac WeChat refreshes in background workers.
 
-Code version: v1.7.0-codex.0
+Code version: v1.7.1-codex.0
 """
 
 from __future__ import annotations
@@ -22,6 +22,7 @@ import time
 from threading import Event, RLock, Thread
 
 from . import wechat_macos_recovery_bank as bank
+from .owner_only_files import ensure_owner_only_directory
 from .wechat_archive import (
     WechatArchiveRepository,
     WechatTimelineProjectionError,
@@ -266,10 +267,12 @@ class WechatMacRefreshService:
         with tempfile.TemporaryDirectory(
             prefix=".mac-refresh-", dir=staging_parent
         ) as directory:
-            os.chmod(directory, 0o700)
+            workspace = Path(directory)
+            ensure_owner_only_directory(workspace)
             # A ctime-only recheck requires two private owned parent directories.
-            staged = Path(directory) / "staged"
+            staged = workspace / "staged"
             staged.mkdir(mode=0o700)
+            ensure_owner_only_directory(staged)
             candidate = staged / "candidate.sqlite3"
             receipt = bank.stage_mac_recovery_bank(
                 self.root,

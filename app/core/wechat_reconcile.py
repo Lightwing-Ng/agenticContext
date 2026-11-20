@@ -1,6 +1,6 @@
 """Add native text observations without replacing earlier WeChat evidence."""
 
-# Code version: v1.8.0-codex.0
+# Code version: v1.8.1-codex.0
 
 from __future__ import annotations
 
@@ -25,6 +25,7 @@ from .wechat_archive import (
 )
 from .wechat_payments import payment_card_text, validate_payment_card_fields
 from .wechat_resource_index import CHANNELS_APP_SUBTYPE, CHANNELS_LABEL_PATHS
+from .windows_file_metadata import file_change_time
 
 
 _ADDITIVE_SCHEMA = """
@@ -248,7 +249,7 @@ def _forwarded_reference_schema(reference):
                 or not isinstance(locator.get("database"), str)
                 or re.fullmatch(r"[A-Za-z0-9_.-]{1,128}", locator["database"]) is None
                 or locator.get("table")
-                != "Chat_" + hashlib.md5(item["peer_id"].encode()).hexdigest()
+                != "Chat_" + hashlib.md5(item["peer_id"].encode(), usedforsecurity=False).hexdigest()
                 or type(locator.get("local_id")) is not int
                 or locator["local_id"] < 1
             ):
@@ -559,13 +560,18 @@ def _file_identity(path: Path):
     metadata = path.stat()
     if not path.is_file():
         raise ValueError("Reconciliation files must be regular files.")
-    return (
+    identity = (
         metadata.st_dev,
         metadata.st_ino,
         metadata.st_size,
         metadata.st_mtime_ns,
         metadata.st_ctime_ns,
     )
+    if os.name == "nt":
+        # Windows stat().ctime is birth time; retain it independently of mutations.
+        birth = getattr(metadata, "st_birthtime_ns", metadata.st_ctime_ns)
+        return (*identity[:4], file_change_time(path), birth)
+    return identity
 
 
 def _database_identity(path: Path):
@@ -668,7 +674,7 @@ def _normalize_sources(sources, exclusions):
             if (
                 not isinstance(owner, str)
                 or not owner
-                or hashlib.md5(owner.encode()).hexdigest() != account_hash
+                or hashlib.md5(owner.encode(), usedforsecurity=False).hexdigest() != account_hash
                 or source_id != "ios-" + account_hash
             ):
                 raise ValueError("Verified source account does not match its hash.")
@@ -726,7 +732,7 @@ def _normalize_record(raw, source, source_snapshot):
     if not isinstance(conversation_hash, str) or not _HEX.fullmatch(conversation_hash):
         raise ValueError("Native observations need their conversation table hash.")
     peer = str(raw.get("conversation_id") or "")
-    if peer and hashlib.md5(peer.encode()).hexdigest() != conversation_hash:
+    if peer and hashlib.md5(peer.encode(), usedforsecurity=False).hexdigest() != conversation_hash:
         raise ValueError("Conversation ID does not match its native table hash.")
     kind = str(raw.get("conversation_kind") or "unclassified")
     if kind not in {"direct", "group", "unclassified"}:
@@ -1015,7 +1021,7 @@ def reconcile_wechat_records(
             if row["peer_id"]:
                 key = (
                     row["partition_id"],
-                    hashlib.md5(row["peer_id"].encode()).hexdigest(),
+                    hashlib.md5(row["peer_id"].encode(), usedforsecurity=False).hexdigest(),
                 )
                 by_hash.setdefault(key, set()).add(row["id"])
         # This index stays on disk and grows independently of Python memory.
@@ -1325,7 +1331,7 @@ def reconcile_wechat_records(
             )
         if report["changed"]:
             os.chmod(temporary, 0o600)
-            with temporary.open("rb") as stream:
+            with temporary.open("r+b") as stream:
                 os.fsync(stream.fileno())
             os.replace(temporary, target)
         report["database_bytes"] = target.stat().st_size if target.exists() else 0

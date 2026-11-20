@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Inventory retained native app witnesses or capture a bounded repair batch.
 
-Code version: v1.0.0-codex.0
+Code version: v1.0.1-codex.0
 """
 
 import argparse
@@ -389,6 +389,8 @@ def _capture(local_store, history, by_shard, counts):
 
 
 def _private_directory(path):
+    if os.open not in os.supports_dir_fd or not hasattr(os, "O_DIRECTORY"):
+        raise ValueError("Native capture output requires macOS directory handles.")
     path = path.expanduser().absolute()
     if (
         path.parent.resolve() != path.parent
@@ -468,7 +470,7 @@ def main(argv=None):
             closing(completions._readonly(completion_path)) as derived,
             closing(_readonly(repository.path)) as history,
         ):
-            if not completions._current_metadata(
+            if not completions._matches_read_pins(
                 derived, repository.path, completions._pins(repository.path),
             ):
                 raise ValueError("The retained completion catalog needs current archive inputs.")

@@ -1,6 +1,6 @@
 """Resource detail batches preserve originals, prior proofs, and publication boundaries.
 
-Code version: v1.2.0-codex.0
+Code version: v1.2.2-codex.0
 """
 
 from contextlib import closing
@@ -14,6 +14,7 @@ import pytest
 
 from app.core import wechat_resource_detail_repair as repair
 from app.core import wechat_resource_details as details
+from app.core.owner_only_files import owner_only_problem
 from app.core.wechat_archive import WechatArchiveRepository, _file_identity, _identifier, _time_fields
 from app.core.wechat_contacts import initialize_contact_registry
 from tests import test_wechat_resource_details as evidence
@@ -113,7 +114,7 @@ def test_staging_is_review_only_and_preserves_all_source_bytes(repair_fixture, t
     assert report["rejected"] == {}
     assert not target.exists()
     candidate = tmp_path / "candidate.json"
-    assert candidate.stat().st_mode & 0o777 == 0o600
+    assert not owner_only_problem(candidate)
     assert hashlib.sha256(candidate.read_bytes()).hexdigest() == report["candidate_sha256"]
     assert _source_bytes(f) == before
 
@@ -138,7 +139,7 @@ def test_publication_merges_existing_proof_and_drives_the_real_sql_reader(
     assert by_id[original["message_id"]] == original
     assert set(by_id) == {f.row["id"], row["id"]}
     assert rollback.read_bytes() == old_registry
-    assert rollback.stat().st_mode & 0o777 == 0o600
+    assert not owner_only_problem(rollback)
     result = WechatArchiveRepository(f.root).query(
         session=f.conversation["id"], query="second preserved", persist_event_cache=False,
     )
@@ -370,6 +371,16 @@ def test_cross_viewer_capture_requires_an_active_exact_completion_and_preserves_
     assert enriched["sender_id"] == completed["sender_id"]
     assert enriched["sender_label"] == completed["sender_label"]
     assert json.loads(enriched["provenance"])["resource_reference"]["channels_description"] == "Exact Channels share"
+    with closing(repair._readonly(f["history"])) as connection:
+        _conversations, upstream, status = repository._timeline_tables(
+            connection, _file_identity(f["history"]), conversation_id=target,
+            strict=True, include_secondary=False, include_resource_details=False,
+        )
+        original = dict(connection.execute(
+            f"SELECT * FROM {upstream} WHERE id=?", (row["id"],),
+        ).fetchone())
+    assert status in {"ready", "absent"}
+    assert details.row_sha256(original) == details.row_sha256(row)
 
 
 def test_manifest_can_fill_only_an_exact_ordinary_group_text_sender(repair_fixture, tmp_path):
