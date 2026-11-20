@@ -1,6 +1,6 @@
 """Stage and read evidence-checked message completions in one derived SQL catalog.
 
-Code version: v1.0.8-codex.0
+Code version: v1.1.0-codex.0
 
 Original history, resource catalogs, account boundaries, and recovery-bank pins
 remain unchanged. Strategies produce either exact resource-row replacements or
@@ -2247,6 +2247,53 @@ def completion_message_conversation(history_path, message_id):
     if _identity(target) != identity:
         raise ValueError("The derived message locator changed.")
     return row[0] if row is not None else None
+
+
+def present_retained_app_cards(connection, messages):
+    """Reuse card fields from the already validated completion for visible rows."""
+    if not connection.execute(
+        "SELECT 1 FROM sqlite_temp_master WHERE type='table' AND name='secondary_completion_active'"
+    ).fetchone():
+        return
+    for row in messages:
+        if row["text"] != "[App message]":
+            continue
+        proof = json.loads(row["provenance"])
+        reference = proof.get("resource_reference")
+        if not isinstance(reference, dict) or reference.get("kind") != "app":
+            continue
+        found = connection.execute(
+            "SELECT w.message FROM temp.secondary_completion_active a "
+            "JOIN secondary_completions.entries e ON e.id=a.id "
+            "JOIN secondary_completions.witnesses w ON w.id=e.witness_key "
+            "WHERE a.id=? AND e.conversation_id=? AND e.operation='replace' "
+            "AND e.strategy='native_sender' AND w.source_key=e.source_key",
+            (row["id"], row["conversation_id"]),
+        ).fetchone()
+        if found is None:
+            continue
+        message = load_json_cell(found[0])
+        resource = message.get("resource")
+        local_type = message.get("local_type")
+        if (
+            not isinstance(resource, dict)
+            or resource.get("kind") != "app"
+            or type(local_type) is not int
+            or local_type & 0xFFFFFFFF != 49
+            or message.get("server_id") != str(proof.get("server_id"))
+            or message.get("create_time") != proof.get("unix_timestamp")
+            or row["sender_id"] != message.get("sender_id")
+            or resource.get("app_subtype") != str(local_type >> 32)
+            or not bank._valid_resource_labels(resource, 49)
+        ):
+            continue
+        fields = {
+            key: resource[key]
+            for key in ("app_subtype", "app_metadata_version", *bank._APP_LABEL_FIELDS)
+            if resource.get(key)
+        }
+        if all(reference.get(key) in (None, "", value) for key, value in fields.items()):
+            row["retained_app_card_fields"] = fields
 
 
 def _active_predicate(message_table, *, membership_table=None):

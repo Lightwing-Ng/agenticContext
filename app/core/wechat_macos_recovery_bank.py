@@ -1,6 +1,6 @@
 """Stage indexed, source-bound Mac recovery without rewriting the original archive.
 
-Code version: v1.7.0-codex.0
+Code version: v1.7.1-codex.0
 """
 
 from __future__ import annotations
@@ -31,11 +31,18 @@ from .platform_lock import lock_file, unlock_file
 from .wechat_archive import _identifier, _time_fields, wechat_archive_path
 from .wechat_completion_clone import sync_completion_file
 from .wechat_reconcile import _TEXT_METADATA_FIELDS, native_text_metadata
-from .wechat_resource_index import _APP_LABEL_FIELDS as _LINK_LABEL_FIELDS, _KINDS, _LABELS, _app_label
+from .wechat_resource_index import (
+    CHANNELS_APP_SUBTYPE,
+    CHANNELS_LABEL_PATHS,
+    _APP_LABEL_FIELDS,
+    _KINDS,
+    _LABELS,
+    _app_label,
+)
 from .wechat_text import is_native_pat_projection, native_components_text
 
 
-CODE_VERSION = "v1.7.0-codex.0"
+CODE_VERSION = "v1.7.1-codex.0"
 VERSION = "v1.4.0-codex.0"
 MAX_PACKET_BYTES = 128 * 1024**2
 MAX_PACKET_MESSAGES = 100_000
@@ -71,7 +78,7 @@ _SIGNATURE_FIELDS = (
     "system_source_ids",
     "app_card_metadata",
 )
-_APP_LABEL_FIELDS = ("safe_title", "app_name", "app_name_source", "publisher_name", "publisher_name_source")
+_LINK_LABEL_FIELDS = ("safe_title", "publisher_name", "app_name")
 _SOURCE_INPUTS = (
     "history.sqlite3",
     "macos_recovery.json",
@@ -503,9 +510,13 @@ def _valid_resource_labels(resource, typ):
         resource["app_metadata_version"] != "1"
         or typ != 49
         or resource.get("kind") != "app"
+        or (
+            CHANNELS_LABEL_PATHS.keys() & resource.keys()
+            and resource.get("app_subtype") != str(CHANNELS_APP_SUBTYPE)
+        )
         or not any(
             resource.get(key, "").strip()
-            for key in ("safe_title", "publisher_name", "app_name")
+            for key in (*_LINK_LABEL_FIELDS, *CHANNELS_LABEL_PATHS)
         )
     ):
         return False
@@ -881,10 +892,8 @@ def _stub_source(connection, row, catalog_hashes):
             for key in (
                 *_TEXT_METADATA_FIELDS,
                 "native_metadata",
-                "safe_title",
+                *_APP_LABEL_FIELDS,
                 "app_subtype",
-                "publisher_name",
-                "app_name",
                 "app_metadata_version",
             )
         ):

@@ -1,6 +1,6 @@
 """Relative and absolute callers share proof caches without bypassing input checks.
 
-Code version: v1.1.0-codex.0
+Code version: v1.1.1-codex.0
 """
 
 from pathlib import Path
@@ -44,8 +44,10 @@ def test_all_input_keys_and_fingerprints_agree_for_relative_and_absolute_roots(
         "history.sqlite3",
         "contacts.sqlite3",
         "conversation_quote_reviews.json",
+        "resource_details.json",
         *optional,
     }
+    assert relative_inputs[str(directory / "resource_details.json")] is None
     assert all(Path(key).is_absolute() for key in relative_inputs)
 
 

@@ -1,6 +1,6 @@
 """Stream one complete source-scoped WeChat timeline from pinned local inputs.
 
-Code version: v1.5.0-codex.0
+Code version: v1.6.0-codex.0
 """
 
 from __future__ import annotations
@@ -139,6 +139,10 @@ class WechatSessionExport:
             raise ValueError("The WeChat conversation is unavailable.")
         self.sources = {repository.path: _identity(repository.path)}
         from .wechat_forwarded_clocks import WechatForwardedClocks, registry_digest
+        from .wechat_resource_details import detail_input_identities
+
+        self.detail_history_path = repository.path
+        self.detail_inputs = detail_input_identities(repository.path)
 
         self.local_store_root = local_store_root
         self.forwarded_clock_digest = registry_digest(local_store_root)
@@ -386,8 +390,11 @@ class WechatSessionExport:
 
     def _check_sources(self):
         from .wechat_forwarded_clocks import registry_digest
+        from .wechat_resource_details import detail_input_identities
 
         try:
+            if detail_input_identities(self.detail_history_path) != self.detail_inputs:
+                raise WechatSessionSourceChanged("The native resource details changed during export.")
             if any(
                 _identity(path) != expected for path, expected in self.sources.items()
             ):

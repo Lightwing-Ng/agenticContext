@@ -1,6 +1,6 @@
 """Present persistent WeChat resource references without exposing host paths.
 
-Code version: v1.2.0-codex.0
+Code version: v1.3.1-codex.0
 """
 
 from __future__ import annotations
@@ -12,6 +12,7 @@ import re
 
 from .wechat_archive import WechatArchiveRepository
 from .wechat_mac_resources import WechatMacResourceResolver
+from .wechat_resource_index import CHANNELS_APP_SUBTYPE
 
 
 RESOURCE_LABELS = {
@@ -30,6 +31,8 @@ _STATUS_LABELS = {
     "missing": "Not found on this Mac",
 }
 _DIGEST = re.compile(r"[0-9a-f]{64}")
+_CHANNELS_NAME = "WeChat Channels"
+_CHANNELS_FALLBACK_TITLE = "当前微信版本不支持展示该内容，请升级至最新版本。"
 
 
 def _card_label(value):
@@ -42,6 +45,25 @@ def _card_label(value):
     ):
         return ""
     return value
+
+
+def _app_card_text(reference):
+    """Keep source attribution independent of the local attachment's availability."""
+    if reference.get("app_subtype") == "19":
+        return "Chat history", ""
+    title = _card_label(reference.get("safe_title"))
+    if reference.get("app_subtype") == str(CHANNELS_APP_SUBTYPE):
+        if title.strip() == _CHANNELS_FALLBACK_TITLE:
+            title = ""
+        return (
+            _card_label(reference.get("channels_description")) or title or _CHANNELS_NAME,
+            _card_label(reference.get("channels_nickname")),
+        )
+    return (
+        title or RESOURCE_LABELS["app"],
+        _card_label(reference.get("publisher_name"))
+        or _card_label(reference.get("app_name")),
+    )
 
 
 def _html_resource_reference(provenance, account_id, peer_id):
@@ -148,9 +170,13 @@ def resource_reference(provenance, account_id, peer_id):
 
 def present_resource(reference, resolver):
     """Keep unavailable references visible and distinguish folders from files."""
+    channels = (
+        reference["kind"] == "app"
+        and reference.get("app_subtype") == str(CHANNELS_APP_SUBTYPE)
+    )
     if reference.get("availability") == "metadata_only":
         label = RESOURCE_LABELS[reference["kind"]]
-        result = {
+        resource = {
             "kind": reference["kind"],
             "kind_label": label,
             "label": label,
@@ -159,14 +185,13 @@ def present_resource(reference, resolver):
             "action_label": "",
             "can_reveal": False,
         }
-        if reference["kind"] == "app" and reference.get("app_subtype") == "5":
-            result.update(
-                label=_card_label(reference.get("safe_title")) or label,
-                publisher_name=_card_label(reference.get("publisher_name"))
-                or _card_label(reference.get("app_name")),
-                is_link=True,
-            )
-        return result
+        if reference["kind"] == "app":
+            resource["label"], resource["publisher_name"] = _app_card_text(reference)
+            if reference.get("app_subtype") == "5":
+                resource["is_link"] = True
+        if channels:
+            resource.update(is_link=True, platform_label=_CHANNELS_NAME)
+        return resource
     destination = resolver.resolve(reference)
     status = destination["status"]
     filename = reference.get("filename")
@@ -175,7 +200,7 @@ def present_resource(reference, resolver):
         if isinstance(filename, str) and filename
         else RESOURCE_LABELS[reference["kind"]]
     )
-    return {
+    resource = {
         "kind": reference["kind"],
         "kind_label": RESOURCE_LABELS[reference["kind"]],
         "label": label,
@@ -185,6 +210,13 @@ def present_resource(reference, resolver):
         "can_reveal": status in {"file", "candidate", "folder"}
         and destination["path"] is not None,
     }
+    if reference["kind"] == "app":
+        app_label, resource["publisher_name"] = _app_card_text(reference)
+        if not isinstance(filename, str) or not filename:
+            resource["label"] = app_label
+    if channels:
+        resource.update(is_link=True, platform_label=_CHANNELS_NAME)
+    return resource
 
 
 def resolve_resource_for_reveal(local_store_root, message_id):

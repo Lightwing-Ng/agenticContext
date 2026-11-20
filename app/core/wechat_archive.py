@@ -1,6 +1,6 @@
 """Source-separated, text-only WeChat archive import and indexed local queries."""
 
-# Code version: v1.12.0-codex.0
+# Code version: v1.13.0-codex.0
 
 from __future__ import annotations
 
@@ -808,12 +808,14 @@ class WechatArchiveRepository:
         status_conversation_id=None,
         strict=False,
         include_secondary=True,
+        include_resource_details=True,
     ):
         """Share source-bound metadata placeholders across browsing and export."""
         from .wechat_media_event_index import attach_media_event_index
         from .wechat_media_placeholders import attach_media_placeholders
         from .wechat_macos_recovery import attach_mac_recovery
         from .wechat_macos_recovery_bank import attach_mac_recovery_bank
+        from .wechat_resource_details import attach_resource_details
         from .wechat_secondary_completions import attach_secondary_message_completions
 
         conversations, messages, status = self._resource_timeline_tables(
@@ -875,6 +877,16 @@ class WechatArchiveRepository:
             if strict:
                 raise WechatTimelineProjectionError(completion_status)
             status = completion_status
+        detail_status = "absent"
+        if include_secondary and include_resource_details:
+            conversations, messages, detail_status = attach_resource_details(
+                connection, self.path, conversations, messages,
+                conversation_id=conversation_id,
+            )
+            if detail_status not in {"ready", "absent"}:
+                if strict:
+                    raise WechatTimelineProjectionError(detail_status)
+                status = detail_status
         if status_conversation_id is not None:
             status = (
                 native_status
@@ -897,6 +909,10 @@ class WechatArchiveRepository:
             if completion_status not in {"ready", "absent"}:
                 status = completion_status
             elif completion_status == "ready" and status == "absent":
+                status = "ready"
+            if detail_status not in {"ready", "absent"}:
+                status = detail_status
+            elif detail_status == "ready" and status == "absent":
                 status = "ready"
         return conversations, messages, status
 
@@ -1515,8 +1531,10 @@ class WechatArchiveRepository:
                     )
                 ]
                 from .wechat_macos_recovery import mark_mac_recovery_rows
+                from .wechat_secondary_completions import present_retained_app_cards
 
                 mark_mac_recovery_rows(connection, messages)
+                present_retained_app_cards(connection, messages)
                 quote_originals = self._quoted_resource_originals(
                     connection, messages, session, message_table=source_message_table
                 )

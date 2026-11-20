@@ -1,6 +1,6 @@
 """Synthetic-only tests for mac_sqlcipher_read_v1; no secret or database I/O.
 
-Code version: v1.1.0-codex.0. All fixtures use synthetic keys and pages.
+Code version: v1.2.0-codex.0. All fixtures use synthetic keys and pages.
 """
 
 import hashlib
@@ -130,6 +130,58 @@ class ReadTests(unittest.TestCase):
         self.assertEqual(
             reader.decrypt_page(KEY, self.encrypted[0], 1, SALT)[-80:], bytes(80)
         )
+
+    def test_only_fixed_all_zero_main_lock_byte_page_is_excluded(self):
+        reserved = reader.LOCK_BYTE_PAGE_NUMBER
+        self.assertEqual(reserved, 262_145)
+        page, excluded = reader._decrypt_main_page(
+            KEY, bytes(reader.PAGE_SIZE), reserved, SALT
+        )
+        self.assertEqual(page, bytes(reader.PAGE_SIZE))
+        self.assertEqual(excluded, 1)
+        for adjacent in (reserved - 1, reserved + 1):
+            with self.subTest(page_number=adjacent):
+                with self.assertRaisesRegex(reader.RecoveryError, "authentication"):
+                    reader._decrypt_main_page(
+                        KEY, bytes(reader.PAGE_SIZE), adjacent, SALT
+                    )
+        with self.assertRaisesRegex(reader.RecoveryError, "authentication"):
+            reader.decrypt_page(KEY, bytes(reader.PAGE_SIZE), reserved, SALT)
+
+    def test_nonzero_or_incomplete_main_lock_byte_page_is_unsupported(self):
+        reserved = reader.LOCK_BYTE_PAGE_NUMBER
+        valid_encrypted = encrypt_page(plain_page(reserved, 17), reserved)
+        self.assertEqual(
+            reader.decrypt_page(KEY, valid_encrypted, reserved, SALT),
+            plain_page(reserved, 17),
+        )
+        for page in (valid_encrypted, bytes(reader.PAGE_SIZE - 1), b"\x01" + bytes(4095)):
+            with self.subTest(length=len(page)):
+                with self.assertRaisesRegex(reader.RecoveryError, "lock-byte page"):
+                    reader._decrypt_main_page(KEY, page, reserved, SALT)
+
+    def test_lock_byte_exclusion_has_honest_output_authentication_counts(self):
+        # A small synthetic slot exercises assembly; the fixed real slot is tested above.
+        main = self.encrypted[0] + bytes(reader.PAGE_SIZE) + self.encrypted[2]
+        with patch.object(reader, "LOCK_BYTE_PAGE_NUMBER", 2):
+            plaintext, metadata = reader.decrypt_database(main, b"", KEY)
+        self.assertEqual(
+            plaintext, self.pages[0] + bytes(reader.PAGE_SIZE) + self.pages[2]
+        )
+        self.assertFalse(metadata["encrypted_pages_authenticated"])
+        self.assertTrue(metadata["content_pages_authenticated"])
+        self.assertEqual(metadata["output_page_count"], 3)
+        self.assertEqual(metadata["authenticated_output_page_count"], 2)
+        self.assertEqual(metadata["lock_byte_page_count"], 1)
+
+    def test_wal_cannot_target_fixed_lock_byte_page_even_without_a_commit(self):
+        for commit in (0, reader.LOCK_BYTE_PAGE_NUMBER):
+            with self.subTest(commit=commit):
+                wal = make_wal(
+                    [(reader.LOCK_BYTE_PAGE_NUMBER, commit, bytes(reader.PAGE_SIZE))]
+                )
+                with self.assertRaisesRegex(reader.RecoveryError, "lock-byte page"):
+                    reader.parse_wal(wal)
 
     def test_wrong_key_page_number_and_tampering(self):
         with self.assertRaises(reader.RecoveryError):

@@ -1,6 +1,6 @@
 """Authenticated raw overviews survive reloads without reusing changed evidence.
 
-Code version: v1.0.3-codex.0
+Code version: v1.1.0-codex.0
 """
 
 from collections import OrderedDict
@@ -447,6 +447,19 @@ def test_previous_snapshot_accepts_an_unchanged_archive_after_reader_update(
 def test_previous_snapshot_does_not_create_storage(snapshot_store):
     assert _load_previous(snapshot_store) == (None, [])
     assert not _directory(snapshot_store).exists()
+
+
+def test_previous_snapshot_remains_available_after_resource_detail_publication(snapshot_store):
+    from app.core.wechat_resource_details import FILENAME as DETAILS, encode_registry
+
+    verified = _load(snapshot_store)
+    path = snapshot_store.repository.path.with_name(DETAILS)
+    descriptor = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+    with os.fdopen(descriptor, "wb") as output:
+        if os.name == "nt":
+            owner_only_files.ensure_owner_only(path)
+        output.write(encode_registry([]))
+    assert _load_previous(snapshot_store) == verified
 
 
 def test_previous_snapshot_allows_first_completion_publication(snapshot_store):

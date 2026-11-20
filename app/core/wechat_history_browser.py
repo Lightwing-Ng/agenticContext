@@ -1,6 +1,6 @@
 """Adapt indexed human conversations to the shared Local resources page model."""
 
-# Code version: v1.34.1-codex.0
+# Code version: v1.34.2-codex.0
 
 from __future__ import annotations
 
@@ -983,6 +983,8 @@ def query_wechat_history(
             provenance, metadata["account_id"], metadata["peer_id"]
         )
         if reference is not None:
+            if fields := row.get("retained_app_card_fields"):
+                reference = {**reference, **fields}
             metadata["resource"] = present_resource(reference, mac_resources)
         supplemental_text = text_observations.project(
             message_id=row["id"],
