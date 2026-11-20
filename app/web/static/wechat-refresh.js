@@ -1,4 +1,4 @@
-/* Code version: v1.5.0-codex.0 */
+/* Code version: v1.6.0-codex.0 */
 
 (function initializeWechatRefresh() {
     "use strict";
@@ -9,7 +9,14 @@
     const bannerCopy = banner?.querySelector("[data-wechat-refresh-copy]");
     const pendingReadSelector = '[data-wechat-read-pending][data-state="running"]';
     const resultKey = "agenticContextWechatRefreshV1";
+    const pendingKey = "agenticContextWechatPendingRefreshV1";
     const contactReturnKey = "agenticContextWechatContactReturnV1";
+    // Keep this browser's status watch bounded independently of the worker.
+    const statusLifetime = 2 * 60 * 60 * 1_000;
+    const statusOutageLimit = 30_000;
+    const refreshStatusPath = /^\/api\/browser\/wechat\/refresh\/[A-Za-z0-9_-]{24,128}$/;
+    const legacyStatusError = "The refresh status was lost. The local service may have restarted. "
+        + "Reload this conversation to check for updates before trying again.";
     const formatCount = (count) => new Intl.NumberFormat("en-US").format(count);
     const messageCount = (count) => `${formatCount(count)} message${count === 1 ? "" : "s"}`;
     const wait = (milliseconds) => new Promise((resolve) => window.setTimeout(resolve, milliseconds));
@@ -80,14 +87,16 @@
 
     function restoreResult() {
         if (!(banner instanceof HTMLElement)) return;
-        const result = historyObject()?.[resultKey];
+        let result = historyObject()?.[resultKey];
         if (!result || result.version !== 1 || result.url !== window.location.href) return;
-        if (!(result.account && result.error) && !document.querySelector(pendingReadSelector)) clearSavedResult();
-        if (result.error) {
-            showNotice(`Unable to refresh ${result.account ? "WeChat account" : "chat history"}`, result.error, true);
-        } else {
-            showResult(result);
+        if (result.error === legacyStatusError) {
+            result = { account: result.account === true, interrupted: true, publicationUnknown: true };
+            saveResult(window.location.href, result);
         }
+        if (!result.interrupted && !(result.account && result.error) && !document.querySelector(pendingReadSelector)) {
+            clearSavedResult();
+        }
+        showRefreshResult(result);
         if (result.followLatest === true) {
             const scrollport = document.querySelector("[data-wechat-resources] [data-chat-scrollport]");
             const scrollToLatest = () => window.requestAnimationFrame(() => {
@@ -97,6 +106,23 @@
             });
             if (document.readyState === "complete") scrollToLatest();
             else window.addEventListener("load", scrollToLatest, { once: true });
+        }
+    }
+
+    function showRefreshResult(result) {
+        const scope = result.account ? "WeChat account" : "Chat history";
+        if (result.interrupted) {
+            if (result.publicationUnknown === false) {
+                showNotice(`${scope} refresh interrupted`,
+                    "The local service stopped before this refresh finished. You can try again.");
+            } else {
+                showNotice(`${scope} refresh status unavailable`,
+                    "The local service could not confirm the result. Reload this view to check for saved changes before trying again.");
+            }
+        } else if (result.error) {
+            showNotice(`Unable to refresh ${result.account ? scope : "chat history"}`, result.error, true);
+        } else {
+            showResult(result);
         }
     }
 
@@ -110,6 +136,43 @@
         } catch (_) {
             // Open the updated records even if this entry cannot store the result.
         }
+    }
+
+    function refreshStatusUrl(value) {
+        if (typeof value !== "string") return null;
+        try {
+            const url = new URL(value, window.location.href);
+            if (url.origin === window.location.origin && refreshStatusPath.test(url.pathname)
+                && !url.search && !url.hash && !url.username && !url.password) {
+                return url.pathname;
+            }
+        } catch (_) {
+            // Accept only the local refresh status route.
+        }
+        return null;
+    }
+
+    function savePendingRefresh(statusUrl, expiresAt) {
+        const previous = historyObject();
+        if (!previous) return;
+        const url = window.location.href;
+        if (statusUrl) {
+            previous[pendingKey] = { url, statusUrl, expiresAt };
+        } else if (previous[pendingKey]?.url === url) {
+            delete previous[pendingKey];
+        } else {
+            return;
+        }
+        try {
+            window.history.replaceState(previous, "", url);
+        } catch (_) {
+            // A restricted history entry can still display the current refresh.
+        }
+    }
+
+    function getPendingRefresh() {
+        const pending = historyObject()?.[pendingKey];
+        return pending?.url === window.location.href ? pending : null;
     }
 
     function reloadAfterRefresh(snapshot, account) {
@@ -200,55 +263,57 @@
         return memberSnapshot ? `${message}\n${memberSnapshot}` : message;
     }
 
-    async function waitForRefresh(statusUrl, onProgress) {
-        const destination = new URL(statusUrl, window.location.href);
-        if (destination.origin !== window.location.origin || !destination.pathname.startsWith("/api/")) {
-            throw new Error("The local service returned an invalid refresh status address.");
-        }
-        let failedReads = 0;
-        while (true) {
+    async function waitForRefresh(statusUrl, expiresAt, onProgress) {
+        let outageStart;
+        while (statusUrl && Date.now() < expiresAt) {
             await wait(1_000);
-            let response;
-            let snapshot;
             try {
-                response = await fetch(destination.href, {
+                const response = await fetch(statusUrl, {
                     cache: "no-store",
                     headers: { Accept: "application/json" },
+                    redirect: "error",
+                    signal: AbortSignal.timeout(10_000),
                 });
-                snapshot = await payload(response);
-            } catch (_) {
-                failedReads += 1;
-                if (failedReads >= 5) {
-                    throw new Error("Lost contact with the local service while refreshing chat history.");
+                if (response.status === 404) break;
+                if (response.ok) {
+                    const snapshot = await payload(response);
+                    if (snapshot.state === "interrupted") return snapshot;
+                    if (["succeeded", "failed"].includes(snapshot.state)) {
+                        onProgress(snapshot);
+                        return snapshot;
+                    }
+                    if (snapshot.state === "running") {
+                        outageStart = undefined;
+                        onProgress(snapshot);
+                        continue;
+                    }
                 }
-                continue;
+            } catch (_) {
+                // The service can briefly be unavailable during a restart.
             }
-            if (!response.ok) {
-                throw new Error(snapshot.error || "Unable to read the chat refresh status.");
-            }
-            failedReads = 0;
-            onProgress(snapshot);
-            if (snapshot.state === "running") continue;
-            if (snapshot.state === "succeeded" || snapshot.state === "failed") return snapshot;
-            throw new Error(refreshError(snapshot));
+            outageStart ??= Date.now();
+            if (Date.now() - outageStart >= statusOutageLimit) return { state: "status-unavailable" };
         }
+        return { state: "interrupted" };
     }
 
     banner?.querySelector("[data-wechat-refresh-dismiss]")?.addEventListener("click", clearSavedResult);
     restoreResult();
     if (!(button instanceof HTMLButtonElement)) return;
 
-    button.addEventListener("click", async () => {
-        if (refreshing || button.disabled) return;
+    async function refresh(pending) {
+        if (refreshing || (!pending && button.disabled)) return;
         const endpoint = button.dataset.wechatRefreshUrl;
         const sessionId = button.dataset.wechatSessionId;
         const accountId = button.dataset.wechatAccountId;
         if (!endpoint || !(accountId || sessionId)) return;
         const account = Boolean(accountId);
         const scope = account ? "WeChat account" : "chat history";
+        const originalUrl = window.location.href;
         const readRetry = account && document.querySelector("[data-wechat-read-retry]");
-        if (account) clearSavedResult();
+        clearSavedResult();
         refreshing = true;
+        const idleDisabled = button.disabled;
         button.disabled = true;
         if (readRetry) readRetry.disabled = true;
         button.setAttribute("aria-busy", "true");
@@ -263,36 +328,63 @@
         });
         const showProgress = (snapshot) => notice?.update?.({ copy: progressCopy(snapshot, account) });
 
+        let outcome;
+        let reloading = false;
         try {
-            const response = await fetch(endpoint, {
-                method: "POST",
-                cache: "no-store",
-                headers: { Accept: "application/json", "Content-Type": "application/json" },
-                body: JSON.stringify(account ? { account_id: accountId } : { session_id: sessionId }),
-            });
-            const started = await payload(response);
-            if (!response.ok) {
-                throw new Error(started.error || `Unable to start the ${scope} refresh.`);
+            let result;
+            if (pending) {
+                result = await waitForRefresh(refreshStatusUrl(pending.statusUrl), pending.expiresAt, showProgress);
+            } else {
+                const response = await fetch(endpoint, {
+                    method: "POST",
+                    cache: "no-store",
+                    headers: { Accept: "application/json", "Content-Type": "application/json" },
+                    body: JSON.stringify(account ? { account_id: accountId } : { session_id: sessionId }),
+                });
+                result = await payload(response);
+                if (!response.ok) {
+                    throw new Error(result.error || `Unable to start the ${scope} refresh.`);
+                }
+                if (window.location.href !== originalUrl) return;
+                if (result.state === "running") {
+                    showProgress(result);
+                    const statusUrl = refreshStatusUrl(result.status_url);
+                    const expiresAt = Date.now() + statusLifetime;
+                    if (statusUrl) savePendingRefresh(statusUrl, expiresAt);
+                    result = await waitForRefresh(statusUrl, expiresAt, showProgress);
+                }
             }
-            showProgress(started);
-            const result = ["succeeded", "failed"].includes(started.state)
-                ? started : await waitForRefresh(started.status_url || "", showProgress);
+            if (window.location.href !== originalUrl) return;
+            if (result.state !== "status-unavailable") savePendingRefresh();
             if (result.state === "failed" && result.member_snapshot !== "saved") {
                 throw new Error(refreshError(result));
             }
-            reloadAfterRefresh(result, account);
+            if (["succeeded", "failed"].includes(result.state)) {
+                reloadAfterRefresh(result, account);
+                reloading = true;
+                return;
+            }
+            outcome = { account, interrupted: true, publicationUnknown: result.publication_unknown !== false };
         } catch (error) {
-            notice?.finish();
-            refreshing = false;
-            button.disabled = false;
-            if (readRetry) readRetry.disabled = false;
-            button.removeAttribute("aria-busy");
-            button.setAttribute("aria-label", idleLabel);
-            button.title = idleTitle;
-            const message = error instanceof Error ? error.message : `The ${scope} refresh failed.`;
-            if (account) saveResult(window.location.href, { account: true, error: message });
-            showNotice(`Unable to refresh ${scope}`, message, true);
-            if (account) window.dispatchEvent(new Event("wechat:account-refresh-settled"));
+            outcome = { account, error: error instanceof Error ? error.message : `The ${scope} refresh failed.` };
+        } finally {
+            if (!reloading) {
+                notice?.finish();
+                refreshing = false;
+                button.disabled = idleDisabled;
+                if (readRetry) readRetry.disabled = false;
+                button.removeAttribute("aria-busy");
+                button.setAttribute("aria-label", idleLabel);
+                button.title = idleTitle;
+            }
         }
-    });
+        if (window.location.href !== originalUrl) return;
+        if (account || outcome.interrupted) saveResult(originalUrl, outcome);
+        showRefreshResult(outcome);
+        if (account) window.dispatchEvent(new Event("wechat:account-refresh-settled"));
+    }
+
+    button.addEventListener("click", () => refresh(getPendingRefresh()));
+    const pending = getPendingRefresh();
+    if (pending) refresh(pending);
 })();

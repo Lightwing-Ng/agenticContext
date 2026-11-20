@@ -1,6 +1,6 @@
 """Keep local conversation refresh jobs scoped and credentials out of HTTP.
 
-Code version: v1.2.2-codex.0
+Code version: v1.2.3-codex.0
 """
 
 from types import SimpleNamespace
@@ -259,8 +259,8 @@ def test_refresh_unknown_or_expired_jobs_return_no_details(refresh_client):
     service.status = lambda token: None
     response = client.get("/api/browser/wechat/refresh/" + TOKEN)
     assert response.status_code == 404
-    assert "The local service may have restarted." in response.json["error"]
-    assert "Reload this conversation" in response.json["error"]
+    assert response.json == {"error": "This refresh is unavailable or has expired."}
+    assert response.cache_control.no_store
 
 
 def test_refresh_explains_known_start_failure(refresh_client):

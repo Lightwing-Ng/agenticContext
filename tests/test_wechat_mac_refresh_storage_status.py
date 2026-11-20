@@ -1,6 +1,6 @@
 """Keep disk capacity refusals visible across the local refresh worker.
 
-Code version: v1.1.0-codex.0
+Code version: v1.1.1-codex.0
 """
 
 import json
@@ -42,9 +42,7 @@ def test_low_disk_space_reaches_refresh_status_without_staging(refresh_archive, 
     assert (state["state"], state["phase"], state["added"], state["candidates"]) == (
         "failed", "checking", 0, 1,
     )
-    assert state["message"] == (
-        "Not enough free disk space to refresh this chat. Free up space and try again."
-    )
+    assert state["message"] == refresh.RefreshIssue.DISK_SPACE.value
     assert worker._safe_result(json.dumps(state))["message"] == state["message"]
     assert history.read_bytes() == before
     assert not refresh.bank.mac_recovery_bank_path(root).exists()

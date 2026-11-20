@@ -1,6 +1,6 @@
 """Run explicit, bounded Mac WeChat refreshes in background workers.
 
-Code version: v1.7.1-codex.0
+Code version: v1.8.0-codex.0
 """
 
 from __future__ import annotations
@@ -51,11 +51,13 @@ from .wechat_mac_refresh_source import (
     SourceAccountBindingUnavailable,
     read_database,
 )
+from .wechat_refresh_receipts import WechatRefreshReceipts, interrupted_status
 
 
 MAX_TASKS = 32
 MAX_PACKET_BYTES = 128 * 1024**2
 FREE_SPACE_RESERVE = 512 * 1024**2
+RECEIPT_CHECKPOINT_INTERVAL = 10
 
 
 @dataclass(frozen=True)
@@ -90,7 +92,7 @@ def _refresh_staging_parent(archive_directory):
 class WechatMacRefreshService:
     """Expose metadata availability and explicit account or conversation refreshes."""
 
-    def __init__(self, local_store_root, *, key_registry=None, platform=None):
+    def __init__(self, local_store_root, *, key_registry=None, platform=None, durable_status=False):
         self.root = Path(local_store_root)
         self.registry = key_registry if key_registry is not None else KeyRegistry()
         self.platform = sys.platform if platform is None else platform
@@ -98,6 +100,9 @@ class WechatMacRefreshService:
         self._tasks = {}
         self._active = None
         self._shutdown = Event()
+        self._receipts = WechatRefreshReceipts(
+            wechat_archive_path(self.root).parent / "browser_cache" / "refresh_receipts"
+        ) if durable_status else None
 
     def available(self, account_id, peer_id, kind):
         """Inspect only configured-key metadata; never open or decrypt a database."""
@@ -191,13 +196,28 @@ class WechatMacRefreshService:
                 daemon=True,
                 name="wechat-refresh",
             )
-            self._tasks[token] = {"scope": scope, "public": public, "thread": thread}
+            lease = None
+            if self._receipts is not None:
+                lease = self._receipts.claim(token)
+                if lease is None:
+                    raise RefreshNotice(RefreshIssue.BUSY)
+                try:
+                    self._receipts.write(token, public, publication_possible=False)
+                except BaseException:
+                    lease.close()
+                    raise
+            self._tasks[token] = {
+                "scope": scope, "public": public, "thread": thread, "lease": lease,
+                "publication_possible": False, "checkpoint_at": time.monotonic(),
+            }
             self._active = token
             try:
                 thread.start()
             except Exception:
                 self._tasks.pop(token, None)
                 self._active = None
+                if lease is not None:
+                    lease.close()
                 raise RefreshNotice(RefreshIssue.WORKER_START_FAILED) from None
             return dict(public)
 
@@ -206,7 +226,9 @@ class WechatMacRefreshService:
             return None
         with self._guard:
             task = self._tasks.get(token)
-            return dict(task["public"]) if task is not None else None
+            if task is not None:
+                return dict(task["public"])
+        return self._receipts.read(token) if self._receipts is not None else None
 
     def shutdown(self, *, wait=True, timeout=5.0):
         """Stop accepting work; workers check cancellation before publication."""
@@ -218,16 +240,43 @@ class WechatMacRefreshService:
             for thread in threads:
                 thread.join(max(0, deadline - time.monotonic()))
 
-    def _update(self, token, **values):
+    def _update(self, token, *, publication_possible=False, **values):
         with self._guard:
-            state = {**self._tasks[token]["public"], **values}
+            task = self._tasks[token]
+            previous = task["public"]
+            state = {**previous, **values}
             safe_progress(state)
             if any(
                 type(state[field]) is not int or not 0 <= state[field] <= MAX_COUNTER
                 for field in ("added", "total")
             ):
                 raise RefreshError("Refresh status has an invalid message count.")
-            self._tasks[token]["public"].update(values)
+            if self._receipts is not None:
+                require_publication_checkpoint = publication_possible or state["phase"] == "saving"
+                publication_possible = require_publication_checkpoint or task["publication_possible"]
+                first_publication_checkpoint = publication_possible and not task["publication_possible"]
+                if state["state"] == "interrupted":
+                    state = interrupted_status(state, publication_possible=publication_possible)
+                now = time.monotonic()
+                phase_changed = previous["phase"] != state["phase"]
+                if (
+                    first_publication_checkpoint
+                    or state["state"] != "running"
+                    or phase_changed and (
+                        state["phase"] in {"saving", "verifying"}
+                        or now - task["checkpoint_at"] >= RECEIPT_CHECKPOINT_INTERVAL
+                    )
+                ):
+                    try:
+                        self._receipts.write(token, state, publication_possible=publication_possible)
+                    except OSError:
+                        if first_publication_checkpoint and require_publication_checkpoint:
+                            # Publication can start only after the uncertainty checkpoint is durable.
+                            raise
+                    else:
+                        task["checkpoint_at"] = now
+                        task["publication_possible"] = publication_possible
+            task["public"] = state
 
     def _check_running(self):
         if self._shutdown.is_set():
@@ -317,6 +366,8 @@ class WechatMacRefreshService:
                 or snapshot.get("peer_id") != scope.peer_id
             ):
                 raise RefreshError("The member snapshot crossed its selected scope.")
+            self._update(token, publication_possible=True)
+            self._check_running()
             WechatGroupRosterRepository(self.root).save(snapshot)
         except (OSError, ValueError, RuntimeError, sqlite3.DatabaseError):
             self._check_running()
@@ -329,6 +380,9 @@ class WechatMacRefreshService:
             if sys.version_info[:2] < (3, 14):
                 from .wechat_mac_refresh_worker import run_compatible_worker
 
+                if self._receipts is not None:
+                    # The child can publish between its periodic progress frames.
+                    self._update(token, publication_possible=True)
                 result = run_compatible_worker(
                     self.root,
                     scope.account_id if isinstance(scope, _AccountScope) else scope.session_id,
@@ -462,7 +516,8 @@ class WechatMacRefreshService:
                 ),
             )
         except RefreshNotice as exc:
-            self._update(token, state="failed", partial=True, message=exc.issue.value)
+            state = "interrupted" if exc.issue is RefreshIssue.INTERRUPTED and self._receipts else "failed"
+            self._update(token, state=state, partial=True, message=exc.issue.value)
         except Exception as error:
             from .wechat_mac_refresh_worker import AccountRefreshDeadlineExceeded
 
@@ -482,6 +537,9 @@ class WechatMacRefreshService:
             )
         finally:
             with self._guard:
+                lease = self._tasks[token]["lease"]
+                if lease is not None:
+                    lease.close()
                 if self._active == token:
                     self._active = None
 

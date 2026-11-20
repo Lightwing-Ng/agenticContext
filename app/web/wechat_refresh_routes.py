@@ -1,6 +1,6 @@
 """Expose account-scoped local WeChat refresh jobs without exposing credentials.
 
-Code version: v1.2.2-codex.0
+Code version: v1.3.0-codex.0
 """
 
 from __future__ import annotations
@@ -149,22 +149,22 @@ def register_wechat_refresh_routes(blueprint):
         result = current_app.extensions[WECHAT_REFRESH_EXTENSION].status(token)
         if result is None:
             return _response(
-                {
-                    "error": "The refresh status was lost. The local service may have restarted. "
-                    "Reload this conversation to check for updates before trying again."
-                },
+                {"error": "This refresh is unavailable or has expired."},
                 404,
             )
         if not isinstance(result, dict) or result.get("state") not in {
             "running",
             "succeeded",
             "failed",
+            "interrupted",
         }:
             return _response(
                 {"error": "Refresh status is temporarily unavailable."}, 503
             )
         # Only bounded presentation fields cross the HTTP boundary.
         payload = {"state": result["state"], "partial": bool(result.get("partial"))}
+        if result["state"] == "interrupted":
+            payload["publication_unknown"] = result.get("publication_unknown") is True
         if isinstance(result.get("message"), str):
             payload["message"] = result["message"][:600]
         for field in ("added", "total"):

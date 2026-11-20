@@ -1,4 +1,4 @@
-/* Code version: v1.2.1-codex.0 */
+/* Code version: v1.2.2-codex.0 */
 
 (function initializeWechatReadPage() {
     "use strict";
@@ -22,6 +22,7 @@
     let reads = 0;
     let failedReads = 0;
     let statusUrl = root.dataset.statusUrl;
+    let retryUrl = root.dataset.retryUrl;
     let pollRun = 0;
     let deferredReady = null;
     let resumable = root.dataset.state === "running" && Boolean(statusUrl);
@@ -96,9 +97,15 @@
             reads += 1;
             try {
                 const response = await requestTask(statusUrl);
+                if (stopped || run !== pollRun || window.location.href !== originalUrl) return;
+                if (response.status === 404) {
+                    retryUrl = "";
+                    fail("The saved-view task expired. Try loading this view again.", true);
+                    return;
+                }
+                if (!response.ok) throw new Error("The saved-view status is unavailable.");
                 const snapshot = await response.json();
                 if (stopped || run !== pollRun || window.location.href !== originalUrl) return;
-                if (!response.ok) throw new Error("This saved-view task has expired. Try loading the view again.");
                 if (snapshot.task_id !== root.dataset.taskId || snapshot.generation !== Number(root.dataset.generation)) {
                     fail("The saved-view task changed. Try loading this view again.");
                     return;
@@ -121,8 +128,8 @@
         if (retry.disabled || accountRefreshIsRunning()) return;
         retry.disabled = true;
         try {
-            if (root.dataset.retryUrl) {
-                await requestTask(root.dataset.retryUrl, "POST");
+            if (retryUrl) {
+                await requestTask(retryUrl, "POST");
             }
             if (accountRefreshIsRunning()) return;
             if (!canReloadCurrentView()) {

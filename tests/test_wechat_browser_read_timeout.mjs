@@ -1,4 +1,4 @@
-/* Code version: v1.1.0-codex.0 */
+/* Code version: v1.2.0-codex.0 */
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
@@ -141,6 +141,26 @@ test("the polling limit keeps verified navigation visible and exposes Retry", as
     assert.ok(page.previewNodes.every(node => !node.hidden));
     assert.equal(page.retry.hidden, false);
     assert.match(page.copy.textContent, /Showing the last verified conversations/);
+});
+
+test("an expired status keeps the verified preview and Retry only reloads the current view", async () => {
+    const methods = [];
+    const page = fixture("running", async (_url, { method }) => {
+        methods.push(method);
+        return { ok: false, status: 404 };
+    }, { preview: true });
+    await flush();
+    assert.equal(page.root.dataset.state, "failed");
+    assert.equal(page.placeholder.hidden, true);
+    assert.ok(page.previewNodes.every(node => !node.hidden));
+    assert.match(page.copy.textContent, /Showing the last verified conversations/);
+    assert.equal(page.retry.hidden, false);
+    assert.equal(page.reloads(), 0);
+    assert.equal(page.waits.length, 0);
+
+    await page.retry.click();
+    assert.deepEqual(methods, ["GET"]);
+    assert.equal(page.reloads(), 1);
 });
 
 test("a rejected saved view still hides the pending content", async () => {

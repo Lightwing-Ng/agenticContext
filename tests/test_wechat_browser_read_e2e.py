@@ -1,6 +1,6 @@
 """Pending saved views retain honest content and bounded document navigation.
 
-Code version: v1.4.1-codex.0
+Code version: v1.5.0-codex.0
 """
 
 from __future__ import annotations
@@ -30,6 +30,7 @@ from tests.test_wechat_archive import make_archive
 
 disposable_browser = browser_fixtures.disposable_browser
 _STATUS_PATTERN = "**/api/browser/wechat/read/**"
+_REFRESH_STATUS_URL = "/api/browser/wechat/refresh/synthetic-account-refresh-identifier"
 
 
 class ControlledRead:
@@ -203,7 +204,7 @@ def _open_pending(browser, fixture, *, width=1280, detail=False, scenario=None):
     )
 
 
-def _request_next_poll(page, *, wait_response=True):
+def _advance_to_next_poll(page):
     attempts = page.evaluate("window.__wechatReadProbe.attempts")
     page.wait_for_function(
         "count => window.__wechatReadProbe.delays.length >= count", arg=attempts
@@ -211,6 +212,11 @@ def _request_next_poll(page, *, wait_response=True):
     delay = page.evaluate("window.__wechatReadProbe.delays.at(-1)")
     assert 0 < delay <= 1_000
     page.clock.run_for(delay)
+    return attempts
+
+
+def _request_next_poll(page, *, wait_response=True):
+    attempts = _advance_to_next_poll(page)
     page.wait_for_function(
         "count => window.__wechatReadProbe.attempts >= count", arg=attempts + 1
     )
@@ -229,8 +235,8 @@ def _finish_pending_read(page, fixture):
         assert monotonic() < deadline, "The synthetic saved view did not finish."
         Event().wait(0.01)
     assert service.status(task)["state"] == "succeeded"
-    with page.expect_navigation(wait_until="domcontentloaded"):
-        _request_next_poll(page, wait_response=False)
+    with page.expect_navigation(wait_until="domcontentloaded"), page.expect_request(_STATUS_PATTERN):
+        _advance_to_next_poll(page)
     expect(page.locator("[data-wechat-read-pending]")).to_have_count(0)
 
 
@@ -267,7 +273,7 @@ def test_selected_account_refresh_keeps_search_right_after_saved_view_fails(
         }""")
         assert geometry["rightOffset"] == pytest.approx(0, abs=1)
         assert geometry["gap"] == pytest.approx(geometry["gapToken"], abs=1)
-        assert "/tray.and.arrow.down.fill.svg" in geometry["mask"]
+        assert geometry["mask"].endswith('/square.and.arrow.down.on.square.svg")')
         assert geometry["overflow"] <= 1
         assert opened.errors == []
     finally:
@@ -302,8 +308,9 @@ def test_account_refresh_from_pending_view_posts_only_account_and_keeps_the_url(
         opened.context.close()
 
 
-def test_account_refresh_timeout_stays_visible_when_retrying_the_saved_view(
-    disposable_browser, read_server, monkeypatch
+@pytest.mark.parametrize("result", ["failed", "expired", "interrupted", "publication-unknown"])
+def test_account_refresh_result_stays_visible_when_retrying_the_saved_view(
+    disposable_browser, read_server, monkeypatch, result
 ):
     monkeypatch.setattr(WechatMacRefreshService, "account_available", lambda *_args: True)
     opened = _open_pending(disposable_browser, read_server)
@@ -315,30 +322,145 @@ def test_account_refresh_timeout_stays_visible_when_retrying_the_saved_view(
         expect(retry).to_be_enabled()
         refresh = page.locator("[data-wechat-account-refresh]")
         endpoint = read_server.url + refresh.get_attribute("data-wechat-refresh-url")
-        status = "/api/test-wechat-account-refresh/status"
-        page.route(endpoint, lambda route: route.fulfill(json={
-            "state": "running", "status_url": status,
-        }))
-        message = "WeChat account refresh timed out while checking changes."
-        page.route("**" + status, lambda route: route.fulfill(json={
-            "state": "failed", "message": message,
-        }))
+        refresh_methods, status_methods = [], []
+        failure = "WeChat account refresh timed out while checking changes."
+
+        def begin_refresh(route):
+            refresh_methods.append(route.request.method)
+            route.fulfill(status=202, json={"state": "running", "status_url": _REFRESH_STATUS_URL})
+
+        def read_refresh_status(route):
+            status_methods.append(route.request.method)
+            if result == "expired":
+                route.fulfill(status=404, json={"error": "The refresh status was lost."})
+            elif result == "failed":
+                route.fulfill(json={"state": "failed", "message": failure})
+            else:
+                route.fulfill(json={
+                    "state": "interrupted", "publication_unknown": result == "publication-unknown",
+                })
+
+        page.route(endpoint, begin_refresh)
+        page.route("**" + _REFRESH_STATUS_URL, read_refresh_status)
         with page.expect_response(endpoint):
             refresh.click()
         expect(page.get_by_role("dialog", name="Refreshing WeChat account")).to_be_visible()
         expect(retry).to_be_disabled()
+        page.wait_for_function("history.state?.agenticContextWechatPendingRefreshV1")
+        if result != "failed":
+            page.reload(wait_until="domcontentloaded")
+            expect(refresh).to_have_attribute("aria-busy", "true")
         page.clock.run_for(1_000)
         banner = page.locator("[data-wechat-refresh-banner]")
         expect(banner).to_be_visible()
-        expect(banner.locator("[data-wechat-refresh-title]")).to_have_text("Unable to refresh WeChat account")
-        expect(banner.locator("[data-wechat-refresh-copy]")).to_have_text(message)
+        title = banner.locator("[data-wechat-refresh-title]")
+        copy = banner.locator("[data-wechat-refresh-copy]")
+        if result == "failed":
+            expect(title).to_have_text("Unable to refresh WeChat account")
+            expect(copy).to_have_text(failure)
+            assert "error" in banner.get_attribute("class").split()
+        elif result == "interrupted":
+            expect(title).to_have_text("WeChat account refresh interrupted")
+            expect(copy).to_have_text("The local service stopped before this refresh finished. You can try again.")
+            assert "notice" in banner.get_attribute("class").split()
+        else:
+            expect(title).to_have_text("WeChat account refresh status unavailable")
+            expect(copy).to_contain_text("The local service could not confirm the result.")
+            assert "notice" in banner.get_attribute("class").split()
+        message = copy.inner_text()
+        assert refresh_methods == ["POST"]
+        assert status_methods == ["GET"]
+        assert page.evaluate("history.state?.agenticContextWechatPendingRefreshV1") is None
         expect(retry).to_be_enabled()
         with page.expect_navigation(wait_until="domcontentloaded"):
             retry.click()
-        expect(banner.locator("[data-wechat-refresh-copy]")).to_have_text(message)
+        expect(copy).to_have_text(message)
+        assert page.url == opened.original_url
         banner.get_by_role("button", name="Close refresh result").press("Enter")
         page.reload(wait_until="domcontentloaded")
         expect(banner).to_be_hidden()
+        assert refresh_methods == ["POST"]
+        assert status_methods == ["GET"]
+        assert opened.errors == []
+    finally:
+        opened.context.close()
+
+
+def test_legacy_lost_account_refresh_status_is_restored_as_an_uncertain_outcome(
+    disposable_browser, read_server
+):
+    opened = _open_pending(disposable_browser, read_server)
+    page = opened.page
+    try:
+        page.evaluate("""() => history.replaceState({
+            ...history.state,
+            agenticContextWechatRefreshV1: {
+                url: location.href, version: 1, account: true,
+                error: "The refresh status was lost. The local service may have restarted. "
+                    + "Reload this conversation to check for updates before trying again.",
+            },
+        }, "", location.href)""")
+        page.reload(wait_until="domcontentloaded")
+        banner = page.locator("[data-wechat-refresh-banner]")
+        expect(banner.locator("[data-wechat-refresh-title]")).to_have_text("WeChat account refresh status unavailable")
+        expect(banner.locator("[data-wechat-refresh-copy]")).to_contain_text("The local service could not confirm the result.")
+        assert "notice" in banner.get_attribute("class").split()
+        saved = page.evaluate("history.state.agenticContextWechatRefreshV1")
+        assert saved["interrupted"] is True
+        assert saved["publicationUnknown"] is True
+        assert "error" not in saved
+        assert opened.errors == []
+    finally:
+        opened.context.close()
+
+
+def test_account_refresh_reconnects_after_a_transport_outage_without_replaying_the_post(
+    disposable_browser, read_server, monkeypatch
+):
+    monkeypatch.setattr(WechatMacRefreshService, "account_available", lambda *_args: True)
+    opened = _open_pending(disposable_browser, read_server)
+    page = opened.page
+    try:
+        refresh = page.locator("[data-wechat-account-refresh]")
+        endpoint = read_server.url + refresh.get_attribute("data-wechat-refresh-url")
+        refresh_methods, status_methods = [], []
+
+        def begin_refresh(route):
+            refresh_methods.append(route.request.method)
+            route.fulfill(status=202, json={"state": "running", "status_url": _REFRESH_STATUS_URL})
+
+        def read_refresh_status(route):
+            status_methods.append(route.request.method)
+            if len(status_methods) <= 3:
+                route.fulfill(status=503, json={"error": "Temporarily unavailable."})
+            else:
+                route.fulfill(json={"state": "interrupted", "publication_unknown": False})
+
+        def advance_to_poll(milliseconds):
+            with page.expect_response("**" + _REFRESH_STATUS_URL):
+                page.clock.fast_forward(milliseconds)
+
+        page.route(endpoint, begin_refresh)
+        page.route("**" + _REFRESH_STATUS_URL, read_refresh_status)
+        refresh.click()
+        page.wait_for_function("history.state?.agenticContextWechatPendingRefreshV1")
+        advance_to_poll(1_000)
+        advance_to_poll(9_000)
+        expect(refresh).to_have_attribute("aria-busy", "true")
+        assert refresh_methods == ["POST"]
+        advance_to_poll(22_000)
+
+        banner = page.locator("[data-wechat-refresh-banner]")
+        title = banner.locator("[data-wechat-refresh-title]")
+        expect(title).to_have_text("WeChat account refresh status unavailable")
+        expect(refresh).to_be_enabled()
+        assert page.evaluate("history.state.agenticContextWechatPendingRefreshV1.statusUrl") == _REFRESH_STATUS_URL
+        refresh.click()
+        advance_to_poll(1_000)
+        expect(title).to_have_text("WeChat account refresh interrupted")
+        assert refresh_methods == ["POST"]
+        assert status_methods == ["GET"] * 4
+        assert page.evaluate("history.state?.agenticContextWechatPendingRefreshV1") is None
         assert opened.errors == []
     finally:
         opened.context.close()
@@ -430,8 +552,8 @@ def test_ready_reloads_the_exact_url_once_even_if_the_same_task_remains_pending(
     try:
         page.evaluate("history.replaceState({unrelated: {value: 'preserved'}}, '', location.href)")
         opened.scenario.state = "succeeded"
-        with page.expect_navigation(wait_until="domcontentloaded"):
-            _request_next_poll(page, wait_response=False)
+        with page.expect_navigation(wait_until="domcontentloaded"), page.expect_request(_STATUS_PATTERN):
+            _advance_to_next_poll(page)
         expect(page.locator("[data-wechat-read-retry]")).to_be_visible()
         expect(page.locator("#cache_wait_modal")).to_be_hidden()
         page.clock.run_for(30_000)
@@ -758,6 +880,30 @@ def test_status_transport_failure_budget_stops_polling_without_a_reload(
         page.clock.run_for(30_000)
         assert len(scenario.requests) == 5
         assert opened.documents == [opened.original_url]
+        assert opened.errors == []
+    finally:
+        opened.context.close()
+
+
+def test_expired_saved_view_retries_the_exact_document_without_posting_the_old_task(
+    disposable_browser, read_server
+):
+    opened = _open_pending(disposable_browser, read_server, detail=True)
+    page, scenario = opened.page, opened.scenario
+    try:
+        scenario.status = 404
+        _request_next_poll(page)
+        retry = page.locator("[data-wechat-read-retry]")
+        expect(retry).to_be_visible()
+        expect(page.locator("[data-wechat-read-copy]")).to_contain_text("The saved-view task expired.")
+        assert [method for method, _url in scenario.requests] == ["GET", "GET"]
+        assert opened.documents == [opened.original_url]
+        scenario.status = None
+        with page.expect_navigation(wait_until="domcontentloaded") as navigation:
+            retry.click()
+        assert navigation.value.request.method == "GET"
+        assert opened.documents == [opened.original_url, opened.original_url]
+        assert all(method == "GET" for method, _url in scenario.requests)
         assert opened.errors == []
     finally:
         opened.context.close()

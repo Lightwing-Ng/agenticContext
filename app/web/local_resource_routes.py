@@ -5,7 +5,7 @@ refresh service without reaching for a browser or Agent. Serialization of one st
 public shape lives here too, so a template global and a JSON response cannot drift.
 """
 
-# Code version: v1.25.4-codex.0
+# Code version: v1.25.5-codex.0
 
 from __future__ import annotations
 
@@ -241,7 +241,7 @@ def register_local_resource_routes(app: Flask, context: LocalResourceRouteContex
 
     blueprint = Blueprint(LOCAL_RESOURCES_BLUEPRINT_NAME, __name__)
     app.extensions[WECHAT_REFRESH_EXTENSION] = WechatMacRefreshService(
-        context.media_catalog.local_store_root
+        context.media_catalog.local_store_root, durable_status=True,
     )
     app.extensions[WECHAT_READ_EXTENSION] = WechatBrowserReadService(
         context.media_catalog.local_store_root,

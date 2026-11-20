@@ -1,6 +1,6 @@
 """WeChat refresh actions retain shared geometry, scope, and honest progress.
 
-Code version: v1.4.0-codex.0
+Code version: v1.4.1-codex.0
 """
 
 from __future__ import annotations
@@ -19,6 +19,7 @@ from tests import test_wechat_group_roster_routes as roster_fixtures
 disposable_browser = wechat_fixtures.disposable_browser
 wechat_server = wechat_fixtures.wechat_server
 roster_app = roster_fixtures.roster_app
+_STATUS_URL = "/api/browser/wechat/refresh/synthetic-refresh-status-identifier"
 
 
 @pytest.fixture
@@ -231,9 +232,9 @@ def test_refresh_failure_restores_the_action_and_shows_a_shared_error_notice(
         else:
             page.route(urljoin(wechat_server, endpoint), lambda route: route.fulfill(
                 status=202,
-                json={"state": "running", "status_url": "/api/test-wechat-refresh/status"},
+                json={"state": "running", "status_url": _STATUS_URL},
             ))
-            page.route("**/api/test-wechat-refresh/status", lambda route: route.fulfill(
+            page.route("**" + _STATUS_URL, lambda route: route.fulfill(
                 json={"state": "failed", "message": error}
             ))
         refresh.click()
@@ -273,7 +274,7 @@ def test_group_refresh_shows_member_snapshot_outcome_after_reload(
         "view": "text", "source": "wechat", "account": "account:" + roster_app.owner,
         "chat_kind": "group", "session": roster_app.group, "page": 1,
     })
-    status_url = "/api/test-wechat-refresh/status"
+    status_url = _STATUS_URL
     message_failure = "The test chat history could not be refreshed."
     requests = []
     try:
@@ -368,7 +369,7 @@ def test_refresh_reloads_the_same_scope_and_preserves_contact_history_for_one_no
         }""")
         page.route(urljoin(wechat_server, endpoint), lambda route: route.fulfill(
             status=202,
-            json={"state": "running", "status_url": "/api/test-wechat-refresh/status"},
+            json={"state": "running", "status_url": _STATUS_URL},
         ))
         reads = []
 
@@ -380,7 +381,7 @@ def test_refresh_reloads_the_same_scope_and_preserves_contact_history_for_one_no
                 "total": 5678, "partial": True,
             })
 
-        page.route("**/api/test-wechat-refresh/status", status)
+        page.route("**" + _STATUS_URL, status)
         with page.expect_navigation(wait_until="domcontentloaded"):
             refresh.click(no_wait_after=True)
         assert page.url == original_url
@@ -486,7 +487,7 @@ def test_refresh_reports_actual_phases_and_counts_without_reopening_dismissed_fe
     disposable_browser, wechat_server, refresh_keys, width
 ):
     context, page = _open_chat(disposable_browser, wechat_server, width=width)
-    status_url = "/api/test-wechat-progress/status"
+    status_url = _STATUS_URL
     snapshot = {
         "state": "running", "phase": "reading", "parts_total": 7,
         "parts_completed": 1, "part_current": 2, "checked": 1234,
