@@ -1,6 +1,6 @@
 """Global preparation preserves source isolation, sender proof, and idempotency.
 
-Code version: v1.2.1-codex.0
+Code version: v1.3.0-codex.0
 """
 
 from contextlib import closing
@@ -17,7 +17,9 @@ from app.core import wechat_mac_refresh as refresh_service
 from app.core import wechat_mac_refresh_projection as projection
 from app.core import wechat_mac_refresh_worker as refresh_worker
 from app.core import wechat_macos_recovery_bank as bank
-from app.core.wechat_mac_refresh_source import KeyReference, RefreshError
+from app.core.wechat_mac_refresh_source import (
+    KeyReference, RefreshError, RefreshIssue, SourceSnapshotChanged,
+)
 from tests import test_wechat_mac_refresh as refresh_fixtures
 
 
@@ -216,6 +218,78 @@ def test_account_refresh_reads_one_owner_once_and_publishes_all_eligible_chats(
             assert other_rows(published) == other_before
     finally:
         service.shutdown()
+
+
+@pytest.mark.parametrize(
+    ("error", "attempts", "issue"),
+    (
+        (RefreshError, 1, RefreshIssue.ACCOUNT_SOURCES_SKIPPED),
+        (SourceSnapshotChanged, 3, RefreshIssue.ACCOUNT_SOURCE_CHANGED),
+    ),
+)
+def test_account_refresh_fails_when_every_configured_source_is_skipped(
+    refresh_archive, tmp_path, monkeypatch, error, attempts, issue,
+):
+    root, history, _session, _records = refresh_archive
+    service = refresh_service.WechatMacRefreshService(
+        root, key_registry=Registry(tmp_path), platform="darwin", durable_status=True,
+    )
+    monkeypatch.setattr(refresh_service, "sys", SimpleNamespace(version_info=(3, 14)))
+
+    reads = 0
+
+    def refuse_source(_reference, **_kwargs):
+        nonlocal reads
+        reads += 1
+        raise error("Synthetic private source failure")
+
+    monkeypatch.setattr(global_refresh, "sleep", lambda _delay: None)
+    monkeypatch.setattr(global_refresh, "read_database", refuse_source)
+    before = history.read_bytes()
+    try:
+        task = service.start_account(OWNER)
+        state = refresh_fixtures._wait(service, task["task_id"])
+        service.shutdown()
+        assert (state["state"], state["checked"], state["added"]) == ("failed", 0, 0)
+        assert (state["parts_total"], state["parts_completed"], state["skipped_parts"]) == (1, 0, 1)
+        assert reads == attempts
+        assert state["message"] == issue.value
+        assert refresh_worker._safe_result(json.dumps(state))["message"] == state["message"]
+        restarted = refresh_service.WechatMacRefreshService(
+            root, platform="darwin", durable_status=True,
+        )
+        assert restarted.status(task["task_id"])["state"] == "failed"
+        assert history.read_bytes() == before
+        assert not bank.mac_recovery_bank_path(root).exists()
+    finally:
+        service.shutdown()
+
+
+def test_account_refresh_retries_changed_encrypted_snapshot(
+    refresh_archive, tmp_path, monkeypatch,
+):
+    root, _history, session, records = refresh_archive
+    scope = projection.resolve_scope(root, session)
+    reads = 0
+
+    def read_source(_reference, **_kwargs):
+        nonlocal reads
+        reads += 1
+        if reads == 1:
+            raise SourceSnapshotChanged("The live source changed.")
+        return refresh_fixtures._database(scope, records)
+
+    monkeypatch.setattr(global_refresh, "sleep", lambda _delay: None)
+    monkeypatch.setattr(global_refresh, "read_database", read_source)
+    progress = []
+    packets = list(global_refresh.iter_global_refresh_packets(
+        root, registry=Registry(tmp_path), on_progress=progress.append,
+    ))
+    assert reads == 2
+    assert packets
+    assert progress[-1]["completed_sources"] == 1
+    assert progress[-1]["skipped_sources"] == 0
+    assert progress[-1]["reason_codes"] == {}
 
 
 def test_account_scope_delegates_from_python_313_without_loading_keys(

@@ -1,6 +1,6 @@
 """Run explicit, bounded Mac WeChat refreshes in background workers.
 
-Code version: v1.8.1-codex.0
+Code version: v1.9.0-codex.0
 """
 
 from __future__ import annotations
@@ -646,6 +646,13 @@ class WechatMacRefreshService:
         self._check_running()
         if not receipt and bank._inputs(history) != baseline:
             raise RefreshNotice(RefreshIssue.ARCHIVE_CHANGED)
+        skipped = coverage.get("skipped_sources", 0)
+        if skipped and not coverage.get("completed_sources"):
+            changed = coverage["reason_codes"].get("source_snapshot_changed", 0)
+            raise RefreshNotice(
+                RefreshIssue.ACCOUNT_SOURCE_CHANGED if changed == skipped
+                else RefreshIssue.ACCOUNT_SOURCES_SKIPPED
+            )
         self._update(token, phase="verifying")
         if receipt:
             bank.verify_published_account_refresh(self.root, owner, receipt)

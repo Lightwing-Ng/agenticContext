@@ -1,5 +1,5 @@
 """Version information for the application."""
 
-# Code version: v1.55.4-codex.0
+# Code version: v1.55.5-codex.0
 
-APP_VERSION = "v1.55.4"
+APP_VERSION = "v1.55.5"

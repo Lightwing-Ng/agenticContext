@@ -1,4 +1,4 @@
-/* Code version: v1.6.0-codex.0 */
+/* Code version: v1.6.1-codex.0 */
 
 (function initializeWechatRefresh() {
     "use strict";
@@ -267,12 +267,14 @@
         let outageStart;
         while (statusUrl && Date.now() < expiresAt) {
             await wait(1_000);
+            const controller = new AbortController();
+            const timeout = window.setTimeout(() => controller.abort(), 10_000);
             try {
                 const response = await fetch(statusUrl, {
                     cache: "no-store",
                     headers: { Accept: "application/json" },
                     redirect: "error",
-                    signal: AbortSignal.timeout(10_000),
+                    signal: controller.signal,
                 });
                 if (response.status === 404) break;
                 if (response.ok) {
@@ -290,6 +292,8 @@
                 }
             } catch (_) {
                 // The service can briefly be unavailable during a restart.
+            } finally {
+                window.clearTimeout(timeout);
             }
             outageStart ??= Date.now();
             if (Date.now() - outageStart >= statusOutageLimit) return { state: "status-unavailable" };

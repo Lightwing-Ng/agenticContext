@@ -1,4 +1,4 @@
-/* Code version: v1.2.3-codex.0 */
+/* Code version: v1.3.0-codex.0 */
 
 (function initializeWechatReadPage() {
     "use strict";
@@ -21,12 +21,12 @@
     const keepAccountPreview = root.dataset.wechatReadAccountPreview === "true";
     let stopped = false;
     let reads = 0;
-    let failedReads = 0;
     let statusUrl = root.dataset.statusUrl;
     let retryUrl = root.dataset.retryUrl;
     let pollRun = 0;
     let deferredReady = null;
     let resumable = root.dataset.state === "running" && Boolean(statusUrl);
+    const statusOutageLimit = 30_000;
     const wait = (milliseconds) => new Promise((resolve) => window.setTimeout(resolve, milliseconds));
 
     function address(value) {
@@ -37,13 +37,22 @@
         return url.href;
     }
 
-    function requestTask(value, method = "GET") {
-        return fetch(address(value), {
-            method,
-            cache: "no-store",
-            headers: { Accept: "application/json" },
-            signal: AbortSignal.timeout(10_000),
-        });
+    async function requestTask(value, method = "GET") {
+        const url = address(value);
+        const controller = new AbortController();
+        const timeout = window.setTimeout(() => controller.abort(), 10_000);
+        try {
+            const response = await fetch(url, {
+                method,
+                cache: "no-store",
+                headers: { Accept: "application/json" },
+                signal: controller.signal,
+            });
+            const snapshot = method === "GET" && response.ok ? await response.json() : null;
+            return { status: response.status, ok: response.ok, snapshot };
+        } finally {
+            window.clearTimeout(timeout);
+        }
     }
 
     function fail(message, keepPreview = false) {
@@ -94,24 +103,23 @@
 
     async function poll() {
         const run = ++pollRun;
+        let outageStart;
         while (!stopped && run === pollRun && window.location.href === originalUrl && reads < 1_800) {
             reads += 1;
             try {
-                const response = await requestTask(statusUrl);
+                const { status, ok, snapshot } = await requestTask(statusUrl);
                 if (stopped || run !== pollRun || window.location.href !== originalUrl) return;
-                if (response.status === 404) {
+                if (status === 404) {
                     retryUrl = "";
                     fail("The saved-view task expired. Try loading this view again.", true);
                     return;
                 }
-                if (!response.ok) throw new Error("The saved-view status is unavailable.");
-                const snapshot = await response.json();
-                if (stopped || run !== pollRun || window.location.href !== originalUrl) return;
+                if (!ok) throw new Error("The saved-view status is unavailable.");
                 if (snapshot.task_id !== root.dataset.taskId || snapshot.generation !== Number(root.dataset.generation)) {
                     fail("The saved-view task changed. Try loading this view again.");
                     return;
                 }
-                failedReads = 0;
+                outageStart = undefined;
                 if (snapshot.state === "succeeded") { ready(snapshot); return; }
                 if (snapshot.state !== "running") {
                     fail(snapshot.message || "Saved records could not be checked. Try again.",
@@ -120,8 +128,11 @@
                 }
             } catch (_) {
                 if (stopped || run !== pollRun || window.location.href !== originalUrl) return;
-                failedReads += 1;
-                if (failedReads >= 5) { fail("Lost contact with the local service. Try loading this view again.", true); return; }
+                outageStart ??= Date.now();
+                if (Date.now() - outageStart >= statusOutageLimit) {
+                    fail("Lost contact with the local service. Try loading this view again.", true);
+                    return;
+                }
             }
             await wait(reads < 4 ? 250 : 1_000);
         }

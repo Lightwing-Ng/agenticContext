@@ -1,6 +1,6 @@
 """Pending saved views retain honest content and bounded document navigation.
 
-Code version: v1.5.0-codex.0
+Code version: v1.6.0-codex.0
 """
 
 from __future__ import annotations
@@ -162,7 +162,7 @@ def _install_poll_probe(page):
         };
         const timeout = window.setTimeout.bind(window);
         window.setTimeout = (callback, delay, ...args) => {
-            if (new Error().stack.includes('wechat-browser-read.js')) {
+            if (delay <= 1_000 && new Error().stack.includes('wechat-browser-read.js')) {
                 probe.delays.push(Number(delay));
             }
             return timeout(callback, delay, ...args);
@@ -170,7 +170,7 @@ def _install_poll_probe(page):
     })();""")
 
 
-def _open_pending(browser, fixture, *, width=1280, detail=False, scenario=None):
+def _open_pending(browser, fixture, *, width=1280, detail=False, scenario=None, legacy_timeout=False):
     context = browser.new_context(
         viewport={"width": width, "height": 1157 if width == 836 else 937},
         reduced_motion="reduce",
@@ -181,6 +181,8 @@ def _open_pending(browser, fixture, *, width=1280, detail=False, scenario=None):
             if incoming.resource_type == "document" else None)
     page.on("pageerror", lambda error: errors.append(str(error)))
     _install_poll_probe(page)
+    if legacy_timeout:
+        page.add_init_script("Object.defineProperty(AbortSignal, 'timeout', { value: undefined });")
     scenario = scenario or ReadStatusScenario()
     page.route(_STATUS_PATTERN, scenario)
     parameters = {
@@ -409,6 +411,40 @@ def test_legacy_lost_account_refresh_status_is_restored_as_an_uncertain_outcome(
         assert saved["interrupted"] is True
         assert saved["publicationUnknown"] is True
         assert "error" not in saved
+        assert opened.errors == []
+    finally:
+        opened.context.close()
+
+
+def test_saved_view_and_account_refresh_poll_without_abort_signal_timeout(
+    disposable_browser, read_server, monkeypatch
+):
+    monkeypatch.setattr(WechatMacRefreshService, "account_available", lambda *_args: True)
+    opened = _open_pending(disposable_browser, read_server, legacy_timeout=True)
+    page = opened.page
+    try:
+        refresh = page.locator("[data-wechat-account-refresh]")
+        endpoint = read_server.url + refresh.get_attribute("data-wechat-refresh-url")
+        methods = []
+
+        def begin(route):
+            methods.append(route.request.method)
+            route.fulfill(status=202, json={"state": "running", "status_url": _REFRESH_STATUS_URL})
+
+        def read_refresh_status(route):
+            methods.append(route.request.method)
+            route.fulfill(json={"state": "interrupted", "publication_unknown": False})
+
+        page.route(endpoint, begin)
+        page.route("**" + _REFRESH_STATUS_URL, read_refresh_status)
+        refresh.click()
+        page.wait_for_function("history.state?.agenticContextWechatPendingRefreshV1")
+        with page.expect_response("**" + _REFRESH_STATUS_URL):
+            page.clock.fast_forward(1_000)
+
+        expect(page.locator("[data-wechat-refresh-title]")).to_have_text("WeChat account refresh interrupted")
+        assert methods == ["POST", "GET"]
+        assert all(method == "GET" for method, _url in opened.scenario.requests)
         assert opened.errors == []
     finally:
         opened.context.close()
@@ -872,13 +908,18 @@ def test_status_transport_failure_budget_stops_polling_without_a_reload(
     opened = _open_pending(disposable_browser, read_server, scenario=scenario)
     page = opened.page
     try:
+        retry = page.locator("[data-wechat-read-retry]")
         for _ in range(4):
             _request_next_poll(page)
-        expect(page.locator("[data-wechat-read-retry]")).to_be_visible()
+        expect(retry).to_be_hidden()
+        assert len(scenario.requests) == 5
+        with page.expect_response(_STATUS_PATTERN):
+            page.clock.fast_forward(30_000)
+        expect(retry).to_be_visible()
         expect(page.locator("#cache_wait_modal")).to_be_hidden()
-        assert len(scenario.requests) == 5
+        assert len(scenario.requests) == 6
         page.clock.run_for(30_000)
-        assert len(scenario.requests) == 5
+        assert len(scenario.requests) == 6
         assert opened.documents == [opened.original_url]
         assert opened.errors == []
     finally:

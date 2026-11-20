@@ -1,6 +1,6 @@
 """Read configured Mac WeChat sources into authenticated memory-only snapshots.
 
-Code version: v1.2.1-codex.0
+Code version: v1.3.0-codex.0
 """
 
 from __future__ import annotations
@@ -49,6 +49,10 @@ class RefreshIssue(StrEnum):
     )
     BUSY = "Another conversation is refreshing. Wait for it to finish, then try again."
     ACCOUNT_UNAVAILABLE = "This account cannot be refreshed on this Mac."
+    ACCOUNT_SOURCES_SKIPPED = "No configured Mac WeChat source could be read for this account."
+    ACCOUNT_SOURCE_CHANGED = (
+        "The live Mac WeChat database changed while it was being read. Try again in a moment."
+    )
     INTERRUPTED = "The local refresh was interrupted before it could finish. Try again."
     WORKER_START_FAILED = "The local refresh worker could not be started. Try again shortly."
     WORKER_UNAVAILABLE = "The local refresh worker stopped before returning a result. Try again."
@@ -66,6 +70,10 @@ class RefreshNotice(RefreshError):
     def __init__(self, issue: RefreshIssue):
         self.issue = issue
         super().__init__(issue.value)
+
+
+class SourceSnapshotChanged(RefreshError):
+    """An encrypted source changed while its live snapshot was being collected."""
 
 
 class SourceAccountBindingUnavailable(RefreshError):
@@ -189,17 +197,23 @@ def identity(path, *, optional=False):
 def read_stable(path, maximum, *, private=False):
     path = _checked_path(path)
     before = identity(path)
-    if before[2] > maximum or (private and owner_only_problem(path)):
+    if before[2] > maximum:
+        if not private:
+            raise SourceSnapshotChanged("A source changed before it could be read.")
+        raise RefreshError("The configured key file must be bounded and owner-only.")
+    if private and owner_only_problem(path):
         raise RefreshError("The configured key file must be bounded and owner-only.")
     flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
     descriptor = os.open(path, flags)
     with os.fdopen(descriptor, "rb") as stream:
         opened = os.fstat(stream.fileno())
         if (opened.st_dev, opened.st_ino) != before[:2]:
-            raise RefreshError("A source changed before it could be read.")
+            raise SourceSnapshotChanged("A source changed before it could be read.")
         raw = stream.read(maximum + 1)
-    if len(raw) > maximum or identity(path) != before or (private and owner_only_problem(path)):
+    if private and owner_only_problem(path):
         raise RefreshError("A source changed while it was being read.")
+    if len(raw) > maximum or identity(path) != before:
+        raise SourceSnapshotChanged("A source changed while it was being read.")
     return raw
 
 
@@ -314,20 +328,25 @@ def read_database(reference, *, check_cancel=None):
     if before["-journal"] is not None and before["-journal"][2]:
         raise RefreshError("A nonempty rollback journal requires a separate recovery.")
     _admit_snapshot(before)
-    main = read_stable(path, before[""][2])
-    wal = (
-        read_stable(Path(str(path) + "-wal"), before["-wal"][2])
-        if before["-wal"]
-        else b""
-    )
-    if before["-shm"]:
-        read_stable(Path(str(path) + "-shm"), before["-shm"][2])
-    after = {
-        suffix: identity(Path(str(path) + suffix), optional=bool(suffix))
-        for suffix in _GROUP_SUFFIXES
-    }
+    try:
+        main = read_stable(path, before[""][2])
+        wal = (
+            read_stable(Path(str(path) + "-wal"), before["-wal"][2])
+            if before["-wal"]
+            else b""
+        )
+        if before["-shm"]:
+            read_stable(Path(str(path) + "-shm"), before["-shm"][2])
+        after = {
+            suffix: identity(Path(str(path) + suffix), optional=bool(suffix))
+            for suffix in _GROUP_SUFFIXES
+        }
+    except FileNotFoundError:
+        raise SourceSnapshotChanged(
+            "The live database group changed during its read-only snapshot."
+        ) from None
     if before != after:
-        raise RefreshError(
+        raise SourceSnapshotChanged(
             "The live database group changed during its read-only snapshot."
         )
     main_sha = hashlib.sha256(main).hexdigest()

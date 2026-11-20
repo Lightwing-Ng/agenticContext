@@ -1,4 +1,4 @@
-/* Code version: v1.3.0-codex.0 */
+/* Code version: v1.4.0-codex.0 */
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
@@ -41,24 +41,36 @@ function fixture(state, fetch, { preview = false, accountPreview = false, accoun
         querySelector: selector => elements[selector],
         closest: () => ({ querySelectorAll: () => [placeholder, ...previewNodes] }),
     };
+    let now = 0;
     const waits = [];
     const deadlines = [];
     const windowListeners = new Map();
     vm.runInNewContext(source, {
         fetch,
         URL,
-        AbortSignal: {
-            timeout(delay) {
-                const controller = new AbortController();
-                deadlines.push({ delay, expire: () => controller.abort() });
-                return controller.signal;
-            },
-        },
+        AbortController,
+        AbortSignal: {},
+        Date: { now: () => now },
         window: {
             location,
             history: { state: null, replaceState(state) { this.state = state; } },
             addEventListener(name, callback) { windowListeners.set(name, callback); },
-            setTimeout: callback => waits.push(callback),
+            setTimeout(callback, delay) {
+                const time = now + delay;
+                const timer = {
+                    delay,
+                    canceled: false,
+                    expire() {
+                        assert.equal(timer.canceled, false);
+                        now = Math.max(now, time);
+                        callback();
+                    },
+                };
+                if (delay === 10_000) deadlines.push(timer);
+                else waits.push(timer.expire);
+                return timer;
+            },
+            clearTimeout(timer) { timer.canceled = true; },
         },
         document: {
             querySelector: (selector) => selector === "[data-wechat-read-pending]"
@@ -82,24 +94,45 @@ function stall(signal) {
     });
 }
 
-test("five stalled status bodies reveal Retry without reloading", async () => {
+test("stalled status bodies trigger bounded Retry without AbortSignal.timeout or a reload", async () => {
     const page = fixture("running", async (_url, { method, signal }) => {
         assert.equal(method, "GET");
         return { ok: true, json: () => stall(signal) };
     });
-    for (let attempt = 0; attempt < 5; attempt++) {
+    for (let attempt = 0; attempt < 4; attempt++) {
         await flush();
         assert.equal(page.root.dataset.state, "running");
         assert.equal(page.deadlines[attempt]?.delay, 10_000);
         page.deadlines[attempt].expire();
         await flush();
-        if (attempt < 4) page.waits.shift()();
+        if (attempt < 3) page.waits.shift()();
     }
     assert.equal(page.root.dataset.state, "failed");
     assert.equal(page.placeholder.hidden, true);
     assert.equal(page.retry.hidden, false);
     assert.match(page.copy.textContent, /Lost contact with the local service/);
     assert.equal(page.reloads(), 0);
+});
+
+test("five immediate saved-view status errors still allow a healthy retry", async () => {
+    let attempts = 0;
+    const page = fixture("running", async () => {
+        if (++attempts <= 5) return { ok: false, status: 503 };
+        return {
+            ok: true,
+            json: async () => ({ task_id: "synthetic-task", generation: 1, state: "succeeded" }),
+        };
+    });
+    for (let attempt = 0; attempt < 5; attempt++) {
+        await flush();
+        assert.equal(page.root.dataset.state, "running");
+        assert.equal(page.retry.hidden, true);
+        assert.equal(page.deadlines[attempt].canceled, true);
+        page.waits.shift()();
+    }
+    await flush();
+    assert.equal(attempts, 6);
+    assert.equal(page.reloads(), 1);
 });
 
 test("a ready saved view waits for active account refresh to settle before reloading", async () => {

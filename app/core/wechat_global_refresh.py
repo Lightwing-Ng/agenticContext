@@ -1,6 +1,6 @@
 """Prepare bounded global Mac refresh packets without publishing or reading new keys.
 
-Code version: v1.2.0-codex.0
+Code version: v1.3.0-codex.0
 
 Inventory reads canonical scope metadata and the existing verified-key registry. The
 iterator decrypts one configured shard at a time and retains the existing per-scope
@@ -16,6 +16,7 @@ from dataclasses import dataclass, field
 import hashlib
 from pathlib import Path
 import sqlite3
+from time import sleep
 
 from . import wechat_macos_recovery_bank as bank
 from .wechat_archive import wechat_archive_path
@@ -31,12 +32,14 @@ from .wechat_mac_refresh_source import (
     KeyRegistry,
     RefreshError,
     SourceAccountBindingUnavailable,
+    SourceSnapshotChanged,
     _DIRECTORY,
     read_database,
 )
 
 
 MAX_GLOBAL_SCOPES = 100_000
+_SNAPSHOT_RETRY_DELAYS = (0.2, 0.4)
 
 
 class GlobalRefreshCancelled(RefreshError):
@@ -65,6 +68,17 @@ class GlobalRefreshInventory:
     history_path: Path = field(repr=False)
     history_identity: dict = field(repr=False)
     summary: dict
+
+
+def _read_source_snapshot(reference, check_cancel):
+    """Retry only live identity changes before using any authenticated rows."""
+    for delay in _SNAPSHOT_RETRY_DELAYS:
+        try:
+            return read_database(reference, check_cancel=check_cancel)
+        except SourceSnapshotChanged:
+            check_cancel()
+            sleep(delay)
+    return read_database(reference, check_cancel=check_cancel)
 
 
 def _reference_identity(reference):
@@ -326,20 +340,24 @@ def iter_global_refresh_packets(
             database = None
             try:
                 progress("reading")
-                database = read_database(
-                    loaded[_reference_identity(reference)], check_cancel=running
+                database = _read_source_snapshot(
+                    loaded[_reference_identity(reference)], running,
                 )
                 context = prepare_source_context(owner, database, _learn_witnesses=True)
             except (GlobalRefreshCancelled, GlobalRefreshInputChanged):
                 if database is not None:
                     database.close()
                 raise
-            except (OSError, ValueError, TypeError, RuntimeError, sqlite3.Error):
+            except (OSError, ValueError, TypeError, RuntimeError, sqlite3.Error) as error:
                 if database is not None:
                     database.close()
-                reasons["source_read_or_metadata_failed"] += 1
+                reason = (
+                    "source_snapshot_changed" if isinstance(error, SourceSnapshotChanged)
+                    else "source_read_or_metadata_failed"
+                )
+                reasons[reason] += 1
                 status["skipped_sources"] += 1
-                excluded("source_read_or_metadata_failed", reference)
+                excluded(reason, reference)
                 progress("comparing")
                 continue
             try:

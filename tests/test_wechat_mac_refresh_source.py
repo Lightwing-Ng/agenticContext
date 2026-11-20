@@ -1,6 +1,6 @@
 """Configured keys and memory-only snapshots remain scoped and fail closed.
 
-Code version: v1.1.1-codex.0
+Code version: v1.1.2-codex.0
 """
 
 from dataclasses import replace
@@ -400,5 +400,5 @@ def test_source_growth_cannot_exceed_the_previously_admitted_read(registry, monk
         return read(path, maximum, **kwargs)
 
     monkeypatch.setattr(source, "read_stable", bounded_read)
-    with pytest.raises(source.RefreshError, match="bounded and owner-only"):
+    with pytest.raises(source.SourceSnapshotChanged, match="changed before it could be read"):
         source.read_database(reference)

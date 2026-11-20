@@ -1,6 +1,6 @@
 """A completed refresh follows new messages after the verified conversation reloads.
 
-Code version: v1.0.1-codex.0
+Code version: v1.0.2-codex.0
 """
 
 from __future__ import annotations
@@ -24,6 +24,7 @@ from tests.test_wechat_browser_read_e2e import ControlledRead
 
 disposable_browser = refresh_fixtures.disposable_browser
 refresh_keys = refresh_fixtures.refresh_keys
+_REFRESH_STATUS_URL = "/api/browser/wechat/refresh/synthetic-conversation-refresh-identifier"
 
 
 @pytest.mark.parametrize(
@@ -91,7 +92,7 @@ def test_refresh_restores_the_result_after_the_saved_view_is_ready(
         page.evaluate("history.replaceState({unrelated: 'preserved'}, '', location.href)")
         page.route("**/api/browser/wechat/refresh", lambda route: route.fulfill(
             status=202,
-            json={"state": "running", "status_url": "/api/test-wechat-refresh/status"},
+            json={"state": "running", "status_url": _REFRESH_STATUS_URL},
         ))
         phase = controlled.reset()
 
@@ -102,7 +103,7 @@ def test_refresh_restores_the_result_after_the_saved_view_is_ready(
                 "skipped_parts": 1, "unavailable_parts": 2, "excluded": 3,
             })
 
-        page.route("**/api/test-wechat-refresh/status", complete_refresh)
+        page.route("**" + _REFRESH_STATUS_URL, complete_refresh)
         refresh.click()
         expect(page.locator("[data-wechat-read-pending]")).to_be_visible()
         assert phase.entered.wait(timeout=5)
