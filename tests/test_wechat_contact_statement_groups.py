@@ -20,6 +20,7 @@ from app.core.wechat_contacts import (
     contact_registry_path,
     initialize_contact_registry,
 )
+from app.core.wechat_secondary_completions import completion_input_identities
 from tests.test_wechat_archive import make_archive
 
 
@@ -247,6 +248,7 @@ def _legacy_cache(fixture, *, stale=False):
         str(path.resolve()): analysis._identity(path)
         for path in (fixture.history, fixture.registry)
     }
+    identities.update(completion_input_identities(fixture.history))
     fingerprint = hashlib.sha256(
         analysis._json([analysis._LEGACY_REFERENCE_VERSION, identities]).encode()
     ).hexdigest()

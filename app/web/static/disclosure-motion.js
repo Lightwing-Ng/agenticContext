@@ -1,4 +1,4 @@
-/* Code version: v1.1.0-codex.0 */
+/* Code version: v1.2.0-codex.0 */
 
 (function initializeSharedDisclosureMotion() {
     "use strict";
@@ -6,22 +6,26 @@
     const reduced = window.matchMedia("(prefers-reduced-motion: reduce)");
     const controllers = new WeakMap();
     const active = new Map();
-    // Worthward's bouncy preset: mass 1, stiffness 180, damping 18, velocity 0.
     const duration = 620;
+    const dampingRatio = 0.8;
     const frequency = Math.sqrt(180);
-    const damped = Math.sqrt(180 - 9 * 9);
+    const decay = dampingRatio * frequency;
+    const damped = frequency * Math.sqrt(1 - dampingRatio * dampingRatio);
+    const clamp = (value, minimum, maximum) => Math.min(maximum, Math.max(minimum, value));
 
-    function spring(progress) {
-        if (progress === 0 || progress === 1) return progress;
-        const time = progress * duration / 1000;
-        return 1 - Math.exp(-9 * time)
-            * (Math.cos(damped * time) + 9 / damped * Math.sin(damped * time));
+    function spring(time, initialVelocity = 0) {
+        const coefficient = (initialVelocity - decay) / damped;
+        return 1 + Math.exp(-decay * time)
+            * (-Math.cos(damped * time) + coefficient * Math.sin(damped * time));
     }
 
-    function closeProgress(progress) {
-        // Critical damping keeps the summary visible throughout closing.
-        const displacement = (time) => 1 - Math.exp(-frequency * time) * (1 + frequency * time);
-        return displacement(progress * duration / 1000) / displacement(duration / 1000);
+    function springVelocity(time, initialVelocity = 0) {
+        const coefficient = (initialVelocity - decay) / damped;
+        const cosine = Math.cos(damped * time);
+        const sine = Math.sin(damped * time);
+        return Math.exp(-decay * time)
+            * (decay * cosine - decay * coefficient * sine
+                + damped * sine + coefficient * damped * cosine);
     }
 
     function settleConflicts(details) {
@@ -39,6 +43,7 @@
         if (!summary || !body) return;
         const widthElement = typeof widthTarget === "function" ? widthTarget(details) : null;
         let animations = [];
+        let motionState = null;
         let targetOpen = details.open;
         let nativeOpen = details.open;
         const originalInert = body.inert;
@@ -47,6 +52,7 @@
         function stop() {
             animations.forEach((animation) => animation.cancel());
             animations = [];
+            motionState = null;
             active.delete(details);
         }
 
@@ -71,6 +77,13 @@
         function move(open, nativeToggle = false) {
             let start = geometry();
             const interrupted = animations.length > 0;
+            const elapsed = clamp(Number(animations[0]?.currentTime) || 0, 0, duration) / 1000;
+            const carried = motionState ? {
+                height: (motionState.end.height - motionState.start.height)
+                    * springVelocity(elapsed, motionState.heightVelocity),
+                width: (motionState.end.width - motionState.start.width)
+                    * springVelocity(elapsed, motionState.widthVelocity),
+            } : {height: 0, width: 0};
             // Capture first: settling a descendant can change the parent's natural size.
             settleConflicts(details);
             stop();
@@ -96,22 +109,34 @@
             body.inert = open ? originalInert : true;
             if (!open && body.contains(document.activeElement)) summary.focus({ preventScroll: true });
             details.dataset.collapseMotion = open ? "open" : "close";
+            const heightDistance = end.height - start.height;
+            const widthDistance = end.width - start.width;
+            const heightVelocity = Math.abs(heightDistance) > 0.5
+                ? clamp(carried.height / heightDistance, -8, 8) : 0;
+            const widthVelocity = Math.abs(widthDistance) > 0.5
+                ? clamp(carried.width / widthDistance, -8, 8) : 0;
+            motionState = {start, end, heightVelocity, widthVelocity};
             const samples = Array.from({ length: 41 }, (_, index) => {
                 const offset = index / 40;
-                return { offset, position: open ? spring(offset) : closeProgress(offset) };
+                const time = offset * duration / 1000;
+                return {
+                    offset,
+                    height: offset === 1 ? 1 : spring(time, heightVelocity),
+                    width: offset === 1 ? 1 : spring(time, widthVelocity),
+                };
             });
             const options = { duration, easing: "linear", fill: "both" };
-            const height = details.animate(samples.map(({ offset, position }) => ({
-                height: `${start.height + (end.height - start.height) * position}px`,
+            const height = details.animate(samples.map(({ offset, height: position }) => ({
+                height: `${Math.max(Math.min(start.height, end.height), start.height + heightDistance * position)}px`,
                 overflow: "clip",
                 offset,
             })), options);
-            const width = widthElement?.animate(samples.map(({ offset, position }) => ({
-                width: `${start.width + (end.width - start.width) * position}px`,
+            const width = widthElement?.animate(samples.map(({ offset, width: position }) => ({
+                width: `${Math.max(Math.min(start.width, end.width), start.width + widthDistance * position)}px`,
                 offset,
             })), options);
-            const content = body.animate(samples.map(({ offset, position }) => ({
-                transform: `translateY(${open ? (1 - position) * 6 : -position * 4}px) scaleY(${open ? 0.985 + 0.015 * position : 1 - 0.015 * position})`,
+            const content = body.animate(samples.map(({ offset, height: position }) => ({
+                transform: `translateY(${open ? (1 - clamp(position, 0, 1)) * 6 : -clamp(position, 0, 1) * 4}px)`,
                 transformOrigin: "top center",
                 offset,
             })), options);

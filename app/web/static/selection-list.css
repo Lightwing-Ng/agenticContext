@@ -1,4 +1,4 @@
-/* Code version: v1.0.0-codex.0 */
+/* Code version: v1.0.1-codex.0 */
 
 .selection-list {
     display: grid;
@@ -62,6 +62,7 @@
     outline: 2px solid var(--accent-text);
     outline-offset: 2px;
     border-radius: var(--radius-soft);
+    corner-shape: var(--corner-shape-continuous);
 }
 
 .selection-list-identity:has(.selection-list-input:active) .selection-list-mark {

@@ -1,6 +1,6 @@
 """Preferred conversation events share pagination, source jumps, and CSV rows.
 
-Code version: v1.0.1-codex.0
+Code version: v1.1.0-codex.0
 """
 
 from __future__ import annotations
@@ -70,8 +70,21 @@ def resolved_event_store(tmp_path, monkeypatch):
     with sqlite3.connect(registry) as connection:
         initialize_contact_registry(connection)
 
-    def projection(repository, connection, session, current, message_table, identity, *, persist=True):
+    projection_cache_writes = []
+
+    def projection(
+        repository,
+        connection,
+        session,
+        current,
+        message_table,
+        identity,
+        *,
+        persist=True,
+    ):
         assert session == conversation["id"]
+        assert type(persist) is bool
+        projection_cache_writes.append(persist)
         return {
             "status": "ready",
             "preferred_by_id": {hidden: preferred},
@@ -90,6 +103,7 @@ def resolved_event_store(tmp_path, monkeypatch):
         hidden=hidden,
         preferred=preferred,
         boundary=rows[100]["id"],
+        projection_cache_writes=projection_cache_writes,
     )
 
 
@@ -108,12 +122,18 @@ def test_source_jump_maps_hidden_id_to_preferred_and_uses_display_page(
     assert before == (fixture.history.read_bytes(), fixture.registry.read_bytes())
 
 
+@pytest.mark.parametrize("write_event_cache", [True, False])
 def test_session_export_uses_the_same_preferred_membership_without_source_writes(
     resolved_event_store,
+    write_event_cache,
 ):
     fixture = resolved_event_store
     before = fixture.history.read_bytes(), fixture.registry.read_bytes()
-    export = WechatSessionExport(fixture.store, fixture.conversation["id"])
+    export = WechatSessionExport(
+        fixture.store,
+        fixture.conversation["id"],
+        write_event_cache=write_event_cache,
+    )
     assert export.conversation["message_count"] == 103
     rows = list(export.items())
     identifiers = [row["id"] for row in rows]
@@ -122,6 +142,7 @@ def test_session_export_uses_the_same_preferred_membership_without_source_writes
     assert identifiers.count(fixture.preferred) == 1
     assert identifiers[0] == fixture.preferred
     assert export.connection is None
+    assert fixture.projection_cache_writes == [write_event_cache]
     assert before == (fixture.history.read_bytes(), fixture.registry.read_bytes())
 
 

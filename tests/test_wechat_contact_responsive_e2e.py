@@ -1,6 +1,6 @@
-"""Contact statements fit their scrollport and keep shared header alignment.
+"""Contact messages fit their scrollport and keep shared header alignment.
 
-Code version: v1.2.2-codex.0
+Code version: v1.2.5-codex.0
 """
 
 from __future__ import annotations
@@ -30,6 +30,7 @@ LONG_STATEMENT = (
 )
 LONG_CONVERSATION = "A conversation with a long title 需要保留的完整群聊名称"
 LONG_ACCOUNT = "Research account with a complete source identity · abc123"
+LONG_CONTACT_NAME = "需要完整显示的微信联系人名称" * 3
 
 
 def _static_resource_name(url):
@@ -64,7 +65,7 @@ def _stylesheet_diagnostic(response):
 
 
 @contextmanager
-def _observe_contact_table_failure(page):
+def _observe_contact_table_failure(page, measurements=None):
     """Keep bounded static evidence and inspect bodies only after a failed assertion."""
     stylesheets, failed_requests, console_codes = [], [], []
 
@@ -127,6 +128,7 @@ def _observe_contact_table_failure(page):
             }""")
             diagnostics = {
                 "state": state,
+                "sampled_geometry": measurements[-1] if measurements else None,
                 "stylesheets": [_stylesheet_diagnostic(response) for response in stylesheets],
                 "failed_static_requests": failed_requests,
                 "static_console_codes": console_codes,
@@ -154,6 +156,12 @@ def _responsive_results(fixture):
             total_pages=1611,
             current_page=int(kwargs.get("page", 1)),
         )
+        if result["current_page"] != 1:
+            result["contact"]["display_name"] = LONG_CONTACT_NAME
+        for position, item in enumerate(result["items"], 1):
+            item["sequence_number"] = (result["current_page"] - 1) * result[
+                "page_size"
+            ] + position
         result["items"][1].update(
             content_text=LONG_STATEMENT,
             conversation_title=LONG_CONVERSATION,
@@ -233,13 +241,42 @@ def _table_geometry(page):
             const time = cell.querySelector('time');
             return {text: time.textContent.trim(), ...textMetrics(cell, time)};
         });
+        function visibleTextMetrics(cell) {
+            const box = cell.getBoundingClientRect();
+            const walker = document.createTreeWalker(cell, NodeFilter.SHOW_TEXT);
+            const range = document.createRange();
+            const documentWhitespace = new Set([0x20, 0x09, 0x0a, 0x0d]);
+            let node, requiredGlyphCount = 0, missingGlyphCount = 0;
+            let textFits = true;
+            while ((node = walker.nextNode())) {
+                let offset = 0;
+                for (const character of node.data) {
+                    const end = offset + character.length;
+                    // CSS document spaces, tabs, and segment breaks have no visible glyph.
+                    // Other Unicode characters, including NBSP, remain required.
+                    if (!documentWhitespace.has(character.codePointAt(0))) {
+                        requiredGlyphCount += 1;
+                        range.setStart(node, offset);
+                        range.setEnd(node, end);
+                        const rects = [...range.getClientRects()]
+                            .filter(rect => rect.width > 0 && rect.height > 0);
+                        if (!rects.length) missingGlyphCount += 1;
+                        textFits = textFits && rects.length > 0 && rects.every(rect => (
+                            rect.left >= box.left - 1 && rect.right <= box.right + 1
+                        ));
+                    }
+                    offset = end;
+                }
+            }
+            return {textFits, requiredGlyphCount, missingGlyphCount};
+        }
         const longCells = [...body.rows[1].cells].slice(1).map(cell => {
             const range = document.createRange();
             range.selectNodeContents(cell);
             const box = cell.getBoundingClientRect();
             const textBox = range.getBoundingClientRect();
             return {width: box.width, textWidth: textBox.width,
-                textFits: textBox.left >= box.left - 1 && textBox.right <= box.right + 1,
+                ...visibleTextMetrics(cell),
                 lines: range.getClientRects().length, overflowX: getComputedStyle(cell).overflowX,
                 textOverflow: getComputedStyle(cell).textOverflow};
         });
@@ -324,13 +361,25 @@ def test_contact_columns_fit_without_horizontal_scroll_and_keep_centered_numbers
     measurements = []
     url = fixture.url + "/browser/wechat/contacts/" + fixture.target_id
     try:
-        with _observe_contact_table_failure(page), patch(
+        with _observe_contact_table_failure(page, measurements), patch(
             "app.core.wechat_contact_analysis.query_contact_analysis",
             side_effect=_responsive_results(fixture),
         ):
             for number_page in (1, 1610):
                 page.goto(url + f"?page={number_page}", wait_until="networkidle")
                 page.evaluate("() => document.fonts.ready")
+                name = page.locator("[data-contact-analysis-name]")
+                username = page.locator("[data-contact-analysis-username]")
+                if number_page != 1:
+                    expect(name).to_have_text(LONG_CONTACT_NAME)
+                name_box = name.bounding_box()
+                username_box = username.bounding_box()
+                assert name_box and username_box
+                assert username_box["y"] >= name_box["y"] + name_box["height"]
+                assert abs(username_box["x"] - name_box["x"]) <= 1
+                theme_box = page.locator("#global_theme_toggle").bounding_box()
+                assert theme_box and name_box["x"] + name_box["width"] <= theme_box["x"]
+                expect(page.locator(".wechat-contact-source-note")).to_have_count(0)
                 rows = page.locator("[data-table-body] tbody tr")
                 expect(rows).to_have_count(50)
                 expect(rows.nth(1).locator("td").nth(2)).to_have_text(LONG_STATEMENT)
@@ -360,6 +409,86 @@ def test_contact_columns_fit_without_horizontal_scroll_and_keep_centered_numbers
             fixture.history.read_bytes(),
             fixture.registry.read_bytes(),
         )
+    finally:
+        context.close()
+
+
+def _contact_geometry_control_markup(statement):
+    # A separate native DOM uses ch advances to make legal hanging deterministic.
+    # Application typography, source text, and production styles remain unchanged.
+    columns = "".join(
+        f'<col style="width:{width}%">' for width in (10, 20, 40, 15, 15)
+    )
+    header = "<tr>" + "".join("<th>Column</th>" for _ in range(5)) + "</tr>"
+    rows = "".join(
+        f"<tr><td>{number}</td><td><time>7 Aug 2021 18:59:03</time></td>"
+        f'<td><span class="statement">{content}</span></td>'
+        "<td>Conversation</td><td>Account</td></tr>"
+        for number, content in ((1, "Short statement"), (2, statement))
+    )
+    return f"""<!doctype html><style>
+        html {{ font: 16px/20px monospace; }}
+        body {{ margin: 0; }}
+        .wechat-contact-table-shell {{ width: 100ch; }}
+        [data-table-scroll] {{ overflow: auto; }}
+        table {{ width: 100%; table-layout: fixed; border-collapse: collapse; }}
+        td, th {{ padding: 0; border: 0; }}
+        td:first-child {{ text-align: center; }}
+        .statement {{ white-space: pre-wrap; overflow-wrap: anywhere; }}
+    </style><div class="wechat-contact-table-shell">
+        <table data-table-header><colgroup>{columns}</colgroup><thead>{header}</thead></table>
+        <div data-table-scroll><table data-table-body><colgroup>{columns}</colgroup>
+            <tbody>{rows}</tbody></table></div>
+    </div>"""
+
+
+def test_contact_text_geometry_accepts_legal_hanging_document_space(disposable_browser):
+    context = disposable_browser.new_context(viewport={"width": 1280, "height": 800})
+    page = context.new_page()
+    try:
+        page.set_content(_contact_geometry_control_markup("0" * 40 + " " + "0" * 4))
+        measured = _table_geometry(page)
+        statement = measured["longCells"][1]
+        assert statement["textWidth"] > statement["width"] + 1, measured
+        _assert_table_fits(measured)
+        assert statement["requiredGlyphCount"] == 44, measured
+        assert statement["missingGlyphCount"] == 0, measured
+    finally:
+        context.close()
+
+
+@pytest.mark.parametrize(
+    "fault", ["visible_overflow", "hidden_all", "hidden_one", "hidden_nbsp"]
+)
+def test_contact_text_geometry_rejects_missing_or_overflowing_glyphs(
+    disposable_browser, fault
+):
+    statement = "0" * 40 + " " + "0" * 4
+    if fault == "hidden_one":
+        statement = "0" * 39 + '<span style="display:none">0</span> ' + "0" * 4
+    elif fault == "hidden_nbsp":
+        statement = "0" * 40 + '<span style="display:none">\u00a0</span>' + "0" * 4
+    context = disposable_browser.new_context(viewport={"width": 1280, "height": 800})
+    page = context.new_page()
+    try:
+        page.set_content(_contact_geometry_control_markup(statement))
+        content = page.locator("[data-table-body] tbody tr").nth(1).locator(".statement")
+        if fault == "visible_overflow":
+            content.evaluate(
+                "node => { node.style.position = 'relative'; node.style.left = '4px'; }"
+            )
+        elif fault == "hidden_all":
+            content.evaluate("node => { node.style.display = 'none'; }")
+        measured = _table_geometry(page)
+        statement_geometry = measured["longCells"][1]
+        assert statement_geometry["requiredGlyphCount"] > 0, measured
+        assert not statement_geometry["textFits"], measured
+        if fault == "visible_overflow":
+            assert statement_geometry["missingGlyphCount"] == 0, measured
+        else:
+            assert statement_geometry["missingGlyphCount"] > 0, measured
+        with pytest.raises(AssertionError):
+            _assert_table_fits(measured)
     finally:
         context.close()
 

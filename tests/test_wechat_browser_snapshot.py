@@ -1,12 +1,15 @@
 """Authenticated raw overviews survive reloads without reusing changed evidence.
 
-Code version: v1.1.0-codex.0
+Code version: v1.2.1-codex.0
 """
 
 from collections import OrderedDict
 from concurrent.futures import Future, ThreadPoolExecutor
 from contextlib import closing
+import hashlib
+import hmac
 import os
+import shutil
 import sqlite3
 import stat
 from threading import Event
@@ -16,6 +19,9 @@ import pytest
 
 from app.core import owner_only_files
 from app.core import wechat_browser_snapshot as snapshots
+from app.core import wechat_archive_relocation as relocation
+from app.core import wechat_macos_recovery_bank as bank
+from app.core import wechat_resource_details as details
 from app.core.wechat_archive import WechatTimelineProjectionError, _file_identity
 from app.core.wechat_secondary_completions import FILENAME
 from tests import test_wechat_conversation_events as fixtures
@@ -443,7 +449,6 @@ def test_previous_snapshot_accepts_an_unchanged_archive_after_reader_update(
         ("browser_snapshot_conversations", "ready", (rows[0][2],)), rows,
     )
 
-
 def test_previous_snapshot_does_not_create_storage(snapshot_store):
     assert _load_previous(snapshot_store) == (None, [])
     assert not _directory(snapshot_store).exists()
@@ -467,6 +472,59 @@ def test_previous_snapshot_allows_first_completion_publication(snapshot_store):
     assert verified[0] is not None
     _add_completion_input(snapshot_store)
     assert _load_previous(snapshot_store) == verified
+
+
+def _publish_details(path):
+    candidate = path.with_suffix(".candidate")
+    candidate.write_bytes(details.encode_registry([]))
+    candidate.chmod(0o600)
+    candidate.replace(path)
+
+
+@pytest.mark.parametrize("prior_detail_pin", ("legacy", "absent", "published"))
+def test_previous_snapshot_allows_private_detail_publication(snapshot_store, prior_detail_pin):
+    fixture = snapshot_store
+    history = fixture.repository.path
+    path = history.with_name(details.FILENAME)
+    if prior_detail_pin == "published":
+        _publish_details(path)
+    verified = _load(fixture)
+    assert verified[0] is not None
+    if prior_detail_pin == "legacy":
+        directory = _directory(fixture)
+        key, _ = snapshots._read_signing_key(directory / "signing.key")
+        previous = snapshots._decode_snapshot(
+            (directory / "conversations.snapshot").read_bytes(), key,
+        )
+        del previous["pin"]["inputs"][str(path.resolve())]
+        assert snapshots._write_snapshot(directory, key, previous, lambda: True)
+    _publish_details(path)
+    assert _load_previous(fixture) == verified
+    assert fixture.snapshot_calls == [True]
+
+
+@pytest.mark.parametrize("change", ("removed", "public", "oversized", "symlink", "contacts"))
+def test_previous_snapshot_rejects_unsafe_detail_transition(snapshot_store, change):
+    fixture = snapshot_store
+    path = fixture.repository.path.with_name(details.FILENAME)
+    _publish_details(path)
+    assert _load(fixture)[0] is not None
+    if change == "removed":
+        path.unlink()
+    elif change == "public":
+        path.chmod(0o644)
+    elif change == "oversized":
+        with path.open("r+b") as stream:
+            stream.truncate(details.MAX_BYTES + 1)
+    elif change == "symlink":
+        moved = path.with_suffix(".moved")
+        path.rename(moved)
+        path.symlink_to(moved)
+    else:
+        _publish_details(path)
+        before = fixture.registry.stat()
+        os.utime(fixture.registry, ns=(before.st_atime_ns, before.st_mtime_ns + 1_000_000_000))
+    assert _load_previous(fixture) == (None, [])
 
 
 @pytest.mark.parametrize(
@@ -508,4 +566,47 @@ def test_previous_snapshot_discards_summary_if_cache_path_changes(
         return result
 
     monkeypatch.setattr(snapshots, "_install", drift_after_install)
+    assert _load_previous(fixture) == (None, [])
+
+
+def test_navigation_relocation_preserves_signed_rows_without_admitting_current_details(
+    previous_snapshot, monkeypatch,
+):
+    fixture, completion, rows = previous_snapshot
+    history = fixture.repository.path
+    cache = _directory(fixture)
+    key, _ = snapshots._read_signing_key(cache / "signing.key")
+    snapshot = cache / "conversations.snapshot"
+    encoded = snapshot.read_bytes()
+    records = {}
+    for path in (history, completion, fixture.registry):
+        previous = bank._identity(path)
+        copy = path.with_suffix(".moved")
+        shutil.copy2(path, copy)
+        copy.replace(path)
+        records[path.name] = {"previous": previous, "current": bank._identity(path)}
+    contacts = records.pop(fixture.registry.name)
+
+    def save(path, domain, value):
+        payload = snapshots._json(value)
+        path.write_bytes(hmac.digest(key, domain + payload, "sha256") + payload)
+        path.chmod(0o600)
+
+    save(history.with_name(relocation.FILENAME), relocation.DOMAIN,
+         {"version": relocation.VERSION, "files": records})
+    monkeypatch.setattr(snapshots, "_code_fingerprint", lambda: "reader-code-v2")
+    assert _load_previous(fixture) == (None, [])
+    proof = cache / relocation.NAVIGATION_FILENAME
+    value = {"snapshot_sha256": hashlib.sha256(encoded).hexdigest(), "contacts": contacts}
+    save(proof, relocation.NAVIGATION_DOMAIN, value)
+    assert _load_previous(fixture) == (
+        ("browser_snapshot_conversations", "ready", (rows[0][2],)), rows,
+    )
+    assert not fixture.snapshot_calls
+    changed = snapshots._decode_snapshot(encoded, key)
+    changed["rows"][0][4] = "A different signed snapshot"
+    assert snapshots._write_snapshot(cache, key, changed, lambda: True)
+    assert _load_previous(fixture) == (None, [])
+    snapshot.write_bytes(encoded)
+    os.utime(fixture.registry, None)
     assert _load_previous(fixture) == (None, [])

@@ -1,6 +1,6 @@
 """Behavioral checks for the optional, browser-local Beta boundary.
 
-Code version: v0.6.0-codex.0
+Code version: v0.6.1-codex.0
 """
 
 from __future__ import annotations
@@ -63,7 +63,7 @@ def test_beta_index_and_each_experiment_render_only_the_selected_metadata(
             assert experiment.title in response.get_data(as_text=True)
             assert rendered[-1]["beta_experiment"] == experiment
             assert tuple(rendered[-1]["beta_experiments"]) == BETA_EXPERIMENTS
-            assert rendered[-1]["beta_version"] == "v0.5.0"
+            assert rendered[-1]["beta_version"] == "v0.5.1"
 
 
 def test_beta_catalog_contains_only_the_eight_browser_local_experiments() -> None:

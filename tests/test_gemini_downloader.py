@@ -1,6 +1,6 @@
-"""Focused tests for Gemini session history Parquet persistence."""
+"""Focused tests for Gemini session history SQLite persistence."""
 
-# Code version: v1.12.0-codex.0
+# Code version: v1.13.0-codex.0
 
 from __future__ import annotations
 
@@ -12,7 +12,6 @@ from types import SimpleNamespace
 from unittest.mock import Mock, patch
 from urllib.parse import parse_qs, urlencode
 
-import pyarrow.parquet as pq
 import pytest
 from playwright.sync_api import Browser
 
@@ -52,7 +51,8 @@ from app.core.gemini_downloader import (
 )
 from app.core.config import CrawlConfig
 from app.core.state import TaskSnapshot, TaskState
-from app.core.resource_persistence import GEMINI_HISTORY_SCHEMA
+from app.core.llm_sqlite import read_sqlite_schema
+from app.core.resource_persistence import GEMINI_HISTORY_SCHEMA, read_resource_rows
 from app.core.safari_automation import SafariPage
 
 
@@ -348,10 +348,10 @@ def test_gemini_history_store_atomically_merges_and_replaces_conversations(tmp_p
     assert not unchanged
     store.save()
 
-    table = pq.read_table(path)
-    assert table.schema.names == GEMINI_HISTORY_SCHEMA.names
-    assert table.num_rows == 2
-    assert table.to_pylist()[1]["source_links"] == ["https://example.com/source"]
+    rows = read_resource_rows(path)
+    assert read_sqlite_schema(path).equals(GEMINI_HISTORY_SCHEMA)
+    assert len(rows) == 2
+    assert rows[1]["source_links"] == ["https://example.com/source"]
 
     reloaded = GeminiHistoryStore(path)
     added, unchanged = reloaded.replace_conversation(first, _messages(), "2026-08-12T06:00:00Z")
@@ -606,12 +606,12 @@ def test_gemini_initial_snapshot_counts_cached_rows(tmp_path: Path) -> None:
     assert "1 session, 2 messages" in snapshot.message
 
 
-def test_gemini_history_store_rejects_an_unreadable_existing_parquet(tmp_path: Path) -> None:
+def test_gemini_history_store_rejects_an_unreadable_existing_store(tmp_path: Path) -> None:
     path = gemini_history_path(tmp_path)
     path.parent.mkdir(parents=True)
-    path.write_text("not parquet", encoding="utf-8")
+    path.write_text("not a database", encoding="utf-8")
 
-    with pytest.raises(RuntimeError, match="Parquet is unreadable"):
+    with pytest.raises(RuntimeError, match="store is unreadable"):
         GeminiHistoryStore(path)
 
 

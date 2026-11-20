@@ -1,6 +1,6 @@
 """Stage and read evidence-checked message completions in one derived SQL catalog.
 
-Code version: v1.1.0-codex.0
+Code version: v1.2.1-codex.0
 
 Original history, resource catalogs, account boundaries, and recovery-bank pins
 remain unchanged. Strategies produce either exact resource-row replacements or
@@ -33,8 +33,8 @@ from .wechat_completion_json_codec import (
 )
 from .wechat_completion_clone import (
     clone_completion_catalog,
-    sync_completion_file,
     sync_completion_directory,
+    sync_completion_file,
 )
 from .wechat_global_guard import global_refresh_guard
 from .wechat_reconcile import native_text_metadata
@@ -48,7 +48,7 @@ from .wechat_resource_sender_evidence import (
 from .wechat_text import native_components_text
 
 
-CODE_VERSION = "v1.0.8-codex.0"
+CODE_VERSION = "v1.1.1-codex.0"
 PROOF_VERSION = "v1.0.0-codex.0"
 VERSION = PROOF_VERSION
 FILENAME = "secondary_message_completions.sqlite3"
@@ -100,9 +100,7 @@ CREATE TABLE archive_info (key TEXT PRIMARY KEY,value TEXT NOT NULL);
 
 
 def _clonefile(source, destination):
-    clone_completion_catalog(
-        source, destination, expected_identity=_identity(source)
-    )
+    clone_completion_catalog(source, destination, expected_identity=_identity(source))
 
 
 def _json(value):
@@ -195,6 +193,13 @@ def _metadata(connection):
     if info.get("schema_version") != "1" or info.get("version") != VERSION:
         raise ValueError("Unsupported completion catalog contract.")
     return json.loads(info["input_identities"])
+
+
+def _matches_read_pins(connection, history_path, pins):
+    from .wechat_archive_relocation import matches
+
+    previous = _metadata(connection)
+    return previous == pins or matches(history_path, FILENAME, previous, pins)
 
 
 def _decoded_message(row):
@@ -882,8 +887,19 @@ def stage_secondary_message_completions(
     base_candidate_path=None,
     base_candidate_sha256=None,
     only_uncompleted=False,
+    primary_conversation_id=None,
 ):
-    """Prepare a reviewable derived catalog without changing any published file."""
+    """Prepare a derived catalog, optionally for one owner's incomplete resources."""
+    if primary_conversation_id is not None and (
+        not isinstance(primary_conversation_id, str)
+        or re.fullmatch(r"wechat:[0-9a-f]{64}", primary_conversation_id) is None
+        or only_uncompleted is not True
+        or notice_plans is not None
+        or native_system_roles
+    ):
+        raise ValueError(
+            "Scoped completions require one primary conversation and incomplete resources only."
+        )
     history_path = wechat_archive_path(local_store_root).absolute()
     target = history_path.with_name(FILENAME)
     candidate = Path(candidate_path).absolute()
@@ -946,6 +962,14 @@ def stage_secondary_message_completions(
             _readonly(history_path.with_name("resource_references.sqlite3"))
         ) as catalog,
     ):
+        scoped_conversation = None
+        if primary_conversation_id is not None:
+            scoped_conversation = catalog.execute(
+                "SELECT * FROM conversations WHERE id=? AND kind='group'",
+                (primary_conversation_id,),
+            ).fetchone()
+            if scoped_conversation is None:
+                raise ValueError("The scoped primary group has no resource catalog.")
         snapshots = _snapshot_resolver(history, catalog)
         if base is not None:
             _clonefile(base, candidate)
@@ -974,8 +998,9 @@ def stage_secondary_message_completions(
                 "CREATE TABLE IF NOT EXISTS ambiguities (id TEXT PRIMARY KEY,conversation_id TEXT NOT NULL,reason TEXT NOT NULL)"
             )
             output.commit()
-            _index_existing_appends(output, history, catalog)
-            output.commit()
+            if scoped_conversation is None:
+                _index_existing_appends(output, history, catalog)
+                output.commit()
             packet_count = 0
             for packet in packets:
                 packet_count += 1
@@ -983,15 +1008,32 @@ def stage_secondary_message_completions(
                     raise ValueError(
                         "Secondary completions require an independent source-level account binding."
                     )
-                bank._validate_account_binding(history, packet)
+                if scoped_conversation is not None:
+                    if (
+                        packet.get("session_id") != primary_conversation_id
+                        or packet.get("peer_id") != scoped_conversation["peer_id"]
+                        or packet.get("conversation_kind") != "group"
+                        or scoped_conversation["account_key"]
+                        != "account:" + str(packet.get("account_id"))
+                    ):
+                        raise ValueError(
+                            "The native packet differs from the scoped primary conversation."
+                        )
+                    bank._binding(history, packet)
+                else:
+                    bank._validate_account_binding(history, packet)
                 events = iter_secondary_native_events(packet)
                 if packet.get("conversation_kind") != "group":
                     ignored["authenticated_non_group_packets"] += 1
                     continue
-                primary_groups = catalog.execute(
-                    "SELECT * FROM conversations WHERE kind='group' AND peer_id=?",
-                    (packet["peer_id"],),
-                ).fetchall()
+                primary_groups = (
+                    (scoped_conversation,)
+                    if scoped_conversation is not None
+                    else catalog.execute(
+                        "SELECT * FROM conversations WHERE kind='group' AND peer_id=?",
+                        (packet["peer_id"],),
+                    ).fetchall()
+                )
                 if (
                     not primary_groups
                     and history.execute(
@@ -1187,7 +1229,7 @@ def stage_secondary_message_completions(
                             original=row,
                             strategy=strategy,
                         )
-                if notice_plans is None:
+                if scoped_conversation is None and notice_plans is None:
                     from .wechat_secondary_system_notices import build_notice_plans
 
                     for plan in build_notice_plans(
@@ -2233,18 +2275,26 @@ def compact_secondary_message_completions(
 
 def completion_message_conversation(history_path, message_id):
     """Locate a derived ID; callers still validate its complete SQL scope."""
+    from .wechat_archive_relocation import receipt_identity
+
     history_path = Path(history_path)
     target = history_path.with_name(FILENAME)
     identity = _identity(target, optional=True)
     if identity is None:
         return None
+    pins = _pins(history_path)
+    relocation = receipt_identity(history_path)
     with closing(_readonly(target)) as derived:
-        if _metadata(derived) != _pins(history_path):
+        if not _matches_read_pins(derived, history_path, pins):
             raise ValueError("The derived message locator is stale.")
         row = derived.execute(
             "SELECT conversation_id FROM entries WHERE id=?", (message_id,)
         ).fetchone()
-    if _identity(target) != identity:
+    if (
+        _identity(target) != identity
+        or _pins(history_path) != pins
+        or receipt_identity(history_path) != relocation
+    ):
         raise ValueError("The derived message locator changed.")
     return row[0] if row is not None else None
 
@@ -2330,6 +2380,8 @@ def attach_secondary_message_completions(
     connection, history_path, conversation_table, message_table, *, conversation_id=None
 ):
     """Apply validated rows in SQL before paging, search, export, or event grouping."""
+    from .wechat_archive_relocation import receipt_identity
+
     history_path = Path(history_path)
     target = history_path.with_name(FILENAME)
     if not target.exists() and not target.is_symlink():
@@ -2340,6 +2392,7 @@ def attach_secondary_message_completions(
         register_json_codec(connection)
         target_identity = _identity(target)
         pins = _pins(history_path)
+        relocation = receipt_identity(history_path)
         key = _validation_cache_key(target, target_identity, pins, conversation_id)
         with (
             closing(_readonly(target)) as derived,
@@ -2348,7 +2401,7 @@ def attach_secondary_message_completions(
                 _readonly(history_path.with_name("resource_references.sqlite3"))
             ) as catalog,
         ):
-            if _metadata(derived) != pins:
+            if not _matches_read_pins(derived, history_path, pins):
                 return conversation_table, message_table, "stale"
             with _LOCK:
                 verified = (
@@ -2407,7 +2460,7 @@ def attach_secondary_message_completions(
             + message_table
             + " b WHERE NOT EXISTS(SELECT 1 FROM secondary_completion_active a WHERE a.id=b.id) UNION ALL SELECT "
             + projected
-            + " FROM secondary_completions.messages m JOIN secondary_completion_active a ON a.id=m.id"
+            + " FROM secondary_completion_active a CROSS JOIN secondary_completions.messages m ON m.id=a.id"
         )
         connection.execute("DROP VIEW IF EXISTS temp." + CONVERSATION_TABLE)
         connection.execute(
@@ -2421,7 +2474,8 @@ def attach_secondary_message_completions(
         affected = [
             row[0]
             for row in connection.execute(
-                "SELECT DISTINCT m.conversation_id FROM secondary_completions.messages m JOIN secondary_completion_active a ON a.id=m.id"
+                "SELECT DISTINCT m.conversation_id FROM secondary_completion_active a "
+                "CROSS JOIN secondary_completions.messages m ON m.id=a.id"
             )
         ]
         for identifier in affected:
@@ -2469,7 +2523,10 @@ def attach_secondary_message_completions(
             + conversation_table
             + " c WHERE NOT EXISTS(SELECT 1 FROM secondary_completion_conversations d WHERE d.id=c.id) UNION ALL SELECT * FROM secondary_completion_conversations"
         )
-        if _identity(target) != target_identity or _pins(history_path) != pins:
+        if (
+            _identity(target) != target_identity or _pins(history_path) != pins
+            or receipt_identity(history_path) != relocation
+        ):
             raise ValueError("A completion source changed while building the SQL view.")
         return CONVERSATION_TABLE, MESSAGE_TABLE, "ready"
     except (

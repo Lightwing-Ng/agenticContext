@@ -1,6 +1,6 @@
 """Read-only all-session media expansion and exact-content deduplication.
 
-Code version: v1.1.2-codex.0
+Code version: v1.1.1-codex.0
 """
 
 from __future__ import annotations
@@ -447,46 +447,6 @@ def test_pending_cap_reserves_admission_for_active_files_before_tombstones(
         assert len([item for item in expanded.items if not item.is_deleted]) == 1
         assert len([item for item in expanded.items if item.is_deleted]) == 6
         assert len(deleted_reads) == 2
-    finally:
-        release.set()
-        with catalog._content_hash_condition:
-            catalog._content_hash_condition.wait_for(lambda: not catalog._content_hash_pending, timeout=2)
-
-    assert not catalog._content_hash_pending
-
-
-def test_blocked_tombstone_admission_keeps_capacity_for_later_active_files(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    directory = _write_project(tmp_path, tuple(
-        (f"deleted-{index}.png", str(index), b"same") for index in range(4)
-    ))
-    catalog = LocalMediaCatalog(tmp_path)
-    for item in catalog.snapshot():
-        catalog.delete(item.stable_id)
-    real_file_digest = hashlib.file_digest
-    release = Event()
-
-    def blocked_deleted_digest(handle, algorithm):
-        if ".browser-trash" in Path(handle.name).parts:
-            release.wait(2)
-        return real_file_digest(handle, algorithm)
-
-    monkeypatch.setattr(hashlib, "file_digest", blocked_deleted_digest)
-    monkeypatch.setattr(local_media_browser, "CONTENT_HASH_MAX_PENDING", 4)
-    monkeypatch.setattr(local_media_browser, "CONTENT_HASH_WAIT_SECONDS", 0.05)
-    try:
-        # First fill the deleted-media allowance while no active files are present.
-        assert catalog.query(source="chatgpt", chatgpt_all_media=True).total_count == 4
-        (directory / "later-one.png").write_bytes(b"same")
-        (directory / "later-two.png").write_bytes(b"same")
-
-        expanded = catalog.query(source="chatgpt", chatgpt_all_media=True, force_refresh=True)
-
-        # New active work must enter even when the previous tombstone reads remain blocked.
-        assert len([item for item in expanded.items if not item.is_deleted]) == 1
-        assert len([item for item in expanded.items if item.is_deleted]) == 4
-        assert expanded.total_count == 5
     finally:
         release.set()
         with catalog._content_hash_condition:

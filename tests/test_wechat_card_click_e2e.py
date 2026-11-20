@@ -1,6 +1,6 @@
 """Message cards share provenance activation without taking over text or actions.
 
-Code version: v1.1.1-codex.0
+Code version: v1.2.2-codex.0
 """
 
 from __future__ import annotations
@@ -221,35 +221,71 @@ def test_contact_link_navigates_without_opening_message_details(
         context.close()
 
 
+@pytest.mark.parametrize(
+    ("status", "result", "reported_feedback"),
+    [
+        (200, {"revealed": True, "target_kind": "folder"}, "Folder shown in Finder"),
+        (200, {"revealed": True, "target_kind": "file"}, "File shown in Finder"),
+        (
+            409,
+            {"error": "This resource reference is unavailable or needs refreshing."},
+            "This resource reference is unavailable or needs refreshing.",
+        ),
+    ],
+)
+@pytest.mark.parametrize("activation", ["pointer", "keyboard"])
 def test_resource_action_keeps_its_own_behavior_without_opening_details(
-    disposable_browser, sender_run_server
+    disposable_browser, sender_run_server, status, result, reported_feedback, activation
 ):
     fixture = sender_run_server
-    context = disposable_browser.new_context(reduced_motion="reduce")
+    context = disposable_browser.new_context(
+        viewport={"width": 806, "height": 1118}, reduced_motion="reduce"
+    )
     page = context.new_page()
     requests = []
 
     def resource_response(route):
         requests.append(route.request.url)
         route.fulfill(
-            status=200,
+            status=status,
             content_type="application/json",
-            body=json.dumps({"revealed": True, "target_kind": "folder"}),
+            body=json.dumps(result),
         )
+
+    def activate(button, key):
+        if activation == "keyboard":
+            page.keyboard.press(key)
+        else:
+            button.click()
 
     page.route("**/api/browser/wechat/resources/*/reveal", resource_response)
     try:
         card = _open(page, fixture).nth(2)
         button = card.locator("[data-wechat-resource-reveal]")
-        card.hover()
-        button.click()
-        expect(card.locator("[data-wechat-resource-feedback]")).to_have_text(
-            "Folder shown in Finder"
-        )
+        feedback = card.locator("[data-wechat-resource-feedback]")
+        details = card.locator(":scope > .wechat-provenance")
+        expect(feedback).to_have_text("Local folder only")
+        if activation == "keyboard":
+            button.focus()
+        else:
+            card.hover()
+        activate(button, "Enter")
+        expect(feedback).to_have_text(reported_feedback)
+        expect(button).to_be_enabled()
         assert len(requests) == 1
-        expect(card.locator(":scope > .wechat-provenance")).not_to_have_attribute(
-            "open", ""
-        )
+        expect(details).not_to_have_attribute("open", "")
+        if activation == "keyboard":
+            expect(button).to_be_focused()
+
+        activate(button, "Space")
+        expect(feedback).to_have_text("Local folder only")
+        assert len(requests) == 1
+        expect(details).not_to_have_attribute("open", "")
+
+        activate(button, "Enter")
+        expect(feedback).to_have_text(reported_feedback)
+        assert len(requests) == 2
+        expect(details).not_to_have_attribute("open", "")
         fixture.reveal.assert_not_called()
         fixture.open_folder.assert_not_called()
         assert fixture.history.read_bytes() == fixture.original

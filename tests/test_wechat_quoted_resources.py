@@ -1,6 +1,6 @@
 """Nontext quoted references remain typed and source-scoped without payload reads.
 
-Code version: v1.3.3-codex.0
+Code version: v1.4.1-codex.0
 """
 
 from copy import deepcopy
@@ -8,6 +8,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 from xml.sax.saxutils import escape
 
+from bs4 import BeautifulSoup
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 import pytest
 
@@ -15,6 +16,8 @@ from app.core.wechat_history_browser import _native_quoted_reply_presentation
 from app.core.wechat_forwarded import project_native_forwarded
 from app.core.wechat_quoted_resources import (
     NESTED_REFERENCE_BASIS,
+    INLINE_APP_BASIS,
+    NESTED_INLINE_APP_BASIS,
     ORIGINAL_BASIS,
     REFERENCE_BASIS,
     project_native_quoted_resources,
@@ -22,7 +25,6 @@ from app.core.wechat_quoted_resources import (
 from app.core.wechat_resources import present_resource
 from app.core.wechat_text import extract_wechat_text
 from tests.test_wechat_quote_padding import _fixture as _padding_fixture
-from tests.test_wechat_resources import _RenderedMarkup, _text
 
 
 def _fixture(message_type=3, kind="image"):
@@ -73,7 +75,7 @@ def _run(fixture):
     ("message_type", "kind", "label"),
     [
         (3, "image", "Image"), (49, "app", "App message"),
-        (49, "file", "File"),
+        (49, "file", "Source attachment.pdf"),
     ],
 )
 def test_exact_original_adds_inert_typed_reference_without_copying_payloads(
@@ -164,7 +166,7 @@ def test_exact_group_card_accepts_only_original_proved_author_and_retains_labels
     fixture = _fixture(49, "app")
     fixture.original.messaging["sender_id"] = sender
     fixture.original.messaging["provenance"]["resource_reference"].update(
-        app_subtype="5", safe_title="Literal original title", publisher_name="Literal publisher"
+        safe_title="Literal original title", publisher_name="Literal publisher"
     )
     reference = fixture.reply.messaging["provenance"]["quoted_reference"]
     reference["source_chat_id"] = sender if chat_role == "original" else fixture.reply.messaging["sender_id"]
@@ -188,15 +190,19 @@ def test_exact_original_does_not_promote_unresolved_native_author_values(sender)
     assert "resource_original" not in quote
 
 
-def _nested_fixture(*, quoted_container=False, grouped=False):
+def _nested_fixture(*, quoted_container=False, grouped=False, app_card=False):
     fixture = _fixture()
     original_proof = fixture.original.messaging["provenance"]
     reference = (
-        "<refermsg><type>3</type><fromusr>wxid_padding_author</fromusr>"
+        f"<refermsg><type>{49 if app_card else 3}</type><fromusr>wxid_padding_author</fromusr>"
         "<chatusr>123@chatroom</chatusr><displayname>Quoted source</displayname>"
         f"<svrid>{original_proof['server_id']}</svrid>"
-        f"<createtime>{original_proof['unix_timestamp']}</createtime></refermsg>"
+        f"<createtime>{original_proof['unix_timestamp']}</createtime>"
     )
+    if app_card:
+        card = '<msg><appmsg><type>76</type><title>广岛之恋 &lt;b&gt;literal&lt;/b&gt;</title></appmsg><appinfo><appname>QQ音乐</appname></appinfo></msg>'
+        reference += "<content>" + escape(card) + "</content>"
+    reference += "</refermsg>"
     children = (
         '<dataitem datatype="49" dataid="quoted-child">'
         "<sourcename>Forwarded reply author</sourcename><dataitemsource>"
@@ -206,8 +212,8 @@ def _nested_fixture(*, quoted_container=False, grouped=False):
     )
     if grouped:
         children = (
-            '<dataitem datatype="17"><recordinfo><datalist>'
-            + children + "</datalist></recordinfo></dataitem>"
+            '<dataitem datatype="17"><recordxml><recordinfo><datalist>'
+            + children + "</datalist></recordinfo></recordxml></dataitem>"
         )
     raw = (
         "<msg><appmsg><type>19</type><title>Source forwarding container</title>"
@@ -251,6 +257,100 @@ def _run_nested(fixture):
         originals=fixture.originals,
     )
     return fixture.child.messaging["quoted_reply"]
+
+
+def _inline_card(fixture, *, title="广岛之恋 <b>literal</b>"):
+    reference = fixture.reply.messaging["provenance"]["quoted_reference"]
+    reference["app_card_metadata"] = {
+        "schema_version": 1, "appmsg_subtype": 76, "safe_title": title,
+        "app_name": "QQ音乐", "app_name_source": "appinfo/appname",
+    }
+    fixture.reply.messaging.update(_native_quoted_reply_presentation(fixture.reply.messaging["provenance"]))
+
+
+def test_inline_app_card_is_inert_source_bound_metadata_without_an_original():
+    fixture = _fixture(49, "app")
+    fixture.originals = []
+    _inline_card(fixture)
+    before = deepcopy(fixture.reply)
+    with patch("app.core.wechat_mac_resources.WechatMacResourceResolver.resolve") as resolver:
+        quote = _run(fixture)
+        resolver.assert_not_called()
+    assert quote["resource_basis"] == INLINE_APP_BASIS
+    assert quote["resource"]["label"] == "广岛之恋 <b>literal</b>"
+    assert quote["resource"]["publisher_name"] == "QQ音乐"
+    assert quote["resource"]["can_reveal"] is False
+    assert "resource_original" not in quote
+    assert fixture.reply.content_text == before.content_text
+    assert fixture.reply.messaging["provenance"] == before.messaging["provenance"]
+    assert _run(fixture) == quote
+    environment = Environment(loader=FileSystemLoader("app/web/templates"), autoescape=select_autoescape(["html"]))
+    module = environment.get_template("_wechat_browser.html").make_module({"text_page": SimpleNamespace(messaging={}, session_detail=False, sessions=[])})
+    soup = BeautifulSoup(str(module.message_row(fixture.reply)), "html.parser")
+    assert soup.select_one(".wechat-resource-label").get_text() == "广岛之恋 <b>literal</b>"
+    assert not soup.select(".wechat-resource b, .wechat-resource a, .wechat-resource button")
+
+
+@pytest.mark.parametrize("conflict", [None, "safe_title", "app_name", "app_subtype", "kind"])
+def test_inline_and_exact_original_card_facts_merge_only_without_conflicts(conflict):
+    fixture = _fixture(49, "app")
+    _inline_card(fixture)
+    original = fixture.original.messaging["provenance"]["resource_reference"]
+    original.update(app_subtype="76", safe_title="广岛之恋 <b>literal</b>", publisher_name="Original publisher")
+    if conflict == "kind":
+        original["kind"] = "file"
+    elif conflict is not None:
+        original[conflict] = "Different source value"
+    quote = _run(fixture)
+    if conflict is None:
+        assert quote["resource_basis"] == ORIGINAL_BASIS
+        assert quote["resource"]["label"] == "广岛之恋 <b>literal</b>"
+        assert quote["resource"]["publisher_name"] == "Original publisher"
+        assert "resource_original" in quote
+    else:
+        assert quote["resource_basis"] == REFERENCE_BASIS
+        assert quote["resource"]["label"] == "App message"
+        assert not quote["resource"].get("publisher_name")
+        assert "resource_original" not in quote
+
+
+@pytest.mark.parametrize("conflict", [False, True])
+def test_inline_file_title_must_agree_with_an_exact_legacy_filename(conflict):
+    fixture = _fixture(49, "file")
+    _inline_card(fixture, title="Different.pdf" if conflict else "Source attachment.pdf")
+    proof = fixture.reply.messaging["provenance"]
+    proof["quoted_reference"]["app_card_metadata"]["appmsg_subtype"] = 6
+    fixture.reply.messaging.update(_native_quoted_reply_presentation(proof))
+    fixture.original.messaging["provenance"]["resource_reference"]["app_subtype"] = "6"
+    quote = _run(fixture)
+    if conflict:
+        assert quote["resource_basis"] == REFERENCE_BASIS
+        assert quote["resource"]["label"] == "App message"
+        assert "resource_original" not in quote
+    else:
+        assert quote["resource_basis"] == ORIGINAL_BASIS
+        assert quote["resource"]["kind"] == "file"
+        assert quote["resource"]["label"] == "Source attachment.pdf"
+        assert "resource_original" in quote
+
+
+@pytest.mark.parametrize("quoted_container", [False, True])
+@pytest.mark.parametrize("grouped", [False, True])
+def test_nested_inline_app_card_uses_only_its_exact_authenticated_component(quoted_container, grouped):
+    fixture = _nested_fixture(quoted_container=quoted_container, grouped=grouped, app_card=True)
+    before = deepcopy((fixture.parent.content_text, fixture.parent.messaging["provenance"], fixture.child.messaging["provenance"]))
+    with patch("app.core.wechat_mac_resources.WechatMacResourceResolver.resolve") as resolver:
+        quote = _run_nested(fixture)
+        resolver.assert_not_called()
+    assert quote["resource_basis"] == NESTED_INLINE_APP_BASIS
+    assert quote["resource"]["label"] == "广岛之恋 <b>literal</b>"
+    assert quote["resource"]["publisher_name"] == "QQ音乐"
+    assert "resource_original" not in quote
+    assert (fixture.parent.content_text, fixture.parent.messaging["provenance"], fixture.child.messaging["provenance"]) == before
+    first = deepcopy(quote)
+    assert _run_nested(fixture) == first
+    fixture.record["authority"] = "untrusted"
+    assert "resource" not in _run_nested(fixture)
 
 
 @pytest.mark.parametrize("quoted_container", [False, True])
@@ -439,7 +539,7 @@ def test_unverified_or_complete_quotes_do_not_gain_a_resource_placeholder(defect
     [
         (3, "image", "Image"), (34, "audio", "Voice message"), (43, "video", "Video"),
         (47, "sticker", "Sticker"), (49, "app", "App message"),
-        (49, "file", "File"),
+        (49, "file", "Source attachment.pdf"),
     ],
 )
 def test_actual_quote_fragment_reuses_the_inert_resource_row_without_active_urls(
@@ -454,25 +554,23 @@ def test_actual_quote_fragment_reuses_the_inert_resource_row_without_active_urls
     module = environment.get_template("_wechat_browser.html").make_module(
         {"text_page": SimpleNamespace(messaging={}, session_detail=False, sessions=[])}
     )
-    markup = _RenderedMarkup(str(module.message_row(fixture.reply)))
-    blockquote = markup.find(tag="blockquote", css_class="wechat-message-quote")
-    resource = markup.find(css_class="wechat-resource", within=blockquote)
-    assert resource.attrs["data-wechat-resource-kind"] == kind
-    assert resource.attrs["data-wechat-resource-status"] == "metadata_only"
-    assert _text(markup.find(css_class="wechat-resource-label", within=resource)) == label
-    assert _text(markup.find(css_class="wechat-resource-status", within=resource)) == "Metadata only"
-    assert not any(
-        element.tag in {"a", "img", "video", "audio", "button", "script"}
-        and any(parent is resource for parent in element.ancestors)
-        for element in markup.elements
+    soup = BeautifulSoup(str(module.message_row(fixture.reply)), "html.parser")
+    resource = soup.select_one("blockquote.wechat-message-quote .wechat-resource")
+    assert resource["data-wechat-resource-kind"] == kind
+    assert resource["data-wechat-resource-status"] == "metadata_only"
+    assert resource.select_one(".wechat-resource-label").get_text() == label
+    assert resource.select_one(".wechat-resource-status") is None
+    assert "Metadata only" not in resource.get_text()
+    assert not resource.find_all(["a", "img", "video", "audio", "button", "script"])
+    assert not resource.has_attr("data-wechat-resource-reveal")
+    assert (
+        soup.select_one(".wechat-message-text").get_text() == fixture.reply.content_text
     )
-    assert "data-wechat-resource-reveal" not in resource.attrs
-    assert _text(markup.find(css_class="wechat-message-text")) == fixture.reply.content_text
-    assert "unavailable" not in _text(resource)
-    ordinary = _RenderedMarkup(str(module.resource_card(quote["resource"])))
-    original_row = ordinary.find(css_class="wechat-resource")
-    assert original_row.attrs == resource.attrs
-    assert _text(original_row) == _text(resource)
+    assert "unavailable" not in resource.get_text()
+    ordinary = BeautifulSoup(
+        str(module.resource_card(quote["resource"])), "html.parser"
+    )
+    assert ordinary.select_one(".wechat-resource").decode() == resource.decode()
     assert (
         present_resource(
             fixture.original.messaging["provenance"]["resource_reference"], None

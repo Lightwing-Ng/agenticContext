@@ -21,6 +21,7 @@ from app.core import wechat_contact_analysis as analysis
 from app.core import wechat_conversation_events as events
 from app.core import wechat_statement_reviews as reviews
 from app.core.wechat_contacts import contact_registry_path, initialize_contact_registry
+from app.core.wechat_secondary_completions import completion_input_identities
 from app.web.wechat_contact_csv import contact_csv_chunks
 from tests import test_wechat_forwarded_overlap as packet_fixtures
 from tests import test_wechat_statement_reviews as review_fixtures
@@ -207,6 +208,7 @@ def retained_review_store(reviewed_store):
             str(path.resolve()): analysis._identity(path)
             for path in (history, registry)
         }
+        identities.update(completion_input_identities(history))
         for row in flat_rows:
             if not row["source_id"].startswith("ios-"):
                 continue

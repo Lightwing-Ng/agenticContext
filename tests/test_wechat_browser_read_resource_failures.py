@@ -9,7 +9,9 @@ from threading import Event
 import pytest
 
 from app.core.chat_history_browser import ChatHistoryPage, query_chat_history
+from app.core.wechat_archive import import_wechat_archive
 from app.core.wechat_browser_read import WechatBrowserReadService
+from tests.test_wechat_archive import make_archive
 from tests import test_wechat_browser_read as read_tests
 from tests import test_wechat_resources as resources
 from tests.wechat_browser_markup import parse_browser_markup
@@ -77,10 +79,14 @@ def test_other_failures_do_not_infer_resource_guidance_from_private_error_text(t
 
 
 @pytest.mark.parametrize("status", ["stale", "invalid"])
-def test_running_read_becomes_a_safe_failed_warning_in_poll_and_document(resource_app, status):
+def test_running_read_becomes_a_safe_failed_warning_in_poll_and_document(resource_app, status, tmp_path):
     app = resource_app
     service = app.extensions["wechat_browser_read"]
-    page = query_chat_history(app.config["TEST_STORE_ROOT"], source="wechat")
+    store = app.config["TEST_STORE_ROOT"]
+    import_wechat_archive(make_archive(tmp_path / "archive"), store)
+    page = query_chat_history(store, source="wechat")
+    account_options = [row["key"] for row in page.messaging["account_options"]]
+    assert account_options
     page.messaging.update(resource_index_status=status, private_path=_PRIVATE_PATH)
     entered, release = Event(), Event()
 
@@ -91,14 +97,18 @@ def test_running_read_becomes_a_safe_failed_warning_in_poll_and_document(resourc
 
     service.loader = blocked_loader
     client = app.test_client()
-    address = "/browser?view=text&source=wechat"
+    address = "/browser?view=text&session_view=1&source=wechat&sort=newest&q="
     try:
         initial = client.get(address)
         assert initial.status_code == 200
         assert entered.wait(1)
-        shell = parse_browser_markup(initial.data).find(".//*[@data-wechat-read-pending]")
+        markup = parse_browser_markup(initial.data)
+        shell = markup.find(".//*[@data-wechat-read-pending]")
         assert shell is not None
         assert shell.get("data-state") == "running"
+        assert [option.get("value") for option in markup.findall(".//*[@id='browser_wechat_account']/option")] == [
+            "", *account_options,
+        ]
         assert "Media and file references need refreshing" not in initial.get_data(as_text=True)
         status_url = shell.get("data-status-url")
         assert client.get(status_url).json["state"] == "running"
@@ -123,6 +133,9 @@ def test_running_read_becomes_a_safe_failed_warning_in_poll_and_document(resourc
             for element in markup.iter()
         )
         assert markup.find(".//*[@data-chat-message-id]") is None
+        assert [option.get("value") for option in markup.findall(".//*[@id='browser_wechat_account']/option")] == [
+            "", *account_options,
+        ]
         assert _PRIVATE_PATH not in failed_document.get_data(as_text=True)
         assert service.acquire({})[0] is None
     finally:

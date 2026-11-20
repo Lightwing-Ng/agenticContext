@@ -1,6 +1,23 @@
 # Shared UI workflow
 
-Documentation version: `v1.4.4-codex.0`
+Documentation version: `v1.4.7-codex.0`
+
+## Shared spring motion
+
+The central layout contract v1.23.0 delegates finite accelerated motion to
+`../../shared_docs/SHARED_UI_MOTION_CONTRACT.md` v1.0.0. AgenticContext defines the
+shared `--motion-spring-080` CSS sample in `style.css` and resolves its finite
+motion aliases through that one token. The reference spring uses mass 1,
+stiffness 180, damping ratio 0.80, and a 620ms sample interval.
+
+`disclosure-motion.js` carries the current velocity into a reversal. The Style
+tokens `resizer.js` samples pointer release velocity and settles only its visual
+handle layer; the split width remains clamped. At a hard edge that handle also
+stretches along the drag axis and compresses across it. Sidebar title and iPhone
+gesture feedback read the computed spring token. Continuous loading rotation,
+steady skeleton travel, and Reduced Motion remain separate from finite spring
+travel. Browser acceptance should sample slow and fast releases at both bounds,
+reversal, cancellation, and the resting geometry.
 
 ## Shared pagination range selection
 
@@ -20,6 +37,15 @@ then taps both sidebar states, the theme action, and the dismiss control.
 The Agent sidebar keeps its full-height glass shell and fixed Dock. Its inner
 scrollport clips controls above the Dock and lets the last session row scroll
 into an unobstructed position before activation.
+
+## Shared continuous corners
+
+Rounded-rectangle surfaces use `--corner-shape-continuous: squircle` with their
+existing border-radius values. The token is defined once in `style.css` and reused
+by cards, sidebar, modal, dropdown, table shell and clipped header, notice,
+preview, and small Badge adapters. Circular actions, avatars, status dots, and
+true pill controls retain round geometry. Unsupported browsers keep their
+existing border-radius shape; the radius and layout dimensions do not change.
 
 ## Shared Circular icon button
 

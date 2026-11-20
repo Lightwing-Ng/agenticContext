@@ -1,6 +1,6 @@
 """Stage a streaming, source-proven refresh of an existing native resource catalog.
 
-Code version: v1.0.1-codex.0
+Code version: v1.0.2-codex.0
 """
 
 from __future__ import annotations
@@ -28,14 +28,16 @@ from .wechat_native_resource_revalidation import (
     _validate_row,
 )
 from .wechat_resource_index import _SCHEMA, _json, _readonly
+from .wechat_primary_source_receipts import primary_source_database_receipts
 
 
-VERSION = "v1.0.1-codex.0"
+VERSION = "v1.0.2-codex.0"
 MAX_CONVERSATIONS = 10_000
 MAX_RESOURCE_ROWS = 20_000_000
 MAX_PRIMARY_OBSERVATIONS = 50_000_000
 MAX_METADATA_BYTES = 64 * 1024**3
 MAX_CELL_BYTES = 16 * 1024**2
+MAX_PRIMARY_RECEIPT_CONTAINERS = 128
 _COLUMNS = (
     "id",
     "conversation_id",
@@ -126,8 +128,9 @@ def _save_anchor(output, proof, direction, primary_id, conversation, snapshots):
     )
 
 
-def _current_anchors(history, output, conversation, snapshots, report):
-    output.execute("DELETE FROM temp.current_native_anchors")
+def _current_anchors(history, output, conversation, snapshots, report, *, reset=True):
+    if reset:
+        output.execute("DELETE FROM temp.current_native_anchors")
     query = (
         "SELECT id,direction,CASE WHEN length(CAST(provenance AS BLOB))<=? "
         "THEN provenance END AS provenance FROM messages WHERE conversation_id=?"
@@ -198,6 +201,91 @@ def _current_anchors(history, output, conversation, snapshots, report):
         )
 
 
+def _primary_receipt_scope(
+    history,
+    output,
+    conversation,
+    source_snapshot_id,
+    receipts,
+    snapshots,
+    report,
+):
+    """Add independent receipts and anchors from exact same-account containers."""
+    if type(source_snapshot_id) is not int or source_snapshot_id < 1:
+        raise ValueError("A supplemental resource needs its exact source snapshot.")
+    containers = history.execute(
+        "SELECT * FROM main.conversations WHERE account_key=? AND peer_id=? "
+        "AND kind=? ORDER BY id LIMIT ?",
+        (
+            conversation["account_key"],
+            conversation["peer_id"],
+            conversation["kind"],
+            MAX_PRIMARY_RECEIPT_CONTAINERS + 1,
+        ),
+    ).fetchall()
+    if len(containers) > MAX_PRIMARY_RECEIPT_CONTAINERS:
+        raise ValueError("Primary receipt containers exceed their exact-scope budget.")
+    matched = 0
+    for container in containers:
+        if (
+            history.execute(
+                "SELECT 1 FROM main.messages WHERE conversation_id=? "
+                "AND json_valid(provenance) AND json_extract(provenance,'$.source_snapshot')=? LIMIT 1",
+                (container["id"], source_snapshot_id),
+            ).fetchone()
+            is None
+        ):
+            continue
+        proof = primary_source_database_receipts(history, container, source_snapshot_id)
+        if (
+            proof["owner"] != conversation["account_key"][8:]
+            or proof["native_partition_id"] != conversation["partition_id"]
+        ):
+            raise ValueError(
+                "Primary receipts cannot cross the resource account scope."
+            )
+        for key, digest in proof["receipts"].items():
+            if key in receipts and receipts[key] != digest:
+                raise ValueError(
+                    "Native source receipt bases disagree on a database checksum."
+                )
+            receipts[key] = digest
+        for identifier, value in proof["snapshots"].items():
+            prior = snapshots.get(identifier)
+            if prior is not None:
+                if prior[0] != value[0] or prior[2] != value[2]:
+                    raise ValueError(
+                        "Primary native source snapshot receipts conflict."
+                    )
+                sources = dict(prior[1])
+                for path, digest in value[1].items():
+                    if path in sources and sources[path] != digest:
+                        raise ValueError(
+                            "Primary native source database receipts conflict."
+                        )
+                    sources[path] = digest
+                value = (value[0], sources, value[2])
+            snapshots[identifier] = value
+        # The retained container may be HTML, but only this independently
+        # verified native snapshot supplies the database path and event anchors.
+        native_scope = dict(container)
+        native_scope["partition_id"] = proof["native_partition_id"]
+        _current_anchors(
+            history,
+            output,
+            native_scope,
+            {source_snapshot_id: snapshots[source_snapshot_id]},
+            report,
+            reset=False,
+        )
+        report["primary_receipt_scopes"] += 1
+        matched += 1
+    if not matched:
+        raise ValueError(
+            "A supplemental resource has no independent primary source receipt."
+        )
+
+
 def _resource_rows(source, conversation_id):
     columns = ",".join(
         "CASE WHEN length(CAST("
@@ -260,6 +348,7 @@ def stage_resource_catalog_refresh(local_store_root, candidate_path, *, progress
         "checked_resources": 0,
         "primary_observations": 0,
         "checked_metadata_bytes": 0,
+        "primary_receipt_scopes": 0,
         "source_conversations": 0,
         "conversations": 0,
         "messages": 0,
@@ -294,6 +383,16 @@ def stage_resource_catalog_refresh(local_store_root, candidate_path, *, progress
             if info.get("schema_version") != "1":
                 raise ValueError(
                     "The existing native catalog has an unsupported schema."
+                )
+            if source.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' "
+                "AND name IN ('native_resource_sources',"
+                "'native_resource_occurrences','native_resource_coverage',"
+                "'native_resource_source_inputs') LIMIT 1"
+            ).fetchone():
+                raise ValueError(
+                    "Keep the native resource memberships and coverage; "
+                    "the legacy refresh cannot preserve this extended catalog."
                 )
             for table in ("messages", "conversations"):
                 if (
@@ -351,11 +450,15 @@ def stage_resource_catalog_refresh(local_store_root, candidate_path, *, progress
                 conversation = current or prior
                 if partition["id"] not in source_cache:
                     source_cache[partition["id"]] = _receipts(history, partition)
-                receipt_owner, receipts, snapshots = source_cache[partition["id"]]
+                receipt_owner, base_receipts, base_snapshots = source_cache[
+                    partition["id"]
+                ]
+                receipts, snapshots = dict(base_receipts), dict(base_snapshots)
                 if owner != receipt_owner:
                     raise ValueError("The native source receipt has another account.")
                 _current_anchors(history, output, conversation, snapshots, report)
                 source_count = kept = 0
+                primary_receipt_snapshots = set()
                 first = last = None
                 batch = []
                 for row in _resource_rows(source, prior["id"]):
@@ -381,6 +484,27 @@ def stage_resource_catalog_refresh(local_store_root, candidate_path, *, progress
                         )
                     _budget(report, row["provenance"])
                     source_count += 1
+                    provenance = _bounded_json(row["provenance"])
+                    if (
+                        provenance.get("source_checksum_basis")
+                        == "primary_source_database_receipt"
+                    ):
+                        identifier = provenance.get("source_snapshot")
+                        if type(identifier) is not int or identifier < 1:
+                            raise ValueError(
+                                "A supplemental resource needs its exact source snapshot."
+                            )
+                        if identifier not in primary_receipt_snapshots:
+                            _primary_receipt_scope(
+                                history,
+                                output,
+                                conversation,
+                                identifier,
+                                receipts,
+                                snapshots,
+                                report,
+                            )
+                            primary_receipt_snapshots.add(identifier)
                     key, signature, _, kind = _validate_row(
                         row,
                         conversation,

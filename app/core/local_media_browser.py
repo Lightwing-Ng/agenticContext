@@ -1,6 +1,6 @@
 """Local media discovery, deletion tombstones, and pagination."""
 
-# Code version: v1.37.3-codex.0
+# Code version: v1.38.0-codex.0
 
 from __future__ import annotations
 
@@ -16,9 +16,9 @@ from collections import deque
 from dataclasses import asdict, dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
-from threading import Condition, RLock, Thread
+from threading import Condition, Lock, RLock, Thread
 from time import monotonic
-from typing import Any, Iterable, Iterator, Mapping
+from typing import Any, Callable, Iterable, Iterator, Mapping
 from urllib.parse import unquote, urlsplit
 from zoneinfo import ZoneInfo
 
@@ -58,6 +58,8 @@ DEFAULT_TTL_SECONDS = 5.0
 CONTENT_HASH_MAX_READERS = 4
 CONTENT_HASH_MAX_PENDING = 4096
 CONTENT_HASH_WAIT_SECONDS = 1.0
+_MEDIA_SEARCH_CACHE_MAX_TEXT_BYTES = 64 * 1024 * 1024
+_MEDIA_SEARCH_CACHE_MAX_ITEMS = 16_384
 CHATGPT_TEMPORARY_PROJECT_NAMES = frozenset({"forprompts"})
 _DATE_RE = re.compile(r"^\d{8}$")
 _NUMERIC_RE = re.compile(r"^\d+(?:\.\d+)?$")
@@ -716,6 +718,24 @@ def filter_media_items(
     media_id: str = "",
 ) -> tuple[LocalMediaItem, ...]:
     """Filter media items by source, kind, and case-insensitive text search."""
+
+    return _filter_media_items(items, source, media_kind, query, media_id)
+
+
+def _searchable_media_text(item: LocalMediaItem) -> str:
+    return " ".join(
+        (item.filename, item.title, item.description, item.prompt_markdown, item.creator, item.project_name)
+    ).casefold()
+
+
+def _filter_media_items(
+    items: Iterable[LocalMediaItem],
+    source: str,
+    media_kind: str,
+    query: str,
+    media_id: str,
+    search_text: Callable[[LocalMediaItem], str] = _searchable_media_text,
+) -> tuple[LocalMediaItem, ...]:
     normalized = normalize_browser_filters(source, media_kind, query, "newest", 1, view="media")
     search_terms = tuple(normalized["q"].casefold().split())
     filtered: list[LocalMediaItem] = []
@@ -727,16 +747,7 @@ def filter_media_items(
         if media_id and item.stable_id != media_id:
             continue
         if search_terms:
-            searchable = " ".join(
-                (
-                    item.filename,
-                    item.title,
-                    item.description,
-                    item.prompt_markdown,
-                    item.creator,
-                    item.project_name,
-                )
-            ).casefold()
+            searchable = search_text(item)
             if not all(term in searchable for term in search_terms):
                 continue
         filtered.append(item)
@@ -1081,6 +1092,35 @@ def _build_pagination_ranges(
     return tuple(ranges)
 
 
+class _MediaSearchTextCache:
+    """Retain folded text only for items from a single immutable snapshot."""
+
+    def __init__(self) -> None:
+        self._lock = Lock()
+        self._text_by_id: dict[int, str] = {}
+        self._text_bytes = 0
+
+    def get(self, item: LocalMediaItem) -> str:
+        if type(item) is not LocalMediaItem:
+            return _searchable_media_text(item)
+        # Snapshot items stay alive while their identities can be queried.
+        item_id = id(item)
+        with self._lock:
+            cached = self._text_by_id.get(item_id)
+            if cached is not None:
+                return cached
+
+            text = _searchable_media_text(item)
+            size = sys.getsizeof(text)
+            if (
+                self._text_bytes + size <= _MEDIA_SEARCH_CACHE_MAX_TEXT_BYTES
+                and len(self._text_by_id) < _MEDIA_SEARCH_CACHE_MAX_ITEMS
+            ):
+                self._text_by_id[item_id] = text
+                self._text_bytes += size
+        return text
+
+
 class LocalMediaCatalog:
     """Scan local media and manage recoverable browser deletions."""
 
@@ -1096,6 +1136,7 @@ class LocalMediaCatalog:
         self._refresh_condition = Condition(self._lock)
         self._deletion_catalog = BrowserDeletionCatalog(self.local_store_root)
         self._cached_snapshot: tuple[LocalMediaItem, ...] = ()
+        self._search_text_cache: _MediaSearchTextCache | None = None
         self._cached_at = 0.0
         self._has_snapshot = False
         self._refreshing = False
@@ -1141,6 +1182,7 @@ class LocalMediaCatalog:
                 self._refreshing = False
                 if refresh_generation == self._generation:
                     self._cached_snapshot = refreshed_snapshot
+                    self._search_text_cache = None
                     self._cached_at = monotonic()
                     self._has_snapshot = True
                     self._refresh_condition.notify_all()
@@ -1268,6 +1310,7 @@ class LocalMediaCatalog:
         """Discard cache state while preventing an older scan from publishing."""
         self._generation += 1
         self._cached_snapshot = ()
+        self._search_text_cache = None
         self._cached_at = 0.0
         self._has_snapshot = False
 
@@ -1396,16 +1439,11 @@ class LocalMediaCatalog:
         ]
         deadline = monotonic() + CONTENT_HASH_WAIT_SECONDS
         with self._content_hash_condition:
-            reserved_active_pending = min(CONTENT_HASH_MAX_READERS, max(1, CONTENT_HASH_MAX_PENDING // 2))
             # Schedule active files first so stalled retained previews cannot monopolize readers.
             for item, request in sorted(hash_requests, key=lambda entry: entry[0].is_deleted):
                 media_path, file_identity = request
                 cached = self._content_hash_cache.get(media_path)
                 if cached is not None and cached[0] == file_identity:
-                    continue
-                # Reserve admission as well as readers for active work from later queries.
-                deleted_pending = len(self._content_hash_deleted_queue) + self._content_hash_deleted_readers
-                if item.is_deleted and deleted_pending >= CONTENT_HASH_MAX_PENDING - reserved_active_pending:
                     continue
                 if request not in self._content_hash_pending and len(self._content_hash_pending) < CONTENT_HASH_MAX_PENDING:
                     self._content_hash_pending.add(request)
@@ -1463,6 +1501,14 @@ class LocalMediaCatalog:
         """Return a safe filtered, sorted, and paginated view of the snapshot."""
         filters = normalize_browser_filters(source, media_kind, query, sort, page, view="media")
         items = self.snapshot(force_refresh=force_refresh)
+        search_query = filters["q"]
+        search_text = _searchable_media_text
+        if type(search_query) is str and search_query:
+            with self._lock:
+                if items is self._cached_snapshot:
+                    if self._search_text_cache is None:
+                        self._search_text_cache = _MediaSearchTextCache()
+                    search_text = self._search_text_cache.get
         # Keep covers addressable, but show the matching video in ordinary gallery results.
         video_stems = {
             str(Path(item.relative_path).with_suffix(""))
@@ -1476,12 +1522,13 @@ class LocalMediaCatalog:
                     and str(Path(item.relative_path).with_suffix("")) in video_stems
                 )
             )
-        filtered = filter_media_items(
+        filtered = _filter_media_items(
             items,
-            source=filters["source"],
-            media_kind=filters["kind"],
-            query=filters["q"],
-            media_id=filters["media_id"] or media_id,
+            filters["source"],
+            filters["kind"],
+            search_query,
+            filters["media_id"] or media_id,
+            search_text,
         )
         if filters["source"] == "chatgpt" and chatgpt_all_media:
             unique_items = self._unique_content_items(filtered)

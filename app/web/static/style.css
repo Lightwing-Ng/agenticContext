@@ -1,4 +1,4 @@
-/* Code version: v2.159.4-codex.0 */
+/* Code version: v2.162.0-codex.0 */
 /*
  * Standalone faces are extracted from the approved TTC by scripts/build_web_fonts.py.
  * Collection URL fragments are not reliable face selectors in Chromium.
@@ -184,6 +184,7 @@
     --radius-control: 999px;
     --radius-soft: var(--radius-panel);
     --radius-pill: 999px;
+    --corner-shape-continuous: squircle;
     --mode-switch-radius: var(--radius-pill);
     --mode-switch-pad: 2px;
     --mode-switch-gap: 4px;
@@ -248,6 +249,9 @@
     --control-glass-background-hover: color-mix(in srgb, var(--theme-muted) 8%, transparent);
     --layout-content-width: 640px;
     --layout-control-width: 384px;
+    --layout-grid-columns: 12;
+    --layout-grid-gutter: 12px;
+    --layout-grid-row-gap: 12px;
     --layout-physical-effect-bleed: 48px;
     --page-edge-pad: 10px;
     --page-compact-edge-pad: 8px;
@@ -549,14 +553,15 @@
     --motion-duration-standard: 240ms;
     --motion-duration-emphasized: 420ms;
     --motion-duration-spatial: 560ms;
-    --motion-standard: cubic-bezier(0.2, 0, 0, 1);
-    --motion-emphasized: cubic-bezier(0.16, 1, 0.3, 1);
-    --motion-inertial: cubic-bezier(0.16, 1, 0.3, 1);
-    --motion-bouncy: cubic-bezier(0.34, 1.56, 0.64, 1);
-    --motion-press: cubic-bezier(0.2, 0, 0, 1);
-    --motion-reveal: cubic-bezier(0.16, 1, 0.3, 1);
-    --motion-overshoot: cubic-bezier(0.34, 1.32, 0.64, 1);
-    --motion-shimmer: cubic-bezier(0.45, 0, 0.55, 1);
+    --motion-spring-080: linear(0, .02939, .10213, .19948, .30771, .41717, .52142, .61651, .70032, .77209, .83197, .88071, .91942, .94939, .97195, .98837, .99984, 1.00742, 1.01201, 1.01438, 1.01515, 1.01483, 1.01380, 1.01236, 1.01074, 1.00907, 1.00748, 1.00601, 1.00471, 1.00360, 1.00267, 1.00190, 1);
+    --motion-standard: var(--motion-spring-080);
+    --motion-emphasized: var(--motion-spring-080);
+    --motion-inertial: var(--motion-spring-080);
+    --motion-bouncy: var(--motion-spring-080);
+    --motion-press: var(--motion-spring-080);
+    --motion-reveal: var(--motion-spring-080);
+    --motion-overshoot: var(--motion-spring-080);
+    --motion-shimmer: linear;
 
     --font-size-1: 11px;
     --font-size-2: 12px;
@@ -767,6 +772,7 @@ html.sidebar-memory-collapsed .page {
 .panel {
     background: var(--panel);
     border-radius: var(--radius-panel);
+    corner-shape: var(--corner-shape-continuous);
     box-shadow: var(--shadow);
     backdrop-filter: saturate(180%) blur(28px);
     -webkit-backdrop-filter: saturate(180%) blur(28px);
@@ -808,6 +814,7 @@ html.sidebar-memory-collapsed .page {
     max-height: 100%;
     padding: var(--sidebar-shell-padding);
     border-radius: var(--sidebar-shell-radius);
+    corner-shape: var(--corner-shape-continuous);
     background: var(--sidebar-shell-background);
     border: var(--sidebar-shell-border);
     box-shadow: var(--sidebar-shell-shadow);
@@ -1008,7 +1015,7 @@ html.sidebar-memory-collapsed .app-shell .sidebar {
 .app-shell.is-sidebar-animating [data-sidebar-gel-content] {
     animation-duration: var(--sidebar-motion-duration);
     animation-fill-mode: both;
-    animation-timing-function: var(--motion-bouncy);
+    animation-timing-function: linear;
     backface-visibility: hidden;
     transform-origin: left top;
     will-change: transform;
@@ -1513,6 +1520,7 @@ h2 {
     right: 0;
     padding: var(--shared-select-dropdown-padding);
     border-radius: var(--shared-select-dropdown-radius);
+    corner-shape: var(--corner-shape-continuous);
     color: var(--text);
     background: var(--shared-select-dropdown-material);
     box-shadow: var(--shared-select-shadow);
@@ -1652,6 +1660,7 @@ h2 {
 .browser-session-status-card {
     padding: 12px;
     border-radius: var(--radius-panel);
+    corner-shape: var(--corner-shape-continuous);
     background: color-mix(in srgb, var(--glass-surface-background-strong) 92%, transparent);
     border: 1px solid color-mix(in srgb, var(--theme-color-white-adaptive) 34%, transparent);
     box-shadow: 0 14px 28px rgba(15, 31, 53, 0.08), inset 0 1px 0 color-mix(in srgb, var(--theme-glass-highlight) 92%, transparent);
@@ -1782,6 +1791,7 @@ h2 {
 .agent-browser-session-field.is-browser-ready .browser-session-status-card,
 .agent-tunnel-session-field .browser-session-status-card[data-agent-tunnel-ready="true"] {
     border-radius: var(--radius-panel);
+    corner-shape: var(--corner-shape-continuous);
     background: color-mix(in srgb, var(--theme-success) 6%, var(--glass-surface-background-strong));
 }
 
@@ -1907,6 +1917,7 @@ input.formatted-number-input {
     margin: 0;
     padding: 10px;
     border-radius: var(--radius-panel);
+    corner-shape: var(--corner-shape-continuous);
     background: var(--glass-surface-background-soft);
     box-shadow: inset 0 0 0 1px var(--theme-glass-border);
 }
@@ -2017,6 +2028,10 @@ input.formatted-number-input {
     transition: background 220ms var(--motion-standard), box-shadow 220ms var(--motion-standard), border-color 220ms var(--motion-standard), transform 320ms var(--motion-emphasized), opacity 220ms var(--motion-standard);
 }
 
+.beta-page textarea.text-input-control {
+    corner-shape: var(--corner-shape-continuous);
+}
+
 input[type="url"].text-input-control {
     font-family: var(--font-family-base);
     font-weight: var(--font-weight-regular);
@@ -2066,6 +2081,7 @@ input[type="url"].text-input-control {
     overflow: hidden;
     border: 1px solid var(--theme-glass-highlight);
     border-radius: var(--strategy-stepper-radius);
+    corner-shape: var(--corner-shape-continuous);
     background: var(--glass-surface-background-soft);
     box-shadow: none;
     backdrop-filter: var(--control-liquid-blur);
@@ -2185,7 +2201,7 @@ input[type="url"].text-input-control {
     color: var(--primary-button-color);
     font-size: var(--font-form-control);
     font-weight: var(--primary-button-font-weight);
-    transition: transform 180ms ease, background 180ms ease, opacity 180ms ease;
+    transition: transform 180ms var(--motion-spring-080), background 180ms var(--motion-spring-080), opacity 180ms var(--motion-spring-080);
 }
 
 .primary-button:hover,
@@ -2219,7 +2235,7 @@ input[type="url"].text-input-control {
     padding: 5px 10px;
     min-height: var(--sidebar-action-button-min-height);
     font-weight: var(--font-weight-bold);
-    transition: transform 180ms ease, background 180ms ease, opacity 180ms ease;
+    transition: transform 180ms var(--motion-spring-080), background 180ms var(--motion-spring-080), opacity 180ms var(--motion-spring-080);
 }
 
 .danger-button:hover,
@@ -2296,6 +2312,7 @@ input[type="url"].text-input-control {
     padding: 10px 12px;
     border: 1px solid var(--theme-glass-border);
     border-radius: var(--radius-panel);
+    corner-shape: var(--corner-shape-continuous);
     background: color-mix(in srgb, var(--glass-surface-background) 82%, transparent);
 }
 
@@ -2373,6 +2390,7 @@ input[type="url"].text-input-control {
 .metric-card,
 .report-card {
     border-radius: var(--radius-panel);
+    corner-shape: var(--corner-shape-continuous);
     background: color-mix(in srgb, var(--glass-surface-background-strong) 92%, transparent);
     backdrop-filter: var(--glass-surface-blur);
     -webkit-backdrop-filter: var(--glass-surface-blur);
@@ -2564,6 +2582,7 @@ html.sidebar-memory-collapsed .app-shell .cache-overview-title-card {
     width: 0%;
     height: 100%;
     border-radius: inherit;
+    corner-shape: inherit;
     transition: width 280ms var(--motion-inertial);
 }
 
@@ -2621,6 +2640,7 @@ html.sidebar-memory-collapsed .app-shell .cache-overview-title-card {
     margin: calc(-1 * var(--workspace-article-pad-block-start)) calc(-1 * var(--workspace-article-pad-inline)) var(--workspace-article-heading-gap);
     padding: var(--workspace-article-pad-block-start) var(--workspace-article-pad-inline);
     border-radius: var(--workspace-article-radius);
+    corner-shape: var(--corner-shape-continuous);
     background: var(--workspace-article-heading-background);
     border: 1px solid color-mix(in srgb, var(--theme-glass-highlight) 72%, transparent);
     box-shadow: var(--workspace-article-heading-shadow);
@@ -2652,6 +2672,7 @@ html.sidebar-memory-collapsed .app-shell .cache-overview-title-card {
     min-height: var(--workspace-metric-card-min-height);
     padding: 8px 8px 6px;
     border-radius: var(--workspace-metric-card-radius);
+    corner-shape: var(--corner-shape-continuous);
     background: transparent;
     border: none;
     box-shadow: none;
@@ -2760,6 +2781,7 @@ a.ghost-link[href$="/settings"] {
     padding: 16px;
     border: 1px solid color-mix(in srgb, var(--theme-error) 36%, transparent);
     border-radius: var(--radius-panel);
+    corner-shape: var(--corner-shape-continuous);
     background: color-mix(in srgb, var(--theme-error-translucent) 58%, var(--glass-surface-background-strong));
 }
 
@@ -2802,6 +2824,7 @@ a.ghost-link[href$="/settings"] {
     padding: 16px;
     border: 1px solid color-mix(in srgb, var(--theme-accent-primary) 24%, transparent);
     border-radius: var(--radius-panel);
+    corner-shape: var(--corner-shape-continuous);
     background: color-mix(in srgb, var(--accent-surface-soft) 60%, var(--glass-surface-background-strong));
 }
 
@@ -2845,6 +2868,7 @@ a.ghost-link[href$="/settings"] {
 .shadow-backup-warning {
     padding: 8px 10px;
     border-radius: var(--radius-panel);
+    corner-shape: var(--corner-shape-continuous);
     background: var(--theme-warning-translucent);
     color: var(--theme-warning-text);
 }
@@ -2964,6 +2988,7 @@ a.ghost-link[href$="/settings"] {
 .progress-metric-card {
     padding: 10px 12px;
     border-radius: var(--radius-panel);
+    corner-shape: var(--corner-shape-continuous);
     background: color-mix(in srgb, var(--glass-surface-background-dense) 88%, transparent);
     border: 1px solid color-mix(in srgb, var(--theme-glass-highlight) 70%, transparent);
     box-shadow: 0 8px 22px color-mix(in srgb, var(--theme-shadow-ambient) 70%, transparent);
@@ -3042,6 +3067,7 @@ a.ghost-link[href$="/settings"] {
     display: flex;
     flex-direction: column;
     border-radius: var(--scrollable-data-table-shell-radius);
+    corner-shape: var(--corner-shape-continuous);
     background: var(--scrollable-data-table-shell-background);
     color: var(--scrollable-data-table-body-color);
     border: var(--scrollable-data-table-shell-border);
@@ -3057,6 +3083,8 @@ a.ghost-link[href$="/settings"] {
     min-height: 0;
     height: 100%;
     overflow: auto;
+    border-radius: var(--scrollable-data-table-shell-radius);
+    corner-shape: var(--corner-shape-continuous);
     background: var(--scrollable-data-table-scroll-background);
     scrollbar-gutter: var(--scrollable-data-table-scrollbar-gutter);
     scrollbar-color: var(--scrollable-data-table-scrollbar-color) transparent;
@@ -3090,6 +3118,7 @@ a.ghost-link[href$="/settings"] {
     background: var(--scrollable-data-table-header-background);
     border-bottom: var(--scrollable-data-table-header-border);
     border-radius: var(--scrollable-data-table-shell-radius) var(--scrollable-data-table-shell-radius) 0 0;
+    corner-shape: var(--corner-shape-continuous);
     overflow: hidden;
     will-change: translate;
 }
@@ -3201,6 +3230,7 @@ a.ghost-link[href$="/settings"] {
     align-items: start !important;
     padding: var(--workspace-modal-pad-block) var(--workspace-modal-pad-inline);
     border-radius: var(--workspace-modal-radius);
+    corner-shape: var(--corner-shape-continuous);
     overflow: visible;
     transform: none;
     transform-origin: top center;
@@ -3229,7 +3259,7 @@ a.ghost-link[href$="/settings"] {
     animation-timing-function: var(--motion-overshoot);
 }
 
-/* Below 1081px the notice overlaps the sidebar column, including its entry scale. */
+/* Below 1081px the notice overlaps the sidebar column, including its 1.01x entry scale. */
 @media (min-width: 901px) and (max-width: 1080px) {
     .notice-floating-banner-global {
         --notice-floating-banner-top: calc(
@@ -3585,6 +3615,7 @@ a.ghost-link[href$="/settings"] {
     transform: translateX(-50%) translateY(4px);
     padding: 7px 10px;
     border-radius: var(--radius-soft);
+    corner-shape: var(--corner-shape-continuous);
     background: var(--frosted-glass-background);
     box-shadow: var(--frosted-glass-shadow);
     backdrop-filter: var(--frosted-glass-blur);
@@ -3700,16 +3731,6 @@ html.sidebar-memory-collapsed .app-shell ~ .sidebar-dock {
         filter: saturate(0.92) blur(5px);
     }
 
-    38% {
-        opacity: 1;
-        transform: translate3d(-50%, 8px, 0) scale(1.01);
-        filter: saturate(1) blur(0);
-    }
-
-    62% {
-        transform: translate3d(-50%, -3px, 0) scale(0.998);
-    }
-
     100% {
         opacity: 1;
         transform: translate3d(-50%, 0, 0) scale(1);
@@ -3722,16 +3743,24 @@ html.sidebar-memory-collapsed .app-shell ~ .sidebar-dock {
         transform: translate3d(0, 0, 0) scale3d(1, 1, 1);
     }
 
-    32% {
+    14% {
         transform: translate3d(12px, 0, 0) scale3d(0.984, 1.024, 1);
     }
 
-    56% {
-        transform: translate3d(-5px, 0, 0) scale3d(1.01, 0.992, 1);
+    28% {
+        transform: translate3d(8.36px, 0, 0) scale3d(0.9889, 1.0167, 1);
     }
 
-    76% {
-        transform: translate3d(2px, 0, 0) scale3d(0.997, 1.004, 1);
+    42% {
+        transform: translate3d(3.59px, 0, 0) scale3d(0.9952, 1.0072, 1);
+    }
+
+    56% {
+        transform: translate3d(0.94px, 0, 0) scale3d(0.9987, 1.0019, 1);
+    }
+
+    75% {
+        transform: translate3d(-0.12px, 0, 0) scale3d(0.9998, 1.0002, 1);
     }
 
     100% {
@@ -3744,16 +3773,24 @@ html.sidebar-memory-collapsed .app-shell ~ .sidebar-dock {
         transform: translate3d(0, 0, 0) scale3d(1, 1, 1);
     }
 
-    32% {
+    14% {
         transform: translate3d(-12px, 0, 0) scale3d(0.984, 1.024, 1);
     }
 
-    56% {
-        transform: translate3d(5px, 0, 0) scale3d(1.01, 0.992, 1);
+    28% {
+        transform: translate3d(-8.36px, 0, 0) scale3d(0.9889, 1.0167, 1);
     }
 
-    76% {
-        transform: translate3d(-2px, 0, 0) scale3d(0.997, 1.004, 1);
+    42% {
+        transform: translate3d(-3.59px, 0, 0) scale3d(0.9952, 1.0072, 1);
+    }
+
+    56% {
+        transform: translate3d(-0.94px, 0, 0) scale3d(0.9987, 1.0019, 1);
+    }
+
+    75% {
+        transform: translate3d(0.12px, 0, 0) scale3d(0.9998, 1.0002, 1);
     }
 
     100% {
@@ -3963,6 +4000,7 @@ html.sidebar-memory-collapsed .app-shell ~ .sidebar-dock {
     outline: 2px solid var(--accent-text);
     outline-offset: 2px;
     border-radius: var(--radius-subtle);
+    corner-shape: var(--corner-shape-continuous);
 }
 
 .agent-doctor-technical-label {
@@ -3975,6 +4013,7 @@ html.sidebar-memory-collapsed .app-shell ~ .sidebar-dock {
     margin-top: 6px;
     padding: 10px 12px;
     border-radius: var(--radius-subtle);
+    corner-shape: var(--corner-shape-continuous);
     background: color-mix(in srgb, var(--glass-surface-background-strong) 76%, transparent);
     overflow-x: auto;
     overflow-y: auto;
@@ -3998,6 +4037,7 @@ html.sidebar-memory-collapsed .app-shell ~ .sidebar-dock {
     margin-top: 12px;
     border: 1px solid var(--theme-warning);
     border-radius: var(--radius-soft);
+    corner-shape: var(--corner-shape-continuous);
     background: var(--theme-warning-translucent);
     box-shadow: inset 0 1px 0 var(--theme-glass-highlight);
     /* Keep recovery action shadows and spatial effects visible beyond the panel. */
@@ -4048,6 +4088,7 @@ html.sidebar-memory-collapsed .app-shell ~ .sidebar-dock {
     outline: 2px solid var(--accent-text);
     outline-offset: 2px;
     border-radius: var(--radius-soft);
+    corner-shape: var(--corner-shape-continuous);
 }
 
 .agent-doctor-panel > summary > :first-child {
@@ -4459,6 +4500,7 @@ html.sidebar-memory-collapsed .app-shell ~ .sidebar-dock {
     outline: 2px solid var(--accent-text);
     outline-offset: 2px;
     border-radius: var(--radius-soft);
+    corner-shape: var(--corner-shape-continuous);
 }
 
 .ui-collapse-body {
@@ -4576,6 +4618,7 @@ details.agent-tunnel-guide > summary {
     outline: 2px solid var(--accent-text);
     outline-offset: -2px;
     border-radius: var(--radius-panel);
+    corner-shape: var(--corner-shape-continuous);
 }
 
 .agent-tunnel-guide-actions {
@@ -4596,6 +4639,7 @@ details.agent-tunnel-guide > summary {
     height: auto;
     overflow: hidden;
     border-radius: var(--radius-panel);
+    corner-shape: var(--corner-shape-continuous);
     font-family: var(--font-family-base);
 }
 
@@ -4848,6 +4892,7 @@ details.agent-tunnel-guide > summary {
     resize: none;
     border: var(--frosted-glass-border);
     border-radius: var(--radius-panel);
+    corner-shape: var(--corner-shape-continuous);
     background: var(--frosted-glass-background);
     box-shadow: var(--frosted-glass-shadow);
     backdrop-filter: var(--frosted-glass-blur);
@@ -5186,6 +5231,7 @@ main.agent-page[data-agent-connection-mode="tunnel"] .agent-workspace-grid {
     padding: 8px;
     border: var(--frosted-glass-border);
     border-radius: var(--radius-panel);
+    corner-shape: var(--corner-shape-continuous);
     background: var(--frosted-glass-background);
     box-shadow: var(--frosted-glass-shadow);
     backdrop-filter: var(--frosted-glass-blur);
@@ -5455,6 +5501,7 @@ main.agent-page[data-agent-connection-mode="tunnel"] .agent-workspace-grid {
     padding: 12px;
     border: var(--frosted-glass-border);
     border-radius: var(--radius-soft);
+    corner-shape: var(--corner-shape-continuous);
     background: var(--glass-surface-background-soft);
 }
 
@@ -5730,6 +5777,7 @@ main.agent-page[data-agent-connection-mode="tunnel"] .agent-workspace-grid {
     border: var(--frosted-glass-border);
     border-inline: 0;
     border-radius: var(--radius-soft);
+    corner-shape: var(--corner-shape-continuous);
     background: var(--glass-surface-background-soft);
     overflow: hidden;
 }
@@ -5862,6 +5910,7 @@ main.agent-page[data-agent-connection-mode="tunnel"] .agent-workspace-grid {
     outline: 2px solid var(--accent-text);
     outline-offset: -2px;
     border-radius: var(--radius-soft);
+    corner-shape: var(--corner-shape-continuous);
 }
 
 .agent-activity-content {
@@ -5900,6 +5949,7 @@ main.agent-page[data-agent-connection-mode="tunnel"] .agent-workspace-grid {
     padding: 12px;
     border: var(--frosted-glass-border);
     border-radius: var(--radius-soft);
+    corner-shape: var(--corner-shape-continuous);
     background: var(--glass-surface-background-soft);
 }
 
@@ -5929,6 +5979,7 @@ main.agent-page[data-agent-connection-mode="tunnel"] .agent-workspace-grid {
     min-height: 240px;
     resize: vertical;
     border-radius: var(--radius-soft);
+    corner-shape: var(--corner-shape-continuous);
     font-family: var(--font-mono);
     font-size: var(--font-ui-sm);
     line-height: 1.5;
@@ -5953,12 +6004,6 @@ main.agent-page[data-agent-connection-mode="tunnel"] .agent-workspace-grid {
         opacity: 0;
         transform: translate3d(0, -6px, 0) scale3d(0.985, 0.94, 1);
         filter: saturate(82%);
-    }
-
-    68% {
-        opacity: 1;
-        transform: translate3d(0, 2px, 0) scale3d(1.01, 1.015, 1);
-        filter: saturate(108%);
     }
 
     100% {
@@ -6003,14 +6048,14 @@ main.agent-page[data-agent-connection-mode="tunnel"] .agent-workspace-grid {
     --motion-duration-standard: 240ms;
     --motion-duration-emphasized: 420ms;
     --motion-duration-spatial: 560ms;
-    --motion-standard: cubic-bezier(0.2, 0, 0, 1);
-    --motion-emphasized: cubic-bezier(0.16, 1, 0.3, 1);
-    --motion-inertial: cubic-bezier(0.16, 1, 0.3, 1);
-    --motion-bouncy: cubic-bezier(0.34, 1.56, 0.64, 1);
-    --motion-press: cubic-bezier(0.2, 0, 0, 1);
-    --motion-reveal: cubic-bezier(0.16, 1, 0.3, 1);
-    --motion-overshoot: cubic-bezier(0.34, 1.32, 0.64, 1);
-    --motion-shimmer: cubic-bezier(0.45, 0, 0.55, 1);
+    --motion-standard: var(--motion-spring-080);
+    --motion-emphasized: var(--motion-spring-080);
+    --motion-inertial: var(--motion-spring-080);
+    --motion-bouncy: var(--motion-spring-080);
+    --motion-press: var(--motion-spring-080);
+    --motion-reveal: var(--motion-spring-080);
+    --motion-overshoot: var(--motion-spring-080);
+    --motion-shimmer: linear;
     --frosted-glass-background:
         linear-gradient(180deg, rgba(255, 255, 255, 0.24) 0%, rgba(248, 249, 250, 0.18) 100%),
         rgba(255, 255, 255, 0.08);
@@ -6127,6 +6172,7 @@ main.agent-page[data-agent-connection-mode="tunnel"] .agent-workspace-grid {
     opacity: 1;
     border: var(--frosted-glass-notice-border);
     border-radius: var(--workspace-modal-radius);
+    corner-shape: var(--corner-shape-continuous);
     background: var(--workspace-modal-material);
     box-shadow: var(--frosted-glass-notice-shadow);
     backdrop-filter: var(--frosted-glass-notice-blur);
@@ -6316,6 +6362,7 @@ body.has-settings-directory-browser {
     overscroll-behavior: contain;
     border: var(--frosted-glass-border);
     border-radius: var(--radius-soft);
+    corner-shape: var(--corner-shape-continuous);
     background: var(--glass-surface-background-soft);
 }
 
@@ -6336,6 +6383,7 @@ body.has-settings-directory-browser {
     padding: 7px 10px;
     border: 0;
     border-radius: var(--radius-soft);
+    corner-shape: var(--corner-shape-continuous);
     background: transparent;
     color: var(--text);
     font-family: var(--font-family-base);
@@ -6496,6 +6544,36 @@ body.has-settings-directory-browser {
     .suggestion-loading-spinner {
         animation: none;
     }
+
+    /* Lifecycle changes must not inherit the global 1ms transition on all properties. */
+    .agent-response-status-spinner {
+        transition: none !important;
+    }
+
+    /* Page insets and message rails must commit together. */
+    main.page,
+    .agent-response-question-header,
+    .agent-response-answer-shell {
+        transition: none !important;
+    }
+
+    /* Local resources layout containers must commit responsive geometry together. */
+    .browser-workspace,
+    .browser-workspace-header,
+    .browser-summary-card,
+    .browser-content-card,
+    body:has(.browser-workspace) {
+        transition: none !important;
+    }
+
+    /* Table headers, body offsets, and column widths must commit together. */
+    .scrollable-data-table-shell,
+    .scrollable-data-table-shell > .scrollable-data-table[data-table-header],
+    .scrollable-data-table-shell > .scrollable-data-table[data-table-header] th,
+    .scrollable-data-table-shell .scrollable-data-table[data-table-body],
+    .scrollable-data-table-shell .scrollable-data-table[data-table-body] > tbody > tr > :is(th, td) {
+        transition: none !important;
+    }
 }
 
 body {
@@ -6521,6 +6599,7 @@ body::before,
     padding: var(--sidebar-shell-padding);
     border: var(--sidebar-shell-border);
     border-radius: var(--sidebar-shell-radius);
+    corner-shape: var(--corner-shape-continuous);
     background: var(--sidebar-shell-background);
     box-shadow: var(--sidebar-shell-shadow);
     backdrop-filter: var(--sidebar-shell-blur);
@@ -6996,14 +7075,14 @@ html.sidebar-memory-collapsed .app-shell .sidebar {
     padding: var(--mode-switch-pad);
     border: 0;
     border-radius: var(--mode-switch-radius);
-    background: var(--control-glass-background);
+    background: var(--frosted-glass-background);
     display: grid;
     grid-template-columns: repeat(var(--segmented-option-count), minmax(0, 1fr));
     gap: var(--mode-switch-gap);
     align-items: stretch;
-    box-shadow: inset 0 1px 0 var(--theme-glass-highlight), inset 0 -1px 0 var(--theme-glass-border), var(--frosted-glass-shadow);
-    backdrop-filter: saturate(200%) blur(26px);
-    -webkit-backdrop-filter: saturate(200%) blur(26px);
+    box-shadow: var(--frosted-glass-shadow);
+    backdrop-filter: var(--frosted-glass-blur);
+    -webkit-backdrop-filter: var(--frosted-glass-blur);
     isolation: isolate;
     overflow: visible;
     scrollbar-width: none;
@@ -7022,7 +7101,17 @@ html.sidebar-memory-collapsed .app-shell .sidebar {
 
 .segmented-control:hover,
 .range-mode-shell:hover {
-    background: var(--control-glass-background-hover);
+    background: var(--frosted-glass-background-hover);
+}
+
+.segmented-control[data-segmented-overflow="1"],
+.range-mode-shell[data-segmented-overflow="1"] {
+    grid-template-columns: repeat(var(--segmented-option-count), minmax(var(--segmented-option-min-width, 92px), 1fr));
+    overflow-x: auto;
+    overflow-y: hidden;
+    scroll-padding-inline: 14px;
+    mask-image: linear-gradient(90deg, transparent 0, #000 14px, #000 calc(100% - 14px), transparent 100%);
+    -webkit-mask-image: linear-gradient(90deg, transparent 0, #000 14px, #000 calc(100% - 14px), transparent 100%);
 }
 
 .segmented-control::before,
@@ -7050,6 +7139,18 @@ html.sidebar-memory-collapsed .app-shell .sidebar {
     transform: translateX(calc((100% + var(--mode-switch-gap)) * var(--segmented-active-index, 0)));
 }
 
+.segmented-control:has(> .segmented-control-option:first-child input:checked)::before,
+.range-mode-shell:has(> .range-mode-option:first-child input:checked)::before {
+    box-shadow: var(--mode-switch-thumb-shadow-start-edge);
+}
+
+.segmented-control:has(> .segmented-control-option:last-child input:checked)::before,
+.range-mode-shell:has(> .range-mode-option:last-child input:checked)::before {
+    box-shadow: var(--mode-switch-thumb-shadow-end-edge);
+}
+
+.segmented-control[data-segmented-overflow="1"][data-option-count]::before,
+.range-mode-shell[data-segmented-overflow="1"][data-option-count]::before,
 .segmented-control[data-segmented-pill="measured"][data-option-count]::before,
 .range-mode-shell[data-segmented-pill="measured"][data-option-count]::before {
     width: var(--segmented-pill-width, calc((100% - (var(--mode-switch-thumb-inset) * 2) - (var(--mode-switch-gap) * (var(--segmented-option-count, 2) - 1))) / var(--segmented-option-count, 2)));
@@ -7095,8 +7196,9 @@ html.sidebar-memory-collapsed .app-shell .sidebar {
     line-height: 1.15;
     text-align: center;
     transition: color 220ms var(--motion-standard);
-    overflow-wrap: anywhere;
-    text-wrap: balance;
+    overflow-wrap: normal;
+    text-wrap: nowrap;
+    white-space: nowrap;
 }
 
 .range-mode-option span {
@@ -7122,6 +7224,21 @@ html.sidebar-memory-collapsed .app-shell .sidebar {
     overflow-wrap: normal;
     text-wrap: nowrap;
     white-space: nowrap;
+}
+
+.segmented-control-option:has(input:disabled),
+.range-mode-option:has(input:disabled),
+.segmented-control-option[aria-disabled="true"],
+.range-mode-option[aria-disabled="true"] {
+    cursor: not-allowed;
+}
+
+.segmented-control-option:has(input:disabled) > span,
+.range-mode-option:has(input:disabled) > span,
+.segmented-control-option[aria-disabled="true"] > span,
+.range-mode-option[aria-disabled="true"] > span {
+    opacity: 0.55;
+    pointer-events: none;
 }
 
 .segmented-control-option input:checked + span,
@@ -7359,6 +7476,7 @@ html.sidebar-memory-collapsed .app-shell .sidebar {
     overflow: hidden;
     border: 1px solid color-mix(in srgb, var(--theme-glass-border) 70%, transparent);
     border-radius: var(--radius-soft);
+    corner-shape: var(--corner-shape-continuous);
     background: color-mix(in srgb, var(--theme-muted) 13%, var(--theme-panel-strong));
 }
 
@@ -7659,7 +7777,7 @@ html.sidebar-memory-collapsed .app-shell .workspace > .workspace-header:first-ch
     cursor: pointer;
     flex-shrink: 0;
     transition:
-        opacity 220ms cubic-bezier(0.22, 1, 0.36, 1),
+        opacity 220ms var(--motion-spring-080),
         transform var(--motion-duration-spatial) var(--motion-emphasized),
         background 160ms var(--motion-standard),
         box-shadow 160ms var(--motion-standard),
@@ -7722,7 +7840,7 @@ html.sidebar-memory-collapsed .app-shell .workspace > .workspace-header:first-ch
 }
 
 .browser-session-actions:not(:hover):not(:focus-within) > .browser-session-action-button:not(.browser-session-full-export-button) {
-    transition-timing-function: cubic-bezier(0.55, 0.08, 0.68, 0.53), cubic-bezier(0.55, 0.08, 0.68, 0.53), var(--motion-standard), var(--motion-standard), var(--motion-standard);
+    transition-timing-function: var(--motion-spring-080), var(--motion-spring-080), var(--motion-standard), var(--motion-standard), var(--motion-standard);
 }
 
 .browser-session-action-button img,
@@ -7872,6 +7990,7 @@ html.sidebar-memory-collapsed .app-shell .workspace > .workspace-header:first-ch
 .browser-chat-effect {
     position: absolute;
     border-radius: var(--radius-panel);
+    corner-shape: var(--corner-shape-continuous);
     box-shadow: var(--browser-chat-outer-shadow);
     pointer-events: none;
 }
@@ -7921,6 +8040,7 @@ html.sidebar-memory-collapsed .app-shell .workspace > .workspace-header:first-ch
     padding: 0;
     border: 0;
     border-radius: 4px;
+    corner-shape: var(--corner-shape-continuous);
     background: transparent;
     box-shadow: none;
     cursor: pointer;
@@ -7984,6 +8104,7 @@ html.sidebar-memory-collapsed .app-shell .workspace > .workspace-header:first-ch
     padding: 12px;
     border: var(--frosted-glass-border);
     border-radius: var(--radius-panel);
+    corner-shape: var(--corner-shape-continuous);
     background: var(--frosted-glass-background);
     box-shadow: var(--frosted-glass-shadow);
     backdrop-filter: var(--frosted-glass-blur);
@@ -8617,6 +8738,7 @@ html.sidebar-memory-collapsed .app-shell .workspace > .workspace-header:first-ch
     overflow: hidden;
     border: var(--frosted-glass-border);
     border-radius: var(--radius-panel);
+    corner-shape: var(--corner-shape-continuous);
     background: var(--theme-panel-strong);
     box-shadow: var(--frosted-glass-shadow);
 }
@@ -9320,6 +9442,7 @@ html.sidebar-memory-collapsed .app-shell .workspace > .workspace-header:first-ch
     box-sizing: border-box;
     border: var(--tooltip-border);
     border-radius: var(--radius-soft);
+    corner-shape: var(--corner-shape-continuous);
     background: var(--tooltip-background);
     box-shadow: var(--tooltip-shadow);
     backdrop-filter: var(--tooltip-blur);
@@ -9461,6 +9584,7 @@ html.sidebar-memory-collapsed .app-shell .workspace > .workspace-header:first-ch
     padding: 7px 10px;
     border: var(--frosted-glass-border);
     border-radius: var(--radius-soft);
+    corner-shape: var(--corner-shape-continuous);
     background: var(--frosted-glass-background);
     box-shadow: var(--frosted-glass-shadow);
     backdrop-filter: var(--frosted-glass-blur);
@@ -9536,6 +9660,7 @@ html.sidebar-memory-collapsed .app-shell .workspace > .workspace-header:first-ch
     overflow: visible;
     border: var(--frosted-glass-border);
     border-radius: var(--radius-panel);
+    corner-shape: var(--corner-shape-continuous);
     background: var(--workspace-article-background);
     box-shadow: var(--frosted-glass-shadow);
     color: var(--theme-text);
@@ -9571,6 +9696,7 @@ html.sidebar-memory-collapsed .app-shell .workspace > .workspace-header:first-ch
     padding: 8px 12px;
     border: var(--frosted-glass-border);
     border-radius: var(--radius-panel);
+    corner-shape: var(--corner-shape-continuous);
     background: var(--workspace-article-background);
     box-shadow: var(--frosted-glass-shadow);
     overflow: visible;
@@ -9654,6 +9780,7 @@ html.sidebar-memory-collapsed .app-shell .workspace > .workspace-header:first-ch
 .browser-chat-message-content code {
     padding: 2px 4px;
     border-radius: var(--radius-soft);
+    corner-shape: var(--corner-shape-continuous);
     background: var(--accent-surface-muted);
     font-family: var(--font-family-mono-cjk);
     font-size: 0.92em;
@@ -9664,6 +9791,7 @@ html.sidebar-memory-collapsed .app-shell .workspace > .workspace-header:first-ch
     padding: 10px 12px;
     border: var(--frosted-glass-border);
     border-radius: var(--radius-panel);
+    corner-shape: var(--corner-shape-continuous);
     background: var(--theme-panel-strong);
     overflow-x: auto;
 }
@@ -9718,6 +9846,7 @@ html.sidebar-memory-collapsed .app-shell .workspace > .workspace-header:first-ch
     inline-size: fit-content;
     padding: 2px 6px;
     border-radius: 2px;
+    corner-shape: var(--corner-shape-continuous);
     background: color-mix(in srgb, var(--theme-muted) 16%, var(--theme-background));
     color: var(--theme-muted);
     font-size: var(--font-ui-xs);
@@ -9876,6 +10005,7 @@ html.sidebar-memory-collapsed .app-shell .workspace > .workspace-header:first-ch
     padding: 8px 10px;
     border-top: 1px solid var(--theme-error-translucent);
     border-radius: 0 0 var(--radius-panel) var(--radius-panel);
+    corner-shape: var(--corner-shape-continuous);
     background: var(--theme-error-translucent);
     color: var(--theme-error-strong);
     font-size: var(--font-ui-xs);
@@ -9910,6 +10040,7 @@ html.sidebar-memory-collapsed .app-shell .workspace > .workspace-header:first-ch
     width: 100%;
     overflow: hidden;
     border-radius: var(--radius-panel) var(--radius-panel) 0 0;
+    corner-shape: var(--corner-shape-continuous);
     background: var(--theme-panel-strong);
     isolation: isolate;
 }
@@ -10220,6 +10351,7 @@ html.sidebar-memory-collapsed .app-shell .workspace > .workspace-header:first-ch
     padding: 10px 12px;
     overflow: auto;
     border-radius: var(--radius-soft);
+    corner-shape: var(--corner-shape-continuous);
     background: var(--glass-surface-background-dense);
 }
 
@@ -10330,6 +10462,7 @@ html.sidebar-memory-collapsed .app-shell .workspace > .workspace-header:first-ch
     overscroll-behavior-inline: contain;
     border: 1px solid var(--theme-glass-border);
     border-radius: var(--radius-panel);
+    corner-shape: var(--corner-shape-continuous);
     background: var(--glass-surface-background-strong);
     -webkit-overflow-scrolling: touch;
 }
@@ -10519,6 +10652,7 @@ html.sidebar-memory-collapsed .app-shell .workspace > .workspace-header:first-ch
     height: 100%;
     min-height: 280px;
     border-radius: var(--radius-panel) 0 0 var(--radius-panel);
+    corner-shape: var(--corner-shape-continuous);
 }
 
 .browser-gallery[data-view="list"] .browser-preview-media {
@@ -10593,6 +10727,7 @@ html.sidebar-memory-collapsed .app-shell .workspace > .workspace-header:first-ch
     padding: 8px 10px 9px;
     border: var(--frosted-glass-border);
     border-radius: var(--radius-soft);
+    corner-shape: var(--corner-shape-continuous);
     background: var(--glass-surface-background-soft);
     box-shadow: inset 0 1px 0 color-mix(in srgb, var(--theme-glass-highlight) 42%, transparent);
 }
@@ -10641,6 +10776,7 @@ html.sidebar-memory-collapsed .app-shell .workspace > .workspace-header:first-ch
     overflow: visible;
     border: var(--frosted-glass-border);
     border-radius: var(--radius-panel);
+    corner-shape: var(--corner-shape-continuous);
     background: var(--workspace-article-background);
     box-shadow: var(--frosted-glass-shadow);
     color: var(--theme-text);
@@ -10689,6 +10825,7 @@ html.sidebar-memory-collapsed .app-shell .workspace > .workspace-header:first-ch
     flex-direction: column;
     min-width: 0;
     border-radius: inherit;
+    corner-shape: inherit;
     color: inherit;
     text-decoration: none;
     cursor: pointer;
@@ -10709,6 +10846,7 @@ html.sidebar-memory-collapsed .app-shell .workspace > .workspace-header:first-ch
     min-height: 0;
     overflow: hidden;
     border-radius: var(--radius-panel) var(--radius-panel) 0 0;
+    corner-shape: var(--corner-shape-continuous);
     background: var(--theme-panel-strong);
     isolation: isolate;
 }
@@ -10777,6 +10915,7 @@ html.sidebar-memory-collapsed .app-shell .workspace > .workspace-header:first-ch
 
 .browser-session-gallery[data-view="list"] .browser-session-cover {
     border-radius: var(--radius-panel) 0 0 var(--radius-panel);
+    corner-shape: var(--corner-shape-continuous);
 }
 
 .browser-session-gallery[data-view="list"] .browser-session-card-body {
@@ -10852,10 +10991,6 @@ html.sidebar-memory-collapsed .app-shell .workspace > .workspace-header:first-ch
         transform: scale(0.45) rotate(-18deg);
     }
 
-    70% {
-        transform: scale(1.16) rotate(0deg);
-    }
-
     100% {
         transform: scale(1);
     }
@@ -10879,6 +11014,7 @@ html.sidebar-memory-collapsed .app-shell .workspace > .workspace-header:first-ch
     padding: 44px 18px;
     border: var(--frosted-glass-border);
     border-radius: var(--radius-panel);
+    corner-shape: var(--corner-shape-continuous);
     background: var(--frosted-glass-background);
     box-shadow: var(--frosted-glass-shadow);
     color: var(--theme-muted);
@@ -10909,6 +11045,7 @@ html.sidebar-memory-collapsed .app-shell .workspace > .workspace-header:first-ch
     height: 42px;
     border: 1px solid var(--accent-border-medium);
     border-radius: var(--radius-panel);
+    corner-shape: var(--corner-shape-continuous);
     background: var(--accent-surface-soft);
     box-shadow: var(--frosted-glass-shadow);
 }
@@ -11144,6 +11281,7 @@ html.sidebar-memory-collapsed .app-shell .workspace > .workspace-header:first-ch
     -ms-overflow-style: none;
     border: var(--frosted-glass-border);
     border-radius: var(--radius-soft);
+    corner-shape: var(--corner-shape-continuous);
     background: var(--frosted-glass-opaque-background, var(--frosted-glass-background));
     background-clip: padding-box;
     box-shadow: var(--frosted-glass-shadow);
@@ -11251,11 +11389,6 @@ html.sidebar-memory-collapsed .app-shell .workspace > .workspace-header:first-ch
         transform: translate3d(var(--shared-popover-translate-x, calc(-50% + var(--pagination-range-menu-shift-x))), 9px, 0) scale(0.955);
         filter: saturate(82%);
     }
-    68% {
-        opacity: 1;
-        transform: translate3d(var(--shared-popover-translate-x, calc(-50% + var(--pagination-range-menu-shift-x))), -1px, 0) scale(1.012);
-        filter: saturate(108%);
-    }
     100% {
         opacity: 1;
         transform: translate3d(var(--shared-popover-translate-x, calc(-50% + var(--pagination-range-menu-shift-x))), 0, 0) scale(1);
@@ -11268,11 +11401,6 @@ html.sidebar-memory-collapsed .app-shell .workspace > .workspace-header:first-ch
         opacity: 0;
         transform: translate3d(var(--shared-popover-translate-x, calc(-50% + var(--pagination-range-menu-shift-x))), -9px, 0) scale(0.955);
         filter: saturate(82%);
-    }
-    68% {
-        opacity: 1;
-        transform: translate3d(var(--shared-popover-translate-x, calc(-50% + var(--pagination-range-menu-shift-x))), 1px, 0) scale(1.012);
-        filter: saturate(108%);
     }
     100% {
         opacity: 1;
@@ -11326,6 +11454,7 @@ html.sidebar-memory-collapsed .app-shell .workspace > .workspace-header:first-ch
     overflow: auto;
     border: var(--frosted-glass-border);
     border-radius: var(--workspace-modal-radius);
+    corner-shape: var(--corner-shape-continuous);
     background: var(--frosted-glass-background);
     box-shadow: var(--frosted-glass-shadow);
     backdrop-filter: var(--frosted-glass-blur);
@@ -11368,6 +11497,7 @@ dialog.browser-dialog:not([open]) {
     overflow: hidden;
     border: var(--frosted-glass-border);
     border-radius: var(--radius-panel);
+    corner-shape: var(--corner-shape-continuous);
     background: var(--theme-panel-strong);
     color: var(--theme-muted);
     font-size: var(--font-ui-sm);
@@ -11473,6 +11603,7 @@ dialog.browser-dialog:not([open]) {
     padding: var(--browser-media-frame-padding);
     border: var(--frosted-glass-border);
     border-radius: var(--browser-media-frame-radius, var(--radius-panel));
+    corner-shape: var(--corner-shape-continuous);
     background: var(--frosted-glass-background);
     box-shadow: var(--frosted-glass-shadow);
     backdrop-filter: var(--frosted-glass-blur);
@@ -11515,6 +11646,7 @@ dialog.browser-dialog:not([open]) {
     object-fit: contain !important;
     object-position: center;
     border-radius: inherit;
+    corner-shape: inherit;
     background: #000000;
 }
 
@@ -11764,7 +11896,6 @@ dialog.browser-dialog:not([open]) {
     }
 
     .browser-pagination {
-        width: 100%;
         --local-store-pagination-slot-size: 28px;
         --local-store-pagination-gap: 1px;
     }
@@ -12101,6 +12232,7 @@ dialog.browser-dialog:not([open]) {
     max-width: var(--settings-action-package-max-width);
     padding: var(--settings-action-package-pad-block) var(--settings-action-package-pad-inline);
     border-radius: var(--settings-action-package-radius);
+    corner-shape: var(--corner-shape-continuous);
     background: var(--settings-action-package-background);
     border: var(--settings-action-package-border);
     box-shadow: var(--frosted-glass-shadow);
@@ -12118,6 +12250,7 @@ dialog.browser-dialog:not([open]) {
     width: 36px;
     height: 36px;
     border-radius: var(--radius-soft);
+    corner-shape: var(--corner-shape-continuous);
     background: var(--settings-icon-surface, var(--accent-surface-icon));
     color: var(--settings-icon-tint, var(--accent-text));
     box-shadow: inset 0 1px 0 var(--theme-glass-highlight);
@@ -12279,7 +12412,7 @@ dialog.browser-dialog:not([open]) {
     box-shadow: none;
     text-transform: none;
     letter-spacing: normal;
-    transition: transform 180ms ease, background 180ms ease, opacity 180ms ease;
+    transition: transform 180ms var(--motion-spring-080), background 180ms var(--motion-spring-080), opacity 180ms var(--motion-spring-080);
 }
 
 .settings-inline-button-primary:disabled {
@@ -12586,6 +12719,7 @@ dialog.browser-dialog:not([open]) {
     inset: -6px -8px;
     border: 1px solid transparent;
     border-radius: 14px;
+    corner-shape: var(--corner-shape-continuous);
     box-shadow: none;
     opacity: 0;
     pointer-events: none;
@@ -12865,8 +12999,6 @@ dialog.browser-dialog:not([open]) {
 .style-token-demo .metric-card {
     min-width: 0;
     padding: 12px 8px;
-    border-radius: var(--radius-control);
-    background: color-mix(in srgb, var(--panel-strong) 82%, transparent);
 }
 
 .style-token-demo .metric-card strong {
@@ -13019,6 +13151,7 @@ dialog.browser-dialog:not([open]) {
     overflow: visible;
     border: var(--strategy-tune-panel-border);
     border-radius: var(--strategy-tune-panel-radius);
+    corner-shape: var(--corner-shape-continuous);
     background: var(--strategy-tune-panel-material);
     box-shadow: var(--strategy-tune-panel-shadow);
     backdrop-filter: var(--strategy-tune-panel-blur);
@@ -13322,6 +13455,7 @@ dialog.browser-dialog:not([open]) {
     padding: 0 14px 0 4px;
     border: var(--frosted-glass-border) !important;
     border-radius: var(--radius-soft);
+    corner-shape: var(--corner-shape-continuous);
     background: var(--frosted-glass-background);
     box-shadow: var(--frosted-glass-shadow);
     backdrop-filter: var(--frosted-glass-blur);
@@ -13424,6 +13558,7 @@ dialog.browser-dialog:not([open]) {
     min-height: 168px;
     border: var(--frosted-glass-border);
     border-radius: var(--radius-panel);
+    corner-shape: var(--corner-shape-continuous);
     background: var(--frosted-glass-background);
     box-shadow: var(--frosted-glass-shadow);
     backdrop-filter: var(--frosted-glass-blur);
@@ -13566,6 +13701,7 @@ dialog.browser-dialog:not([open]) {
     padding: var(--settings-general-option-pad-block) var(--settings-general-option-pad-inline);
     border: var(--settings-general-option-border);
     border-radius: var(--settings-general-option-radius);
+    corner-shape: var(--corner-shape-continuous);
     background: var(--settings-general-option-background);
     cursor: pointer;
     transition: background-color 180ms var(--motion-standard), border-color 180ms var(--motion-standard), box-shadow 180ms var(--motion-standard);
@@ -13696,6 +13832,7 @@ dialog.browser-dialog:not([open]) {
     padding: var(--chart-tooltip-padding);
     border: var(--tooltip-border);
     border-radius: var(--chart-tooltip-radius);
+    corner-shape: var(--corner-shape-continuous);
     background: var(--tooltip-background);
     box-shadow: var(--tooltip-shadow);
     backdrop-filter: var(--tooltip-blur);
@@ -13731,11 +13868,13 @@ dialog.browser-dialog:not([open]) {
 
 .style-token-metric-demo-shell { padding: 8px 0; }
 
-.style-token-metric-card-demo {
+.style-token-demo .style-token-metric-card-demo {
     width: min(100%, 280px);
     padding: var(--workspace-metric-card-padding);
     row-gap: var(--workspace-metric-card-row-gap);
     border-radius: var(--workspace-metric-card-radius);
+    corner-shape: var(--corner-shape-continuous);
+    background: color-mix(in srgb, var(--panel-strong) 82%, transparent);
 }
 
 .style-token-table-wrap {
@@ -13916,6 +14055,7 @@ dialog.browser-dialog:not([open]) {
 .style-token-page .panel.sidebar {
     border: var(--sidebar-shell-border);
     border-radius: var(--sidebar-shell-radius);
+    corner-shape: var(--corner-shape-continuous);
     background: var(--sidebar-shell-background);
     box-shadow: var(--sidebar-shell-shadow);
     backdrop-filter: var(--sidebar-shell-blur);
@@ -13961,7 +14101,6 @@ dialog.browser-dialog:not([open]) {
     max-width: 100%;
     justify-self: center;
     margin-inline: auto;
-    box-shadow: inset 0 1px 0 var(--theme-glass-highlight), inset 0 -1px 0 var(--theme-glass-border), 0 10px 28px var(--theme-shadow-ambient);
 }
 
 .style-token-page .range-mode-option {
@@ -13970,14 +14109,6 @@ dialog.browser-dialog:not([open]) {
 
 .style-token-page .range-mode-shell::after {
     display: none;
-}
-
-.style-token-page .range-mode-shell:has(> .range-mode-option:first-child input:checked)::before {
-    box-shadow: var(--mode-switch-thumb-shadow-start-edge);
-}
-
-.style-token-page .range-mode-shell:has(> .range-mode-option:last-child input:checked)::before {
-    box-shadow: var(--mode-switch-thumb-shadow-end-edge);
 }
 
 #workspace_panel .settings-workspace-header.settings-shell-style-tokens:first-child > .settings-summary-card {
@@ -14452,6 +14583,7 @@ main[data-cache-page] .progress-metric-card strong {
     padding: 0 14px 0 4px;
     border: var(--frosted-glass-border) !important;
     border-radius: 6px;
+    corner-shape: var(--corner-shape-continuous);
     background: var(--frosted-glass-background);
     box-shadow: var(--frosted-glass-shadow);
     backdrop-filter: var(--frosted-glass-blur);
@@ -14587,4 +14719,99 @@ main[data-cache-page] .cache-training-progress .is-unavailable .status-progress-
         content: "Answer";
         margin-top: 4px;
     }
+}
+
+/* Workspace content uses one shared twelve-track grid; product data keeps its own tracks. */
+[data-layout-role="content-grid"] {
+    display: grid;
+    grid-template-columns: repeat(var(--layout-grid-columns), minmax(0, 1fr));
+    column-gap: var(--layout-grid-gutter);
+    row-gap: var(--layout-grid-row-gap);
+    min-width: 0;
+}
+
+.workspace [data-layout-role="content-grid"],
+#browser_workspace [data-layout-role="content-grid"] {
+    grid-template-columns: repeat(var(--layout-grid-columns), minmax(0, 1fr));
+}
+
+[data-layout-role="content-grid"] > * {
+    grid-column: 1 / -1;
+    min-width: 0;
+}
+
+.browser-content-card {
+    container: browser-content / inline-size;
+}
+
+.browser-metric-grid[data-layout-role="content-grid"] > .metric-card {
+    grid-column: span 4;
+    width: 100%;
+    max-width: none;
+}
+
+.browser-metric-grid.browser-session-metric-grid[data-layout-role="content-grid"] > .metric-card,
+.browser-metric-grid.browser-text-metric-grid[data-layout-role="content-grid"]:not(:has(> :nth-child(3))) > .metric-card {
+    grid-column: span 6;
+}
+
+.browser-gallery[data-layout-role="content-grid"] > :is(.browser-media-card, .browser-session-card) {
+    grid-column: span 3;
+}
+
+.browser-gallery[data-layout-role="content-grid"][data-view="list"] > :is(.browser-media-card, .browser-session-card) {
+    grid-column: 1 / -1;
+}
+
+@container browser-content (max-width: 835px) {
+    .browser-gallery[data-layout-role="content-grid"]:not([data-view="list"]) > :is(.browser-media-card, .browser-session-card) {
+        grid-column: span 4;
+    }
+}
+
+@container browser-content (max-width: 683px) {
+    .browser-gallery[data-layout-role="content-grid"]:not([data-view="list"]) > :is(.browser-media-card, .browser-session-card) {
+        grid-column: span 6;
+    }
+}
+
+@container browser-content (max-width: 599px) {
+    .browser-metric-grid[data-layout-role="content-grid"] > .metric-card {
+        grid-column: span 6;
+    }
+}
+
+@container browser-content (max-width: 451px) {
+    .browser-gallery[data-layout-role="content-grid"]:not([data-view="list"]) > :is(.browser-media-card, .browser-session-card) {
+        grid-column: 1 / -1;
+    }
+}
+
+@media (max-width: 560px) {
+    .browser-gallery.browser-session-gallery[data-layout-role="content-grid"][data-view="grid"] > .browser-session-card {
+        grid-column: span 6;
+    }
+}
+
+@container browser-content (max-width: 395px) {
+    .browser-metric-grid[data-layout-role="content-grid"] > .metric-card {
+        grid-column: 1 / -1;
+    }
+}
+
+.agent-content-grid {
+    width: 100%;
+    height: 100%;
+    min-height: 0;
+    grid-template-rows: minmax(0, 1fr);
+}
+
+main.agent-page[data-agent-connection-mode="tunnel"] .agent-content-grid {
+    height: auto;
+    grid-template-rows: auto;
+    align-content: start;
+}
+
+#workspace_panel .workspace-grid[data-layout-role="content-grid"] {
+    grid-template-columns: repeat(var(--layout-grid-columns), minmax(0, 1fr));
 }

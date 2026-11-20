@@ -1,6 +1,6 @@
 """Audited missing-media frames remain source-scoped, payload-free timeline events.
 
-Code version: v1.0.2-codex.0
+Code version: v1.0.3-codex.0
 """
 
 from __future__ import annotations
@@ -559,7 +559,7 @@ def test_metadata_only_images_reuse_standard_resource_cards_without_payload_acti
     parsed.feed(rendered)
     for image in images:
         article = parsed.articles["wechat_message_" + image.stable_id]
-        assert "".join(article["text"]).count("Metadata only") == 1
+        assert "Metadata only" not in "".join(article["text"])
         assert "data-wechat-resource-kind" in article["attributes"]
         assert "data-wechat-resource-status" in article["attributes"]
         assert not set(article["tags"]) & {"img", "video", "audio", "button"}

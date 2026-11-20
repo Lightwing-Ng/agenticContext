@@ -1,6 +1,6 @@
 # Test Suite
 
-Test-suite version: `v1.13.0-codex.0`
+Test-suite version: `v1.14.0-codex.0`
 
 The authoritative test workflow, coverage baseline, isolation contract, and CI behavior are
 documented in [TESTING.md](TESTING.md). Use `./scripts/test.sh` and `./scripts/check.sh` on
@@ -9,6 +9,16 @@ macOS/Linux, or `.\scripts\test.ps1` and `.\scripts\check.ps1` on Windows.
 ## Coverage Map
 
 This is a behavior map, not a claim of complete coverage or a current test-count baseline.
+
+- `test_coverage_policy.py` and `test_quality_shards.py`: independent critical statement/branch
+  floors, complete test partitions, fresh coverage, artifact and inventory integrity, and refusal
+  of missing policies, required modules, or successful shard receipts.
+- `test_browser_engine_smoke.py`: actual Chromium or explicitly selected WebKit rendering,
+  keyboard menus, themes, and touch dismissal in simulated desktop/tablet/phone viewports.
+- `test_chatgpt_history_preservation.py`, `test_llm_crash_recovery.py`,
+  `test_wechat_exchange_crash_recovery.py`, and `test_wechat_exchange_startup.py`: dual-backend
+  history protection, real process interruption, pinned coordinated publication recovery,
+  unknown-drift refusal, and application restart before archive readers begin.
 
 - `test_test_entrypoints.py` and `test_windows_entrypoints.py`: minimum Python version,
   interpreter arguments, safe marker selection, installer failures, pytest exit propagation,

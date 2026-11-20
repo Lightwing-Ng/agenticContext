@@ -1,6 +1,6 @@
 """Explicit native metadata refresh preserves every verified conversation scope.
 
-Code version: v1.2.0-codex.0
+Code version: v1.2.1-codex.0
 """
 
 from __future__ import annotations
@@ -27,8 +27,10 @@ import pytest
 from app.core.chat_history_browser import query_chat_history
 from app.core import wechat_native_resource_revalidation as refresh
 from app.core.owner_only_files import owner_only_problem
+from app.core import wechat_resource_catalog_refresh as catalog
 from app.core.wechat_archive import WechatArchiveRepository, _identifier, _time_fields
 from app.core.wechat_mac_resources import WechatMacResourceResolver
+from app.core.wechat_resource_index import _SCHEMA
 from app.core.wechat_session_export import WechatSessionExport
 from app.web.presentation import format_wechat_source_clock
 from app.web.wechat_session_csv import session_csv_chunks
@@ -202,15 +204,90 @@ def two_native_scopes(native_metadata, monkeypatch):
     )
 
 
-def _publish(fixture, selected, name):
+def _publish(fixture, selected, name, **options):
     candidate = fixture.original.with_name(name + ".sqlite3")
     report = refresh.stage_extended_native_resource_revalidation(
-        fixture.store, candidate, conversation_ids=selected
+        fixture.store, candidate, conversation_ids=selected, **options
     )
     rollback = fixture.store.parent / (name + "-rollback.sqlite3")
     refresh.publish_native_resource_revalidation(
         fixture.store, report, rollback_path=rollback
     )
+    return report
+
+
+def _event_signature(row, server, epoch):
+    values = list(row)
+    proof = json.loads(values[11])
+    proof["server_id"] = server
+    proof["unix_timestamp"] = epoch
+    proof["resource_reference"]["unix_timestamp"] = epoch
+    values[7:11] = _time_fields(
+        {"sent_at_utc_iso": datetime.fromtimestamp(epoch, UTC).isoformat()}
+    )
+    values[11] = json.dumps(proof)
+    return tuple(values)
+
+
+@pytest.fixture
+def newer_native_supplement(two_native_scopes):
+    fixture = two_native_scopes
+    backup, database = "e" * 64, "f" * 64
+    metadata = deepcopy(fixture.metadata)
+    metadata.update(backup_id=backup)
+    metadata["input_databases"][0]["sha256"] = database
+    with sqlite3.connect(fixture.history) as primary:
+        primary.execute(
+            "INSERT INTO source_snapshots VALUES(3,?,?,?)",
+            (backup, fixture.conversation["partition_id"], json.dumps(metadata)),
+        )
+    # A current canonical index must not hide independently proved newer events.
+    current = fixture.original.with_name("current-canonical.sqlite3")
+    catalog.stage_resource_catalog_refresh(fixture.store, current)
+    current.replace(fixture.original)
+    rows = [
+        _resource(
+            fixture.resources[1],
+            fixture.conversation,
+            "wxid_account_a",
+            backup,
+            database,
+            local,
+            kind,
+            typ,
+            label,
+        )
+        for local, (kind, typ, label) in (
+            (22, KINDS[0]),
+            (23, KINDS[0]),
+            (24, KINDS[1]),
+            (25, KINDS[1]),
+        )
+    ]
+    rows[0] = _event_signature(rows[0], "10002", 1650000002)
+    rows[3] = _event_signature(rows[3], "10003", 1650000003)
+    supplemental = fixture.store.parent / "newer-native-metadata.sqlite3"
+    with sqlite3.connect(supplemental) as output:
+        output.executescript(_SCHEMA)
+        output.executemany(
+            "INSERT INTO messages VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)", rows
+        )
+        output.execute(
+            "INSERT INTO conversations VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+            tuple(
+                fixture.conversation[key]
+                for key in (
+                    "id",
+                    "partition_id",
+                    "account_key",
+                    "peer_id",
+                    "title",
+                    "kind",
+                )
+            )
+            + (4, rows[0][7], rows[2][7], rows[0][8], rows[2][8], rows[2][6]),
+        )
+    return SimpleNamespace(**vars(fixture), supplemental=supplemental, newer_rows=rows)
 
 
 class _ResourceBubbles(HTMLParser):
@@ -310,7 +387,10 @@ def test_explicit_refresh_adds_a_second_scope_without_losing_first_bubbles_or_so
             session=conversation["id"],
             account=conversation["account_key"],
         )
-        resource_items = [item for item in page.items if item.messaging.get("resource")]
+        recovered_ids = {row[0] for row in resources}
+        resource_items = [
+            item for item in page.items if item.stable_id in recovered_ids
+        ]
         assert {item.messaging["resource"]["kind"] for item in resource_items} == {
             kind for kind, _, _ in KINDS
         }
@@ -339,10 +419,10 @@ def test_explicit_refresh_adds_a_second_scope_without_losing_first_bubbles_or_so
             )
         parsed = _ResourceBubbles()
         parsed.feed(rendered)
-        assert set(parsed.resources.values()) == {kind for kind, _, _ in KINDS}
-        assert set(parsed.resources) == {
-            "wechat_message_" + item.stable_id for item in resource_items
-        }
+        assert {
+            parsed.resources["wechat_message_" + item.stable_id]
+            for item in resource_items
+        } == {kind for kind, _, _ in KINDS}
         assert parsed.payload_tags == []
         export = WechatSessionExport(
             fixture.store, conversation["id"], account=conversation["account_key"]
@@ -510,3 +590,225 @@ def test_rollback_flush_error_keeps_published_fallback_and_sources_unchanged(
     assert (
         fixture.history.read_bytes(), fixture.original.read_bytes(), fallback.read_bytes()
     ) == preserved
+
+
+@pytest.mark.parametrize("platform_name", ["nt", "posix"])
+def test_publication_syncs_directories_only_where_the_host_supports_them(tmp_path, monkeypatch, platform_name):
+    from types import SimpleNamespace
+    from unittest.mock import MagicMock
+
+    native = SimpleNamespace(
+        name=platform_name,
+        O_RDONLY=0,
+        open=MagicMock(return_value=73),
+        fsync=MagicMock(),
+        close=MagicMock(),
+    )
+    monkeypatch.setattr(refresh, "os", native)
+    refresh._sync_directory(tmp_path)
+    if platform_name == "nt":
+        native.open.assert_not_called()
+        native.fsync.assert_not_called()
+        native.close.assert_not_called()
+    else:
+        native.open.assert_called_once_with(tmp_path, native.O_RDONLY)
+        native.fsync.assert_called_once_with(73)
+        native.close.assert_called_once_with(73)
+
+
+def test_newer_snapshot_media_survive_current_canonical_priority_and_later_scope_extension(
+    newer_native_supplement,
+):
+    fixture = newer_native_supplement
+    before = (
+        fixture.history.read_bytes(),
+        fixture.original.read_bytes(),
+        fixture.supplemental.read_bytes(),
+    )
+    repository = WechatArchiveRepository(fixture.store)
+    assert repository.query(session=fixture.conversation["id"])["count"] == 6
+    _publish(
+        fixture,
+        [fixture.conversation["id"]],
+        "newer-media-scope",
+        supplemental_path=fixture.supplemental,
+    )
+    page = repository.query(session=fixture.conversation["id"])
+    assert page["resource_index_status"] == "ready" and page["count"] == 8
+    ids = {row["id"] for row in page["messages"]}
+    assert {row[0] for row in fixture.first_rows} <= ids
+    assert {fixture.newer_rows[1][0], fixture.newer_rows[2][0]} <= ids
+    assert not {fixture.newer_rows[0][0], fixture.newer_rows[3][0]} & ids
+    # Extending another chat must preserve metadata absent from the canonical input.
+    _publish(fixture, [fixture.second["id"]], "later-native-scope")
+    assert {
+        row["id"]
+        for row in repository.query(session=fixture.conversation["id"])["messages"]
+    } == ids
+    assert repository.query(session=fixture.second["id"])["count"] == 6
+    export = WechatSessionExport(fixture.store, fixture.conversation["id"])
+    exported = list(
+        csv.DictReader(
+            io.StringIO("".join(session_csv_chunks(export)).lstrip("\ufeff"))
+        )
+    )
+    assert len(exported) == 8
+    assert sum(row["Statement"] == "[Image]" for row in exported) == 2
+    assert sum(row["Statement"] == "[File]" for row in exported) == 2
+    assert (
+        fixture.history.read_bytes(),
+        fixture.original.read_bytes(),
+        fixture.supplemental.read_bytes(),
+    ) == before
+
+
+def test_newer_snapshot_clock_difference_retains_both_source_observations(
+    newer_native_supplement,
+):
+    fixture = newer_native_supplement
+    with sqlite3.connect(fixture.supplemental) as source:
+        raw = source.execute(
+            "SELECT provenance FROM messages WHERE id=?", (fixture.newer_rows[0][0],)
+        ).fetchone()[0]
+        proof = json.loads(raw)
+        proof["unix_timestamp"] += 1
+        proof["resource_reference"]["unix_timestamp"] += 1
+        projection = _time_fields(
+            {
+                "sent_at_utc_iso": datetime.fromtimestamp(
+                    proof["unix_timestamp"], UTC
+                ).isoformat()
+            }
+        )
+        source.execute(
+            "UPDATE messages SET time_sort=?,timestamp_value=?,timestamp_label=?,time_basis=?,provenance=? WHERE id=?",
+            (*projection, json.dumps(proof), fixture.newer_rows[0][0]),
+        )
+    before = (
+        fixture.history.read_bytes(),
+        fixture.original.read_bytes(),
+        fixture.supplemental.read_bytes(),
+    )
+    report = _publish(
+        fixture,
+        [fixture.conversation["id"]],
+        "source-clock-variation",
+        supplemental_path=fixture.supplemental,
+    )
+    assert len(report["source_clock_conflicts"]) == 1
+    page = WechatArchiveRepository(fixture.store).query(
+        session=fixture.conversation["id"]
+    )
+    assert page["count"] == 9
+    matched = {
+        row["id"]: row
+        for row in page["messages"]
+        if row["id"] in {fixture.resources[1][0], fixture.newer_rows[0][0]}
+    }
+    assert set(matched) == {fixture.resources[1][0], fixture.newer_rows[0][0]}
+    assert (
+        matched[fixture.resources[1][0]]["timestamp_value"] == fixture.resources[1][8]
+    )
+    assert matched[fixture.newer_rows[0][0]]["timestamp_value"] == projection[1]
+    assert "native_resource_source_clock_conflict" in json.loads(
+        matched[fixture.newer_rows[0][0]]["quality_flags"]
+    )
+    assert json.loads(matched[fixture.newer_rows[0][0]]["provenance"])[
+        "native_resource_clock_conflict"
+    ]
+    assert (
+        fixture.history.read_bytes(),
+        fixture.original.read_bytes(),
+        fixture.supplemental.read_bytes(),
+    ) == before
+
+
+@pytest.mark.parametrize("defect", ["type", "direction"])
+def test_same_server_incompatible_native_event_is_refused(
+    newer_native_supplement, defect
+):
+    fixture = newer_native_supplement
+    row = list(fixture.newer_rows[0])
+    proof = json.loads(row[11])
+    if defect == "type":
+        proof["message_type"] = 43
+        proof["resource_reference"].update(kind="video", label="[Video]")
+        row[6], row[13] = "[Video]", "[video]"
+    else:
+        row[3], row[5] = "wxid_account_a", "sent"
+    row[11] = json.dumps(proof)
+    with sqlite3.connect(fixture.supplemental) as source:
+        source.execute("DELETE FROM messages WHERE id=?", (row[0],))
+        source.execute("INSERT INTO messages VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)", row)
+    before = (
+        fixture.history.read_bytes(),
+        fixture.original.read_bytes(),
+        fixture.supplemental.read_bytes(),
+    )
+    candidate = fixture.original.with_name("incompatible-native-event.sqlite3")
+    with pytest.raises(ValueError, match="conflicting"):
+        refresh.stage_extended_native_resource_revalidation(
+            fixture.store,
+            candidate,
+            conversation_ids=[fixture.conversation["id"]],
+            supplemental_path=fixture.supplemental,
+        )
+    assert not candidate.exists()
+    assert not fixture.history.with_name("resource_revalidated.sqlite3").exists()
+    assert (
+        fixture.history.read_bytes(),
+        fixture.original.read_bytes(),
+        fixture.supplemental.read_bytes(),
+    ) == before
+
+
+@pytest.mark.parametrize("canonical_current", [True, False])
+def test_changed_canonical_input_cannot_keep_selecting_a_supplemental_union(
+    newer_native_supplement,
+    canonical_current,
+):
+    fixture = newer_native_supplement
+    if not canonical_current:
+        with sqlite3.connect(fixture.original) as source:
+            pin = json.loads(
+                source.execute(
+                    "SELECT value FROM archive_info WHERE key='history_file_identity'"
+                ).fetchone()[0]
+            )
+            pin["mtime_ns"] -= 1
+            source.execute(
+                "UPDATE archive_info SET value=? WHERE key='history_file_identity'",
+                (json.dumps(pin),),
+            )
+    _publish(
+        fixture,
+        [fixture.conversation["id"]],
+        "sealed-newer-media",
+        supplemental_path=fixture.supplemental,
+    )
+    assert (
+        WechatArchiveRepository(fixture.store).query(
+            session=fixture.conversation["id"]
+        )["count"]
+        == 8
+    )
+    fallback = fixture.history.with_name("resource_revalidated.sqlite3")
+    preserved = fallback.read_bytes()
+    with sqlite3.connect(fixture.original) as source:
+        source.execute(
+            "INSERT INTO archive_info VALUES('new_catalog_revision','preserved')"
+        )
+    assert (
+        refresh.select_resource_index(
+            fixture.history, conversation_id=fixture.conversation["id"]
+        )
+        == fixture.original
+    )
+    page = WechatArchiveRepository(fixture.store).query(
+        session=fixture.conversation["id"]
+    )
+    assert page["count"] == (6 if canonical_current else 1)
+    assert not {fixture.newer_rows[1][0], fixture.newer_rows[2][0]} & {
+        row["id"] for row in page["messages"]
+    }
+    assert fallback.read_bytes() == preserved

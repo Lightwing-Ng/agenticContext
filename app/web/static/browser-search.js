@@ -1,4 +1,4 @@
-/* Code version: v2.2.1-codex.1 */
+/* Code version: v2.2.2-codex.0 */
 
 import Fuse from "./vendor/fuse.min.mjs?v=fuse-js-v7.3.0";
 
@@ -232,7 +232,9 @@ import Fuse from "./vendor/fuse.min.mjs?v=fuse-js-v7.3.0";
 
     // Remove the obsolete shortcut from pages served by a warm template cache.
     document.querySelector("[data-browser-search-focus]")?.remove();
-    searchRoot.querySelector("[data-browser-session-scope-remove]")?.addEventListener("click", () => {
+    searchRoot.querySelector("[data-browser-session-scope-remove]")?.addEventListener("click", (event) => {
+        if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+        event.preventDefault();
         searchRoot.querySelector("[data-browser-session-tag]")?.remove();
         input.dataset.browserSearchGlobalScope = "true";
         input.dataset.browserSearchSubmitCopy = input.dataset.browserSearchGlobalSubmitCopy

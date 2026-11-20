@@ -1,6 +1,6 @@
 """Session CSV preserves complete scoped timelines in three compact columns.
 
-Code version: v2.0.0-codex.0
+Code version: v2.0.1-codex.0
 """
 
 from __future__ import annotations
@@ -29,6 +29,10 @@ from app.web.config_store import SavedConfigStore
 from app.web.wechat_session_csv import session_csv_chunks, session_csv_filename
 from tests.test_wechat_archive import make_archive
 from tests.test_wechat_resource_timeline import _reference, _session, _sidecar
+from tests import test_wechat_session_export_names as name_fixtures
+
+
+named_export = name_fixtures.named_export
 
 
 @pytest.fixture
@@ -194,6 +198,64 @@ def test_csv_includes_valid_timeline_resource_references_without_reading_media(
         "Speaker ID": "Unknown sender",
         "Statement": "[Image]",
     }
+
+
+@pytest.mark.parametrize(
+    "boundary", ["verified", "unverified_contact", "missing_sender", "historical_label"],
+)
+@pytest.mark.parametrize("scoped_remark", [True, False])
+def test_unknown_resource_sender_label_uses_only_a_verified_profile_in_page_and_csv(
+    named_export, boundary, scoped_remark,
+):
+    from app.core.wechat_history_browser import query_wechat_history
+
+    fixture = named_export
+    name_fixtures._preferences(fixture, "empty")
+    name_fixtures._profile(
+        fixture, remark="Scoped source remark" if scoped_remark else None,
+    )
+    source_label = (
+        "Historical video author"
+        if boundary == "historical_label"
+        else "Unknown sender"
+    )
+    identifier, sidecar = name_fixtures._video_resource(fixture, label=source_label)
+    if boundary == "unverified_contact":
+        with sqlite3.connect(fixture.registry) as connection:
+            connection.execute(
+                "UPDATE contacts SET identity_status='unresolved' WHERE id=?",
+                (fixture.contact_id,),
+            )
+    elif boundary == "missing_sender":
+        with sqlite3.connect(sidecar) as connection:
+            connection.execute("UPDATE messages SET sender_id=NULL WHERE id=?", (identifier,))
+    paths = (fixture.history, fixture.registry, sidecar, fixture.preferences)
+    before = {path: path.read_bytes() for path in paths}
+    items = list(WechatSessionExport(fixture.store, fixture.conversation["id"]).items())
+    item = next(item for item in items if item["id"] == identifier)
+    assert item["sender_label"] == source_label
+    expected_viewer = (
+        "Scoped source remark" if scoped_remark else "Global profile name"
+    ) if boundary == "verified" else None
+    assert item.get("viewer_display_name") == expected_viewer
+    page = query_wechat_history(
+        fixture.store, session=fixture.conversation["id"], page_size=1000,
+    )
+    visible = next(message for message in page.items if message.stable_id == identifier)
+    assert visible.author_label == source_label
+    assert visible.messaging.get("viewer_display_name") == expected_viewer
+    assert visible.content_text == item["text"] == "[Video]"
+    assert visible.last_seen_at == item["timestamp_value"]
+    csv_body = "".join(session_csv_chunks(
+        WechatSessionExport(fixture.store, fixture.conversation["id"]),
+    ))
+    csv_rows = list(csv.DictReader(io.StringIO(csv_body.removeprefix("\ufeff"), newline="")))
+    expected_speaker = expected_viewer or source_label
+    if boundary != "missing_sender":
+        expected_speaker += f" ({name_fixtures.SENDER})"
+    video_csv = next(row for row in csv_rows if row["Statement"] == "[Video]")
+    assert video_csv["Speaker ID"] == expected_speaker
+    assert all(path.read_bytes() == content for path, content in before.items())
 
 
 def test_csv_rejects_invalid_or_busy_sources_before_download(session_app):

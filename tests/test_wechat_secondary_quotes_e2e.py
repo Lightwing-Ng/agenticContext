@@ -1,6 +1,6 @@
 """Published source-scoped image quotes keep exact authors and inert card bodies.
 
-Code version: v1.2.1-codex.0
+Code version: v1.2.2-codex.0
 """
 
 from __future__ import annotations
@@ -213,9 +213,8 @@ def test_off_page_completed_image_quote_keeps_body_and_exact_primary_contact(
         expect(resource).to_have_attribute(
             "data-wechat-resource-status", "metadata_only"
         )
-        expect(resource.locator(".wechat-resource-status")).to_have_text(
-            "Metadata only"
-        )
+        expect(resource.locator(".wechat-resource-status")).to_have_count(0)
+        expect(resource).not_to_contain_text("Metadata only")
         expect(quote.locator("img, video, audio, script, a, button")).to_have_count(0)
         expect(quote.locator(".wechat-quoted-text")).to_have_count(0)
         expect(

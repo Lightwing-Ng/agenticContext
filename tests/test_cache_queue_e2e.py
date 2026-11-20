@@ -1,15 +1,16 @@
 """Isolated browser coverage for a Cache task that waits for a busy browser.
 
-Code version: v1.1.0-codex.0
+Code version: v1.1.1-codex.0
 """
 
 from __future__ import annotations
 
 import json
 import re
+from urllib.parse import urlsplit
 
 import pytest
-from playwright.sync_api import Browser, expect
+from playwright.sync_api import Browser, Page, expect
 
 from tests import test_sidebar_e2e as fixtures
 
@@ -51,6 +52,91 @@ def _install_status(context, overrides: dict) -> None:
         route.fulfill(response=response, json=snapshot)
 
     context.route("**/api/cache/chatgpt/status**", respond)
+
+
+def _observe_browser_session_bootstrap(page: Page) -> dict:
+    """Keep bounded dependency evidence without recording response or account content."""
+    evidence: dict = {"scripts": {}, "pageerrors": [], "console_errors": []}
+
+    def error_text(value: str) -> str:
+        return re.sub(
+            r"https?://[^\s\"'<>]+",
+            lambda match: urlsplit(match.group()).path,
+            value,
+        )[:240]
+
+    def script_state(url: str) -> dict | None:
+        path = urlsplit(url).path
+        scripts = evidence["scripts"]
+        if not path.startswith("/static/") or not path.endswith((".js", ".mjs")):
+            return None
+        if path not in scripts and len(scripts) >= 24:
+            return None
+        return scripts.setdefault(path, {})
+
+    def requested(request) -> None:
+        state = script_state(request.url)
+        if state is not None:
+            state["requested"] = True
+
+    def responded(response) -> None:
+        state = script_state(response.url)
+        if state is not None:
+            state["status"] = response.status
+
+    def failed(request) -> None:
+        state = script_state(request.url)
+        if state is not None:
+            state["failure"] = str(request.failure)[:160]
+
+    def page_error(error) -> None:
+        if len(evidence["pageerrors"]) < 8:
+            evidence["pageerrors"].append(error_text(str(error)))
+
+    def console_error(message) -> None:
+        if message.type == "error" and len(evidence["console_errors"]) < 8:
+            evidence["console_errors"].append({"type": message.type, "text": error_text(message.text)})
+
+    page.on("request", requested)
+    page.on("response", responded)
+    page.on("requestfailed", failed)
+    page.on("pageerror", page_error)
+    page.on("console", console_error)
+    return evidence
+
+
+def _browser_session_bootstrap_failure(page: Page, evidence: dict, probe_count: int) -> str:
+    """Sample document state once; the diagnostic deadline never waits for readiness."""
+    diagnostic = {**evidence, "probe_count": probe_count}
+    session = None
+    try:
+        session = page.context.new_cdp_session(page)
+        result = session.send(
+            "Runtime.evaluate",
+            {
+                "expression": """JSON.stringify({
+                    ready_state: document.readyState,
+                    controller_available:
+                        typeof window.CACHELIKES_BROWSER_SESSION_STATUS?.init === "function",
+                    status_script_present: Array.from(document.scripts).some(
+                        script => new URL(script.src || location.href).pathname
+                            === "/static/browser-session-status.js"
+                    )
+                })""",
+                "returnByValue": True,
+                "timeout": 500,
+            },
+        )
+        diagnostic["document"] = json.loads(result["result"]["value"])
+    except Exception as error:
+        diagnostic["snapshot_error_type"] = type(error).__name__
+    finally:
+        if session is not None:
+            try:
+                session.detach()
+            except Exception:
+                pass
+    return "Browser-session bootstrap diagnostic: " + json.dumps(diagnostic, sort_keys=True)
 
 
 @pytest.mark.integration
@@ -285,11 +371,16 @@ def test_transient_safari_probe_retries_stop_after_a_bounded_attempt_count(
 
     context.route("**/api/browser-session**", respond)
     page = context.new_page()
+    bootstrap_evidence = _observe_browser_session_bootstrap(page)
     page.clock.install()
     try:
         page.goto(f"{sidebar_server_url}/cache/x/media/safari")
         message = page.locator('[data-role="browser-session-message"]')
-        expect(message).to_have_text("Waiting on check 1.")
+        try:
+            expect(message).to_have_text("Waiting on check 1.")
+        except AssertionError as error:
+            error.add_note(_browser_session_bootstrap_failure(page, bootstrap_evidence, len(requests)))
+            raise
         for attempt in range(2, 32):
             page.clock.run_for(2_100)
             expect(message).to_have_text(

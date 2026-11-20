@@ -1,6 +1,6 @@
 """Browser-backed Gemini session history caching."""
 
-# Code version: v1.12.0-codex.0
+# Code version: v1.13.0-codex.0
 
 from __future__ import annotations
 
@@ -28,8 +28,8 @@ from .resource_persistence import (
     GEMINI_HISTORY_FILENAME,
     GEMINI_HISTORY_SCHEMA,
     GEMINI_HISTORY_SCHEMA_VERSION,
-    read_parquet_rows,
-    write_parquet_rows_atomic,
+    read_resource_rows,
+    write_resource_rows_atomic,
 )
 from .safari_automation import SafariContext, SafariPage
 from .state import TaskSnapshot, TaskState, utc_now
@@ -117,7 +117,7 @@ def gemini_history_dir(local_store_root: Path | str = LOCAL_STORE_ROOT) -> Path:
 
 
 def gemini_history_path(local_store_root: Path | str = LOCAL_STORE_ROOT) -> Path:
-    """Return the typed Parquet file used for Gemini chat history."""
+    """Return the typed history store used for Gemini chat history."""
     return gemini_history_dir(local_store_root) / GEMINI_HISTORY_FILENAME
 
 
@@ -219,9 +219,9 @@ def build_gemini_initial_snapshot(
     version: str,
     local_store_root: Path | str = LOCAL_STORE_ROOT,
 ) -> TaskSnapshot:
-    """Hydrate an idle Gemini snapshot from the local Parquet cache."""
+    """Hydrate an idle Gemini snapshot from the local history cache."""
     history_path = gemini_history_path(local_store_root)
-    rows = read_parquet_rows(history_path)
+    rows = read_resource_rows(history_path)
     snapshot = TaskSnapshot(
         version=version,
         account_name="Gemini",
@@ -253,13 +253,13 @@ def build_gemini_initial_snapshot(
 
 
 class GeminiHistoryStore:
-    """Merge complete Gemini sessions into one atomic Parquet file."""
+    """Merge complete Gemini sessions into one transactional history store."""
 
     def __init__(self, path: Path) -> None:
         self.path = path
-        rows = read_parquet_rows(path)
-        if path.exists() and rows is None:
-            raise RuntimeError(f"Gemini history Parquet is unreadable: {path}")
+        rows = read_resource_rows(path)
+        if (path.exists() or path.with_suffix(".parquet").exists()) and rows is None:
+            raise RuntimeError(f"Gemini history store is unreadable: {path}")
         self._rows_by_key: dict[str, dict[str, Any]] = {}
         for row in rows or []:
             message_key = str(row.get("message_key") or "").strip()
@@ -457,7 +457,7 @@ class GeminiHistoryStore:
 
     def save(self) -> None:
         """Persist all cached messages with schema verification and atomic replacement."""
-        write_parquet_rows_atomic(self.path, self.rows, GEMINI_HISTORY_SCHEMA)
+        write_resource_rows_atomic(self.path, self.rows, GEMINI_HISTORY_SCHEMA)
 
 
 def inspect_gemini_session(page) -> dict[str, Any]:
@@ -1543,7 +1543,7 @@ def sync_gemini_history(
     *,
     skip_cached_conversations: bool = False,
 ) -> GeminiSyncResult:
-    """Cache rendered Gemini sessions into a local Parquet file."""
+    """Cache rendered Gemini sessions into a local SQLite store."""
     history_path = gemini_history_path(local_store_root)
     store = GeminiHistoryStore(history_path)
     state.update(

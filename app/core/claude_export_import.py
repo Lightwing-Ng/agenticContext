@@ -5,7 +5,7 @@ conversation replaces the cached rows of the same session, using the same conver
 recorded-payload sync path. Sessions that are not in the export are kept.
 """
 
-# Code version: v1.0.0-claude.0
+# Code version: v1.1.0-codex.0
 
 from __future__ import annotations
 
@@ -60,7 +60,8 @@ def import_claude_export(root: Path, export_path: Path, apply: bool = False) -> 
         raise RuntimeError("A cache task is running; history was not modified.")
     try:
         path = claude_history_path(root)
-        original = path.read_bytes() if path.exists() else None
+        source_path = path if path.exists() else path.with_suffix(".parquet")
+        original = source_path.read_bytes() if source_path.exists() else None
         store = ClaudeHistoryStore(path)
         before = {"sessions": store.cached_conversations, "messages": store.cached_messages}
         captured_at = utc_now_iso()
@@ -96,12 +97,13 @@ def import_claude_export(root: Path, export_path: Path, apply: bool = False) -> 
             "applied": False,
         }
         if apply:
-            if (path.read_bytes() if path.exists() else None) != original:
+            current_source = path if path.exists() else path.with_suffix(".parquet")
+            if (current_source.read_bytes() if current_source.exists() else None) != original:
                 raise RuntimeError("History changed during review; history was not modified.")
             backup_dir = root / "recovery" / ("claude-export-" + datetime.now(UTC).strftime("%Y%m%dT%H%M%S%fZ"))
             backup_dir.mkdir(parents=True, exist_ok=False)
             if original is not None:
-                backup = backup_dir / "history.parquet"
+                backup = backup_dir / source_path.name
                 backup.write_bytes(original)
                 result["backup"] = str(backup)
             store.save()

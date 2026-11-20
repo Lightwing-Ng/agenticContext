@@ -1,6 +1,6 @@
 """Project authenticated Mac message receipts without changing original archives.
 
-Code version: v1.1.3-codex.0
+Code version: v1.2.0-codex.0
 """
 
 from __future__ import annotations

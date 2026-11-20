@@ -44,6 +44,7 @@ PROMPT_MARKDOWN_RENDERER = MarkdownIt(
     "default",
     {"html": False, "linkify": False, "typographer": False},
 )
+_CACHED_MARKDOWN_SURROGATES = re.compile(r"[\ud800-\udfff]")
 
 
 CACHE_RECONCILE_PHASES = {"idle", "finished", "completed", "success", "stopped"}
@@ -555,12 +556,16 @@ def render_cached_message(
         else content_html
     )
     rich_text = sanitize_stored_html(source_html, replace_images=replace_images)
-    markdown = (
-        format_chatgpt_display_markdown(content_text)
-        if str(provider or "").strip().lower() == "chatgpt"
-        else content_text
-    )
-    rendered = rich_text if rich_text else str(render_prompt_markdown(markdown))
+    # Preserve custom coercion and parser errors even when HTML wins. Citation
+    # removal can join numeric references, and Markdown links can encode surrogates.
+    if str(provider or "").strip().lower() == "chatgpt" and (
+        not rich_text
+        or type(content_text) is not str
+        or ("&" in content_text and "#" in content_text)
+        or _CACHED_MARKDOWN_SURROGATES.search(content_text)
+    ):
+        content_text = format_chatgpt_display_markdown(content_text)
+    rendered = rich_text if rich_text else str(render_prompt_markdown(content_text))
     return Markup(_wrap_rendered_tables(rendered, aria_label="Scrollable message table"))
 
 

@@ -1,6 +1,6 @@
 # Visual Style Reference
 
-Documentation version: `v1.38.8-codex.0`
+Documentation version: `v1.38.13-codex.0`
 
 ## Authority
 
@@ -89,7 +89,8 @@ typeface.
 1. Inspect the relevant reference files first. Start with
    `../../worthward/app/web/static/assets/css/app.css`, then follow
    its imports in `foundation/`, `layout/`, `components/`, and `views/`.
-2. Reuse the reference project's token names, spacing, corner radii, surface treatment,
+2. Reuse the reference project's token names, spacing, corner radii and continuous
+   corner shape, surface treatment,
    motion curves, and accessibility states where they apply to existing agenticContext
    markup. Preserve the local typography contract above instead of copying the sibling's
    current `font-family` values.
@@ -112,6 +113,42 @@ compatibility layer and update this document when the synchronization strategy c
 
 ## WeChat conversation share action
 
+Eligible private and group conversation pages place Refresh chat history immediately
+before the existing share root. The action reuses the shared 32px Circular icon
+button and 18px glyph, with Worthward's byte-identical
+`square.and.arrow.down.on.square.svg` mask. The existing toolbar flex gap owns its
+spacing; entering or focusing Refresh must not open the adjacent share menu. The
+compact sidebar overlay hides both actions through the same visibility boundary.
+Refreshing reuses the shared waiting card and result notice. When new messages are
+added from an unfiltered conversation link without a page number, or from the
+unfiltered last page, the conversation opens at the end of the new last page.
+Message anchors and contact-return checkpoints take precedence.
+Other refreshes retain the exact URL and existing history checkpoints. The result
+notice stays pending until the verified conversation is displayed and lists gaps in
+source coverage when counts are available.
+
+Refresh progress updates the existing waiting handle with an allowlisted phase,
+the current source ordinal, actual messages checked and possible updates identified.
+Unavailable or unverified sources remain explicit. Candidate counts are not saved
+counts; the result distinguishes new messages, restored placeholders and repaired
+message details only after publication. The spinner stays indeterminate, without
+a fabricated percentage or completion time. The shared 420px card, material,
+geometry and typography remain unchanged. Updating an older handle respects the
+latest waiting task, and closing a notification keeps later progress updates from
+reopening it while the local task continues.
+
+Floating pagination keeps the canonical content-sized pill at narrow widths.
+The existing 560px and 320px rules adjust only page-slot sizes and gaps; they
+must not stretch the pagination surface across its available width.
+
+WeChat speaker labels repair only the legacy reversed keycap sequence
+`[0-9#*] U+20E3 U+FE0F` to the Unicode emoji order
+`[0-9#*] U+FE0F U+20E3` at the final HTML name interpolation. The same private
+template macro covers ordinary, quoted, and nested forwarded speakers. Source
+names, identity keys, message and quotation bodies, CSV, and Markdown retain
+their literal bytes. This source-display adapter changes no font, shared style,
+or sibling component.
+
 WeChat conversation and contact tables use the same proven native-source preference.
 When an HTML observation matches an iPhone or iPad observation, the default row and
 export use the native representative while the existing source disclosure retains
@@ -121,14 +158,26 @@ verified source interval. HTML-only messages and unresolved conflicts remain
 visible. This is a data-projection change with no new control, font, material,
 motion, spacing or responsive breakpoint.
 
+Verified native conversations also project one event for an exact server ID,
+owner, peer, sender, direction, message type, and content signature observed in
+different source snapshots. Ambiguous, unsupported, or conflicting observations
+remain separate. The existing iPad preference selects a deterministic display
+representative; it does not correct either device's clock. Source details show the
+preserved observation count and each source clock, including explicit clock
+disagreement. CSV uses the same projected timeline, while dataset exchange retains
+every original source row.
+
 Conversation detail reuses Worthward's direct-export Share action from
 `templates/_macros.html`: the existing `.circular-icon-button` primitive and
 byte-identical `square.and.arrow.up.svg`. Its native link retains the existing
 complete-conversation CSV route as the default. A product-specific frosted menu
-offers CSV first and the compact `.wechatx` dataset second, with hover, focus,
-touch and keyboard support. Dataset preparation runs in the background with a
-live status and an expiring download token; it does not estimate a percentage.
-Escape and outside clicks remain available while preparation is pending.
+offers CSV first and the compact cross-account `.wechatx` dataset second.
+Hover, focus, and touch reveal the menu. Arrow keys move between the choices and
+Escape restores focus to Share. Dataset preparation runs in the background with a
+live status and an expiring download token. Duplicate clicks reuse the pending job
+and interrupted polling can resume it. The ready job starts a same-origin download
+from the existing document. Escape and outside clicks remain available during
+preparation.
 The search toolbar returns to All conversations
 through the existing Circular icon button and `browser-session-neighbor-prev-icon`
 left-arrow adapter. Its native link retains the account, conversation kind, sort,
@@ -137,11 +186,13 @@ The toolbar centers Back with the search field. Above the existing 900px sidebar
 breakpoint, Back remains at the toolbar's left edge, before the search-action
 container with the existing 12px gap, in both sidebar states. The compact adapter
 retains its sidebar-toggle alignment and safe-inset tokens.
-The Share action's 32px circle and 18px glyph sit in the session toolbar, centered
-vertically with search and horizontally on the theme action's column. The title
-reserves only the theme circle without changing fonts or introducing a breakpoint.
-At the existing 900px sidebar-overlay breakpoint,
-the workspace Share, Refresh and Back actions are hidden while that overlay is open,
+The refresh and Share circles sit before search and use the shared action gap.
+The search pill's right semicircle shares its centerline with the global theme
+button in the WeChat session toolbar, including loading and error states.
+The export menu opens below Share and fits within the width of Share and search
+together. The title reserves the theme circle. At the existing 900px sidebar-overlay
+breakpoint, the workspace Share, Refresh, and Back actions are hidden while the
+overlay is open,
 preserving the sidebar's width and keyboard boundary. Closing the sidebar restores them.
 The native download link retains its account and conversation-kind scope, label,
 tooltip and standard focus state.
@@ -174,6 +225,12 @@ and byte-identical `square.and.arrow.up.svg`. Both controls keep the shared 32px
 circle, 18px icon, accessible name, tooltip, focus states, and native link behavior.
 The contact toolbar retains its own placement and CSV transport; it does not
 import investment drawers or the conversation's global rail positioning rules.
+With the sidebar collapsed, contact Back shares the sidebar toggle's horizontal
+center without changing its vertical position. Its local inline margin derives
+from the shared toggle, article-padding and safe-inset tokens, including the
+existing 900px overlay and 560px compact-page boundaries. An open sidebar retains
+the toolbar's original inset. The persisted collapsed bootstrap uses the same
+equation; no shared control, font, size, motion or breakpoint changes.
 
 ## Shared Collapse
 
@@ -512,7 +569,10 @@ Rapid reversal starts from the currently rendered dimensions. Reduced Motion ski
 and immediately settles active motion when the preference changes; resize, font loading, and
 page exit also clear transient animations. Closing content is inert until native closure.
 Forwarded `Chat history` summaries consume that same controller and message-card width
-target, including nested transcripts. Their native toggle no longer finishes the
+target, including nested transcripts. Measure compact clock fit with the transcript
+body excluded, so the expanded width does not pin the closing bubble. The clock
+stays on the rail and fades briefly while the animated edge crosses it. Their
+native toggle no longer finishes the
 animation it just started. Related active ancestors or descendants settle before a
 new measurement, while independent disclosures and same-target reversal retain
 their motion. Deep source anchors use the controller's immediate `setOpen` path,
@@ -521,6 +581,12 @@ The external-shadow adapter intersects only actively unfolding forwarded ancesto
 unrevealed child shadows remain hidden, and partial child shadows respect that clip.
 Settled transcripts clear the temporary clip and retain their ordinary shadow bleed.
 The observer watches only `data-collapse-motion`, avoiding its own style writes.
+Timestamp measurement batches equal-depth cards before applying geometry, then
+processes their descendants in the resulting parent layout. The external shadow
+adapter reads geometry before writes and submits only changed values. Work no
+longer forces a separate synchronous layout for each additional forwarded message
+on every sampled animation frame. Final motion-state changes refresh shadow clips
+before paint. These changes preserve the existing 620ms spring and native controls.
 No new easing, typography, breakpoint, or card material is introduced. Coverage lives
 in `tests/test_wechat_forwarded_motion_e2e.py` and
 `tests/test_disclosure_motion_control_e2e.py`, alongside the existing source,
@@ -582,7 +648,7 @@ within each cell. No bubble material, alternate typeface, sentiment inference, o
 component is introduced. The analysis preserves
 source-account provenance and links each occurrence back to its actual source page.
 
-Contact statements include text inside source-verified HTML forwarded transcripts.
+The contact view labels each displayed text item `Message` and its count `Text messages`. It includes text inside source-verified HTML forwarded transcripts.
 Each embedded author must pass the same native-ID and published-source proof as
 the chat card; display names never establish identity. A compact reference index
 stores parent IDs, component paths and original clocks without duplicating bodies.
@@ -652,7 +718,7 @@ The gray material, 2px radius, 2px/6px padding, small-text role, and Light/Dark
 colors remain identical. Only the contact table permits the badge label to wrap
 within its narrow column; it does not shrink the type or overlap the account column.
 
-No./Time/Statement/Conversation/Source account use 10/20/40/15/15% at every width.
+No./Time/Message/Conversation/Source account use 10/20/40/15/15% at every width.
 This user-selected allocation sums to 100%; no breakpoint reduces the No. or Time
 share. No. values remain horizontally centered. Both the
 colgroups and body cells declare the allocation; the existing shared controller
@@ -719,6 +785,56 @@ spacing. Native forwarded quotes use the same verified receiving envelope.
 Original speaker labels, quote references, bodies, source clocks, accounts, and
 exports remain unchanged. Coverage lives in `tests/test_wechat_quoted_contacts.py`
 and `tests/test_wechat_quoted_contacts_e2e.py`.
+
+Authenticated Mac quotes use the same native app/file card presentation and
+canonical group-speaker names. Exact referenced cards retain their original
+account, room, author, server ID, source clock and authenticated source boundary.
+Native app-card titles come from the direct `appmsg/title` leaf. Public-account
+attribution comes from `appmsg/sourcedisplayname`; an explicit `appinfo/appname`
+supplies the application name when public-account attribution is absent.
+WeChat Channels cards use the same icon and two-line layout as shared links.
+Native subtype 51 supplies the literal description and publishing nickname from
+`appmsg/finderFeed/desc` and `appmsg/finderFeed/nickname`. A compatibility-only
+title falls back to the WeChat Channels label when the description is absent.
+Quoted cards also use these labels from their own authenticated embedded app
+envelope when an independent original is absent. Source paths are retained and
+an original-card conflict cannot promote embedded labels. The existing quote
+speaker, reply body, account boundary and media availability remain authoritative.
+The title occupies the existing resource-label line, and explicit source
+attribution uses the existing muted secondary line. Both remain escaped plain
+text in ordinary and quoted cards. Native indexing and scoped refresh share one
+bounded label parser, including LF and CRLF group-sender envelopes. Labels also
+remain visible on indexed app references without a metadata-only availability
+marker, without changing their local resolution or Finder actions. File cards
+prefer their explicit filename, then a bounded source card title; these display
+labels never create a filesystem locator. Card metadata does not establish
+article-body or attachment availability. Existing fonts, materials, controls and
+responsive rules are unchanged. Focused coverage lives in
+`tests/test_wechat_resources.py` and
+`tests/test_wechat_resource_card_labels.py`.
+All metadata-only resource cards omit the visible `Metadata only` text while
+retaining their type labels, explicit source names and structured availability
+metadata. The shared resource macro applies this rule to ordinary messages,
+quotes and forwarded children, including HTML contact and location placeholders.
+Images use the local single-photo `photo.fill.svg` asset, and voice messages use
+the local `message.badge.waveform.svg` asset across ordinary messages, quotes and
+forwarded children. Other symbols remain unchanged. Finder-capable cards retain their separate action, feedback node and
+accessible association; embedded cards do not acquire host actions.
+Authenticated native short-video quotes use the existing video resource role.
+Verified `@im.chatroom` rooms and legacy native usernames reuse the contact name
+only after exact original-message evidence establishes the author. A room-valued
+reference that could identify the reply sender retains its source label without
+that evidence, including nested quotes. Source and account boundaries, original
+labels, message bodies and clocks remain unchanged. Coverage also lives in
+`tests/test_wechat_macos_recovery_presentation.py`,
+`tests/test_wechat_quoted_contacts.py` and
+`tests/test_wechat_quoted_resources.py`.
+WeChat message and conversation pagination, including range-menu links, reuses
+the existing waiting modal and paint-before-navigation adapter. The ellipsis
+trigger remains a menu action. Modified clicks, downloads and new-tab targets
+retain native navigation semantics. No shared pagination geometry or timing
+primitive changes. Coverage lives in `tests/test_pagination_boundaries.py` and
+`tests/test_wechat_pagination_loading_e2e.py`.
 
 Legacy HTML Type 1 text uses the same quote variant only with a complete legacy
 envelope, the exact 15-part spaced-hyphen separator, and a nonblank reply. The
@@ -794,7 +910,7 @@ and ordinary user messages remain literal; no contact or status artwork is infer
 
 WeChat media and file occurrences remain compact message bubbles with the normal
 speaker, source disclosure, timestamp rail, and external shadow. A resource body
-reuses the bundled `photo.stack.svg`, `film.circle.svg`,
+reuses the bundled `photo.stack.svg`, `film.fill.svg`,
 `document.on.document.fill.svg`, and `play.fill.svg` symbols instead of loading
 media previews. The body stays passive; a separate standard 32px Circular icon
 button with the existing 18px Finder glyph reveals on hover or keyboard focus.
@@ -956,6 +1072,13 @@ navigation. It follows Worthward's animation-frame-to-task paint boundary, with 
 clicks, downloads and other browsing contexts retain native behavior. Page exit
 and persisted page restoration clear the navigation notice and its pending timers.
 Every Dock host mounts the same partial and controller exactly once.
+The Agent host initializes this controller synchronously immediately after the
+waiting partial, before its other footer scripts. Its Dock can be painted while
+the large Agent bundle is still downloading; deferring the waiting controller
+until parsing ends would leave those early clicks without feedback. The existing
+notice, destination memory, paint boundary and native-click exclusions remain
+unchanged. Startup coverage lives in `tests/test_agent_dock_startup_e2e.py`, including
+real clicks and keyboard activation while a late footer script remains pending.
 Verified-contact statement pagination opts into the same paint-before-navigation
 notice for numeric, current-page and chunk-arrow links. Search, sort and exact
 return context remain in the destination; keyboard and modified clicks retain
@@ -985,6 +1108,10 @@ public markup contract. Non-active page, arrow, and ellipsis controls inherit
 together to `--local-store-pagination-button-color-hover` on hover or
 `:focus-visible`. Spatial movement remains tokenized, with a 1ms linear Reduced
 Motion adaptation.
+The shared layout contract v1.21.4 selects the nearest page within an inclusive
+range. Browser Text, Media, and Prompts range links and Agent conversation history
+buttons clamp the current page to the chosen range. Keyboard activation uses the
+same destination as a pointer click.
 
 Scrollable tables use one clipped `.scrollable-data-table-shell` with a direct-child
 fixed `table[data-table-header]` and one `.scrollable-data-table-scroll` owner that
@@ -993,11 +1120,43 @@ compensation, header height, and horizontal scroll. The shared header, cell, sum
 row, minimum-width, and scrollbar-gutter visuals consume the canonical
 `--scrollable-data-table-*` tokens. AgenticContext-only shell and body aliases remain
 local adapters; product table classes only adapt column semantics and content.
+The first visible, non-summary body row remains the column-width authority. The
+controller observes its actual cells so container-query column changes synchronize
+the fixed header even when the table's outer bounds do not resize. Replacing,
+hiding, or changing the eligibility of that row refreshes the observed cells. A
+body-only mutation observer never observes the header or shell styles written by
+synchronization; cleanup disconnects both observers.
+
+WeChat conversation lists and contact statements use this same complete structure,
+including its fixed header and single scrolling body. Header reservation uses the
+layout height (`offsetHeight`), matching Worthward, so an entrance transform cannot
+change the body's vertical budget. The WeChat totals use the same numeric renderer
+as other Local resources views. `Account sources` in a conversation view counts
+retained account-source archive entries; `Source accounts` in contact analysis
+counts distinct native account keys. Their labels remain distinct because these
+units can differ when multiple archives belong to one account.
+Fractional column measurements are converted from the current rendered scale into
+layout coordinates before assigning header widths, keeping transformed tables
+aligned without rounding away their column precision. This width correction is an
+AgenticContext-first candidate in the central ledger until Worthward promotion and
+applicable neoMe verification are complete.
+Source-filter table headers read the same canonical text-source registry as the
+shared sidebar. They do not depend on assignments local to an included template;
+the separate header menu must retain its complete provider options after sidebar
+composition. This binding changes no cached source, filter semantics or counts.
 
 Segmented controls use `.segmented-control`, shrink-wrap with `fit-content`, remain
 centered within `max-width: 100%`, and create equal tracks with
 `repeat(var(--segmented-option-count), minmax(0, 1fr))`. A measured pill is an
 explicit adapter for content-driven widths, not the default overflow strategy.
+Production controls and catalog specimens share the canonical frosted background,
+shadow and blur, including start/end thumb shadows. Labels remain on one line;
+visible disabled options retain their geometric slot and use the shared muted
+disabled state. Only an overflowing control enables the canonical horizontal-scroll
+fallback. Its 92px minimum track expands to fit literal labels, the active pill is
+measured against the real option, and keyboard selection keeps that option visible.
+Ordinary controls retain their equal tracks and unclipped external shadow. No new
+font role, control dimension or responsive breakpoint is introduced.
 
 Workspace metric labels use the Agent runtime form-field label as their shared
 typographic reference: 15px regular primary text with normal line height and

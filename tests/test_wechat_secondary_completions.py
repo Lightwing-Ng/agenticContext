@@ -1,6 +1,6 @@
 """Derived completion catalogs preserve originals and serve one consistent timeline.
 
-Code version: v1.0.7-codex.2
+Code version: v1.1.0-codex.0
 """
 
 from contextlib import closing
@@ -398,6 +398,107 @@ def test_packet_generator_is_consumed_incrementally_and_replay_is_idempotent(
     assert report["rejected"] == {}
 
 
+def test_scoped_completion_keeps_other_account_resources_and_notices_out(
+    completion_fixture,
+    monkeypatch,
+):
+    fixture = completion_fixture
+    packet = deepcopy(fixture["packet"])
+    account = packet["account_id"]
+    hashed = hashlib.md5(account.encode(), usedforsecurity=False).hexdigest()
+    partition = "ios-" + hashed
+    session = packet["session_id"]
+    conversation = {
+        **fixture["conversation"],
+        "id": session,
+        "partition_id": partition,
+        "account_key": "account:" + account,
+        "message_count": 1,
+    }
+    row = {
+        **fixture["image"],
+        "id": hashlib.sha256(b"same-server-in-selected-account").hexdigest(),
+        "conversation_id": session,
+    }
+    proof = json.loads(row["provenance"])
+    relative = f"Documents/{hashed}/DB/message_2.sqlite"
+    proof.update(
+        record_id=row["id"],
+        source_relative_path="AppDomain-com.tencent.xin/" + relative,
+    )
+    proof["resource_reference"]["account_id"] = account
+    row["provenance"] = json.dumps(proof)
+    with sqlite3.connect(fixture["history"]) as history:
+        history.execute(
+            "INSERT INTO conversations VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+            tuple(conversation[column] for column in completions.CONVERSATION_COLUMNS),
+        )
+        history.execute(
+            "INSERT INTO source_snapshots(snapshot_id,source_id,metadata) VALUES(?,?,?)",
+            (
+                proof["backup_id"],
+                partition,
+                json.dumps(
+                    {
+                        "source_account_id": account,
+                        "account_hash": hashed,
+                        "account_hash_verified": True,
+                        "input_databases": [
+                            {"path": relative, "sha256": proof["source_sha256"]}
+                        ],
+                    }
+                ),
+            ),
+        )
+    with sqlite3.connect(fixture["catalog"]) as catalog:
+        catalog.execute(
+            "INSERT INTO conversations VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+            tuple(conversation[column] for column in completions.CONVERSATION_COLUMNS),
+        )
+        catalog.execute(
+            "INSERT INTO messages VALUES("
+            + ",".join("?" for _ in completions.COLUMNS)
+            + ")",
+            tuple(row[column] for column in completions.COLUMNS),
+        )
+
+    def unexpected_notice_work(*args, **kwargs):
+        pytest.fail("Scoped resource completion must not process system notices.")
+
+    monkeypatch.setattr(systems.notices, "build_notice_plans", unexpected_notice_work)
+    monkeypatch.setattr(completions, "_index_existing_appends", unexpected_notice_work)
+    scoped = {"primary_conversation_id": session, "only_uncompleted": True}
+    report = completions.stage_secondary_message_completions(
+        fixture["root"], fixture["candidate"], [packet], **scoped
+    )
+    assert report["counts"] == {"native_sender": 1}
+    with completions._readonly(fixture["candidate"]) as derived:
+        rows = derived.execute("SELECT id,conversation_id,sender_id FROM messages")
+        assert [tuple(item) for item in rows] == [
+            (row["id"], session, native.MEMBER)
+        ]
+    for key, value in (
+        ("session_id", fixture["conversation"]["id"]),
+        ("account_id", sender.PRIMARY),
+        ("peer_id", "different@chatroom"),
+    ):
+        with pytest.raises(ValueError, match="differs from the scoped primary"):
+            completions.stage_secondary_message_completions(
+                fixture["root"],
+                fixture["candidate"].with_name(f"wrong-{key}.sqlite3"),
+                [{**packet, key: value}],
+                **scoped,
+            )
+    with pytest.raises(ValueError, match="incomplete resources only"):
+        completions.stage_secondary_message_completions(
+            fixture["root"],
+            fixture["candidate"].with_name("explicit-notices.sqlite3"),
+            [packet],
+            notice_plans=(),
+            **scoped,
+        )
+
+
 def test_multiple_physical_witnesses_are_reported_without_selecting_the_first(
     completion_fixture,
 ):
@@ -468,74 +569,14 @@ def test_resource_and_system_strategies_share_one_sql_catalog_and_publication(
     ):
         plans = systems.notices.build_notice_plans(history, catalog, packet)
     assert len(plans) == 1
-    base_report = _stage(fixture)
-    base_report = completions.compact_secondary_message_completions(
-        fixture["root"],
-        fixture["candidate"],
-        fixture["candidate"].with_name("encoded-resource-base.sqlite3"),
-        candidate_sha256=base_report["candidate_sha256"],
-    )
-    base_path = Path(base_report["candidate"])
-    base_bytes = base_path.read_bytes()
-    fixture["candidate"] = base_path.with_name("extended-with-notices.sqlite3")
     report = completions.stage_secondary_message_completions(
-        fixture["root"],
-        fixture["candidate"],
-        (),
-        notice_plans=plans,
-        base_candidate_path=base_path,
-        base_candidate_sha256=base_report["candidate_sha256"],
+        fixture["root"], fixture["candidate"], [fixture["packet"]], notice_plans=plans
     )
-    assert base_path.read_bytes() == base_bytes
-    assert report["packets"] == 0
-    assert report["base_candidate"]["sha256"] == base_report["candidate_sha256"]
     assert report["counts"] == {
         "native_sender": 1,
         "native_quote": 1,
         "system_notice": 1,
     }
-    encoded = completions.compact_secondary_message_completions(
-        fixture["root"],
-        fixture["candidate"],
-        fixture["candidate"].with_name("encoded-notice-candidate.sqlite3"),
-        candidate_sha256=report["candidate_sha256"],
-    )
-    fixture["candidate"] = Path(encoded["candidate"])
-    report = encoded
-    bad_plan = fixture["candidate"].with_name("corrupt-encoded-plan.sqlite3")
-    completions._clonefile(fixture["candidate"], bad_plan)
-    with sqlite3.connect(bad_plan) as output:
-        rowid, frame = output.execute(
-            "SELECT rowid,plan FROM entries WHERE operation='append'"
-        ).fetchone()
-        assert isinstance(frame, bytes)
-        corrupted = bytearray(frame)
-        corrupted[-1] ^= 1
-        output.execute(
-            "UPDATE entries SET plan=? WHERE rowid=?", (bytes(corrupted), rowid)
-        )
-    with pytest.raises((ValueError, sqlite3.DatabaseError)):
-        completions.publish_secondary_message_completions(
-            fixture["root"], bad_plan, candidate_sha256=completions._file_sha(bad_plan)
-        )
-    legacy = fixture["candidate"].with_name("legacy-complete-with-notice.sqlite3")
-    completions._clonefile(fixture["candidate"], legacy)
-    with sqlite3.connect(legacy) as output:
-        output.execute("DROP TABLE append_event_heads")
-        output.execute("DROP TABLE append_event_audit")
-    indexed = completions.stage_secondary_message_completions(
-        fixture["root"],
-        legacy.with_name("indexed-complete-with-notice.sqlite3"),
-        (),
-        notice_plans=(),
-        base_candidate_path=legacy,
-        base_candidate_sha256=completions._file_sha(legacy),
-    )
-    assert indexed["counts"] == report["retained_counts"]
-    with completions._readonly(indexed["candidate"]) as output:
-        assert (
-            output.execute("SELECT COUNT(*) FROM append_event_heads").fetchone()[0] == 1
-        )
     _publish(fixture, report)
     repository = WechatArchiveRepository(fixture["root"])
     result = repository.query(

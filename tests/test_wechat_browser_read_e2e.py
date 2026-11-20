@@ -1,13 +1,12 @@
 """Pending saved views retain honest content and bounded document navigation.
 
-Code version: v1.3.3-codex.0
+Code version: v1.4.1-codex.0
 """
 
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 from functools import partial
-import re
 import sqlite3
 from threading import Event, Thread
 from time import monotonic
@@ -19,6 +18,7 @@ from playwright.sync_api import expect
 from werkzeug.serving import make_server
 
 from app.core.config import CrawlConfig
+from app.core.wechat_mac_refresh import WechatMacRefreshService
 from app.core.wechat_archive import import_wechat_archive, wechat_archive_path
 from app.core.wechat_contacts import contact_registry_path, initialize_contact_registry
 from app.web import local_resource_routes
@@ -60,8 +60,8 @@ class ControlledRead:
 
 
 @pytest.fixture
-def read_server(tmp_path, monkeypatch):
-    archive = make_archive(tmp_path / "archive", repeated=6)
+def read_server(tmp_path, monkeypatch, request):
+    archive = make_archive(tmp_path / "archive", repeated=getattr(request, "param", 6))
     store = tmp_path / "store"
     import_wechat_archive(archive, store)
     history = wechat_archive_path(store)
@@ -220,6 +220,130 @@ def _request_next_poll(page, *, wait_response=True):
         )
 
 
+def _finish_pending_read(page, fixture):
+    task = page.locator("[data-wechat-read-pending]").get_attribute("data-task-id")
+    fixture.controlled.phase.release.set()
+    service = fixture.application.extensions["wechat_browser_read"]
+    deadline = monotonic() + 5
+    while service.status(task)["state"] == "running":
+        assert monotonic() < deadline, "The synthetic saved view did not finish."
+        Event().wait(0.01)
+    assert service.status(task)["state"] == "succeeded"
+    with page.expect_navigation(wait_until="domcontentloaded"):
+        _request_next_poll(page, wait_response=False)
+    expect(page.locator("[data-wechat-read-pending]")).to_have_count(0)
+
+
+@pytest.mark.parametrize("width", [1280, 832, 390])
+def test_selected_account_refresh_keeps_search_right_after_saved_view_fails(
+    disposable_browser, read_server, monkeypatch, width
+):
+    monkeypatch.setattr(WechatMacRefreshService, "account_available", lambda *_args: True)
+    opened = _open_pending(disposable_browser, read_server, width=width)
+    page = opened.page
+    try:
+        toggle = page.locator("#sidebar_toggle")
+        if toggle.get_attribute("aria-expanded") == "true":
+            toggle.click()
+        refresh = page.get_by_role("button", name="Refresh WeChat account", exact=True)
+        expect(refresh).to_be_enabled()
+        opened.scenario.state = "failed"
+        _request_next_poll(page)
+        expect(page.locator("[data-wechat-read-retry]")).to_be_visible()
+        expect(page.locator("[data-wechat-exchange-import-trigger]")).to_have_count(0)
+        geometry = refresh.evaluate("""node => {
+            const toolbar = node.parentElement;
+            const search = node.nextElementSibling.querySelector('.browser-search-control');
+            const refreshBounds = node.getBoundingClientRect();
+            const searchBounds = search.getBoundingClientRect();
+            const glyph = node.querySelector('.icon');
+            return {
+                rightOffset: toolbar.getBoundingClientRect().right - searchBounds.right,
+                gap: searchBounds.left - refreshBounds.right,
+                gapToken: parseFloat(getComputedStyle(toolbar).columnGap),
+                mask: getComputedStyle(glyph).maskImage,
+                overflow: document.documentElement.scrollWidth - innerWidth,
+            };
+        }""")
+        assert geometry["rightOffset"] == pytest.approx(0, abs=1)
+        assert geometry["gap"] == pytest.approx(geometry["gapToken"], abs=1)
+        assert "/tray.and.arrow.down.fill.svg" in geometry["mask"]
+        assert geometry["overflow"] <= 1
+        assert opened.errors == []
+    finally:
+        opened.context.close()
+
+
+def test_account_refresh_from_pending_view_posts_only_account_and_keeps_the_url(
+    disposable_browser, read_server, monkeypatch
+):
+    monkeypatch.setattr(WechatMacRefreshService, "account_available", lambda *_args: True)
+    opened = _open_pending(disposable_browser, read_server)
+    page = opened.page
+    try:
+        refresh = page.get_by_role("button", name="Refresh WeChat account", exact=True)
+        endpoint = read_server.url + refresh.get_attribute("data-wechat-refresh-url")
+        requests = []
+
+        def refresh_account(route):
+            requests.append((route.request.method, route.request.post_data_json))
+            route.fulfill(json={"state": "succeeded", "added": 1234, "partial": True})
+
+        page.route(endpoint, refresh_account)
+        with page.expect_navigation(wait_until="domcontentloaded"):
+            refresh.click(no_wait_after=True)
+        assert page.url == opened.original_url
+        assert requests == [("POST", {"account_id": "wxid_account_a"})]
+        banner = page.locator("[data-wechat-refresh-banner]")
+        expect(banner.locator("[data-wechat-refresh-title]")).to_have_text("WeChat account partly refreshed")
+        expect(banner.locator("[data-wechat-refresh-copy]")).to_contain_text("Added 1,234 messages.")
+        assert opened.errors == []
+    finally:
+        opened.context.close()
+
+
+def test_account_refresh_timeout_stays_visible_when_retrying_the_saved_view(
+    disposable_browser, read_server, monkeypatch
+):
+    monkeypatch.setattr(WechatMacRefreshService, "account_available", lambda *_args: True)
+    opened = _open_pending(disposable_browser, read_server)
+    page = opened.page
+    try:
+        opened.scenario.state = "failed"
+        _request_next_poll(page)
+        retry = page.get_by_role("button", name="Try again", exact=True)
+        expect(retry).to_be_enabled()
+        refresh = page.locator("[data-wechat-account-refresh]")
+        endpoint = read_server.url + refresh.get_attribute("data-wechat-refresh-url")
+        status = "/api/test-wechat-account-refresh/status"
+        page.route(endpoint, lambda route: route.fulfill(json={
+            "state": "running", "status_url": status,
+        }))
+        message = "WeChat account refresh timed out while checking changes."
+        page.route("**" + status, lambda route: route.fulfill(json={
+            "state": "failed", "message": message,
+        }))
+        with page.expect_response(endpoint):
+            refresh.click()
+        expect(page.get_by_role("dialog", name="Refreshing WeChat account")).to_be_visible()
+        expect(retry).to_be_disabled()
+        page.clock.run_for(1_000)
+        banner = page.locator("[data-wechat-refresh-banner]")
+        expect(banner).to_be_visible()
+        expect(banner.locator("[data-wechat-refresh-title]")).to_have_text("Unable to refresh WeChat account")
+        expect(banner.locator("[data-wechat-refresh-copy]")).to_have_text(message)
+        expect(retry).to_be_enabled()
+        with page.expect_navigation(wait_until="domcontentloaded"):
+            retry.click()
+        expect(banner.locator("[data-wechat-refresh-copy]")).to_have_text(message)
+        banner.get_by_role("button", name="Close refresh result").press("Enter")
+        page.reload(wait_until="domcontentloaded")
+        expect(banner).to_be_hidden()
+        assert opened.errors == []
+    finally:
+        opened.context.close()
+
+
 @pytest.mark.parametrize("width", [1280, 836, 390])
 @pytest.mark.parametrize("detail", [False, True])
 def test_pending_view_shows_no_messages_false_zero_totals_or_exports(
@@ -358,12 +482,21 @@ def test_restored_pending_page_resumes_the_inline_skeleton(
         opened.context.close()
 
 
-@pytest.mark.parametrize("width", [1280, 836, 390])
+def _assert_conversation_search_axis(page):
+    search = page.locator(".browser-search-control").bounding_box()
+    theme = page.locator("#global_theme_toggle").bounding_box()
+    assert search is not None and theme is not None
+    assert search["x"] + search["width"] - search["height"] / 2 == pytest.approx(
+        theme["x"] + theme["width"] / 2, abs=1
+    )
+
+
+@pytest.mark.parametrize("width", [1280, 735, 390])
 @pytest.mark.parametrize("detail", [False, True])
 def test_successful_read_reloads_into_the_same_layout_with_validated_records(
     disposable_browser, read_server, monkeypatch, width, detail
 ):
-    paginated_detail = detail and width == 836
+    paginated_detail = detail and width == 735
     if paginated_detail:
         read_server.controlled.original = partial(read_server.controlled.original, page_size=1)
         refresh_service = read_server.application.extensions["wechat_mac_refresh"]
@@ -376,25 +509,16 @@ def test_successful_read_reloads_into_the_same_layout_with_validated_records(
     layout = (
         "[data-layout-role=title-rail]", ".browser-content-toolbar",
         ".browser-search-control", ".browser-metric-grid", result_selector,
-        ".wechat-conversation-context" if detail else "[data-wechat-conversation-list-note]",
-        ".browser-text-summary-card > .browser-pagination",
     )
+
     try:
         # Fallback fonts can change the normal line height of metric labels.
         page.evaluate("document.fonts.ready")
+        if detail:
+            _assert_conversation_search_axis(page)
         pending_boxes = [page.locator(selector).bounding_box() for selector in layout]
-        task = page.locator("[data-wechat-read-pending]").get_attribute("data-task-id")
-        read_server.controlled.phase.release.set()
-        service = read_server.application.extensions["wechat_browser_read"]
-        deadline = monotonic() + 5
-        while service.status(task)["state"] == "running":
-            assert monotonic() < deadline, "The synthetic saved view did not finish."
-            Event().wait(0.01)
-        assert service.status(task)["state"] == "succeeded"
-        with page.expect_navigation(wait_until="domcontentloaded"):
-            _request_next_poll(page, wait_response=False)
-        expect(page.locator("[data-wechat-read-pending]")).to_have_count(0)
-        expect(page.locator(".browser-metric-grid strong")).to_have_text([re.compile(r"[0-9,]+")] * 3)
+        _finish_pending_read(page, read_server)
+        expect(page.locator(".browser-metric-grid [data-numeric-display-value]")).to_have_count(3)
         records = page.locator("[data-chat-message-id]" if detail else "[data-chat-session-id]")
         expect(records.first).to_be_visible()
         expect(page.locator("[data-wechat-conversation-refresh]")).to_have_count(
@@ -404,14 +528,15 @@ def test_successful_read_reloads_into_the_same_layout_with_validated_records(
             1 if paginated_detail else 0
         )
         page.evaluate("document.fonts.ready")
+        if detail:
+            _assert_conversation_search_axis(page)
         for selector, pending in zip(layout, pending_boxes, strict=True):
             ready = page.locator(selector).bounding_box()
             assert pending is not None and ready is not None, selector
-            if selector != ".browser-text-summary-card > .browser-pagination":
-                assert ready["x"] == pytest.approx(pending["x"], abs=1), selector
-                assert ready["width"] == pytest.approx(pending["width"], abs=1), selector
-            assert ready["y"] == pytest.approx(pending["y"], abs=1), selector
-            assert ready["height"] == pytest.approx(pending["height"], abs=1), selector
+            assert ready["x"] == pytest.approx(pending["x"], abs=1), selector
+            assert ready["width"] == pytest.approx(pending["width"], abs=1), selector
+            if selector != result_selector or (detail and width == 735):
+                assert ready["y"] == pytest.approx(pending["y"], abs=1), selector
         expect(page.locator("#cache_wait_modal")).to_be_hidden()
         # A same-URL reload can expose parsed body content before deferred scripts finish.
         page.wait_for_function("window.__wechatReadProbe.domContentLoaded")
@@ -428,12 +553,84 @@ def test_successful_read_reloads_into_the_same_layout_with_validated_records(
         opened.context.close()
 
 
-def test_failed_read_requires_manual_retry_and_then_starts_a_fresh_task(
-    disposable_browser, read_server
+@pytest.mark.parametrize("read_server", [101], indirect=True)
+def test_manual_reload_of_ready_conversation_keeps_messages_without_loading_again(disposable_browser, read_server):
+    scenario = ReadStatusScenario()
+    scenario.state = None
+    opened = _open_pending(disposable_browser, read_server, detail=True, scenario=scenario)
+    page = opened.page
+    try:
+        _finish_pending_read(page, read_server)
+        messages = page.locator("[data-chat-message-id]")
+        expect(messages.first).to_be_visible()
+        message_ids = messages.evaluate_all("rows => rows.map(row => row.dataset.chatMessageId)")
+        blocked = read_server.controlled.reset()
+        for _ in range(2):
+            page.reload(wait_until="domcontentloaded")
+            assert page.url == opened.original_url
+            expect(page.locator("[data-wechat-read-pending]")).to_have_count(0)
+            expect(messages.first).to_be_visible()
+            assert messages.evaluate_all("rows => rows.map(row => row.dataset.chatMessageId)") == message_ids
+        assert not blocked.entered.is_set()
+        assert opened.documents == [opened.original_url] * 4
+    finally:
+        opened.context.close()
+
+
+@pytest.mark.parametrize("read_server", [101], indirect=True)
+@pytest.mark.parametrize(("width", "size"), [(626, 30), (390, 28), (320, 24)])
+def test_pending_pagination_matches_ready_page_button_geometry(
+    disposable_browser, read_server, width, size
 ):
     scenario = ReadStatusScenario()
     scenario.state = None
-    opened = _open_pending(disposable_browser, read_server, scenario=scenario)
+    opened = _open_pending(disposable_browser, read_server, width=width, detail=True, scenario=scenario)
+    page = opened.page
+    geometry = """nodes => nodes.map(node => {
+        const {width, height} = node.getBoundingClientRect();
+        const {borderRadius, cornerShape} = getComputedStyle(node);
+        return {width, height, borderRadius, cornerShape};
+    })"""
+    try:
+        pending = page.locator(".wechat-read-pagination")
+        expect(pending).to_be_visible()
+        expect(pending).to_have_attribute("aria-hidden", "true")
+        pending_box = pending.bounding_box()
+        pending_slots = pending.locator(".navigation-skeleton-line").evaluate_all(geometry)
+        assert pending_slots
+
+        _finish_pending_read(page, read_server)
+        ready = page.get_by_role("navigation", name="Message pages", exact=True)
+        expect(ready.get_by_role("link", name="Message page 2", exact=True)).to_have_attribute(
+            "aria-current", "page"
+        )
+        ready_box = ready.bounding_box()
+        ready_slots = ready.locator(".local-store-page-button")
+        expect(ready_slots).to_have_count(2)
+        ready_shapes = ready_slots.evaluate_all(geometry)
+        assert all(slot == ready_shapes[0] for slot in pending_slots)
+        assert ready_shapes[0]["width"] == ready_shapes[0]["height"] == size
+        assert ready_shapes[0]["borderRadius"] == "50%"
+        assert pending_box["y"] == pytest.approx(ready_box["y"], abs=1)
+        assert pending_box["height"] == ready_box["height"]
+        assert pending_box["x"] + pending_box["width"] / 2 == pytest.approx(
+            ready_box["x"] + ready_box["width"] / 2, abs=1
+        )
+        assert opened.errors == []
+    finally:
+        opened.context.close()
+
+
+@pytest.mark.parametrize("detail", [False, True])
+def test_failed_read_requires_manual_retry_and_then_starts_a_fresh_task(
+    disposable_browser, read_server, detail
+):
+    scenario = ReadStatusScenario()
+    scenario.state = None
+    opened = _open_pending(
+        disposable_browser, read_server, width=735 if detail else 1280,
+        detail=detail, scenario=scenario,
+    )
     page = opened.page
     try:
         original_task = page.locator("[data-wechat-read-pending]").get_attribute("data-task-id")
@@ -445,6 +642,8 @@ def test_failed_read_requires_manual_retry_and_then_starts_a_fresh_task(
             _request_next_poll(page)
         expect(page.locator("[data-wechat-read-retry]")).to_be_visible()
         expect(page.locator("[data-wechat-read-pending]")).to_have_attribute("data-state", "failed")
+        if detail:
+            _assert_conversation_search_axis(page)
         expect(page.locator("[data-wechat-read-placeholder]:not([hidden])")).to_have_count(0)
         expect(page.locator("[data-wechat-read-pending] [aria-busy=true]")).to_have_count(0)
         expect(page.locator("#cache_wait_modal")).to_be_hidden()

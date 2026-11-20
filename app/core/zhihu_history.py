@@ -1,6 +1,6 @@
 """Authenticated Zhihu answer history for the formal text cache.
 
-Code version: v1.6.0-codex.0
+Code version: v1.7.0-codex.0
 """
 
 from __future__ import annotations
@@ -24,8 +24,8 @@ from .resource_persistence import (
     ZHIHU_HISTORY_FILENAME,
     ZHIHU_HISTORY_SCHEMA,
     ZHIHU_HISTORY_SCHEMA_VERSION,
-    read_parquet_rows,
-    write_parquet_rows_atomic,
+    read_resource_rows,
+    write_resource_rows_atomic,
 )
 from .state import TaskSnapshot, TaskState
 from .zhihu_answers import (
@@ -322,9 +322,9 @@ class ZhihuHistoryStore:
 
     def __init__(self, path: Path | str) -> None:
         self.path = Path(path)
-        rows = read_parquet_rows(self.path)
-        if self.path.exists() and rows is None:
-            raise RuntimeError(f"Zhihu history Parquet is unreadable: {self.path}")
+        rows = read_resource_rows(self.path)
+        if (self.path.exists() or self.path.with_suffix(".parquet").exists()) and rows is None:
+            raise RuntimeError(f"Zhihu history store is unreadable: {self.path}")
         self._rows: dict[str, dict[str, Any]] = {}
         for row in rows or []:
             message_key = str(row.get("message_key") or "")
@@ -430,7 +430,7 @@ class ZhihuHistoryStore:
     def save(self) -> None:
         """Persist and verify the formal text cache atomically."""
 
-        write_parquet_rows_atomic(self.path, self.rows, ZHIHU_HISTORY_SCHEMA)
+        write_resource_rows_atomic(self.path, self.rows, ZHIHU_HISTORY_SCHEMA)
 
 
 def build_zhihu_history_initial_snapshot(

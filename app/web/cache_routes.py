@@ -11,7 +11,7 @@ The Safari mutual-exclusion check belongs to the Agent surface, so it arrives as
 capability instead of being reimplemented here.
 """
 
-# Code version: v1.8.3-codex.0
+# Code version: v1.9.0-codex.0
 
 from __future__ import annotations
 
@@ -548,7 +548,7 @@ def register_cache_routes(app: Flask, context: CacheRouteContext) -> None:
 
     @blueprint.get("/")
     def index():
-        return legacy_cache_source_redirect("x")
+        return redirect(url_for("agent.agent"))
 
     @blueprint.get("/grok")
     def grok():

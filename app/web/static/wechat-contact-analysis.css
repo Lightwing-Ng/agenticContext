@@ -1,9 +1,15 @@
-/* Code version: v1.5.0-codex.0 */
+/* Code version: v1.5.5-codex.0 */
 /* Contact statements adapt the shared shell, metrics, and scrollable table. */
 .wechat-contact-workspace .browser-heading-copy {
-    flex-wrap: wrap;
-    align-items: baseline;
-    gap: 4px 8px;
+    flex-direction: column;
+    align-items: stretch;
+    justify-content: center;
+    gap: 4px;
+    padding-inline-end: calc(var(--layout-global-action-inline-size) + var(--layout-edge-gap));
+}
+
+.wechat-contact-workspace [data-contact-analysis-name] {
+    overflow-wrap: anywhere;
 }
 
 .wechat-contact-content {
@@ -23,10 +29,41 @@
     flex-wrap: wrap;
 }
 
+.app-shell.is-sidebar-collapsed .wechat-contact-back,
+html.sidebar-memory-collapsed .app-shell .wechat-contact-back {
+    margin-inline-start: calc(var(--sidebar-toggle-left) - var(--workspace-article-pad-inline));
+}
+
+@media (max-width: 900px) {
+    .app-shell.is-sidebar-collapsed .wechat-contact-back,
+    html.sidebar-memory-collapsed .app-shell .wechat-contact-back {
+        margin-inline-start: calc(-1 * var(--workspace-article-pad-inline));
+    }
+}
+
+@media (max-width: 560px) {
+    .app-shell.is-sidebar-collapsed .wechat-contact-back,
+    html.sidebar-memory-collapsed .app-shell .wechat-contact-back {
+        margin-inline-start: calc(var(--sidebar-overlay-inset-left) - var(--page-compact-edge-pad) - var(--workspace-article-pad-inline));
+    }
+}
+
 .wechat-contact-search {
     flex: 1 1 240px;
     min-width: 0;
     margin: 0 0 0 auto;
+}
+
+@media (min-width: 601px) {
+    .wechat-contact-search {
+        max-width: var(--layout-control-width);
+    }
+}
+
+@media (min-width: 901px) {
+    .wechat-contact-search {
+        max-width: 322px;
+    }
 }
 
 .wechat-contact-search .browser-search-control {
@@ -57,8 +94,11 @@
 }
 
 .wechat-contact-content > .browser-text-metric-grid {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
     margin: 0;
+}
+
+.wechat-contact-content > .browser-text-metric-grid[data-layout-role="content-grid"] > .metric-card {
+    grid-column: span 4;
 }
 
 .wechat-contact-table-shell {
@@ -154,6 +194,7 @@
     outline: 2px solid var(--accent-text);
     outline-offset: 2px;
     border-radius: var(--radius-soft);
+    corner-shape: var(--corner-shape-continuous);
 }
 
 .wechat-contact-table .wechat-contact-sources > summary {

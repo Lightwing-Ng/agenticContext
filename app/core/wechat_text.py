@@ -1,6 +1,6 @@
 """Extract known WeChat textual envelopes without opening attachments or rendering HTML.
 
-Code version: v1.6.3-codex.0
+Code version: v1.10.1-codex.0
 """
 
 from __future__ import annotations
@@ -17,14 +17,15 @@ MAX_XML_BYTES = 2 * 1024 * 1024
 MAX_XML_DEPTH = 32
 MAX_XML_NODES = 20_000
 MAX_FORWARD_DEPTH = 8
-PARSER_VERSION = "v1.6.3-codex.0"
-_PAT_IDENTIFIER = re.compile(r"[A-Za-z0-9_.@-]{1,256}")
-_PAT_USER = re.compile(r"[A-Za-z][A-Za-z0-9_.-]{1,127}")
+PARSER_VERSION = "v1.10.0-codex.0"
 _XML_DECLARATION = re.compile(r"<!\s*(?:DOCTYPE|ENTITY)\b", re.IGNORECASE)
 _CODE = re.compile(r"[0-9]{1,10}")
 _SYSTEM_ROOM_PREFIX = re.compile(r"(?P<room>[0-9]{1,32}@chatroom):[ \t]*(?:\r\n|\n|\r)")
 _SYSTEM_PLACEHOLDER = re.compile(r"\$(?P<name>[A-Za-z_][A-Za-z0-9_]*)\$")
 _SYSTEM_LINK_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+_PAT_IDENTIFIER = re.compile(r"[A-Za-z0-9_.@-]{1,256}")
+_PAT_USER = re.compile(r"[A-Za-z][A-Za-z0-9_.-]{1,127}")
+_PAT_PLACEHOLDER = re.compile(r"\$\{([A-Za-z0-9_.@-]{1,256})\}")
 _INVITATION_HEADINGS = ("Group Chat Invitation", "邀请你加入群聊", "邀请你加入群组")
 _INVITATION_LABEL = r'(?:"[^\r\n]+"|“[^\r\n]+”|「[^\r\n]+」)'
 _INVITATION_GROUP_LABEL = r'(?:"[^\r\n]*"|“[^\r\n]*”|「[^\r\n]*」)'
@@ -227,6 +228,17 @@ def _record_root(
 ) -> ElementTree.Element | None:
     if node is None:
         return None
+    if node.tag == "recordxml" and (
+        node.attrib
+        or len(node) > 1
+        or len(node) == 1
+        and (
+            node[0].tag != "recordinfo"
+            or (node.text or "").strip()
+            or (node[0].tail or "").strip()
+        )
+    ):
+        return None
     if node.tag == "recordinfo" and _child(node, "datalist") is not None:
         return node
     direct = _child(node, "recordinfo")
@@ -234,7 +246,11 @@ def _record_root(
         return _record_root(direct, budget)
     if len(node) == 0 and _usable(node.text or ""):
         parsed = _parse_xml(node.text or "", budget)
-        return parsed if parsed is not None and parsed.tag == "recordinfo" else None
+        return (
+            _record_root(parsed, budget)
+            if parsed is not None and parsed.tag in {"recordinfo", "recordxml"}
+            else None
+        )
     return None
 
 
@@ -289,11 +305,7 @@ def _forward_components(
             else:
                 omitted += 1
                 incomplete = True
-        elif (
-            kind in {1, 49}
-            and appmsg is not None
-            and subtype == 57
-        ):
+        elif kind in {1, 49} and appmsg is not None and subtype == 57:
             budget.forward_depth += depth
             try:
                 quoted = _quoted(appmsg, budget)
@@ -336,7 +348,8 @@ def _forward_components(
                 incomplete = True
                 omitted += 1
                 continue
-            nested = _record_root(_child(item, "recordinfo"), budget)
+            holders = item.findall("recordinfo") + item.findall("recordxml")
+            nested = _record_root(holders[0], budget) if len(holders) == 1 else None
             if nested is None:
                 incomplete = True
                 omitted += 1
@@ -408,7 +421,7 @@ def _forwarded(
         budget.forward_depth -= 1
 
 
-def _quoted_appmsg(
+def _quoted_app_document(
     reference: ElementTree.Element, budget: _Budget
 ) -> ElementTree.Element | None:
     """Read one bounded explicit app envelope from a native quoted content field."""
@@ -428,8 +441,43 @@ def _quoted_appmsg(
         return None
     if root is None or root.tag not in {"msg", "appmsg"}:
         return None
-    appmsg = root if root.tag == "appmsg" else _child(root, "appmsg")
-    return appmsg
+    return root
+
+
+def _quoted_app_card(document, appmsg, subtype, reference):
+    """Retain only unambiguous literal labels from this bounded quoted envelope."""
+    if (
+        document is None
+        or appmsg is None
+        or subtype is None
+        or not 0 < subtype <= 2**31 - 1
+        or len(appmsg.findall("type")) != 1
+        or subtype in {2, 3, 4, 19, 57, 2000, 2001}
+        or any(
+            len(reference.findall(tag)) > 1
+            for tag in (
+                "type", "fromusr", "displayname", "chatusr", "createtime",
+                "svrid", "msgid", "localid", "content",
+            )
+        )
+        or len(appmsg.findall("appinfo")) > 1
+        or document is not appmsg and len(document.findall("appinfo")) > 1
+    ):
+        return None
+    paths = [appmsg.findall("title"), appmsg.findall("sourcedisplayname")]
+    names = appmsg.findall("appinfo/appname")
+    if document is not appmsg:
+        names += document.findall("appinfo/appname")
+    paths.append(names)
+    if any(len(nodes) > 1 or any(len(node) for node in nodes) for nodes in paths):
+        return None
+    # Import lazily: the resource catalog also imports the archive module.
+    from .wechat_resource_index import CHANNELS_APP_SUBTYPE, _app_label_values
+
+    labels = _app_label_values(document, appmsg, str(subtype))
+    if not labels and subtype != CHANNELS_APP_SUBTYPE:
+        return None
+    return {"schema_version": 1, "appmsg_subtype": subtype, **labels}
 
 
 def _quoted(appmsg: ElementTree.Element, budget: _Budget) -> dict[str, Any] | None:
@@ -453,8 +501,18 @@ def _quoted(appmsg: ElementTree.Element, budget: _Budget) -> dict[str, Any] | No
         },
     }
     content = _leaf(reference, "content") if reference_type == 1 else ""
-    quoted_app = _quoted_appmsg(reference, budget) if reference_type == 49 else None
-    quoted_subtype = _code(_leaf(quoted_app, "type")) if quoted_app is not None else None
+    quoted_document = (
+        _quoted_app_document(reference, budget) if reference_type == 49 else None
+    )
+    quoted_app = (
+        quoted_document
+        if quoted_document is not None and quoted_document.tag == "appmsg"
+        else _child(quoted_document, "appmsg")
+    )
+    quoted_subtype = (
+        _code(_leaf(quoted_app, "type")) if quoted_app is not None else None
+    )
+    quoted_reply_body = _leaf(quoted_app, "title") if quoted_subtype == 57 else ""
     forwarded = (
         _forwarded(quoted_app, budget, allow_metadata=True)
         if quoted_subtype == 19
@@ -467,6 +525,20 @@ def _quoted(appmsg: ElementTree.Element, budget: _Budget) -> dict[str, Any] | No
     )
     if _usable(content):
         components.append({"kind": "quoted_text", "text": content, **metadata})
+    elif _usable(quoted_reply_body):
+        # A quoted reply's explicit title is its own body, not its quoted speaker.
+        # Keep the outer reference identity and do not flatten another quote into it.
+        components.append(
+            {
+                "kind": "quoted_text",
+                "text": quoted_reply_body,
+                **metadata,
+                "appmsg_subtype": 57,
+                "text_extraction_kind": "quoted_reply",
+                "flags": ["quoted_native_reply_body"],
+            }
+        )
+        flags.append("quoted_native_reply_body")
     elif payment is not None:
         components.append(
             {
@@ -496,6 +568,11 @@ def _quoted(appmsg: ElementTree.Element, budget: _Budget) -> dict[str, Any] | No
         )
         flags.extend("quoted_" + flag for flag in forwarded["flags"])
     elif reference_type is not None and reference_type != 1:
+        card = _quoted_app_card(
+            quoted_document, quoted_app, quoted_subtype, reference
+        )
+        if card is not None:
+            metadata["app_card_metadata"] = card
         flags.append("quoted_non_text_content_omitted")
     else:
         flags.append("quoted_text_unavailable")
@@ -614,12 +691,12 @@ def _system_hidden_action(link: ElementTree.Element, template_type: str) -> bool
         template_type == "tmpl_type_profilewithrevokeqrcode"
         and link.get("type") == "link_revoke_qrcode"
         and len(link) == 3
-        and _system_container(link, {"title", "username", "qrcodeURL"})
+        and _system_container(link, {"title", "username", "qrcodeURL", "qrcode"})
         and _usable(_system_leaf(link, "username") or "")
     ):
-        # Validate the URL field's shape without projecting or opening its value.
-        qrcode = _child(link, "qrcodeURL")
-        return qrcode is not None and not qrcode.attrib and not len(qrcode)
+        # These observed aliases are mutually exclusive and remain hidden metadata.
+        qrcodes = link.findall("qrcodeURL") + link.findall("qrcode")
+        return len(qrcodes) == 1 and not qrcodes[0].attrib and not len(qrcodes[0])
     return False
 
 
@@ -723,6 +800,224 @@ def _system_template_text(content: ElementTree.Element | None) -> str | None:
     return "".join(parts)
 
 
+def _system_decimal_leaf(node: ElementTree.Element, tag: str) -> bool:
+    value = _system_leaf(node, tag)
+    return value is not None and re.fullmatch(r"[0-9]{1,20}", value) is not None
+
+
+def is_native_pat_projection(
+    native: Any, local_type: int, *, peer_id: str | None = None
+) -> bool:
+    """Recognize only the closed pat projection, preserving neutral system roles.
+
+    This validates representation and optional room agreement. It does not assert
+    participant identity from a label or replace authenticated source validation.
+    """
+    fields = {
+        "text",
+        "text_extraction_kind",
+        "original_message_type",
+        "appmsg_subtype",
+        "flags",
+        "system_message_subtype",
+        "system_source_ids",
+    }
+    if (
+        type(local_type) is not int
+        or local_type & 0xFFFFFFFF != 49
+        or local_type >> 32 not in {0, 62}
+        or not isinstance(native, dict)
+        or set(native) != fields
+        or native.get("text_extraction_kind") != "system_text"
+        or type(native.get("original_message_type")) is not int
+        or native["original_message_type"] != 49
+        or type(native.get("appmsg_subtype")) is not int
+        or native["appmsg_subtype"] != 62
+        or native.get("flags") != ["system_notice"]
+        or native.get("system_message_subtype") != "pat"
+        or not isinstance(native.get("text"), str)
+        or not _usable(native["text"])
+        or "\x00" in native["text"]
+    ):
+        return False
+    identifiers = native.get("system_source_ids")
+    source_keys = {
+        "patinfo/fromusername",
+        "patinfo/chatusername",
+        "patinfo/pattedusername",
+    }
+    if (
+        not isinstance(identifiers, dict)
+        or set(identifiers) != source_keys
+        or any(not isinstance(value, str) for value in identifiers.values())
+        or any(
+            _PAT_USER.fullmatch(identifiers[field]) is None
+            for field in ("patinfo/fromusername", "patinfo/pattedusername")
+        )
+        or _PAT_IDENTIFIER.fullmatch(identifiers["patinfo/chatusername"]) is None
+        or peer_id is not None
+        and (
+            not isinstance(peer_id, str)
+            or identifiers["patinfo/chatusername"] != peer_id
+        )
+    ):
+        return False
+    try:
+        return len(native["text"].encode("utf-8")) <= MAX_XML_BYTES
+    except UnicodeEncodeError:
+        return False
+
+
+def _pat(appmsg: ElementTree.Element) -> dict[str, Any] | None:
+    """Read the observed version-2 pat envelope as literal system display copy.
+
+    Participant fields remain source assertions. Source producers must separately
+    bind the actor, room and event identity to their authenticated native row.
+    """
+    pat = _child(appmsg, "patinfo")
+    fields = {
+        "fromusername",
+        "chatusername",
+        "pattedusername",
+        "patsuffixversion",
+        "template",
+    }
+    if (
+        pat is None
+        or pat.attrib
+        or not _system_container(pat, fields | {"patsuffix"})
+        or any(_system_leaf(pat, field) is None for field in fields)
+        or _system_leaf(pat, "patsuffixversion") != "2"
+    ):
+        return None
+    actor = _system_leaf(pat, "fromusername")
+    target = _system_leaf(pat, "pattedusername")
+    chat = _system_leaf(pat, "chatusername")
+    title = _system_leaf(appmsg, "title")
+    template = _system_leaf(pat, "template")
+    suffix = _system_leaf(pat, "patsuffix") if pat.find("patsuffix") is not None else ""
+    if (
+        any(
+            _PAT_IDENTIFIER.fullmatch(value or "") is None
+            for value in (actor, target, chat)
+        )
+        or title is None
+        or not _usable(title)
+        or "\x00" in title
+        or template is None
+        or suffix is None
+        or _PAT_PLACEHOLDER.findall(template) != [actor, target]
+        or not template.endswith(suffix)
+    ):
+        return None
+    result = _result(
+        49,
+        title,
+        "system_text",
+        subtype=62,
+        flags=["system_notice"],
+        system_message_subtype="pat",
+        system_source_ids={
+            "patinfo/fromusername": actor,
+            "patinfo/chatusername": chat,
+            "patinfo/pattedusername": target,
+        },
+    )
+    return result if is_native_pat_projection(result, 49) else None
+
+
+def _system_revoke_metadata(node: ElementTree.Element) -> bool:
+    """Validate the observed auxiliary shape without exposing its opaque values."""
+    if (
+        node.attrib
+        or len(node) != 2
+        or not _system_container(node, {"groupinfo", "media_expire_at"})
+        or not _system_decimal_leaf(node, "media_expire_at")
+    ):
+        return False
+    group = _child(node, "groupinfo")
+    return bool(
+        group is not None
+        and not group.attrib
+        and len(group) == 3
+        and _system_container(group, {"type", "id", "count"})
+        and _system_decimal_leaf(group, "type")
+        and _system_decimal_leaf(group, "count")
+        and _usable(_system_leaf(group, "id") or "")
+    )
+
+
+def _system_revoke_content_text(root: ElementTree.Element) -> str | None:
+    """Project the source display leaf only when every legacy alternative is absent."""
+    if (
+        root.attrib != {"type": "revokemsg"}
+        or not _system_container(root, {"revokemsg", "extcommoninfo"})
+        or len(root.findall("extcommoninfo")) > 1
+        or root.findall("replacemsg")
+    ):
+        return None
+    revoke = _child(root, "revokemsg")
+    if (
+        revoke is None
+        or revoke.attrib
+        or len(revoke) != 2
+        or not _system_container(revoke, {"content", "revoketime"})
+        or revoke.findall("replacemsg")
+        or not _system_decimal_leaf(revoke, "revoketime")
+    ):
+        return None
+    metadata = _child(root, "extcommoninfo")
+    if metadata is not None and not _system_revoke_metadata(metadata):
+        return None
+    text = _system_leaf(revoke, "content")
+    return text if text is not None and _usable(text) else None
+
+
+def _system_deleted_member_text(root: ElementTree.Element) -> str | None:
+    """Keep duplicated explicit display copy while omitting the separate action."""
+    if (
+        root.attrib != {"type": "delchatroommember"}
+        or len(root) != 1
+        or not _system_container(root, {"delchatroommember"})
+    ):
+        return None
+    notice = _child(root, "delchatroommember")
+    if (
+        notice is None
+        or notice.attrib
+        or len(notice) != 3
+        or not _system_container(notice, {"plain", "text", "link"})
+    ):
+        return None
+    plain, text = _system_leaf(notice, "plain"), _system_leaf(notice, "text")
+    link = _child(notice, "link")
+    if (
+        plain is None
+        or not _usable(plain)
+        or text != plain
+        or link is None
+        or link.attrib
+        or len(link) not in {3, 4}
+        or not _system_container(link, {"scene", "text", "memberlist", "qrcode"})
+        or not _usable(_system_leaf(link, "scene") or "")
+        or not _usable(_system_leaf(link, "text") or "")
+        or len(link.findall("qrcode")) > 1
+        or link.findall("qrcode")
+        and _system_leaf(link, "qrcode") is None
+    ):
+        return None
+    members = _child(link, "memberlist")
+    if (
+        members is None
+        or members.attrib
+        or len(members) != 1
+        or not _system_container(members, {"username"})
+        or not _usable(_system_leaf(members, "username") or "")
+    ):
+        return None
+    return plain
+
+
 def _system_xml_fields(raw: str, budget: _Budget) -> dict[str, Any] | None:
     root = _parse_xml(raw, budget)
     if root is None:
@@ -740,6 +1035,10 @@ def _system_xml_fields(raw: str, budget: _Budget) -> dict[str, Any] | None:
             if _usable(candidate):
                 text = candidate
                 break
+        if subtype == "revokemsg" and not _usable(text):
+            text = _system_revoke_content_text(root) or ""
+        elif subtype == "delchatroommember":
+            text = _system_deleted_member_text(root) or ""
         if subtype == "sysmsgtemplate" and not _usable(text):
             template = _child(root, "sysmsgtemplate")
             if (
@@ -853,6 +1152,8 @@ def extract_wechat_text(message_type: int, raw: str) -> dict[str, Any] | None:
         return _forwarded(appmsg, budget)
     if subtype == 57:
         return _quoted(appmsg, budget)
+    if subtype == 62:
+        return _pat(appmsg)
     if subtype in {2000, 2001}:
         payment = extract_payment_card(appmsg, subtype)
         if payment is not None:
@@ -865,66 +1166,3 @@ def extract_wechat_text(message_type: int, raw: str) -> dict[str, Any] | None:
                 payment_card_fields=payment["payment_card_fields"],
             )
     return None
-
-
-def is_native_pat_projection(
-    native: Any, local_type: int, *, peer_id: str | None = None
-) -> bool:
-    """Recognize only the closed pat projection, preserving neutral system roles.
-
-    This validates representation and optional room agreement. It does not assert
-    participant identity from a label or replace authenticated source validation.
-    """
-    fields = {
-        "text",
-        "text_extraction_kind",
-        "original_message_type",
-        "appmsg_subtype",
-        "flags",
-        "system_message_subtype",
-        "system_source_ids",
-    }
-    if (
-        type(local_type) is not int
-        or local_type & 0xFFFFFFFF != 49
-        or local_type >> 32 not in {0, 62}
-        or not isinstance(native, dict)
-        or set(native) != fields
-        or native.get("text_extraction_kind") != "system_text"
-        or type(native.get("original_message_type")) is not int
-        or native["original_message_type"] != 49
-        or type(native.get("appmsg_subtype")) is not int
-        or native["appmsg_subtype"] != 62
-        or native.get("flags") != ["system_notice"]
-        or native.get("system_message_subtype") != "pat"
-        or not isinstance(native.get("text"), str)
-        or not _usable(native["text"])
-        or "\x00" in native["text"]
-    ):
-        return False
-    identifiers = native.get("system_source_ids")
-    source_keys = {
-        "patinfo/fromusername",
-        "patinfo/chatusername",
-        "patinfo/pattedusername",
-    }
-    if (
-        not isinstance(identifiers, dict)
-        or set(identifiers) != source_keys
-        or any(not isinstance(value, str) for value in identifiers.values())
-        or any(
-            _PAT_USER.fullmatch(identifiers[field]) is None
-            for field in ("patinfo/fromusername", "patinfo/pattedusername")
-        )
-        or _PAT_IDENTIFIER.fullmatch(identifiers["patinfo/chatusername"]) is None
-        or peer_id is not None
-        and (
-            not isinstance(peer_id, str)
-            or identifiers["patinfo/chatusername"] != peer_id
-        )
-    ):
-        return False
-    try:
-        return len(native["text"].encode("utf-8")) <= MAX_XML_BYTES
-    except UnicodeEncodeError:
-        return False

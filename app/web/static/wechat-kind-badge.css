@@ -1,4 +1,4 @@
-/* Code version: v1.0.0-codex.0 */
+/* Code version: v1.0.1-codex.0 */
 .wechat-conversation-kind {
     display: block;
     margin-block-start: 2px;
@@ -11,6 +11,7 @@
     align-items: center;
     padding: 2px 6px;
     border-radius: 2px;
+    corner-shape: var(--corner-shape-continuous);
     background: var(--wechat-kind-badge-background);
     color: var(--wechat-kind-badge-color);
     font-size: var(--font-ui-xs);

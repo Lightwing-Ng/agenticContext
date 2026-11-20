@@ -1,6 +1,6 @@
 """Durable Copilot coverage proof, interruption, and conservative reload checks."""
 
-# Code version: v1.1.0-codex.0
+# Code version: v1.2.0-codex.0
 
 from pathlib import Path
 from unittest.mock import patch
@@ -14,7 +14,7 @@ from app.core.copilot_sync_state import (
     read_copilot_sync_state,
     write_copilot_sync_state,
 )
-from app.core.resource_persistence import COPILOT_HISTORY_SCHEMA, read_parquet_rows, write_parquet_rows_atomic
+from app.core.resource_persistence import COPILOT_HISTORY_SCHEMA, read_resource_rows, write_resource_rows_atomic
 
 
 def _complete(**changes) -> dict:
@@ -84,7 +84,7 @@ def test_partial_checkpoint_survives_reload_and_keeps_unknown_total(tmp_path: Pa
     assert snapshot.performance_metrics["sync_complete"] is False
     assert not snapshot.discovery_complete
     assert "full history total is unknown" in snapshot.message
-    rows = read_parquet_rows(copilot_sync_state_path(tmp_path))
+    rows = read_resource_rows(copilot_sync_state_path(tmp_path))
     assert len(rows) == 1 and set(rows[0]) == set(COPILOT_SYNC_STATE_SCHEMA.names)
 
 
@@ -117,6 +117,18 @@ def test_verified_complete_checkpoint_survives_reload(tmp_path: Path) -> None:
     assert (store.path.read_bytes(), copilot_sync_state_path(tmp_path).read_bytes()) == before
 
 
+def test_legacy_coverage_checkpoint_is_read_without_creating_sqlite(tmp_path: Path) -> None:
+    path = copilot_sync_state_path(tmp_path)
+    legacy = path.with_suffix(".parquet")
+    expected = _complete()
+    write_resource_rows_atomic(legacy, [expected], COPILOT_SYNC_STATE_SCHEMA)
+    original = legacy.read_bytes()
+
+    assert read_copilot_sync_state(tmp_path) == expected
+    assert not path.exists()
+    assert legacy.read_bytes() == original
+
+
 @pytest.mark.parametrize("remaining_sessions", [0, 1])
 def test_missing_or_truncated_history_invalidates_complete_readback_without_rewriting(
     tmp_path: Path, remaining_sessions: int
@@ -126,7 +138,7 @@ def test_missing_or_truncated_history_invalidates_complete_readback_without_rewr
     manifest_path = copilot_sync_state_path(tmp_path)
     before_manifest = (manifest_path.read_bytes(), manifest_path.stat().st_mtime_ns)
     if remaining_sessions:
-        write_parquet_rows_atomic(store.path, store.rows[:remaining_sessions], COPILOT_HISTORY_SCHEMA)
+        write_resource_rows_atomic(store.path, store.rows[:remaining_sessions], COPILOT_HISTORY_SCHEMA)
         before_history = (store.path.read_bytes(), store.path.stat().st_mtime_ns)
     else:
         store.path.unlink()
@@ -178,7 +190,8 @@ def test_corrupt_or_contradictory_checkpoint_cannot_hydrate_as_success(tmp_path:
     assert read_copilot_sync_state(tmp_path)["status"] == "invalid"
     assert build_copilot_initial_snapshot("test", tmp_path).phase == "failed"
     assert path.read_bytes() == b"Invalid fixture checkpoint."
-    write_parquet_rows_atomic(path, [_complete(discovery_complete=False)], COPILOT_SYNC_STATE_SCHEMA)
+    path.unlink()
+    write_resource_rows_atomic(path, [_complete(discovery_complete=False)], COPILOT_SYNC_STATE_SCHEMA)
     assert read_copilot_sync_state(tmp_path)["status"] == "invalid"
     assert build_copilot_initial_snapshot("test", tmp_path).performance_metrics["sync_complete"] is False
 
@@ -186,7 +199,7 @@ def test_corrupt_or_contradictory_checkpoint_cannot_hydrate_as_success(tmp_path:
 def test_atomic_checkpoint_write_failure_preserves_prior_bytes(tmp_path: Path) -> None:
     write_copilot_sync_state(tmp_path, {"status": "incomplete"})
     before = copilot_sync_state_path(tmp_path).read_bytes()
-    with patch("app.core.copilot_sync_state.write_parquet_rows_atomic", side_effect=OSError("Fixture write failed.")):
+    with patch("app.core.copilot_sync_state.write_resource_rows_atomic", side_effect=OSError("Fixture write failed.")):
         with pytest.raises(OSError, match="Fixture write failed"):
             write_copilot_sync_state(tmp_path, _complete())
     assert copilot_sync_state_path(tmp_path).read_bytes() == before

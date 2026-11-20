@@ -1,6 +1,6 @@
 """Paint shared contact-page feedback while real document responses are delayed.
 
-Code version: v1.0.0-codex.0
+Code version: v1.0.1-codex.0
 """
 
 from __future__ import annotations
@@ -118,7 +118,7 @@ def _open_contact(
     [
         (
             2348,
-            "Statement page 2349",
+            "Message page 2349",
             2349,
             1026,
             "light",
@@ -126,10 +126,10 @@ def _open_contact(
             "click",
             "newest",
         ),
-        (2349, "Statement page 2349", 2349, 390, "dark", "reduce", "click", "newest"),
+        (2349, "Message page 2349", 2349, 390, "dark", "reduce", "click", "newest"),
         (
             2349,
-            "Previous statement page",
+            "Previous message page",
             2345,
             390,
             "light",
@@ -137,8 +137,8 @@ def _open_contact(
             "click",
             "oldest",
         ),
-        (2349, "Statement page 2346", 2346, 1026, "dark", "reduce", "enter", "oldest"),
-        (2345, "Next statement page", 2346, 1026, "light", "reduce", "click", "newest"),
+        (2349, "Message page 2346", 2346, 1026, "dark", "reduce", "enter", "oldest"),
+        (2345, "Next message page", 2346, 1026, "light", "reduce", "click", "newest"),
     ],
     ids=[
         "deep-number",
@@ -173,7 +173,7 @@ def test_contact_pagination_paints_during_real_delayed_navigation(
     )
     gate = fixture.gate
     try:
-        pager = page.get_by_role("navigation", name="Contact statement pages")
+        pager = page.get_by_role("navigation", name="Contact message pages")
         link = pager.get_by_role("link", name=label, exact=True)
         if target == initial:
             # Normalize parameter order first, then exercise a byte-identical URL reload.
@@ -202,7 +202,7 @@ def test_contact_pagination_paints_during_real_delayed_navigation(
             // Observe the completed production click listener without cancelling navigation.
             window.addEventListener('click', event => {
                 const link = event.target.closest('a');
-                if (!link?.closest('nav[aria-label="Contact statement pages"]')) return;
+                if (!link?.closest('nav[aria-label="Contact message pages"]')) return;
                 const modal = document.getElementById('cache_wait_modal');
                 const spinner = modal.querySelector('.suggestion-loading-spinner');
                 const style = getComputedStyle(spinner);
@@ -234,8 +234,8 @@ def test_contact_pagination_paints_during_real_delayed_navigation(
         assert len(probes) == 1, probes
         pending = probes[0]
         assert pending["hidden"] is False
-        assert pending["title"] == "Loading statements"
-        assert pending["copy"] == "Opening the selected page of contact statements."
+        assert pending["title"] == "Loading messages"
+        assert pending["copy"] == "Opening the selected page of contact messages."
         assert pending["original"] is True
         assert (
             gate.destination
@@ -269,7 +269,7 @@ def test_contact_pagination_paints_during_real_delayed_navigation(
             assert values[key] == [value]
         expect(page.locator("#cache_wait_modal")).to_be_hidden()
         expect(
-            page.get_by_role("link", name=f"Statement page {target}", exact=True)
+            page.get_by_role("link", name=f"Message page {target}", exact=True)
         ).to_have_attribute("aria-current", "page")
         if target != initial:
             page.go_back(wait_until="networkidle")
@@ -299,7 +299,7 @@ def test_modified_contact_pagination_keeps_native_navigation(
 ):
     context, page, scope = _open_contact(disposable_browser, contact_pagination_server)
     try:
-        link = page.get_by_role("link", name="Statement page 2349", exact=True)
+        link = page.get_by_role("link", name="Message page 2349", exact=True)
         result = link.evaluate(
             """(link, options) => {
                 let intercepted = null;

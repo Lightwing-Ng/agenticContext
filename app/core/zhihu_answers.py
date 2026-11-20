@@ -1,6 +1,6 @@
 """Authenticated Zhihu answer normalization and bounded collection.
 
-Code version: v1.2.0-codex.0
+Code version: v1.3.1-codex.0
 """
 
 from __future__ import annotations
@@ -8,6 +8,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from collections import deque
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -30,6 +31,8 @@ ZHIHU_FETCH_RETRY_DELAY_MS = 1_500
 ZHIHU_FETCH_TIMEOUT_MS = 45_000
 ZHIHU_PAGE_SETTLE_MS = 650
 _ZHIHU_TOKEN_RE = re.compile(r"[A-Za-z0-9_-]{1,128}\Z")
+_ZHIHU_SOURCE_REPLAY_LIMIT = 128 * 1024
+_ZHIHU_SOURCE_EVENT_LIMIT = 4_096
 _ZHIHU_BODY_ROOT_PRIORITY = (
     "itemprop-text",
     "rich-text",
@@ -267,6 +270,53 @@ class _ZhihuBodyRootDetector(HTMLParser):
         attrs: list[tuple[str, str | None]],
     ) -> None:
         self.handle_starttag(tag, attrs)
+
+
+class _ZhihuSourceEvents(_ZhihuBodyRootDetector):
+    """Retain source callbacks while detecting the winning answer body."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        # One extra slot distinguishes a full buffer from a source that exceeds it.
+        self._events: deque[
+            tuple[str, str] | tuple[str, str, list[tuple[str, str | None]]]
+        ] = deque(maxlen=_ZHIHU_SOURCE_EVENT_LIMIT + 1)
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if attrs:
+            super().handle_starttag(tag, attrs)
+        self._events.append(("start", tag, attrs))
+
+    def handle_startendtag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if attrs:
+            super().handle_starttag(tag, attrs)
+        self._events.append(("startend", tag, attrs))
+
+    def handle_endtag(self, tag: str) -> None:
+        self._events.append(("end", tag))
+
+    def handle_data(self, data: str) -> None:
+        self._events.append(("data", data))
+
+    def replay(self, parser: _ZhihuCanonicalHTMLParser) -> bool:
+        """Apply the captured callbacks only if the complete source fits."""
+
+        if len(self._events) > _ZHIHU_SOURCE_EVENT_LIMIT:
+            self._events.clear()
+            return False
+
+        for event in self._events:
+            match event:
+                case ("start", tag, attrs):
+                    parser.handle_starttag(tag, attrs)
+                case ("startend", tag, attrs):
+                    parser.handle_startendtag(tag, attrs)
+                case ("end", tag):
+                    parser.handle_endtag(tag)
+                case ("data", data):
+                    parser.handle_data(data)
+        self._events.clear()
+        return True
 
 
 class _ZhihuCanonicalHTMLParser(HTMLParser):
@@ -693,21 +743,30 @@ def normalize_zhihu_rich_text(value: object) -> ZhihuRichText:
     if not source:
         return ZhihuRichText("", "", (), ())
 
-    detector = _ZhihuBodyRootDetector()
+    exact_source = type(source) is str
+    detector: _ZhihuBodyRootDetector | None = None
+    root_kind = None
     try:
-        detector.feed(source)
-        detector.close()
-        root_kind = next(
-            (
-                candidate
-                for candidate in _ZHIHU_BODY_ROOT_PRIORITY
-                if candidate in detector.root_kinds
-            ),
-            None,
-        )
+        # Every supported body root needs an attribute with an assigned value.
+        if not exact_source or "=" in source:
+            if exact_source and len(source) <= _ZHIHU_SOURCE_REPLAY_LIMIT:
+                detector = _ZhihuSourceEvents()
+            else:
+                detector = _ZhihuBodyRootDetector()
+            detector.feed(source)
+            detector.close()
+            root_kind = next(
+                (
+                    candidate
+                    for candidate in _ZHIHU_BODY_ROOT_PRIORITY
+                    if candidate in detector.root_kinds
+                ),
+                None,
+            )
         html_parser = _ZhihuCanonicalHTMLParser(root_kind)
-        html_parser.feed(source)
-        html_parser.close()
+        if not isinstance(detector, _ZhihuSourceEvents) or not detector.replay(html_parser):
+            html_parser.feed(source)
+            html_parser.close()
         content_html = html_parser.render()
         markdown_parser = _ZhihuMarkdownConverter()
         markdown_parser.feed(content_html)

@@ -1,6 +1,6 @@
 """Project only an authenticated requested peer into the existing Mac bank contract.
 
-Code version: v1.3.0-codex.0
+Code version: v1.7.1-codex.0
 """
 
 from __future__ import annotations
@@ -9,8 +9,8 @@ from collections import deque
 from concurrent.futures import ProcessPoolExecutor, wait
 from concurrent.futures.process import BrokenProcessPool
 from contextlib import contextmanager
-from copy import deepcopy
 from dataclasses import dataclass, field
+from copy import deepcopy
 from datetime import datetime
 import hashlib
 from itertools import chain
@@ -22,11 +22,16 @@ import sqlite3
 from . import wechat_macos_recovery_bank as bank
 from .compute_resources import discover_compute_resources
 from .wechat_archive import WechatArchiveRepository, _file_identity, wechat_archive_path
-from .wechat_mac_refresh_source import MAX_NAMES, RefreshError, SourceAccountBindingUnavailable
-from .wechat_resource_details import detail_input_identities
+from .wechat_group_membership import native_membership_fields
+from .wechat_mac_refresh_source import (
+    MAX_NAMES,
+    RefreshError,
+    RefreshIssue,
+    RefreshNotice,
+    SourceAccountBindingUnavailable,
+)
 from .wechat_resource_index import _APP_LABEL_FIELDS, _KINDS, _LABELS, _app_metadata
-from .wechat_text import extract_wechat_text
-from .wechat_secondary_completions import completion_input_identities
+from .wechat_text import extract_wechat_text, is_native_pat_projection
 from .wechat_wcdb import (
     MAX_TEXT_BYTES,
     MissingDictionaryError,
@@ -55,6 +60,17 @@ _PROJECTION_IN_FLIGHT = 4
 _MAX_NATIVE_PROJECTION_WORKERS = 16
 
 
+class _PacketBudgetExceeded(RefreshError):
+    """One projected event cannot fit the unchanged serialized packet boundary."""
+
+
+@dataclass
+class _NativeWindow:
+    after_local_id: int | None = None
+    last_local_id: int | None = None
+    byte_limited: bool = False
+
+
 @dataclass(frozen=True)
 class ConversationScope:
     session_id: str
@@ -77,15 +93,12 @@ class ConversationComparison:
         if history_path.absolute() != self._history_path or scope != self._scope:
             raise RefreshError("The archive comparison belongs to another conversation.")
         if bank._inputs(history_path) != self._baseline:
-            raise RefreshError("The archive changed during refresh. Try again shortly.")
-        overlay_inputs = (
-            completion_input_identities(history_path),
-            detail_input_identities(history_path),
-        )
+            raise RefreshNotice(RefreshIssue.ARCHIVE_CHANGED)
+        overlay_inputs = _comparison_overlay_inputs(history_path)
         if self._overlay_inputs is None:
             self._overlay_inputs = overlay_inputs
         elif overlay_inputs != self._overlay_inputs:
-            raise RefreshError("The archive changed during refresh. Try again shortly.")
+            raise RefreshNotice(RefreshIssue.ARCHIVE_CHANGED)
 
     def indexes(self, local_store_root, history_path, history, scope, check_cancel):
         if self._indexes is None:
@@ -97,7 +110,7 @@ class ConversationComparison:
         return self._indexes
 
 
-@dataclass(frozen=True)
+@dataclass
 class SourceProjectionContext:
     """Reuse metadata from one unchanged authenticated memory-only snapshot."""
 
@@ -109,6 +122,9 @@ class SourceProjectionContext:
     source_digest: str = field(repr=False)
     total_changes: int = field(repr=False)
     schema_version: int = field(repr=False)
+    bindings: dict = field(default_factory=dict, repr=False)
+    learn_witnesses: bool = field(default=False, repr=False)
+    learned_witnesses: dict = field(default_factory=dict, repr=False)
 
     def require_current(self, database, account_id):
         if (
@@ -122,8 +138,25 @@ class SourceProjectionContext:
         ):
             raise RefreshError("The authenticated projection context changed.")
 
+    def remember_witness(self, anchor):
+        if not self.learn_witnesses:
+            return
+        key = (anchor["peer_id"], anchor["direction"])
+        if key in self.learned_witnesses:
+            return
+        if len(self.learned_witnesses) >= MAX_LEARNED_WITNESSES:
+            if anchor["direction"] != "sent" or any(
+                item["direction"] == "sent"
+                for item in self.learned_witnesses.values()
+            ):
+                return
+            self.learned_witnesses.pop(next(reversed(self.learned_witnesses)))
+        self.learned_witnesses[key] = deepcopy(anchor)
 
-def _source_names(native):
+
+def prepare_source_context(account_id, database, *, _learn_witnesses=False):
+    """Read bounded table and sender metadata once, retaining exact owner proof."""
+    native = database.connection
     tables = frozenset(
         row[0]
         for row in native.execute("SELECT name FROM sqlite_master WHERE type='table'")
@@ -139,20 +172,19 @@ def _source_names(native):
         value = dict(row)
         names[value["rowid"]] = value
         peer_rows.setdefault(value["user_name"], value)
-    return tables, names, peer_rows
-
-
-def prepare_source_context(account_id, database):
-    """Bind one unchanged authenticated database to an exact owner and name index."""
-    native = database.connection
-    tables, names, peer_rows = _source_names(native)
     _owner_row(names, account_id)
-    return SourceProjectionContext(
-        account_id, database, tables, names, peer_rows,
+    context = SourceProjectionContext(
+        account_id,
+        database,
+        tables,
+        names,
+        peer_rows,
         bank._sha([database.source, database.account_directory]),
         native.total_changes,
         native.execute("PRAGMA schema_version").fetchone()[0],
     )
+    context.learn_witnesses = _learn_witnesses is True
+    return context
 
 
 def projection_exclusion_reason(error):
@@ -166,6 +198,8 @@ def projection_exclusion_reason(error):
     return {
         "A native message body has an unsupported storage class.": "row_unsupported_storage_class",
         "A native event has no supported server identifier.": "row_unsupported_server_identifier",
+        "A native app system notice conflicts with its typed source.": "row_app_system_type_conflict",
+        "A native pat notice crosses its authenticated conversation.": "row_pat_scope_conflict",
         "A native message has no authenticated sender.": "row_missing_authenticated_sender",
         "The native text cannot be projected faithfully.": "row_unsupported_typed_projection",
     }.get(str(error), "row_projection_rejected")
@@ -173,7 +207,7 @@ def projection_exclusion_reason(error):
 
 def resolve_scope(local_store_root, session_id):
     if not isinstance(session_id, str) or _SESSION.fullmatch(session_id) is None:
-        raise RefreshError("Select an existing private or group conversation.")
+        raise RefreshNotice(RefreshIssue.INVALID_CONVERSATION)
     path = wechat_archive_path(local_store_root)
     bank._identity(path)
     with sqlite3.connect(
@@ -194,9 +228,7 @@ def resolve_scope(local_store_root, session_id):
         or row[1].startswith("gh_")
         or (row[2] == "group") != row[1].endswith(("@chatroom", "@im.chatroom"))
     ):
-        raise RefreshError(
-            "Only a verified private or group conversation can be refreshed."
-        )
+        raise RefreshNotice(RefreshIssue.INVALID_CONVERSATION)
     return ConversationScope(session_id, row[3], row[1], row[2])
 
 
@@ -235,12 +267,38 @@ def _comparison_signature(row):
     return bank._event_signature({**dict(row), "provenance": json.dumps(proof)})
 
 
+def _comparison_overlay_inputs(history_path):
+    from .wechat_archive_relocation import receipt_identity
+    from .wechat_resource_details import detail_input_identities
+    from .wechat_secondary_completions import completion_input_identities
+
+    relocation = receipt_identity(history_path)
+    signing_key = None
+    if relocation and not relocation.get("unavailable"):
+        key_path = history_path.parent / "browser_cache" / "signing.key"
+        try:
+            state = key_path.lstat()
+        except FileNotFoundError:
+            pass
+        else:
+            signing_key = (
+                state.st_dev, state.st_ino, state.st_size, state.st_mtime_ns, state.st_ctime_ns
+            )
+    return (
+        completion_input_identities(history_path),
+        detail_input_identities(history_path),
+        relocation,
+        signing_key,
+    )
+
+
 def _archive_comparison_indexes(local_store_root, history_path, history, scope, check_cancel):
     history.execute("PRAGMA temp_store=MEMORY")
     repository = WechatArchiveRepository(local_store_root)
     _conversations, message_table, status = repository._timeline_tables(
         history,
         _file_identity(history_path),
+        conversation_id=scope.session_id,
         strict=True,
     )
     if status not in {"ready", "absent"}:
@@ -272,11 +330,14 @@ def _archive_comparison_indexes(local_store_root, history_path, history, scope, 
     return known, archive
 
 
-def _native_rows(connection, table, *, local_id=None):
+def _native_rows(connection, table, *, local_id=None, window=None):
     layout = list(connection.execute('PRAGMA table_info("' + table + '")'))
     columns = [row[1] for row in layout]
-    if local_id is not None and not any(
-        row[1] == "local_id" and row[5] for row in layout
+    if (local_id is not None or window is not None) and not any(
+        row[1] == "local_id"
+        and row[5]
+        and (window is None or row[2].upper() == "INTEGER")
+        for row in layout
     ):
         raise RefreshError("A native witness requires an indexed local primary key.")
     required = {
@@ -297,6 +358,13 @@ def _native_rows(connection, table, *, local_id=None):
     ):
         raise RefreshError("A native message table has an unsupported schema.")
     condition = " WHERE local_id=?" if local_id is not None else ""
+    parameters = [local_id] if local_id is not None else []
+    if window is not None and window.after_local_id is not None:
+        condition = " WHERE local_id>?"
+        parameters = [window.after_local_id]
+    limit = " LIMIT ?" if window is not None else ""
+    if window is not None:
+        parameters.append(bank.MAX_PACKET_MESSAGES)
     return connection.execute(
         'SELECT local_id,server_id,local_type,create_time,real_sender_id,message_content,"'
         + marker
@@ -304,8 +372,9 @@ def _native_rows(connection, table, *, local_id=None):
         + table
         + '"'
         + condition
-        + " ORDER BY local_id",
-        (local_id,) if local_id is not None else (),
+        + " ORDER BY local_id"
+        + limit,
+        parameters,
     )
 
 
@@ -316,12 +385,10 @@ def _server(value):
     return value
 
 
-def _project_message(row, owner, kind, names, *, text_limit=MAX_TEXT_BYTES):
+def _project_message(row, owner, kind, names, *, peer_id=None, text_limit=MAX_TEXT_BYTES):
     typ = row["local_type"] & 0xFFFFFFFF
     sender_row = names.get(row["real_sender_id"])
     sender = sender_row["user_name"] if sender_row else ""
-    if typ not in {10000, 10002} and not sender:
-        raise RefreshError("A native message has no authenticated sender.")
     raw = row["message_content"]
     if not isinstance(raw, (str, bytes)):
         raise RefreshError("A native message body has an unsupported storage class.")
@@ -338,10 +405,6 @@ def _project_message(row, owner, kind, names, *, text_limit=MAX_TEXT_BYTES):
             raw.encode() if isinstance(raw, str) else raw
         ).hexdigest(),
     }
-    if typ in {10000, 10002}:
-        message.update(sender_id="", sender_label="System Message", direction="unknown")
-    elif sender_row:
-        message["sender_proof"] = _name_proof(sender_row)
     projection = None
     if typ in {1, 49, 10000, 10002}:
         decoded = decode_wcdb_text(raw, row["compression_marker"], limit=text_limit)
@@ -351,6 +414,39 @@ def _project_message(row, owner, kind, names, *, text_limit=MAX_TEXT_BYTES):
                     decoded = decoded[len(prefix) :]
                     break
         projection = extract_wechat_text(typ, decoded)
+        if (
+            kind == "group"
+            and peer_id
+            and projection is not None
+            and projection.get("system_message_subtype") == "sysmsgtemplate"
+            and (membership := native_membership_fields(decoded, peer_id, typ)) is not None
+        ):
+            projection["system_membership"] = membership
+    pat = is_native_pat_projection(projection, row["local_type"])
+    if (
+        typ == 49
+        and projection is not None
+        and projection.get("text_extraction_kind") == "system_text"
+        and not pat
+    ):
+        raise RefreshError(
+            "A native app system notice conflicts with its typed source."
+        )
+    if pat and not is_native_pat_projection(
+        projection, row["local_type"], peer_id=peer_id
+    ):
+        raise RefreshError(
+            "A native pat notice crosses its authenticated conversation."
+        )
+    if typ in {10000, 10002} or pat:
+        # A pat's internal row sender is not its action participant. Keep the
+        # original sender coordinate while presenting the typed notice neutrally.
+        message.update(sender_id="", sender_label="System Message", direction="unknown")
+    else:
+        if not sender:
+            raise RefreshError("A native message has no authenticated sender.")
+        if sender_row:
+            message["sender_proof"] = _name_proof(sender_row)
     if projection is not None:
         message.update(text=projection["text"], native_text=projection)
     else:
@@ -382,7 +478,7 @@ def _project_message(row, owner, kind, names, *, text_limit=MAX_TEXT_BYTES):
 def _project_native_row(row, names, scope, *, text_limit=MAX_TEXT_BYTES):
     try:
         return _project_message(
-            row, scope.account_id, scope.kind, names, text_limit=text_limit,
+            row, scope.account_id, scope.kind, names, peer_id=scope.peer_id, text_limit=text_limit,
         ), None
     except (WCDBDecodeError, WCDBBackendUnavailableError, RefreshError) as error:
         return None, projection_exclusion_reason(error)
@@ -771,7 +867,7 @@ def _global_binding(
                 item for item in selected if item["peer_id"] != sent["peer_id"]
             )
             return {
-                "schema_version": 1 if owner_row["rowid"] == 2 else 2,
+                "schema_version": 2,
                 "account_id": scope.account_id,
                 "account_directory": directory,
                 "owner_proof": owner_proof,
@@ -789,21 +885,23 @@ def prepare_packet(
     database,
     *,
     check_cancel=None,
+    context=None,
+    on_excluded=None,
+    on_counts=None,
     comparison=None,
     projection_executor=None,
     projection_in_flight=_PROJECTION_IN_FLIGHT,
-    on_excluded=None,
+    _window=None,
+    _local_anchor_pool=None,
 ):
     """Return only new or changed target events; identical replay creates no new bank copy."""
     check_cancel = check_cancel if check_cancel is not None else lambda: None
     check_cancel()
     native = database.connection
-    tables, names, peer_rows = _source_names(native)
+    context = context or prepare_source_context(scope.account_id, database)
+    context.require_current(database, scope.account_id)
+    tables, names, peer_rows = context.tables, context.names, context.peer_rows
     table = _table(scope.peer_id)
-    if names.get(2, {}).get("user_name") != scope.account_id:
-        raise RefreshError(
-            "The authenticated native owner does not match this conversation."
-        )
     if table not in tables:
         return None, {"total": 0, "existing": 0, "excluded": 0}
     if scope.peer_id not in peer_rows:
@@ -839,8 +937,11 @@ def prepare_packet(
             known, archive = comparison.indexes(
                 local_store_root, history_path, history, scope, check_cancel
             )
-        local_anchors = {}
+        local_anchors = {} if _local_anchor_pool is None else _local_anchor_pool
         counts = {"total": 0, "existing": 0, "excluded": 0}
+        message_bytes = 0
+        header_bytes = len(bank._json(packet).encode())
+        header_reserve = min(64 * 1024, max(1024, bank.MAX_PACKET_BYTES // 16))
         def record_exclusion(row, reason):
             counts["excluded"] += 1
             if on_excluded is not None:
@@ -857,10 +958,14 @@ def prepare_packet(
                 })
 
         for row, message, reason, signature in _ordered_native_projection(
-            _native_rows(native, table), names, scope, projection_executor,
-            check_cancel, packet=packet, in_flight=projection_in_flight,
+            _native_rows(native, table, window=_window), names, scope,
+            projection_executor if _window is None else None, check_cancel, packet=packet,
+            in_flight=projection_in_flight,
         ):
             counts["total"] += 1
+            previous_local_id = _window.last_local_id if _window is not None else None
+            if _window is not None:
+                _window.last_local_id = row["local_id"]
             if reason is not None:
                 record_exclusion(row, reason)
                 continue
@@ -870,16 +975,38 @@ def prepare_packet(
                         original, row, message, scope.peer_id, peer_rows[scope.peer_id]
                     )
                     if anchor:
-                        local_anchors[message["server_id"]] = anchor
+                        if len(local_anchors) < 2 or _local_anchor_pool is None:
+                            local_anchors[message["server_id"]] = anchor
+                        context.remember_witness(anchor)
                 if signature is None:
                     signature = _native_comparison_signature(packet, message)
                 if signature in known.get(message["server_id"], ()):
                     counts["existing"] += 1
                     continue
+                if _window is not None:
+                    encoded_bytes = len(bank._json(message).encode()) + 1
+                    if (
+                        header_bytes + header_reserve + message_bytes + encoded_bytes
+                        > bank.MAX_PACKET_BYTES
+                    ):
+                        if not packet["messages"]:
+                            raise _PacketBudgetExceeded(
+                                "A native projection exceeds its packet byte budget."
+                            )
+                        counts["total"] -= 1
+                        _window.last_local_id = previous_local_id
+                        _window.byte_limited = True
+                        break
+                    message_bytes += encoded_bytes
                 # Validate every candidate with the established packet validator below.
                 packet["messages"].append(message)
+            except _PacketBudgetExceeded:
+                raise
             except (WCDBDecodeError, WCDBBackendUnavailableError, RefreshError) as error:
                 record_exclusion(row, projection_exclusion_reason(error))
+        context.require_current(database, scope.account_id)
+        if on_counts is not None:
+            on_counts(dict(counts))
         if not packet["messages"]:
             if comparison is not None:
                 comparison.require_current(history_path, scope)
@@ -894,18 +1021,25 @@ def prepare_packet(
             ]
         else:
             source["account_directory"] = database.account_directory
-            packet["account_binding"] = _global_binding(
-                local_store_root,
-                native,
-                history,
-                scope,
-                source,
-                database.account_directory,
-                names,
-                peer_rows,
-                tables,
-                check_cancel,
+            binding_key = (
+                str(history_path.resolve()),
+                tuple(_file_identity(history_path).items()),
             )
+            if binding_key not in context.bindings:
+                context.bindings[binding_key] = _global_binding(
+                    local_store_root,
+                    native,
+                    history,
+                    scope,
+                    source,
+                    database.account_directory,
+                    names,
+                    peer_rows,
+                    tables,
+                    check_cancel,
+                    learned_witnesses=tuple(context.learned_witnesses.values()),
+                )
+            packet["account_binding"] = deepcopy(context.bindings[binding_key])
         bank._validate_packet(packet, (scope.account_id,))
         bank._binding(history, packet)
         if comparison is not None:
@@ -913,3 +1047,66 @@ def prepare_packet(
         return packet, counts
     finally:
         history.close()
+
+
+def iter_prepare_packets(
+    local_store_root,
+    scope,
+    database,
+    *,
+    context=None,
+    check_cancel=None,
+    on_excluded=None,
+    on_counts=None,
+):
+    """Split one pinned scope into bounded packets without weakening any proof.
+
+    Every window examines at most the existing packet row limit. The full scope
+    retains the existing one-million-row anchor boundary, and serialized packets
+    retain their existing byte boundary. The original prepare_packet API remains
+    a single-packet operation with its original physical-row limit.
+    """
+    check_cancel = check_cancel if check_cancel is not None else lambda: None
+    context = context or prepare_source_context(scope.account_id, database)
+    context.require_current(database, scope.account_id)
+    table = _table(scope.peer_id)
+    if table not in context.tables:
+        return
+    total = database.connection.execute(
+        'SELECT COUNT(*) FROM "' + table + '"'
+    ).fetchone()[0]
+    if total > MAX_ARCHIVE_ANCHOR_ROWS:
+        raise RefreshError("The native scope exceeds its bounded global row budget.")
+    history = wechat_archive_path(local_store_root)
+    history_pin = bank._identity(history)
+    scanned, after_local_id, anchors = 0, None, {}
+    while scanned < total:
+        check_cancel()
+        if bank._identity(history) != history_pin:
+            raise RefreshError("The archive changed between native packet windows.")
+        context.require_current(database, scope.account_id)
+        window = _NativeWindow(after_local_id=after_local_id)
+        packet, counts = prepare_packet(
+            local_store_root,
+            scope,
+            database,
+            context=context,
+            check_cancel=check_cancel,
+            on_excluded=on_excluded,
+            on_counts=on_counts,
+            _window=window,
+            _local_anchor_pool=anchors,
+        )
+        if (
+            not counts["total"]
+            or type(window.last_local_id) is not int
+            or after_local_id is not None
+            and window.last_local_id <= after_local_id
+        ):
+            raise RefreshError("Native packet windows did not make bounded progress.")
+        scanned += counts["total"]
+        after_local_id = window.last_local_id
+        if scanned > total:
+            raise RefreshError("The native scope changed between packet windows.")
+        if packet is not None:
+            yield packet

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-# Code version: v1.8.2-codex.0
+# Code version: v1.9.0-codex.0
 
 set -euo pipefail
 
@@ -54,7 +54,15 @@ if (( JS_FILE_COUNT == 0 )); then
 fi
 
 echo "[5/6] JavaScript unit tests"
-node --test tests/test_agent_optimization.mjs tests/test_beta_engines.mjs tests/test_browser_chat_ruler.mjs tests/test_numeric_display.mjs tests/test_pagination_boundaries.mjs tests/test_select_controller.mjs tests/test_wechat_browser_read_timeout.mjs
+JS_TEST_FILES=()
+while IFS= read -r test_file; do
+	JS_TEST_FILES+=("$test_file")
+done < <(find tests -maxdepth 1 -type f -name 'test_*.mjs' | sort)
+if (( ${#JS_TEST_FILES[@]} == 0 )); then
+	echo "No JavaScript unit test files were found." >&2
+	exit 1
+fi
+node --test "${JS_TEST_FILES[@]}"
 
 echo "[6/6] Python tests with branch coverage"
 SHARD_COVERAGE_MINIMUM="$COVERAGE_MINIMUM"
@@ -74,9 +82,9 @@ if [[ ! -f test-results/coverage.json || ! test-results/coverage.json -nt "$COVE
 	echo "Pytest did not produce a fresh coverage report." >&2
 	exit 1
 fi
-
 if [[ ${AGENTIC_CONTEXT_TEST_SHARD+x} || ${AGENTIC_CONTEXT_TEST_SHARD_COUNT+x} ]]; then
 	echo "Quality shard passed. Complete platform coverage aggregation is still required."
 else
+	"$PYTHON_BIN" scripts/check_coverage.py test-results/coverage.json --policy scripts/coverage_policy.json
 	echo "Quality gate passed."
 fi

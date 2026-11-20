@@ -1,6 +1,6 @@
 """Contact detail stays inside the shared Local resources navigation context.
 
-Code version: v1.1.1-codex.0
+Code version: v1.2.1-codex.0
 """
 
 from __future__ import annotations
@@ -71,6 +71,115 @@ def _switch_source(page, label):
     page.locator("#browser_filter_form").get_by_role(
         "button", name="Source: " + label, exact=True
     ).click()
+
+
+@pytest.mark.parametrize(
+    ("width", "search_limit"),
+    [
+        (1280, 322),
+        (901, 322),
+        (900, 384),
+        (887, 384),
+        (844, 384),
+        (601, 384),
+        (600, None),
+        (561, None),
+        (560, None),
+        (390, None),
+    ],
+)
+def test_contact_back_aligns_with_collapsed_sidebar_without_moving_its_row(
+    disposable_browser, contact_analysis_server, width, search_limit
+):
+    fixture = contact_analysis_server
+    context = disposable_browser.new_context(
+        viewport={"width": width, "height": 1280}, reduced_motion="reduce"
+    )
+    context.set_default_timeout(7000)
+    context.set_default_navigation_timeout(15000)
+    try:
+        page = context.new_page()
+        origin = _origin(fixture)
+        page.goto(_contact_url(fixture, origin), wait_until="domcontentloaded")
+        expect(page.locator("[data-contact-analysis-state]")).to_have_attribute(
+            "data-contact-analysis-state", "ready"
+        )
+        page.evaluate("() => document.fonts.ready")
+        toggle = page.locator("#sidebar_toggle")
+        back = page.get_by_role("link", name="Back to conversation", exact=True)
+        expect(back).to_have_attribute("href", origin)
+        for expanded in (True, False, True, False):
+            if toggle.get_attribute("aria-expanded") != str(expanded).lower():
+                toggle.click()
+            expect(toggle).to_have_attribute("aria-expanded", str(expanded).lower())
+            page.wait_for_function("""() => !document.querySelector('#sidebar_toggle')
+                .getAnimations().some(animation => animation.playState === 'running')
+            """)
+            geometry = back.evaluate("""element => {
+                const box = node => {
+                    const rect = node.getBoundingClientRect();
+                    return {
+                        left: rect.left, right: rect.right,
+                        top: rect.top, bottom: rect.bottom,
+                        width: rect.width, height: rect.height,
+                        centerX: rect.left + rect.width / 2,
+                        centerY: rect.top + rect.height / 2,
+                    };
+                };
+                const toolbar = element.closest('.wechat-contact-toolbar');
+                return {
+                    back: box(element),
+                    icon: box(element.querySelector('.icon')),
+                    toggle: box(document.querySelector('#sidebar_toggle')),
+                    toolbar: box(toolbar),
+                    export: box(document.querySelector('.wechat-contact-export')),
+                    search: box(toolbar.querySelector('.browser-search-control')),
+                    gap: parseFloat(getComputedStyle(toolbar).columnGap),
+                    margin: getComputedStyle(element).marginInlineStart,
+                    overflow: document.documentElement.scrollWidth - innerWidth,
+                };
+            }""")
+            assert geometry["back"]["width"] == 32, geometry
+            assert geometry["back"]["height"] == 32, geometry
+            assert geometry["icon"]["width"] == 18, geometry
+            assert geometry["icon"]["height"] == 18, geometry
+            for neighbor in ("export", "search"):
+                assert geometry["back"]["centerY"] == pytest.approx(
+                    geometry[neighbor]["centerY"], abs=0.5
+                ), geometry
+                assert geometry["back"]["right"] <= geometry[neighbor]["left"], geometry
+            available_width = (
+                geometry["toolbar"]["right"]
+                - geometry["export"]["right"]
+                - geometry["gap"]
+            )
+            expected_width = (
+                available_width
+                if search_limit is None
+                else min(available_width, search_limit)
+            )
+            assert geometry["search"]["width"] == pytest.approx(
+                expected_width, abs=0.5
+            ), geometry
+            assert geometry["search"]["right"] == pytest.approx(
+                geometry["toolbar"]["right"], abs=0.5
+            ), geometry
+            if expanded:
+                assert geometry["margin"] == "0px", geometry
+                assert geometry["back"]["left"] == pytest.approx(
+                    geometry["toolbar"]["left"], abs=0.5
+                ), geometry
+            else:
+                assert geometry["back"]["centerX"] == pytest.approx(
+                    geometry["toggle"]["centerX"], abs=0.5
+                ), geometry
+            assert geometry["overflow"] <= 0.5, geometry
+        assert fixture.before == (
+            fixture.history.read_bytes(),
+            fixture.registry.read_bytes(),
+        )
+    finally:
+        context.close()
 
 
 @pytest.mark.parametrize("width", [1026, 390])

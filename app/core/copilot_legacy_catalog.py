@@ -1,6 +1,6 @@
 """Preserve verified legacy HTTP catalogs without claiming transcript completeness.
 
-Code version: v1.0.0-codex.0
+Code version: v1.1.0-codex.0
 
 HTTP catalog IDs are source identities. Conversation URLs are explicitly derived
 from the observed native legacy route. updatedAt describes conversation metadata,
@@ -13,6 +13,7 @@ import gzip
 import hashlib
 import json
 import re
+import sqlite3
 from collections import defaultdict
 from collections.abc import Mapping
 from datetime import datetime
@@ -22,11 +23,12 @@ from typing import Any
 import pyarrow as pa
 import pyarrow.parquet as pq
 
-from .resource_persistence import write_parquet_rows_atomic
+from .llm_sqlite import read_sqlite_schema
+from .resource_persistence import read_resource_rows, write_resource_rows_atomic
 
 
 COPILOT_LEGACY_CATALOG_SCHEMA_VERSION = 1
-COPILOT_LEGACY_CATALOG_FILENAME = "legacy-catalog.parquet"
+COPILOT_LEGACY_CATALOG_FILENAME = "legacy-catalog.sqlite3"
 HTTP_SOURCE_KIND = "edge-http-cache-response"
 METADATA_TIME_KIND = "conversation-updatedAt; not a message timestamp"
 URL_BASIS = "derived from observed native legacy route and exact provider ID"
@@ -291,18 +293,19 @@ def write_copilot_legacy_catalog(catalog: Mapping[str, Any], destination: Path) 
     """Write a reviewed catalog to an explicit destination; no production default."""
 
     rows = _validated_rows(catalog.get("conversations"))
-    write_parquet_rows_atomic(Path(destination), rows, COPILOT_LEGACY_CATALOG_SCHEMA)
-    actual = pq.read_table(destination)
-    if not actual.schema.equals(COPILOT_LEGACY_CATALOG_SCHEMA) or actual.to_pylist() != rows:
-        raise RuntimeError("Legacy catalog Parquet readback did not match its reviewed rows.")
+    write_resource_rows_atomic(Path(destination), rows, COPILOT_LEGACY_CATALOG_SCHEMA)
+    if read_resource_rows(Path(destination)) != rows:
+        raise RuntimeError("Legacy catalog readback did not match its reviewed rows.")
 
 
 def read_copilot_legacy_catalog(root: Path | str) -> dict[str, Any]:
     """Read durable coverage evidence conservatively, without creating any files."""
 
     path = copilot_legacy_catalog_path(root)
+    legacy_path = path.with_suffix(".parquet")
     result = {
-        "path": str(path), "status": "missing", "present": path.exists() or path.is_symlink(),
+        "path": str(path), "status": "missing",
+        "present": path.exists() or path.is_symlink() or legacy_path.exists() or legacy_path.is_symlink(),
         "conversation_ids": [], "sessions": None, "physical_records": None,
         "catalog_complete": False, "cursor_chain_proven": False,
         "reason": "No retained legacy catalog is available.",
@@ -310,11 +313,18 @@ def read_copilot_legacy_catalog(root: Path | str) -> dict[str, Any]:
     if not result["present"]:
         return result
     try:
-        table = pq.read_table(path)
-        if not table.schema.equals(COPILOT_LEGACY_CATALOG_SCHEMA):
-            raise ValueError("Legacy catalog Parquet schema is invalid.")
-        rows = _validated_rows(table.to_pylist())
-    except (OSError, TypeError, ValueError, KeyError, RecursionError, pa.ArrowException):
+        actual_schema = (
+            read_sqlite_schema(path)
+            if path.is_file()
+            else pq.read_schema(legacy_path)
+        )
+        if not actual_schema.equals(COPILOT_LEGACY_CATALOG_SCHEMA):
+            raise ValueError("Legacy catalog schema is invalid.")
+        rows = _validated_rows(read_resource_rows(path))
+        typed_rows = pa.Table.from_pylist(rows, schema=COPILOT_LEGACY_CATALOG_SCHEMA).to_pylist()
+        if typed_rows != rows:
+            raise ValueError("Legacy catalog field types are invalid.")
+    except (OSError, TypeError, ValueError, KeyError, RecursionError, sqlite3.Error, pa.ArrowException):
         return {**result, "status": "invalid", "reason": "Retained legacy catalog is unreadable or invalid; coverage remains unverified."}
     return {
         **result, "status": "valid", "conversation_ids": [row["conversation_id"] for row in rows],

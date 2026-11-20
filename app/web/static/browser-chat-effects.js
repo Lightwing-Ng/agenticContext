@@ -1,4 +1,4 @@
-/* Code version: v1.3.0-codex.0 */
+/* Code version: v1.3.2-codex.0 */
 
 (function initializeBrowserChatEffects() {
     "use strict";
@@ -87,10 +87,11 @@
                 scrollport.querySelectorAll("details[data-wechat-forwarded][data-collapse-motion]"),
                 (details) => ({ details, bounds: details.getBoundingClientRect() }),
             );
+            const nextRange = Math.max(0, scrollport.scrollHeight - scrollport.clientHeight);
             entries.forEach(({ message, effect }, index) => {
                 const bounds = rectangles[index];
                 if (message.closest("details:not([open])")
-                    || !message.getClientRects().length || bounds.width <= 0 || bounds.height <= 0) {
+                    || bounds.width <= 0 || bounds.height <= 0) {
                     effect.hidden = true;
                     return;
                 }
@@ -114,13 +115,17 @@
                 }
                 if (effect.style.clipPath !== clipPath) effect.style.clipPath = clipPath;
                 // Scroll-content coordinates stay valid while the timeline supplies the offset.
-                effect.style.left = `${(bounds.left - layerBounds.left) / scaleX}px`;
-                effect.style.top = `${(bounds.top - layerBounds.top) / scaleY + scrollTop}px`;
-                effect.style.width = `${bounds.width / scaleX}px`;
-                effect.style.height = `${bounds.height / scaleY}px`;
+                const geometry = {
+                    left: `${(bounds.left - layerBounds.left) / scaleX}px`,
+                    top: `${(bounds.top - layerBounds.top) / scaleY + scrollTop}px`,
+                    width: `${bounds.width / scaleX}px`,
+                    height: `${bounds.height / scaleY}px`,
+                };
+                Object.entries(geometry).forEach(([property, value]) => {
+                    if (effect.style[property] !== value) effect.style[property] = value;
+                });
                 effect.hidden = false;
             });
-            const nextRange = Math.max(0, scrollport.scrollHeight - scrollport.clientHeight);
             if (nextRange !== range) {
                 range = nextRange;
                 scrollMotion.effect.setKeyframes(scrollKeyframes(range));
@@ -151,8 +156,9 @@
         if (typeof MutationObserver === "function") {
             const observer = new MutationObserver(scheduleMaterialUpdate);
             observer.observe(document.documentElement, { attributes: true });
-            // Settling can remove a motion clip without changing the final card dimensions.
-            const disclosureObserver = new MutationObserver(scheduleUpdate);
+            // Finalizing can change natural geometry after the animation's last
+            // resize delivery. Refresh its clip before the next paint as well.
+            const disclosureObserver = new MutationObserver(updateEffects);
             disclosureObserver.observe(scrollport, {
                 attributes: true,
                 subtree: true,

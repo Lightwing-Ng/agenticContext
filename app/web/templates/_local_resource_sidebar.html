@@ -1,4 +1,4 @@
-{# Code version: v1.1.4-codex.0 #}
+{# Code version: v1.1.5-codex.0 #}
 {% set is_wechat_text = filters.view == 'text' and filters.source == 'wechat' %}
 {% set is_zhihu_text = filters.view == 'text' and filters.source == 'zhihu' %}
 {% set is_session_index = filters.view == 'media' and filters.session_index %}
@@ -60,6 +60,7 @@
                                 type="button"
                                 class="trade-strategy-select form-select trade-strategy-trigger browser-source-filter-trigger"
                                     data-browser-source-filter-trigger
+                                    disabled
                                     aria-haspopup="listbox"
                                     aria-expanded="false"
                                     aria-controls="browser_source_filter_options"
@@ -202,7 +203,7 @@
                     {% endif %}
                     <label class="field browser-filter-field">
                         <span>{{ "Sort order" if is_all_media else ("Session order" if is_session_index else ("Image order in session" if filters.view == "media" and filters.source == "chatgpt" and filters.session_view else ("Sort prompts" if filters.view == "prompts" else "Sort order"))) }}</span>
-                        <select name="sort" class="form-select" {% if contact_filters is defined %}id="wechat_contact_sort" form="wechat_contact_filter_form" data-shared-select-auto aria-label="Sort contact statements"{% else %}aria-label="{{ 'Sort cached media' if is_all_media else ('Order ChatGPT sessions' if is_session_index else ('Order images in the current session' if filters.view == 'media' and filters.source == 'chatgpt' and filters.session_view else ('Sort saved prompts' if filters.view == 'prompts' else ('Sort cached media' if filters.view == 'media' else 'Sort cached text')))) }}"{% endif %}>
+                        <select name="sort" class="form-select" {% if contact_filters is defined %}id="wechat_contact_sort" form="wechat_contact_filter_form" data-shared-select-auto aria-label="Sort contact messages"{% else %}aria-label="{{ 'Sort cached media' if is_all_media else ('Order ChatGPT sessions' if is_session_index else ('Order images in the current session' if filters.view == 'media' and filters.source == 'chatgpt' and filters.session_view else ('Sort saved prompts' if filters.view == 'prompts' else ('Sort cached media' if filters.view == 'media' else 'Sort cached text')))) }}"{% endif %}>
                             <option value="newest" {% if (contact_filters.sort if contact_filters is defined else filters.sort) == "newest" %}selected{% endif %}>Newest first</option>
                             <option value="oldest" {% if (contact_filters.sort if contact_filters is defined else filters.sort) == "oldest" %}selected{% endif %}>Oldest first</option>
                             {% if contact_filters is not defined %}

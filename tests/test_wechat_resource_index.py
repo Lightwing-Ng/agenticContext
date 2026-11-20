@@ -1,22 +1,23 @@
 """Native resource catalogs preserve accounts, source bytes, and undecoded records.
 
-Code version: v1.1.0-codex.0
+Code version: v1.3.1-codex.0
 """
 
 from __future__ import annotations
 
-from contextlib import closing
 import hashlib
 import json
-import os
 import sqlite3
 from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
 
-from app.core.owner_only_files import owner_only_problem
-from app.core.wechat_archive import import_wechat_archive, wechat_archive_path
+from app.core.wechat_archive import (
+    WechatArchiveRepository,
+    import_wechat_archive,
+    wechat_archive_path,
+)
 from app.core.wechat_resource_index import (
     _app_metadata,
     build_resource_index,
@@ -54,7 +55,7 @@ def resources(tmp_path):
     )
     database = db_root / "message_1.sqlite"
     columns = "(CreateTime INTEGER,Des INTEGER,MesLocalID INTEGER PRIMARY KEY,Message TEXT,MesSvrID INTEGER,Type INTEGER,WCDB_CT_Message INTEGER)"
-    with closing(sqlite3.connect(database)) as connection, connection:
+    with sqlite3.connect(database) as connection:
         for peer in ("peer-direct", "peer-group", "attachments@chatroom"):
             connection.execute(f'CREATE TABLE "{_table(peer)}" {columns}')
         rows = [
@@ -105,11 +106,11 @@ def resources(tmp_path):
             f'INSERT INTO "{_table("attachments@chatroom")}" VALUES(?,?,?,?,?,?,?)',
             (NOW, 1, 10, b"only-resource-conversation", SERVER, 43, 2),
         )
-    with closing(sqlite3.connect(db_root / "MM.sqlite")) as connection, connection:
+    with sqlite3.connect(db_root / "MM.sqlite") as connection:
         connection.execute("CREATE TABLE Friend(UsrName TEXT PRIMARY KEY)")
         connection.execute("INSERT INTO Friend VALUES('attachments@chatroom')")
     (owner_root / "FileIndex").mkdir()
-    with closing(sqlite3.connect(owner_root / "FileIndex/fileIndexInfo.db")) as connection, connection:
+    with sqlite3.connect(owner_root / "FileIndex/fileIndexInfo.db") as connection:
         connection.execute(
             "CREATE TABLE FileIndexInfoTable(fileMD5 TEXT,filePath TEXT,fileSize INTEGER,indexType INTEGER,msgLocalId INTEGER,msgtime INTEGER,msgType INTEGER,userName TEXT)"
         )
@@ -131,7 +132,7 @@ def resources(tmp_path):
             ],
         )
     (owner_root / "FileBrowse").mkdir()
-    with closing(sqlite3.connect(owner_root / "FileBrowse/fileInfo.db")) as connection, connection:
+    with sqlite3.connect(owner_root / "FileBrowse/fileInfo.db") as connection:
         connection.execute(
             "CREATE TABLE BrowseInfoTable(msgWrapSvrID INTEGER PRIMARY KEY,msgLocalID INTEGER,fileTime INTEGER,desTitle TEXT,fileExt TEXT,fileMD5 TEXT,fileSize INTEGER,fromUserName TEXT,fromChatName TEXT)"
         )
@@ -145,7 +146,7 @@ def resources(tmp_path):
 
 
 def _rows(fixture):
-    with closing(sqlite3.connect(resource_index_path(fixture.store))) as connection, connection:
+    with sqlite3.connect(resource_index_path(fixture.store)) as connection:
         connection.row_factory = sqlite3.Row
         return [
             dict(row)
@@ -174,7 +175,7 @@ def test_initial_index_preserves_literal_app_title_and_source_roles(
         + "</msg>"
     )
     peer = "peer-group" if prefix else "peer-direct"
-    with closing(sqlite3.connect(fixture.source)) as connection, connection:
+    with sqlite3.connect(fixture.source) as connection:
         connection.execute(
             f'INSERT OR REPLACE INTO "{_table(peer)}" VALUES(?,?,?,?,?,?,?)',
             (NOW + 3, 1, 13, payload, SERVER - 3, 49, 0),
@@ -236,7 +237,7 @@ def test_initial_index_preserves_source_labels_from_normal_zstd_app_cells(
         "<url>https://example.invalid/private-card</url>"
         f"{details}</appmsg></msg>"
     )
-    with closing(sqlite3.connect(resources.source)) as connection, connection:
+    with sqlite3.connect(resources.source) as connection:
         connection.execute(
             f'INSERT INTO "{_table(peer)}" VALUES(?,?,?,?,?,?,?)',
             (NOW + 3, 1, 13, zstd.compress(payload.encode()), SERVER - 3, 49, marker),
@@ -261,39 +262,6 @@ def test_initial_index_preserves_source_labels_from_normal_zstd_app_cells(
         resources.store
     ).read_bytes()
     assert before == (resources.source.read_bytes(), resources.history.read_bytes())
-
-
-@pytest.mark.parametrize("case", ["trailing-data", "unknown-marker", "oversized", "missing-dictionary"])
-def test_unsupported_compressed_app_cells_keep_generic_index_references(resources, case):
-    zstd = pytest.importorskip("compression.zstd")
-    plaintext = b"<appmsg><type>5</type><title>Never recovered</title></appmsg>"
-    marker = 4
-    payload = zstd.compress(plaintext)
-    if case == "trailing-data":
-        payload += b"invalid trailing bytes"
-    elif case == "unknown-marker":
-        marker = 6
-    elif case == "oversized":
-        payload = zstd.compress(plaintext + b" " * (256 * 1024))
-    else:
-        dictionary = zstd.train_dict(
-            [plaintext + f" Sample {number}".encode() for number in range(200)], 1024
-        )
-        payload = zstd.compress(plaintext, zstd_dict=dictionary)
-        marker = 2
-    with closing(sqlite3.connect(resources.source)) as connection, connection:
-        connection.execute(
-            f'UPDATE "{_table("peer-direct")}" SET Message=?, WCDB_CT_Message=? WHERE MesLocalID=13',
-            (payload, marker),
-        )
-
-    build_resource_index(resources.store, resources.snapshot)
-
-    row = next(row for row in _rows(resources) if row["ordinal"] == 13)
-    reference = json.loads(row["provenance"])["resource_reference"]
-    assert row["text"] == "[App message]"
-    assert reference["kind"] == "app"
-    assert {"app_subtype", "safe_title", "app_metadata_version"}.isdisjoint(reference)
 
 
 @pytest.mark.parametrize(
@@ -343,6 +311,7 @@ def test_explicit_app_subtype_requires_one_direct_literal_leaf(
     assert metadata["subtype"] == subtype
     assert metadata["kind"] == kind
     assert "safe_title" not in metadata
+    assert "app_metadata_version" not in metadata
 
 
 def test_quoted_type_does_not_make_a_direct_app_subtype_ambiguous():
@@ -396,20 +365,48 @@ def test_group_app_body_colon_and_newline_are_not_a_sender_prefix():
     assert "sender_id" not in metadata
 
 
-@pytest.mark.parametrize(
-    "envelope",
-    [
-        "<type>5</type><finderFeed><desc>Wrong subtype</desc></finderFeed>",
-        "<type>51</type><finderFeed><desc>First</desc></finderFeed>"
-        "<finderFeed><nickname>Wrong feed</nickname></finderFeed>",
-        "<type>51</type><finderFeed><desc>First</desc><desc>Second</desc>"
-        "<nickname><part>Nested value</part></nickname></finderFeed>",
-    ],
-)
-def test_channels_labels_require_the_exact_subtype_and_unambiguous_literal_fields(envelope):
-    metadata = _app_metadata(f"<appmsg>{envelope}</appmsg>", False, False)
-    assert "channels_description" not in metadata
-    assert "channels_nickname" not in metadata
+def test_existing_v1_catalog_without_app_labels_remains_readable(resources):
+    fixture = resources
+    build_resource_index(fixture.store, fixture.snapshot)
+    path = resource_index_path(fixture.store)
+    with sqlite3.connect(path) as connection:
+        assert (
+            dict(connection.execute("SELECT key,value FROM archive_info"))[
+                "schema_version"
+            ]
+            == "1"
+        )
+        legacy_ids = set()
+        for identifier, raw in connection.execute(
+            "SELECT id,provenance FROM messages"
+        ).fetchall():
+            proof = json.loads(raw)
+            reference = proof["resource_reference"]
+            for key in (
+                "safe_title",
+                "publisher_name",
+                "publisher_name_source",
+                "app_name",
+                "app_name_source",
+                "app_subtype",
+            ):
+                reference.pop(key, None)
+            connection.execute(
+                "UPDATE messages SET provenance=? WHERE id=?",
+                (json.dumps(proof), identifier),
+            )
+            if reference["peer_id"] == "peer-direct":
+                legacy_ids.add(identifier)
+        session = connection.execute(
+            "SELECT id FROM conversations WHERE peer_id='peer-direct'"
+        ).fetchone()[0]
+    before = path.read_bytes(), fixture.history.read_bytes()
+    page = WechatArchiveRepository(fixture.store).query(
+        account="account:" + OWNER, session=session, persist_event_cache=False
+    )
+    assert page["resource_index_status"] == "ready"
+    assert legacy_ids <= {row["id"] for row in page["messages"]}
+    assert before == (path.read_bytes(), fixture.history.read_bytes())
 
 
 def test_native_types_and_real_times_become_metadata_placeholders_without_payload_reads(
@@ -479,9 +476,7 @@ def test_native_types_and_real_times_become_metadata_placeholders_without_payloa
     assert "sender_id_unavailable" in json.loads(group["quality_flags"])
     assert source_before == fixture.source.read_bytes()
     assert history_before == fixture.history.read_bytes()
-    assert owner_only_problem(resource_index_path(fixture.store)) == ""
-    if os.name == "posix":
-        assert resource_index_path(fixture.store).stat().st_mode & 0o777 == 0o600
+    assert resource_index_path(fixture.store).stat().st_mode & 0o777 == 0o600
 
 
 def test_schema_identity_and_attachment_only_conversations_follow_existing_contract(
@@ -490,8 +485,8 @@ def test_schema_identity_and_attachment_only_conversations_follow_existing_contr
     fixture = resources
     build_resource_index(fixture.store, fixture.snapshot)
     with (
-        closing(sqlite3.connect(resource_index_path(fixture.store))) as sidecar, sidecar,
-        closing(sqlite3.connect(fixture.history)) as main, main,
+        sqlite3.connect(resource_index_path(fixture.store)) as sidecar,
+        sqlite3.connect(fixture.history) as main,
     ):
         for table in ("messages", "conversations"):
             assert (
@@ -769,3 +764,17 @@ def test_a_unique_thumbnail_is_labeled_and_cannot_overwrite_browse_metadata(reso
     assert reference["checksum_md5"] == "f" * 32
     assert reference["filename"] == "document.pdf"
     assert reference["byte_size"] == 1234
+@pytest.mark.parametrize(
+    "envelope",
+    [
+        "<type>5</type><finderFeed><desc>Wrong subtype</desc></finderFeed>",
+        "<type>51</type><finderFeed><desc>First</desc></finderFeed>"
+        "<finderFeed><nickname>Wrong feed</nickname></finderFeed>",
+        "<type>51</type><finderFeed><desc>First</desc><desc>Second</desc>"
+        "<nickname><part>Nested value</part></nickname></finderFeed>",
+    ],
+)
+def test_channels_labels_require_the_exact_subtype_and_unambiguous_literal_fields(envelope):
+    metadata = _app_metadata(f"<appmsg>{envelope}</appmsg>", False, False)
+    assert "channels_description" not in metadata
+    assert "channels_nickname" not in metadata

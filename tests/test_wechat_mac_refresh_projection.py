@@ -1,12 +1,13 @@
-"""Verify Mac refresh comparison reuse and bounded native row projection.
+"""Native refresh projection keeps exact archive and source evidence.
 
-Code version: v1.0.0-codex.0
+Code version: v1.2.1-codex.0
 """
 
 from concurrent.futures import ProcessPoolExecutor
 from concurrent.futures.process import BrokenProcessPool
 from contextlib import closing, nullcontext
 from dataclasses import replace
+import hashlib
 from multiprocessing import get_context
 
 import pytest
@@ -14,13 +15,91 @@ import pytest
 from app.core import wechat_mac_refresh_projection as projection
 from app.core import wechat_macos_recovery_bank as bank
 from app.core.wechat_mac_refresh_source import RefreshError
-from app.core.wechat_secondary_completions import FILENAME
-from tests import test_wechat_mac_refresh as fixtures
+from tests import test_wechat_mac_refresh as refresh_fixtures
 from tests.test_wechat_mac_refresh import _database
 
 
-mac_archive = fixtures.mac_archive
-refresh_archive = fixtures.refresh_archive
+mac_archive = refresh_fixtures.mac_archive
+refresh_archive = refresh_fixtures.refresh_archive
+OWNER = "wxid_synthetic_card_owner"
+SENDER = "wxid_synthetic_card_sender"
+
+
+def _project(raw, *, kind="direct", marker=0):
+    return projection._project_message(
+        {
+            "local_id": 94,
+            "local_type": (5 << 32) | 49,
+            "server_id": 594,
+            "create_time": 1700000094,
+            "real_sender_id": 3,
+            "message_content": raw,
+            "compression_marker": marker,
+        },
+        OWNER,
+        kind,
+        {3: {"rowid": 3, "user_name": SENDER, "is_session": 1}},
+    )
+
+
+@pytest.mark.parametrize("kind,prefix", [("direct", ""), ("group", SENDER + ":\n")])
+def test_app_card_projection_preserves_title_publisher_and_original_body_hash(kind, prefix):
+    raw = (
+        prefix
+        + "<msg><appmsg><type>5</type><title>Literal &amp; source title</title>"
+        "<sourcedisplayname>Original publisher</sourcedisplayname>"
+        "<sourceusername>gh_synthetic_original</sourceusername>"
+        "<url>https://example.invalid/private-article</url>"
+        "<aeskey>opaque-secret-key</aeskey></appmsg>"
+        "<appinfo><appname></appname></appinfo></msg>"
+    )
+    message = _project(raw, kind=kind)
+    assert message["text"] == "[App message]"
+    assert message["resource"] == {
+        "kind": "app",
+        "label": "[App message]",
+        "native_time": 1700000094,
+        "app_subtype": "5",
+        "safe_title": "Literal & source title",
+        "publisher_name": "Original publisher",
+        "publisher_name_source": "appmsg/sourcedisplayname",
+        "app_metadata_version": "1",
+    }
+    assert message["content_sha256"] == hashlib.sha256(raw.encode()).hexdigest()
+    assert message["sender_id"] == SENDER
+    assert "native_text" not in message
+
+
+def test_third_party_app_keeps_app_name_without_inventing_a_publisher():
+    message = _project(
+        "<msg><appmsg><type>5</type><title>Literal third-party title</title>"
+        "<url>https://example.invalid/unknown-publisher</url></appmsg>"
+        "<appinfo><appname>Source application</appname></appinfo></msg>"
+    )
+    resource = message["resource"]
+    assert resource["safe_title"] == "Literal third-party title"
+    assert resource["app_name"] == "Source application"
+    assert resource["app_name_source"] == "appinfo/appname"
+    assert "publisher_name" not in resource
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        "<msg><appmsg><type>5</type><url>https://example.invalid/only-source</url></appmsg></msg>",
+        "<msg><appmsg><type>5</type><title><b>Structured title</b></title>"
+        "<sourcedisplayname><b>Nested publisher</b></sourcedisplayname></appmsg></msg>",
+        "<msg><appmsg><type>5</type><title>Broken",
+    ],
+)
+def test_unavailable_or_ambiguous_labels_keep_a_generic_card(payload):
+    message = _project(payload)
+    assert message["resource"] == {
+        "kind": "app",
+        "label": "[App message]",
+        "native_time": 1700000094,
+        "app_subtype": "5",
+    }
 
 
 def test_conversation_comparison_reuses_indexes_across_authenticated_shards(
@@ -30,13 +109,13 @@ def test_conversation_comparison_reuses_indexes_across_authenticated_shards(
     scope = projection.resolve_scope(root, session)
     comparison = projection.ConversationComparison(history, scope, bank._inputs(history))
     scans = []
-    scan = projection._archive_comparison_indexes
+    timeline = projection.WechatArchiveRepository._timeline_tables
 
-    def counted_scan(*args):
-        scans.append(scope)
-        return scan(*args)
+    def counted_timeline(*args, **kwargs):
+        scans.append(kwargs.get("conversation_id"))
+        return timeline(*args, **kwargs)
 
-    monkeypatch.setattr(projection, "_archive_comparison_indexes", counted_scan)
+    monkeypatch.setattr(projection.WechatArchiveRepository, "_timeline_tables", counted_timeline)
     empty = _database(scope, records, include_target=False)
     try:
         assert projection.prepare_packet(root, scope, empty, comparison=comparison) == (
@@ -53,35 +132,34 @@ def test_conversation_comparison_reuses_indexes_across_authenticated_shards(
             results.append(projection.prepare_packet(root, scope, database, comparison=comparison))
         finally:
             database.close()
-    assert scans == [scope]
+    assert scans == [session]
     assert results[0] == results[1]
     assert results[0][1] == {"total": 4, "existing": 2, "excluded": 0}
     with pytest.raises(RefreshError, match="another conversation"):
         comparison.require_current(history, replace(scope, account_id="wxid_other"))
 
 
-def test_conversation_comparison_rejects_overlay_publication_during_projection(
-    refresh_archive, monkeypatch,
-):
+def test_conversation_comparison_rejects_an_overlay_published_during_reuse(refresh_archive):
     root, history, session, records = refresh_archive
     scope = projection.resolve_scope(root, session)
     baseline = bank._inputs(history)
     comparison = projection.ConversationComparison(history, scope, baseline)
-    new_overlay = history.with_name(FILENAME)
-    ordered = projection._ordered_native_projection
+    details = history.with_name("resource_details.json")
 
-    def publish_overlay_after_projection(*args, **kwargs):
-        yield from ordered(*args, **kwargs)
-        new_overlay.write_bytes(b"Synthetic replacement catalog")
+    def publish_detail_registry(_):
+        details.write_text("{}", encoding="utf-8")
+        details.chmod(0o600)
 
-    with closing(_database(scope, records)) as database:
+    database = _database(scope, records)
+    try:
         projection.prepare_packet(root, scope, database, comparison=comparison)
-        monkeypatch.setattr(
-            projection, "_ordered_native_projection", publish_overlay_after_projection,
-        )
         with pytest.raises(RefreshError, match="archive changed during refresh"):
-            projection.prepare_packet(root, scope, database, comparison=comparison)
-    assert bank._inputs(history) == baseline
+            projection.prepare_packet(
+                root, scope, database, comparison=comparison, on_counts=publish_detail_registry,
+            )
+        assert bank._inputs(history) == baseline
+    finally:
+        database.close()
 
 
 @pytest.mark.parametrize("broken", [False, True])

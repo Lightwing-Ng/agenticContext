@@ -1,6 +1,92 @@
 # Testing guide
 
-Documentation version: `v1.51.1-codex.0`
+Documentation version: `v1.51.2-codex.0`
+
+## Media SQLite persistence checks
+
+`tests/test_media_sqlite.py` verifies typed indexed rows, exact schemas and metadata,
+nullable/list values, unchanged-row suppression, atomic mixed mutations, failed-write
+rollback, concurrent first publication, conditional claims, and format isolation.
+Catalog and Grok integration tests exercise actual dirty-key callers, legacy
+read-only fallback, normalized old schemas, visual deduplication, failed-flush
+retry, status selection, and provider task boundaries. Migration tests cover all
+five admitted resource types, exact rollback, source drift, protected-name exclusion,
+existing-target conflicts, and open handles. They use synthetic isolated stores.
+
+Run `TZ=UTC ./scripts/check.sh` for the full non-live suite, branch coverage,
+dependency audit, documentation checks, JavaScript syntax, and JavaScript tests.
+Do not substitute a focused storage selection or exclude `slow` tests for a full
+suite claim.
+
+Use `scripts/benchmark_media_sqlite.py --rows 1000 10000 --repeats 9 --report
+test-results/media-synthetic.json` for public synthetic comparisons. Real migration
+reports stay private. Disk point queries are compared separately from full reads;
+one-row writes compare the old in-memory snapshot serialization and verification
+against a keyed SQLite transaction. Neither benchmark substitutes disk reads for
+the existing process-local memory cache. Report P95 and median, full-read costs,
+file sizes, and rollback allocation, including regressions.
+
+## WeChat for Mac recovery checks
+
+The `test_wechat_macos_recovery*` suites use synthetic archives and independent source proofs.
+They cover account and peer isolation, authenticated sender mappings, literal native text,
+neutral system messages, structured replies and forwards, resource placeholders, staged atomic
+publication, replay, immutable-reader drift, indexed scope counts, and source-pinned exports.
+Resource-stub upgrades must preserve the original event ID and bubble count, retain the original
+catalog, and reject meaningful old metadata or body conflicts. Source-level account binding must
+retain exact cross-peer anchors and a native owner-sender proof; it does not authorize new
+conversations or guessed local anchors.
+
+These offline tests do not capture keys, read personal databases, control WeChat, or establish
+real-account completeness. Real recovery additionally requires source-group hashes, authenticated
+page/WAL receipts, full SQLite integrity checks, before/after readback, and explicit gap counts.
+
+## LLM SQLite persistence checks
+
+`tests/test_llm_sqlite.py` exercises exact schemas, duplicate and interleaved row
+order, scoped conversation reads, changed-bucket updates, failed transactions,
+initial-write failure, and read-only legacy fallback. `tests/test_migrate_llm_sqlite.py`
+covers canonical scope, numbered-file exclusion, exact gzip rollback verification,
+retirement, source drift, open handles, modification-time preservation, resumable
+matching targets, and conflicting-target refusal. Migration tests use isolated
+synthetic stores and never production history or cloud providers.
+
+Storage fixtures must cover new version 3 Zstandard-compressed Arrow IPC writes in
+32 stable SHA-256 conversation buckets, explicit original row ordinals, exact Arrow
+schema preservation, and compatible version 2 JSON reads through the same public
+APIs. Summary version 2 fixtures must keep compressed JSON metadata separate from
+message bodies and omit body previews. Format coverage must preserve scoped reads,
+full exports, duplicate rows, and ordering across both readable payload versions.
+
+Run the storage and migration checks with the browser's relevant query coverage:
+
+```bash
+TZ=UTC ./scripts/test.sh tests/test_llm_sqlite.py tests/test_migrate_llm_sqlite.py \
+  tests/test_chat_history_browser.py tests/test_chat_history_project_filter.py
+```
+
+Provider suites must keep testing persistence, conservative completeness, recovery
+backups with the correct source extension, and failed-write preservation. Copilot
+catalog and coverage fixtures additionally verify that a legacy Parquet read creates
+no SQLite file. Browser equivalence checks cover overview, detail, direct message
+lookup, source selection, discovery overlays, project membership, and pagination;
+search and Zhihu remain covered through their full-history paths.
+
+Gemini Takeout fixtures cover both canonical SQLite and read-only Parquet baselines,
+exact same-format backups, schema and content-hash validation, separate legacy/canonical
+compare-and-swap checks, and versioned receipt recovery before and after publication.
+Real version 1 receipt envelopes must replay without rewriting completed metadata and
+must refuse adoption after an unrelated migration. Initial SQLite writes must verify the
+native owner-only boundary before any transcript bytes and leave the source unchanged
+when that boundary fails. These tests use synthetic source bundles and isolated stores.
+
+For private real-data benchmarks, use the migration report's warmup, repeated samples,
+median, P95, operation scope, and query plan. Compare identical source rows and
+schemas; measure full reads separately from indexed session reads and one-message
+snapshot updates. Include initial placeholder allocation, hydrated allocation,
+SQLite size, rollback size, and retained numbered histories when reporting storage.
+Do not add account data or real-data benchmark outcomes to tracked test fixtures or
+documentation. Focused checks do not replace the repository's complete quality gate.
 
 ## Supported commands
 
@@ -195,6 +281,25 @@ module remains indivisible, so capacity improvements still require live CI evide
 Re-run the complete workflow when retrying: artifacts are named by run attempt, and
 successful shards from an earlier attempt cannot fill gaps in a newer attempt.
 
+
+
+Derived WeChat retirement uses synthetic stores in
+`tests/test_wechat_derived_redundancy.py`, `tests/test_wechat_derived_retirement.py`, and
+`tests/test_wechat_derived_publication.py`. Verify ambiguous identities, clock conflicts,
+duplicate source positions, unique content, resource exclusions, hash drift, bounded
+mid-operation disk exhaustion, source counters, and publication rollback. Test shared-body
+views as well as ordinary tables, preserve native and unmatched rows, and check current
+resource pins without reactivating stale indexes. Contact name and source-link regressions
+live in `tests/test_wechat_contact_profile_names.py` and the contact route suite.
+
+Contact analysis availability tests use isolated registries to distinguish unreadable,
+cloud-only, or invalid identity configuration from retryable source races. They assert
+that an unavailable configuration queues no build, hydrates no file, and preserves
+source bytes. Route checks require `503/error` with an escaped explanation and no open
+waiting modal, while an active source journal or registry identity race stays
+`202/indexing`. Run these with `tests/test_wechat_contact_unavailable.py` and
+`tests/test_wechat_contact_analysis_routes.py`.
+
 Install the project dependencies with the supported Python 3.13 or newer workflow:
 
 ```bash
@@ -250,13 +355,6 @@ On Windows:
 $env:AGENTIC_CONTEXT_TEST_MARK_EXPRESSION='integration'; .\scripts\test.ps1
 ```
 
-`tests/test_chatgpt_display.py` and `tests/test_chatgpt_display_web.py` cover the
-display-only adapter for observed ChatGPT component markup and empty citation
-pointers. Known component rows become Markdown tables, diagram text remains
-readable, and unsupported structures keep inert fenced source. Inline, fenced,
-and indented code stay literal. Route checks preserve user messages, other
-providers, stored Parquet bytes, and original Markdown exports.
-
 The default marker expression is `not live`. Run an intentionally manual live check only with an
 explicit override, for example `AGENTIC_CONTEXT_TEST_MARK_EXPRESSION=live ./scripts/test.sh`.
 
@@ -288,7 +386,7 @@ display-only adapter for observed ChatGPT component markup and empty citation
 pointers. Known component rows become Markdown tables, diagram text remains
 readable, and unsupported structures keep inert fenced source. Inline, fenced,
 and indented code stay literal. Route checks preserve user messages, other
-providers, stored Parquet bytes, and original Markdown exports.
+providers, stored history bytes, and original Markdown exports.
 
 Microsoft Copilot's focused offline checks are `tests/test_copilot_history.py`,
 `tests/test_copilot_catalog.py`, `tests/test_copilot_catalog_transport.py`,
@@ -324,7 +422,7 @@ message-body coverage for hundreds of sessions. The actual legacy source is the
 existing macOS Edge sidebar. Its 357 visible titles and 19 verified HTTP catalog
 responses are preserved in recovery; the latter contain 377 physical records and
 357 distinct native IDs. Tests verify exact response hashes, gzip decoding, strict
-catalog fields, duplicate identity preservation, typed Parquet readback, and invalid
+catalog fields, duplicate identity preservation, typed SQLite and legacy Parquet readback, and invalid
 catalog handling. A complete current-web sync must remain partial across repeat
 runs and reload whenever this legacy evidence remains unverified. Existing legacy
 message rows must not prevent collection of available current-web sessions.
@@ -356,24 +454,6 @@ On Windows:
 .\scripts\check.ps1
 ```
 
-Run the WeChat contact and native-text checks with synthetic fixtures:
-
-```bash
-./scripts/test.sh tests/test_wechat_contacts.py tests/test_wechat_contact_browser.py \
-  tests/test_wechat_contact_template.py tests/test_wechat_provenance.py \
-  tests/test_wechat_identity.py tests/test_wechat_wcdb.py tests/test_wechat_text.py \
-  tests/test_wechat_reconcile.py
-```
-
-They cover exact native identity, OpenIM realm separation, scoped name observations, unidentified
-speaker isolation, and per-message body/time/record fingerprints. Native checks cover bounded
-metadata parsing, strict plaintext decoding, explicit missing-backend/dictionary failures,
-supported text envelopes, account/hash boundaries, replay, conflicting observations, exclusions,
-and preservation of existing message evidence during additive publication. Real Zstd cases run
-when `compression.zstd` is available; Python 3.13 still exercises the explicit unavailable-backend
-contract. These checks do not read production backups, cloud exports, media, or the local index,
-and passing them does not establish complete recovery of a particular backup.
-
 WeChat disclosure motion checks use a synthetic archive and disposable browser profiles:
 
 ```bash
@@ -383,6 +463,13 @@ WeChat disclosure motion checks use a synthetic archive and disposable browser p
 They verify measured width/height spring motion and opening overshoot, interrupted reversal,
 keyboard activation, arrow removal, shadow alignment, final geometry cleanup, Reduced Motion
 including a midflight preference change, and disclosure without ScrollTimeline support.
+Forwarded stress checks sample actual paused WAAPI effects and compare Chromium's
+`LayoutCount` for 32 versus 96 equal-depth child messages during opening and closing.
+The guard rejects per-message synchronous-layout growth without asserting a
+machine-specific frame rate. Pre-paint shadow checks register their observer after
+the production geometry observers and retain the 1px bound. An intentionally late
+height-write control must violate that same bound; a later timer is not used to
+compare a new animation layout against a preceding painted shadow.
 The desktop/narrow Light/Dark checks never read the production archive or authenticated profiles.
 Contact-source disclosures reuse the same spring with height/body motion only. Their checks cover
 stable table columns, native keyboard activation, continuous reversal, Reduced Motion, restored
@@ -400,6 +487,27 @@ legacy SQL writers, read-only/attached database queries, append guards, and stri
 validation. Publication checks replace APFS cloning with a test-only file copy and exercise
 verified rollback evidence, sidecar pin handling, changed-input refusal, and failed-publication
 recovery. They never read production history, hydrate cloud archives, or launch browsers.
+
+Storage-maintenance regressions use disposable SQLite files and synthetic provider metadata:
+
+```bash
+./scripts/test.sh tests/test_compact_wechat_sqlite.py tests/test_publish_wechat_compaction.py tests/test_preserve_wechat_workstations.py tests/test_verify_wechat_onedrive.py tests/test_archive_wechat_rollbacks.py tests/test_wechat_rollback_location.py
+```
+
+They assert source-byte preservation when candidate hard links, repeated source inodes,
+late candidate links, parent traversal, or actual runtime-directory aliases are refused.
+Case checks follow the filesystem's real identity semantics rather than lowercasing paths.
+Phased relocation tests retain prior workstation/receipt mappings and reject conflicting
+relative paths before moving new files. Relocation unit tests replace native rename/durability
+primitives; unsupported-platform apply checks verify that no output is created. Missing
+allocation metadata stays unknown. Separate Windows models exercise the production
+rename and directory-sync branches, exact binary checksums, late collisions, source
+drift, and file-sync failure. Native directory attributes must be checked root-first
+before entering source, destination, public, report, or cache subtrees; incomplete
+enumeration and failed cache metadata queries remain explicitly unverified.
+File Provider success never certifies remote content or
+authorizes local release. Native macOS compression and atomic-swap checks retain their
+explicit filesystem/platform requirements; no Windows execution is inferred from local results.
 
 Private-chat checks require reciprocal verified native owner/peer IDs and retain separate
 sent/received directions, sender labels, sources, gaps, and conflicting bodies. Invalid
@@ -802,17 +910,22 @@ The canonical local and CI quality gate is `scripts/check.sh` on macOS/Linux and
 `scripts/check.ps1` on Windows. The gates run, in order:
 
 1. Installed requirement-version validation, `pip check`, and a local-environment `pip-audit` scan.
-2. Ruff static checks over `main.py`, `app/`, `tests/`, and `scripts/`. The enforced rule set is
-   pinned in `ruff.toml` so a Ruff upgrade cannot change it; Ruff 0.16 replaced the built-in
-   default selection that the gate previously relied on.
+2. Ruff static checks over `main.py`, `app/`, `tests/`, and `scripts/`.
 3. Offline Markdown file, image, and heading links in the repository documentation.
 4. `node --check` for every first-party JavaScript file in `app/web/static/`.
-5. Node unit tests for the shared Agent Optimization and Site tools runtime contract.
+5. Every `tests/test_*.mjs` Node unit-test file, discovered automatically. An empty
+   JavaScript test inventory is a gate failure on both POSIX and Windows.
 6. The full pytest suite with branch coverage for `app/`, including the disposable-browser
    responsive sidebar E2E flow.
 
 The coverage report is written to `test-results/coverage.json`; all generated test artifacts are
-ignored by Git. The gate currently enforces a 55% combined statement-and-branch coverage floor.
+ignored by Git. The gate enforces a 55% combined statement-and-branch coverage floor and the
+independent statement and branch floors in `scripts/coverage_policy.json`. Each required group
+must have at least 70% statement coverage and 50% branch coverage. The policy names LLM SQLite,
+resource persistence, WeChat exchange and recovery, derived publication, native restoration, and
+Mac refresh. A missing required module, missing branch measurements, or missing policy fails the
+gate. Application coverage includes `app/`; maintenance scripts and `main.py` have behavioral
+tests but are not included in that percentage.
 Override `AGENTIC_CONTEXT_COVERAGE_MINIMUM` only for an intentional local diagnostic, never to make a
 regression pass.
 
@@ -821,12 +934,52 @@ Historical coverage counts are preserved in [TEST_HISTORY.md](TEST_HISTORY.md).
 Raise the coverage floor only after adding behavior-level tests. Do not exclude production modules
 or lower the threshold to mask a gap.
 
+### Publication and restart safety
+
+`test_chatgpt_history_preservation.py` runs the same retention, conflicting-body replay, empty
+provider response, and invalid-guard contracts against Parquet and canonical SQLite storage.
+`test_llm_crash_recovery.py` uses a real killed child process at transaction boundaries;
+reopened databases must contain complete old or new rows and pass `PRAGMA integrity_check`.
+
+`test_wechat_exchange_crash_recovery.py` kills actual publishers between coordinated history and
+sidecar replacements. A durable, bounded publication journal preserves exact candidate, original,
+backup, and unrelated-state pins. Reentry completes a verified pending publication; unknown drift
+or invalid mappings fail without overwriting independent evidence. Application construction runs
+recovery before composing archive readers, covered by `test_wechat_exchange_startup.py`.
+These are process-interruption checks on synthetic stores, not a claim of physical power-loss or
+real-account completeness.
+
 ## CI portability contract
 
-GitHub Actions is the canonical clean-room gate. It runs the quality contract on `ubuntu-latest`
-and `windows-latest` with Python 3.13 as the minimum-version baseline, Node.js 22, UTC, and a freshly installed Playwright
-Chromium. A test that passes only on the developer's macOS workstation is not evidence of a
-passing project contract.
+GitHub Actions is the canonical clean-room gate. Linux and Windows retain complete Python 3.13
+minimum-version suites, partitioned into eight deterministic shards per platform. Aggregation
+requires every successful shard, the exact test inventory, matching commit/run/attempt/platform
+identities, and verified branch-coverage artifacts before applying global and critical-path floors.
+The runners use Node.js 22 and UTC.
+
+A separate Python 3.14 profile imports `compression.zstd` before running codec and storage tests,
+so missing dictionary support cannot silently skip that profile. The macOS profile exercises
+native APFS compression, atomic inode swaps, AppleScript/AppKit, process locks, and isolated
+device-runtime boundaries. Its WebKit smoke checks real local rendering, theme changes, keyboard
+menus, and touch drawer hit testing at desktop, tablet, and phone sizes. Chromium remains the
+full-suite browser. Both browser profiles set `PLAYWRIGHT_BROWSERS_PATH` explicitly so the
+temporary pytest `HOME` cannot hide installed binaries. Compatibility profiles are required by
+the Linux aggregate gate.
+
+Run the additional browser profile locally after installing its binary:
+
+```bash
+export PLAYWRIGHT_BROWSERS_PATH="${TMPDIR:-/tmp}/agenticcontext-playwright"
+python3 -m playwright install webkit
+AGENTIC_CONTEXT_SMOKE_BROWSER=webkit TZ=UTC ./scripts/test.sh tests/test_browser_engine_smoke.py
+```
+
+Phone and tablet labels describe simulated viewports. These tests do not establish physical
+iPhone pairing, signing, WDA readiness, or live provider authentication. Existing manual acceptance
+procedures in [iPhone](IPHONE.md), [Jury](JURY.md), and [Safari acceptance](SAFARI_CACHE_ACCEPTANCE.md)
+remain separate release evidence; record the tested commit, environment, operation, outcome, and
+unresolved gaps without credentials or private content. Never turn an unperformed manual check
+into a passing automated result.
 
 Use this command to reproduce the CI timezone locally:
 
@@ -957,7 +1110,7 @@ Windows CI run without the authenticated manual checks is not live Windows provi
   contacting Zhihu or opening a host profile. Workflow tests inject current-account, vote-up
   activity, and author-answer pages into a
   temporary `local_store` root. They verify exact activity filtering, cursor rejection,
-  cumulative Parquet writes, unavailable-body retention, source-link extraction, empty provider
+  cumulative SQLite writes, unavailable-body retention, source-link extraction, empty provider
   HTML, complete Local resources answer rendering, source-specific Answerer filtering, query-state
   preservation, removed answer IDs/Projects/Clear filters, literal detail headings, default Edge
   controls, login-probe routing, and the single-character vector logo.
@@ -978,7 +1131,7 @@ Windows CI run without the authenticated manual checks is not live Windows provi
   reading to the terminal page when nothing is cached, ignoring provider totals and duplicates,
   fail-closed cursor and repeated-page handling, and cooperative stop. Sync tests cover its merge
   metrics and the answerer-URL requirement. `test_zhihu_answerer_refresh_e2e.py` drives the real
-  Zhihu service, collector, and Parquet merge in a disposable browser against injected provider
+  Zhihu service, collector, and SQLite merge in a disposable browser against injected provider
   pages: added, unchanged, and provider-failure results, wait-modal release, and the four-action
   drawer inside 1,138, 1,024, and 390 px viewports. No test contacts Zhihu or opens a host browser
   profile.
@@ -1032,6 +1185,17 @@ Windows CI run without the authenticated manual checks is not live Windows provi
 
 The current detailed module-to-behavior map is maintained in [TEST_COVERAGE.md](TEST_COVERAGE.md).
 
+## Native WeChat resource refresh checks
+
+`test_wechat_native_resource_refresh.py` exercises explicit staged publication through the
+public repository, existing resource bubbles, pagination, search, account filters, and CSV.
+It covers image, video, voice, sticker, and file placeholders; preservation of earlier scoped
+additions; strict duplicate proofs; retained clock variants; and invalidation after a canonical
+catalog change. `test_wechat_native_resource_receipts.py` checks newer iPad manifest, account,
+database-digest, and current-text-witness binding, including sealed reads that never reopen
+the preservation manifest. Source archives, canonical metadata, and media payloads remain
+outside test-owned mutation boundaries.
+
 ## Isolation contract
 
 `tests/conftest.py` runs before application test modules are imported. It redirects all default
@@ -1060,6 +1224,13 @@ when the route or service boundary is the behavior being tested.
 - `slow`: Tests materially slower than the unit-test median.
 - `live`: Explicit manual checks that require a signed-in browser or a remote service. These never
   belong in CI or the default quality gate.
+
+The live Tunnel badge contract reads the canonical Worthward style-token page at
+`http://127.0.0.1:8688/settings/style-tokens` by default. Set
+`AGENTIC_CONTEXT_REFERENCE_STYLE_URL` to the style-token URL of an actual isolated Worthward
+instance when its user-owned service is unavailable. Keep the original rendering assertions,
+use the sibling application's supported temporary-store overrides, and stop the owned instance
+after verification. The live agenticContext status remains tied to its real service on `8666`.
 
 The sidebar E2E layer may use Playwright-managed Chromium or an installed Chrome or Edge binary,
 but always launches a clean browser context without a user-data directory. Its Flask server uses

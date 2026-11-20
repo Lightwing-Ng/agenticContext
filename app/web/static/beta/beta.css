@@ -1,4 +1,4 @@
-/* Code version: v0.5.0-codex.0 */
+/* Code version: v0.5.1-codex.0 */
 
 .beta-page .beta-workspace { overflow: visible; }
 .beta-page #workspace_panel .beta-title { box-sizing: border-box; display: flex; flex: 0 0 auto; flex-direction: column; width: min(100%, var(--layout-content-width)); height: auto; min-height: calc(var(--workspace-title-rail-control-height) + var(--workspace-title-rail-pad-block-start)); padding: var(--workspace-title-rail-pad-block-start) var(--workspace-article-pad-inline) 0; }
@@ -7,7 +7,7 @@
 .beta-page .app-shell.is-sidebar-collapsed #workspace_panel .beta-title,
 html.sidebar-memory-collapsed .beta-page #workspace_panel .beta-title { padding-inline-start: var(--workspace-title-rail-collapsed-pad-inline-start); }
 .beta-page .beta-scrollport { padding-block-start: 12px; }
-.beta-page .beta-content { width: min(100%, var(--layout-content-width)); display: grid; gap: 18px; padding-inline: 12px; box-sizing: border-box; }
+.beta-page .beta-content { width: min(100%, var(--layout-content-width)); display: grid; grid-template-columns: repeat(var(--layout-grid-columns), minmax(0, 1fr)); column-gap: var(--layout-grid-gutter); row-gap: var(--layout-grid-row-gap); padding-inline: 12px; box-sizing: border-box; }
 .beta-page .beta-nav { --settings-category-icon-tint: var(--accent-text); --settings-category-icon-surface: var(--accent-surface-muted); }
 .beta-page .beta-nav-idea-collision { --settings-category-icon-url: url("/static/images/wand.and.sparkles.inverse.svg"); }
 .beta-page .beta-nav-context-capsule { --settings-category-icon-url: url("/static/images/square.stack.3d.down.forward.fill.svg"); }
@@ -44,7 +44,7 @@ html.sidebar-memory-collapsed .beta-page #workspace_panel .beta-title { padding-
 .beta-page .beta-optional { color: var(--muted); font-size: 10px; margin-inline-start: 4px; }
 .beta-page .beta-source-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
 .beta-page .beta-source-single { grid-template-columns: minmax(0, 1fr); }
-.beta-page textarea.text-input-control { min-height: 154px; border-radius: var(--radius-soft); resize: vertical; line-height: 1.5; font-size: 12px; padding: 12px; }
+.beta-page textarea.text-input-control { min-height: 154px; border-radius: var(--radius-soft); corner-shape: var(--corner-shape-continuous); resize: vertical; line-height: 1.5; font-size: 12px; padding: 12px; }
 .beta-page .beta-budget input { width: min(100%, 150px); }
 .beta-page .beta-help { color: var(--muted); font-size: 11px; line-height: 1.5; margin: 0; }
 .beta-page .beta-material-tools, .beta-page .beta-actions, .beta-page .beta-export-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; }
@@ -77,7 +77,7 @@ html.sidebar-memory-collapsed .beta-page #workspace_panel .beta-title { padding-
 .beta-page .beta-footnote p { margin: 6px 0 0; }
 
 @media (max-width: 600px) {
-    .beta-page .beta-content { gap: 14px; padding-inline: 10px; }
+    .beta-page .beta-content { column-gap: var(--layout-grid-gutter); row-gap: var(--layout-grid-row-gap); padding-inline: 10px; }
     .beta-page .beta-source-grid { grid-template-columns: minmax(0, 1fr); }
     .beta-page .beta-input-card, .beta-page .beta-result { padding: 12px; }
     .beta-page .beta-intro h2 { font-size: 23px; }

@@ -7,7 +7,6 @@ from collections import Counter
 from contextlib import closing
 import hashlib
 import json
-import os
 import sqlite3
 from types import SimpleNamespace
 
@@ -96,7 +95,6 @@ def test_inventory_filters_retained_app_evidence_by_target_and_strategy():
     }]
 
 
-@pytest.mark.skipif(os.open not in os.supports_dir_fd, reason="requires POSIX directory handles")
 def test_cli_resumes_after_last_attempt_and_keeps_the_lookahead(tmp_path, monkeypatch, capsys):
     history = capture.WechatArchiveRepository(tmp_path).path
     history.parent.mkdir(parents=True)

@@ -1,6 +1,6 @@
 """Regression coverage for independent ChatGPT Chat and local Codex resources."""
 
-# Code version: v1.0.0-codex.0
+# Code version: v1.1.1-codex.0
 
 from pathlib import Path
 from unittest.mock import patch
@@ -50,12 +50,12 @@ def _row(source: str, session: str, text: str, *, index: int = 0, role: str = "u
 def history_root(tmp_path: Path) -> Path:
     """Persist fixture messages exclusively under pytest's disposable directory."""
     write_parquet_rows_atomic(
-        tmp_path / "llm/chatgpt/history.parquet",
+        tmp_path / "llm/chatgpt/history.sqlite3",
         [_row("chatgpt", "shared-id", "A separate web-only prompt.")],
         CHATGPT_HISTORY_SCHEMA,
     )
     write_parquet_rows_atomic(
-        tmp_path / "llm/codex/history.parquet",
+        tmp_path / "llm/codex/history.sqlite3",
         [
             _row("codex", "shared-id", "Explain the local parser."),
             _row("codex", "shared-id", "The parser reads local text.", index=1, role="assistant"),
@@ -111,7 +111,7 @@ def test_web_and_local_sessions_remain_separate_with_matching_ids(history_root: 
     assert all(item.source == "codex" for item in local.sessions)
     assert all(item.conversation_url == "" for item in local.sessions)
     assert web.sessions[0].conversation_url == "https://chatgpt.com/c/shared-id"
-    assert chat_history_path(history_root, "codex") == history_root / "llm/codex/history.parquet"
+    assert chat_history_path(history_root, "codex") == history_root / "llm/codex/history.sqlite3"
 
 
 def test_codex_detail_keeps_source_times_search_and_navigation(history_root: Path) -> None:
@@ -163,14 +163,14 @@ def test_browser_exposes_distinct_sources_and_safe_local_actions(client) -> None
     assert 'data-browser-source-filter-option="chatgpt"' in index_html
     assert 'data-browser-source-filter-label="ChatGPT Chat"' in index_html
     assert 'data-browser-source-filter-option="codex"' in index_html
-    assert 'data-browser-source-filter-label="Codex"' in index_html
-    assert 'aria-label="Cached Codex sessions"' in index_html
+    assert 'data-browser-source-filter-label="ChatGPT Codex"' in index_html
+    assert 'aria-label="Cached ChatGPT Codex sessions"' in index_html
     assert "Local Codex session" in index_html
     assert "Web chat session" not in index_html
     detail = client.get("/browser?view=text&source=codex&session=codex:shared-id&session_view=1")
     assert detail.status_code == 200
     detail_html = detail.get_data(as_text=True)
-    assert 'aria-label="Cached Codex session messages"' in detail_html
+    assert 'aria-label="Cached ChatGPT Codex session messages"' in detail_html
     assert "Explain the local parser." in detail_html
     assert "data-browser-session-open-original" not in detail_html
     assert "data-browser-session-refresh-url" in detail_html

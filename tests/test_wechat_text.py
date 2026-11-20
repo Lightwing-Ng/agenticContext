@@ -1,6 +1,6 @@
 """Known text envelopes retain source evidence without accessing media.
 
-Code version: v1.4.1-codex.0
+Code version: v1.6.0-codex.0
 """
 
 from __future__ import annotations
@@ -323,6 +323,83 @@ def _forwarded_app(record):
     )
 
 
+@pytest.mark.parametrize("representation", ["escaped", "cdata", "inline"])
+@pytest.mark.parametrize("app_source", ["root", "appmsg"])
+def test_quoted_app_card_keeps_only_literal_labels_without_adding_body(
+    representation, app_source
+):
+    info = "<appinfo><appname>QQ音乐</appname></appinfo>"
+    body = (
+        "<type>76</type><title><![CDATA[广岛之恋 <b>literal</b>]]></title>"
+        "<sourcedisplayname>Literal publisher</sourcedisplayname>"
+        "<url>https://example.invalid/private-token</url><aeskey>opaque-key</aeskey>"
+        "<lyric>Full lyrics must not survive</lyric>"
+    )
+    card = "<msg><appmsg>" + body
+    card += (info if app_source == "appmsg" else "") + "</appmsg>"
+    card += (info if app_source == "root" else "") + "</msg>"
+    # CDATA cannot contain another CDATA terminator.
+    if representation == "cdata":
+        card = card.replace("<![CDATA[广岛之恋 <b>literal</b>]]>", "广岛之恋 &lt;b&gt;literal&lt;/b&gt;")
+    result = extract_wechat_text(49, _quoted_app(card, representation=representation, reply="好歌"))
+    assert result["text"] == "好歌"
+    assert result["text_components"] == [{"kind": "reply_text", "text": "好歌"}]
+    assert result["quoted_reference"]["app_card_metadata"] == {
+        "schema_version": 1, "appmsg_subtype": 76,
+        "safe_title": "广岛之恋 <b>literal</b>",
+        "publisher_name": "Literal publisher",
+        "publisher_name_source": "appmsg/sourcedisplayname",
+        "app_name": "QQ音乐",
+        "app_name_source": "appinfo/appname" if app_source == "root" else "appmsg/appinfo/appname",
+    }
+    assert not any(secret in str(result) for secret in ("private-token", "opaque-key", "Full lyrics"))
+    assert result["flags"] == ["quoted_reply_envelope", "quoted_non_text_content_omitted"]
+
+
+@pytest.mark.parametrize(
+    "card",
+    [
+        "<msg><appmsg><type>76</type><type>76</type><title>First</title></appmsg></msg>",
+        "<msg><appmsg><type>76</type><title>First</title><title>First</title></appmsg></msg>",
+        "<msg><appmsg><type>76</type><title><b>Nested</b></title></appmsg></msg>",
+        "<msg><appmsg><type>76</type><title>Title</title><sourcedisplayname>A</sourcedisplayname><sourcedisplayname>B</sourcedisplayname></appmsg></msg>",
+        "<msg><appmsg><type>76</type><title>Title</title><appinfo><appname>A</appname></appinfo></appmsg><appinfo><appname>B</appname></appinfo></msg>",
+        "<msg><appmsg><type>76</type><title>Title</title></appmsg><appmsg><type>76</type></appmsg></msg>",
+        "<msg><appmsg><type>76</type><title>Title</title></appmsg><appinfo><appname>A</appname><appname>A</appname></appinfo></msg>",
+        "<msg><appmsg><type>76</type><title>" + "x" * 1025 + "</title></appmsg></msg>",
+        '<!DOCTYPE msg [<!ENTITY leak SYSTEM "file:///private/secret">]><msg><appmsg><type>76</type><title>&leak;</title></appmsg></msg>',
+    ],
+)
+def test_ambiguous_or_unsafe_quoted_app_labels_remain_unavailable(card):
+    result = extract_wechat_text(49, _quoted_app(card))
+    assert result["text"] == "Actual reply"
+    assert "app_card_metadata" not in result["quoted_reference"]
+
+
+@pytest.mark.parametrize("tag", ["type", "fromusr", "svrid", "content"])
+def test_duplicate_quote_identity_fields_cannot_supply_app_labels(tag):
+    raw = _quoted_app(_app(76, "<title>Literal card</title>"))
+    value = {"type": "49", "fromusr": "wxid_forwarder", "svrid": "18446744073709551615", "content": "ignored"}[tag]
+    raw = raw.replace("</refermsg>", f"<{tag}>{value}</{tag}></refermsg>")
+    result = extract_wechat_text(49, raw)
+    assert result["text"] == "Actual reply"
+    assert "app_card_metadata" not in result["quoted_reference"]
+
+
+def test_quoted_app_card_shares_the_outer_xml_budget(monkeypatch):
+    raw = _quoted_app(_app(76, "<title>Literal card</title>"))
+    monkeypatch.setattr(wechat_text, "MAX_XML_BYTES", len(raw.encode()))
+    result = extract_wechat_text(49, raw)
+    assert result["text"] == "Actual reply"
+    assert "app_card_metadata" not in result["quoted_reference"]
+
+
+@pytest.mark.parametrize("subtype", [2, 3, 4, 19, 57, 2000, 2001])
+def test_quoted_app_labels_do_not_reinterpret_dedicated_message_roles(subtype):
+    result = extract_wechat_text(49, _quoted_app(_app(subtype, "<title>Source label</title>")))
+    assert "app_card_metadata" not in result["quoted_reference"]
+
+
 @pytest.mark.parametrize("representation", ["cdata", "escaped", "inline"])
 def test_quoted_forwarded_text_keeps_reply_forwarder_and_original_author_separate(
     representation,
@@ -375,7 +452,7 @@ def test_quoted_forwarded_text_keeps_reply_forwarder_and_original_author_separat
     "content",
     [
         _app(6, "<title>private.pdf</title>"),
-        _app(57, "<title>Another reply must not become this reply</title>"),
+        _app(57, "<title>Ambiguous first</title><title>Ambiguous second</title>"),
         '<recordinfo><datalist><dataitem datatype="1"><datadesc>Not explicit subtype 19</datadesc></dataitem></datalist></recordinfo>',
         "<config>"
         + _forwarded_app(
@@ -394,6 +471,21 @@ def test_quoted_app_whitelist_does_not_promote_unknown_media_or_ambiguous_conten
     assert result["text"] == "Actual reply"
     assert result["text_components"] == [{"kind": "reply_text", "text": "Actual reply"}]
     assert "quoted_non_text_content_omitted" in result["flags"]
+
+
+def test_an_embedded_reply_body_stays_in_its_quoted_role():
+    body = "Another reply must not become this reply"
+    result = extract_wechat_text(
+        49, _quoted_app(_app(57, "<title>" + body + "</title>"))
+    )
+    assert result["text_components"][0] == {
+        "kind": "reply_text",
+        "text": "Actual reply",
+    }
+    assert result["text_components"][1]["kind"] == "quoted_text"
+    assert result["text_components"][1]["text"] == body
+    assert result["text_components"][1]["source_sender_id"] == "wxid_forwarder"
+    assert result["quoted_reference"]["source_sender_id"] == "wxid_forwarder"
 
 
 def test_plain_quoted_xml_looking_text_is_not_reinterpreted_as_forwarding():

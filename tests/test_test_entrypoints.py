@@ -1,6 +1,6 @@
 """Behavioral checks for the POSIX test and quality entrypoints.
 
-Code version: v1.3.4-codex.0
+Code version: v1.4.2-codex.0
 """
 
 from importlib.metadata import version
@@ -91,19 +91,22 @@ def test_requirements_checker_rejects_an_installed_version_outside_the_constrain
     assert result.returncode == 0, result.stderr
 
 
-def test_requirements_checker_validates_tiktoken_for_runtime(tmp_path):
-    """The runtime gate must cover dependencies imported during application startup."""
+@pytest.mark.parametrize("distribution,mode", [
+    ("tiktoken", "runtime"), ("beautifulsoup4", "test"), ("beautifulsoup4", "quality"),
+])
+def test_requirements_checker_validates_required_distributions(tmp_path, distribution, mode):
+    """Reject incompatible startup and test-parser dependencies before collection."""
     requirements = tmp_path / "requirements.txt"
     checker = PROJECT_ROOT / "scripts/check_python_requirements.py"
-    requirements.write_text("tiktoken<0\n", encoding="utf-8")
+    requirements.write_text(f"{distribution}<0\n", encoding="utf-8")
     result = subprocess.run(
-        [sys.executable, str(checker), "runtime", str(requirements)],
+        [sys.executable, str(checker), mode, str(requirements)],
         capture_output=True,
         text=True,
         timeout=10,
     )
     assert result.returncode == 1
-    assert "tiktoken" in result.stderr
+    assert distribution in result.stderr
 
 
 def test_quality_resolver_rejects_importable_but_incompatible_dependencies(tmp_path):
@@ -179,6 +182,9 @@ def test_quality_gate_rejects_noop_python(tmp_path, stale_report):
     static = tmp_path / "app/web/static"
     static.mkdir(parents=True)
     (static / "probe.js").write_text("void 0;\n")
+    tests = tmp_path / "tests"
+    tests.mkdir()
+    (tests / "test_probe.mjs").write_text("void 0;\n")
     interpreter = tmp_path / "noop-python"
     interpreter.write_text("#!/bin/sh\nexit 0\n")
     interpreter.chmod(0o755)
@@ -200,6 +206,50 @@ def test_quality_gate_rejects_noop_python(tmp_path, stale_report):
     assert result.returncode != 0, result.stdout + result.stderr
     assert "Pytest did not produce a fresh coverage report." in result.stdout + result.stderr
     assert "Quality gate passed." not in result.stdout
+
+
+@pytest.mark.parametrize("mode", ["empty", "passes", "fails"])
+def test_quality_gate_discovers_javascript_tests_and_rejects_empty_suites(tmp_path, mode):
+    """A newly named Node test must execute without editing either gate's file list."""
+    if shutil.which("node") is None:
+        pytest.skip("Node.js is required to exercise JavaScript test discovery.")
+    scripts = tmp_path / "scripts"
+    scripts.mkdir()
+    for name in ("check.sh", "test.sh", "resolve_python.sh"):
+        shutil.copy2(PROJECT_ROOT / "scripts" / name, scripts / name)
+    static = tmp_path / "app/web/static"
+    static.mkdir(parents=True)
+    (static / "probe.js").write_text("void 0;\n")
+    tests = tmp_path / "tests"
+    tests.mkdir()
+    (tests / "ignored.mjs").write_text("throw new Error('Must not run.');\n")
+    if mode != "empty":
+        for name in ("test_new_behavior.mjs", "test_another_behavior.mjs"):
+            (tests / name).write_text(
+                "import test from 'node:test';\n"
+                f"test('{name}', () => {{ "
+                + ("throw new Error('Deliberate failure.');" if mode == "fails" else "")
+                + " });\n",
+                encoding="utf-8",
+            )
+    interpreter = tmp_path / "noop-python"
+    interpreter.write_text("#!/bin/sh\nexit 0\n")
+    interpreter.chmod(0o755)
+    environment = _environment()
+    environment["AGENTIC_CONTEXT_PYTHON"] = str(interpreter)
+    result = subprocess.run(
+        [str(scripts / "check.sh")], env=environment,
+        capture_output=True, text=True, timeout=30,
+    )
+    output = result.stdout + result.stderr
+    assert result.returncode != 0, output
+    assert "Quality gate passed." not in output
+    if mode == "empty":
+        assert "No JavaScript unit test files were found." in output
+    else:
+        assert "test_new_behavior.mjs" in output
+        assert "test_another_behavior.mjs" in output
+        assert ("[6/6] Python tests with branch coverage" in output) == (mode == "passes")
 
 
 def test_resolver_prefers_usable_path_python3_over_homebrew_style_installation(tmp_path):
@@ -253,7 +303,7 @@ def test_quality_resolver_reports_missing_modules_before_fallback(tmp_path):
     result = subprocess.run(command, env=environment, capture_output=True, text=True, timeout=10)
     assert result.returncode == 0
     assert result.stdout.strip() == str(ready)
-    expected = "flask playwright yt_dlp pyarrow PIL markdown_it tiktoken ruff pytest pytest_cov"
+    expected = "flask playwright yt_dlp pyarrow PIL markdown_it tiktoken ruff pytest pytest_cov bs4"
     assert f"missing quality dependencies: {missing} ({expected})" in result.stderr
 
     environment["AGENTIC_CONTEXT_PYTHON"] = str(missing)
@@ -318,6 +368,44 @@ def test_runtime_resolver_uses_prepared_platform_fallback(tmp_path):
     assert result.returncode == 0, result.stderr
     assert result.stdout.strip() == str(ready)
     assert f"missing runtime dependencies: {missing}" in result.stderr
+
+
+def test_app_entrypoint_falls_back_to_prepared_checkout_venv(tmp_path):
+    """Launch from a different working directory after rejecting the host Python."""
+    project = tmp_path / "project with spaces"
+    scripts = project / "scripts"
+    scripts.mkdir(parents=True)
+    for name in ("run_app.sh", "resolve_python.sh"):
+        shutil.copy2(PROJECT_ROOT / "scripts" / name, scripts / name)
+    with (scripts / "resolve_python.sh").open("a", encoding="utf-8") as resolver:
+        resolver.write("\n_python_platform_candidates() { :; }\n")
+
+    host_bin = tmp_path / "host"
+    host_bin.mkdir()
+    venv_bin = project / ".venv" / "bin"
+    venv_bin.mkdir(parents=True)
+    for candidate, ready in ((host_bin / "python3", False), (venv_bin / "python", True)):
+        candidate.write_text(
+            f"#!{sys.executable}\nimport sys\n"
+            "if sys.argv[1] == 'main.py': print(sys.argv[0]); raise SystemExit(0)\n"
+            "if sys.argv[2].startswith('import sys;'):\n"
+            "    exec(sys.argv[2])\n"
+            f"raise SystemExit({0 if ready else 1})\n",
+            encoding="utf-8",
+        )
+        candidate.chmod(0o755)
+    shutil.copy2(host_bin / "python3", host_bin / "python")
+    environment = _environment()
+    environment.pop("AGENTIC_CONTEXT_PYTHON")
+    environment["PATH"] = str(host_bin) + os.pathsep + environment["PATH"]
+
+    result = subprocess.run(
+        [str(scripts / "run_app.sh")], cwd=tmp_path, env=environment,
+        capture_output=True, text=True, timeout=10,
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == str(venv_bin / "python")
+    assert f"missing runtime dependencies: {host_bin / 'python3'}" in result.stderr
 
 
 def test_app_entrypoint_checks_runtime_dependencies_before_main(tmp_path):

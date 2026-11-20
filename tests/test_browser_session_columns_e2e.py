@@ -1,10 +1,10 @@
-"""Container-sized cached session column contracts. Code version: v1.0.3-codex.0."""
+"""Container-sized cached session column contracts. Code version: v1.0.4-codex.0."""
 
 from collections.abc import Iterator
 from threading import Thread
 
 import pytest
-from playwright.sync_api import Browser, Page, expect
+from playwright.sync_api import Browser, Page, TimeoutError as PlaywrightTimeoutError, expect
 from werkzeug.serving import make_server
 
 from app.core.resource_persistence import (
@@ -14,6 +14,7 @@ from app.core.resource_persistence import (
     ZHIHU_HISTORY_SCHEMA,
     write_parquet_rows_atomic,
 )
+from app.web.cache_sources import get_cache_source_view
 from tests import test_sidebar_e2e
 
 
@@ -82,6 +83,40 @@ def _session_table_geometry(page: Page) -> dict:
         await document.fonts.ready;
         await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
     }""")
+    try:
+        page.wait_for_function(
+            """() => {
+                const shell = document.querySelector('.browser-session-index-shell');
+                const header = shell?.querySelector('[data-table-header]');
+                const body = shell?.querySelector('[data-table-body]');
+                const headings = header?.rows[0]?.cells;
+                const cells = body?.rows[0]?.cells;
+                if (!headings || !cells || headings.length !== cells.length) return false;
+                return Math.abs(header.getBoundingClientRect().width - body.getBoundingClientRect().width) <= 1
+                    && Array.from(headings).every((heading, index) => {
+                        const a = heading.getBoundingClientRect();
+                        const b = cells[index].getBoundingClientRect();
+                        return Math.abs(a.left - b.left) <= 1 && Math.abs(a.width - b.width) <= 1;
+                    });
+            }""",
+            timeout=5_000,
+        )
+    except PlaywrightTimeoutError as error:
+        diagnostic = page.locator(".browser-session-index-shell").evaluate(
+            """shell => Array.from(shell.querySelectorAll('[data-table-header], [data-table-body]')).map(table => ({
+                kind: table.hasAttribute('data-table-header') ? 'header' : 'body',
+                bounds: table.getBoundingClientRect().toJSON(),
+                inlineWidth: table.style.width,
+                computedWidth: getComputedStyle(table).width,
+                numberToken: getComputedStyle(table).getPropertyValue('--browser-session-number-width'),
+                cells: Array.from(table.rows[0].cells).map(cell => ({
+                    bounds: cell.getBoundingClientRect().toJSON(),
+                    inlineWidth: cell.style.width,
+                    computedWidth: getComputedStyle(cell).width,
+                })),
+            }))"""
+        )
+        raise AssertionError(f"Session header alignment did not converge: {diagnostic}") from error
     return page.locator(".browser-session-index-shell").evaluate("""shell => {
         const header = shell.querySelector('[data-table-header]');
         const body = shell.querySelector('[data-table-body]');
@@ -215,8 +250,14 @@ def test_session_columns_fill_container_and_preserve_navigation(
             page.keyboard.press("Escape")
             expect(page.locator("#browser_header_source_filter_options")).to_be_hidden()
             trigger.click()
-            page.locator("#browser_header_source_filter_options").get_by_role("option", name="Claude Chat", exact=True).click()
-            expect(page.locator(".browser-session-source-mark").first).to_have_attribute("aria-label", "Claude Chat")
+            claude_source = get_cache_source_view("claude")
+            assert claude_source is not None
+            page.locator("#browser_header_source_filter_options").get_by_role(
+                "option", name=claude_source.label, exact=True
+            ).click()
+            expect(page.locator(".browser-session-source-mark").first).to_have_attribute(
+                "aria-label", claude_source.label
+            )
             _assert_session_columns(page, zhihu=False)
         updated_header = page.locator(".browser-session-col-updated")
         sort_link = updated_header.locator(".browser-session-sort-link")

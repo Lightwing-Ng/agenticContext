@@ -1,4 +1,6 @@
-"""Isolated Codex cache and Local resources navigation. Code version: v1.0.1-codex.0."""
+"""Isolated Codex cache and Local resources navigation."""
+
+# Code version: v1.1.2-codex.0
 
 from collections.abc import Iterator
 from threading import Thread
@@ -30,7 +32,7 @@ def codex_browser_server(tmp_path_factory: pytest.TempPathFactory) -> Iterator[d
     (source_folder / "sessions").mkdir(parents=True)
     for source, text in (("chatgpt", "The web chat prompt."), ("codex", "Review the local parser.")):
         write_parquet_rows_atomic(
-            root / "llm" / source / "history.parquet",
+            root / "llm" / source / "history.sqlite3",
             [_row(source, "shared-id", text)],
             CHATGPT_HISTORY_SCHEMA,
         )
@@ -86,10 +88,10 @@ def test_local_codex_filter_detail_and_content_mode_navigation(
         form.locator("[data-browser-source-filter-trigger]").click()
         menu = form.locator("[data-browser-source-filter-menu]")
         expect(menu.get_by_role("option", name="ChatGPT Chat", exact=True)).to_be_visible()
-        menu.get_by_role("option", name="Codex", exact=True).click()
+        menu.get_by_role("option", name="ChatGPT Codex", exact=True).click()
         page.wait_for_url("**/browser?**source=codex**")
         _set_sidebar(page, opened=False)
-        expect(page.get_by_role("table", name="Cached Codex sessions")).to_be_visible()
+        expect(page.get_by_role("table", name="Cached ChatGPT Codex sessions")).to_be_visible()
         expect(page.locator(".browser-session-table-title")).to_have_text(["Local Codex session"])
         _assert_no_horizontal_overflow(page)
         page.get_by_role("link", name="Local Codex session", exact=True).click()
@@ -157,7 +159,7 @@ def test_codex_cache_folder_picker_and_dock_preserve_local_source(
         expect(page.locator("#start_button")).to_be_enabled()
         page.locator("[data-cache-source-switcher-trigger]").click()
         expect(page.locator('[data-cache-source-switcher-option="chatgpt"]')).to_contain_text("ChatGPT Chat")
-        expect(page.locator('[data-cache-source-switcher-option="codex"]')).to_contain_text("Codex")
+        expect(page.locator('[data-cache-source-switcher-option="codex"]')).to_contain_text("ChatGPT Codex")
         page.locator('[data-cache-source-switcher-option="chatgpt"]').click()
         page.wait_for_url("**/cache/chatgpt/**")
         page.locator("[data-cache-source-switcher-trigger]").click()

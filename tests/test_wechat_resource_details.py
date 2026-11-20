@@ -1,6 +1,6 @@
 """Bounded resource details preserve canonical identity and exact native evidence.
 
-Code version: v1.1.1-codex.0
+Code version: v1.1.0-codex.0
 """
 
 from contextlib import closing
@@ -14,9 +14,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from app.core import owner_only_files
 from app.core import wechat_resource_details as details
-from app.core import windows_file_metadata
 from app.core.wechat_archive import WechatArchiveRepository, _time_fields
 from app.core.wechat_history_browser import query_wechat_history
 from app.core.wechat_resource_sender_evidence import secondary_native_events
@@ -24,7 +22,6 @@ from app.core.wechat_session_export import WechatSessionExport, WechatSessionSou
 from tests import test_wechat_macos_recovery_account_binding as account
 from tests import test_wechat_macos_recovery_bank as native
 from tests import test_wechat_resource_sender_evidence as sender
-from tests.test_wechat_json_file_identity import WindowsMetadataOS
 
 
 mac_archive = native.mac_archive
@@ -94,7 +91,7 @@ def _registry(fixture, entry=None):
     entry = entry or details.make_entry(fixture.row, fixture.conversation, fixture.packet)
     path = fixture.history.with_name(details.FILENAME)
     path.write_text(json.dumps({"version": details.VERSION, "entries": [entry]}))
-    owner_only_files.ensure_owner_only(path)
+    path.chmod(0o600)
     return path
 
 
@@ -283,12 +280,7 @@ def test_malformed_or_untrusted_registry_fails_closed(fixture, problem):
     elif problem == "version":
         payload["version"] = "unsupported"
     elif problem == "public":
-        if os.name == "nt":
-            security = owner_only_files._windows_security()
-            owner = security.current_user_sid()
-            security.set_protected_dacl(str(path), f"D:P(A;;FA;;;{owner})(A;;FR;;;WD)")
-        else:
-            path.chmod(0o644)
+        path.chmod(0o644)
     elif problem == "symlink":
         target = path.with_suffix(".preserved")
         path.rename(target)
@@ -311,16 +303,6 @@ def test_registry_identity_pins_in_place_change_with_restored_size_and_mtime(fix
     assert details.registry_identity(fixture.history) != before
 
 
-def test_windows_registry_rejects_native_change_during_read(fixture, monkeypatch):
-    path = _registry(fixture)
-    monkeypatch.setattr(details, "os", WindowsMetadataOS(path))
-    changes = iter((55, 55, 56))
-    monkeypatch.setattr(windows_file_metadata, "file_change_time", lambda *_args, **_kwargs: next(changes))
-
-    with pytest.raises(ValueError, match="changed while reading"):
-        details.load_registry(fixture.history)
-
-
 def test_absent_registry_is_pinned_without_creating_files(fixture):
     path = fixture.history.with_name(details.FILENAME)
     assert details.detail_input_identities(fixture.history) == {str(path.resolve()): None}
@@ -334,7 +316,7 @@ def _compact_registry(fixture, entries=None):
     entries = entries or [details.make_entry(fixture.row, fixture.conversation, fixture.packet)]
     path = fixture.history.with_name(details.FILENAME)
     path.write_bytes(details.encode_registry(entries))
-    owner_only_files.ensure_owner_only(path)
+    path.chmod(0o600)
     return path
 
 

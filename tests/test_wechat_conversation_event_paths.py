@@ -1,6 +1,6 @@
 """Relative and absolute callers share proof caches without bypassing input checks.
 
-Code version: v1.1.1-codex.0
+Code version: v1.1.0-codex.0
 """
 
 from pathlib import Path

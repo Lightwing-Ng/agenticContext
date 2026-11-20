@@ -1,6 +1,6 @@
 """Aggregate one verified contact's text occurrences without merging namesakes.
 
-Code version: v1.24.0-codex.0
+Code version: v1.25.1-codex.0
 """
 
 from __future__ import annotations
@@ -9,16 +9,19 @@ from concurrent.futures import ThreadPoolExecutor
 from contextlib import ExitStack, closing, contextmanager
 from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation
-from itertools import groupby
+from heapq import merge
+from itertools import groupby, islice
 import hashlib
 import json
 import os
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import re
 import sqlite3
 import stat
 import tempfile
 from threading import Event, Lock, local
+import unicodedata
+from urllib.parse import unquote
 
 from .wechat_archive import (
     WechatArchiveRepository,
@@ -43,6 +46,11 @@ from .wechat_contact_embedded import (
     native_candidate_ids,
     native_detail,
     native_details,
+)
+from .wechat_forwarded_authors import (
+    VERSION as FORWARDED_AUTHOR_VERSION,
+    WechatForwardedAuthors,
+    registry_digest as forwarded_author_links_digest,
 )
 from .wechat_contact_merges import (
     VERSION as CONTACT_MERGE_VERSION,
@@ -82,15 +90,26 @@ from .wechat_source_precedence import (
     VERSION as SOURCE_PRECEDENCE_VERSION,
     monotone_pair_runs,
 )
+from .wechat_html_group_frames import (
+    VERSION as HTML_GROUP_FRAME_VERSION,
+    group_frame_registry_digest,
+    load_group_source_frames,
+)
 from .wechat_contact_forwarded_copies import (
     VERSION as FORWARDED_COPY_PROJECTION_VERSION,
+    allows_forwarded_copy_projection,
+    contact_display_policies_digest,
     copy_forwarded_copy_evidence,
+    fold_contact_forwarded_copies,
     restore_forwarded_copy_groups,
 )
 
 
-VERSION = "v1.22.1-codex.0"
-INDEX_VERSION = "v1.15.0-codex.0"
+VERSION = "v1.24.3-codex.0"
+INDEX_VERSION = "v1.16.0-codex.0"
+MACOS_CONTACT_VERSION = "v1.0.0-codex.0"
+CONTACT_QUOTED_PRECEDENCE_VERSION = "v1.0.1-codex.0"
+CONTACT_GROUP_PRECEDENCE_VERSION = "v1.1.0-codex.0"
 _LEGACY_REFERENCE_VERSION = "v1.1.1-codex.0"
 _CONTACT_ID = re.compile(r"wechat:contact:[0-9a-f]{64}")
 _MESSAGE_KEY = re.compile(
@@ -144,6 +163,10 @@ _STATEMENT_COLUMNS = (
 
 class ContactAnalysisSourceChanged(RuntimeError):
     """Reject an index built against sources that changed during the build."""
+
+
+class ContactAnalysisUnavailable(ContactAnalysisSourceChanged):
+    """Stop polling when required identity configuration needs local repair."""
 
 
 class _ContactAnalysisCancelled(RuntimeError):
@@ -291,7 +314,7 @@ def _identity(path):
 
 
 def _detail_source_identities(history):
-    """Pin optional resource details while preserving caches without a registry."""
+    """Keep unused detail registries compatible with complete retained scans."""
     from .wechat_resource_details import detail_input_identities
 
     return {
@@ -345,6 +368,7 @@ def _source_state(root):
         "v1.13.0-codex.0",
         "v1.14.0-codex.0",
         "v1.15.0-codex.0",
+        "v1.16.0-codex.0",
     }:
         parts.append(event_revision)
         parts.append({"forwarded_clock_version": FORWARDED_CLOCK_VERSION})
@@ -354,6 +378,7 @@ def _source_state(root):
         "v1.13.0-codex.0",
         "v1.14.0-codex.0",
         "v1.15.0-codex.0",
+        "v1.16.0-codex.0",
     }:
         parts.append({"forwarded_origins_version": FORWARDED_ORIGINS_VERSION})
     if INDEX_VERSION in {
@@ -361,18 +386,25 @@ def _source_state(root):
         "v1.13.0-codex.0",
         "v1.14.0-codex.0",
         "v1.15.0-codex.0",
+        "v1.16.0-codex.0",
     }:
         parts.append({"statement_reviews": reviews_digest(root)})
-    if INDEX_VERSION in {"v1.13.0-codex.0", "v1.14.0-codex.0", "v1.15.0-codex.0"}:
+    if INDEX_VERSION in {"v1.13.0-codex.0", "v1.14.0-codex.0", "v1.15.0-codex.0", "v1.16.0-codex.0"}:
         parts.append(
             {"identified_packet_copies_version": IDENTIFIED_PACKET_COPIES_VERSION}
         )
-    if INDEX_VERSION in {"v1.14.0-codex.0", "v1.15.0-codex.0"}:
+    if INDEX_VERSION in {"v1.14.0-codex.0", "v1.15.0-codex.0", "v1.16.0-codex.0"}:
         parts.append({"quoted_clock_version": QUOTED_CLOCK_VERSION})
-    if INDEX_VERSION == "v1.15.0-codex.0":
+    if INDEX_VERSION in {"v1.15.0-codex.0", "v1.16.0-codex.0"}:
         parts.append({"source_precedence_version": SOURCE_PRECEDENCE_VERSION})
         parts.append(
             {"forwarded_copy_projection_version": FORWARDED_COPY_PROJECTION_VERSION}
+        )
+        parts.append(
+            {"quoted_source_precedence_version": CONTACT_QUOTED_PRECEDENCE_VERSION}
+        )
+        parts.append(
+            {"group_source_precedence_version": CONTACT_GROUP_PRECEDENCE_VERSION}
         )
         parts.append(
             {
@@ -380,6 +412,38 @@ def _source_state(root):
                 "forwarded_clock_links_digest": forwarded_clock_links_digest(root),
             }
         )
+    if INDEX_VERSION == "v1.16.0-codex.0":
+        parts.append(
+            {"contact_display_policies": contact_display_policies_digest(root)}
+        )
+        parts.append(
+            {
+                "html_group_frame_version": HTML_GROUP_FRAME_VERSION,
+                "html_group_source_frames": group_frame_registry_digest(root),
+            }
+        )
+        parts.append(
+            {
+                "forwarded_author_version": FORWARDED_AUTHOR_VERSION,
+                "forwarded_author_links_digest": forwarded_author_links_digest(root),
+            }
+        )
+    bank_path = history.with_name("macos_recovery.sqlite3")
+    if bank_path.exists() or bank_path.is_symlink():
+        from . import wechat_macos_recovery_bank as bank
+
+        try:
+            inputs = bank._inputs(history)
+            parts.append({
+                "macos_contact_version": MACOS_CONTACT_VERSION,
+                "macos_contact_inputs": bank._validation_key(
+                    bank_path, inputs[bank_path.name], inputs
+                ),
+            })
+        except (ValueError, OSError) as error:
+            raise ContactAnalysisSourceChanged(
+                "The Mac contact source is temporarily unavailable."
+            ) from error
     fingerprint = hashlib.sha256(_json(parts).encode()).hexdigest()
     # Event proofs may arrive while the expensive accepted-reference scan runs.
     # Keep the raw inputs and every rule pinned while allowing that completed scan
@@ -425,8 +489,13 @@ def _analysis_scope(root, contact_id, paths):
         return None
     try:
         scope = resolve_contact_merge(root, contact_id)
-    except ValueError as error:
+    except ContactMergeSourceChanged as error:
         raise ContactAnalysisSourceChanged(str(error)) from error
+    except (ValueError, OSError) as error:
+        raise ContactAnalysisUnavailable(
+            "Contact identity configuration could not be verified. Make "
+            "contact_merges.json available locally and check its contents, then refresh."
+        ) from error
     identities = []
     with closing(_readonly(paths[1])) as registry:
         for member in scope["member_contact_ids"]:
@@ -571,6 +640,7 @@ def _build_person_index(root, contact_id, fingerprint):
                     for _, member_source in members:
                         copy_clock_evidence(member_source, output)
                         _copy_forwarded_clock_evidence(member_source, output)
+                        _copy_forwarded_author_evidence(member_source, output)
                         copy_forwarded_copy_evidence(member_source, output)
                 except ContactMergeSourceChanged as error:
                     raise ContactAnalysisSourceChanged(str(error)) from error
@@ -622,9 +692,18 @@ def _contact(root, contact_id, contacts):
             return None
         observed = WechatContactRepository(root).query_observations(contact_id)
         names = observed["items"]
-        display = next(
-            (item["value"] for item in names if item["value"]), row["username"]
-        )
+        # Hash-ordered evidence pages must not rank a raw username above a nickname.
+        preferred = connection.execute(
+            "SELECT value FROM contact_observations "
+            "WHERE contact_id=? AND value!='' AND value!=? "
+            "GROUP BY kind,value ORDER BY CASE kind "
+            "WHEN 'nickname' THEN 0 WHEN 'remark' THEN 1 "
+            "WHEN 'room_display_name' THEN 2 WHEN 'alias' THEN 3 "
+            "WHEN 'source_sender_label' THEN 4 ELSE 99 END,"
+            "COUNT(*) DESC,value COLLATE NOCASE,value LIMIT 1",
+            (contact_id, row["username"]),
+        ).fetchone()
+        display = preferred["value"] if preferred else row["username"]
         profile = {**dict(row), "platform": "wechat"}
         profile["display_name"] = (
             WechatDisplayNames(root).contact_name(profile) or display
@@ -764,7 +843,7 @@ def _candidate_native_batches(connection, history, directory, username):
         ]
 
 
-def _native_embedded_values(connection, rows, username):
+def _native_embedded_values(connection, rows, username, *, author_resolutions=None):
     """Require a proven native owner before using literal embedded author IDs."""
     requests = _requests(connection, rows)
     accepted = {request["id"] for request in requests}
@@ -786,6 +865,7 @@ def _native_embedded_values(connection, rows, username):
             parent_id=row["id"],
             account_id=owner,
             peer_id=row["peer_id"] or "",
+            author_resolutions=(author_resolutions or {}).get(row["id"], {}),
         ):
             if detail["sender_id"] == username:
                 yield _reference_values(row, detail=detail)
@@ -1133,7 +1213,7 @@ def _requests(connection, rows):
     return requests
 
 
-def _native_conversation_key(row):
+def _native_conversation_key(row, *, verified_macos=False):
     """Share proven group IDs and private participant pairs across native accounts."""
     owner, peer = row["account_id"], row["peer_id"]
     if (
@@ -1141,8 +1221,10 @@ def _native_conversation_key(row):
         or not owner
         or row["account_key"] != "account:" + owner
         or row["container_account_key"] != row["account_key"]
-        or row["identity_status"] != "Verified archive ID"
-        or row["source_id"] != "ios-" + hashlib.md5(owner.encode()).hexdigest()
+        or not verified_macos and (
+            row["identity_status"] != "Verified archive ID"
+            or row["source_id"] != "ios-" + hashlib.md5(owner.encode()).hexdigest()
+        )
         or not isinstance(peer, str)
         or not peer
         or "\0" in peer
@@ -1156,9 +1238,11 @@ def _native_conversation_key(row):
     return None
 
 
-def _native_statement_key(row, contact_id, conversation_key):
+def _native_statement_key(row, contact_id, conversation_key, *, verified_macos=False):
     """Match proven server events without choosing between conflicting source clocks."""
-    if conversation_key is None or conversation_key != _native_conversation_key(row):
+    if conversation_key is None or conversation_key != _native_conversation_key(
+        row, verified_macos=verified_macos
+    ):
         return None
     provenance = json.loads(row["provenance"])
     server_id = provenance.get("server_id")
@@ -1175,6 +1259,10 @@ def _native_statement_key(row, contact_id, conversation_key):
     )
     if not text:
         return None
+    return _native_text_statement_key(contact_id, conversation_key, server_id, original_type, text)
+
+
+def _native_text_statement_key(contact_id, conversation_key, server_id, original_type, text):
     return _identifier(
         "native-statement-v2",
         contact_id,
@@ -1183,6 +1271,109 @@ def _native_statement_key(row, contact_id, conversation_key):
         str(original_type),
         hashlib.sha256(text.encode()).hexdigest(),
     )
+
+
+def _remove_macos_contact_references(output):
+    # Bank changes invalidate only Mac references. The historical source input
+    # fingerprint remains eligible for a compact, source-preserving rebuild.
+    output.execute(
+        "DELETE FROM statement_members WHERE reference_id IN "
+        "(SELECT id FROM refs WHERE source_id GLOB 'macos-*')"
+    )
+    output.execute("DELETE FROM refs WHERE source_id GLOB 'macos-*'")
+    output.execute(
+        "DELETE FROM statement_groups WHERE id NOT IN (SELECT statement_id FROM statement_members)"
+    )
+
+
+def _append_macos_contact_references(source, output, history, contact_id, username):
+    """Add text from the sealed Mac bank using its authenticated sender and peer scope."""
+    from . import wechat_macos_recovery_bank as bank
+
+    if not username:
+        return
+    try:
+        if bank._attach(source, history) is None:
+            return
+        candidates = source.execute(
+            _ROW_SELECT.replace("main.messages", "macos_recovery_bank.messages")
+            + "JOIN macos_recovery_bank.event_keys k ON k.message_id=m.id "
+            "AND k.account_id=p.account_id AND k.peer_id=c.peer_id "
+            "WHERE m.sender_id=? OR (instr(m.provenance,?)>0 AND "
+            "json_extract(m.provenance,'$.text_extraction_kind') IN "
+            "('forwarded_text','quoted_reply'))",
+            (username, _json(username)),
+        )
+        scopes = set()
+        embedded = []
+        for raw in candidates:
+            _check_build_cancelled()
+            row = dict(raw)
+            scope = row["conversation_id"]
+            if scope not in scopes:
+                proofs = source.execute(
+                    "SELECT proof FROM macos_recovery_bank.conversation_proofs "
+                    "WHERE conversation_id=?",
+                    (scope,),
+                ).fetchall()
+                if not proofs:
+                    raise ValueError("A Mac contact conversation has no bound receipt.")
+                for proof in proofs:
+                    bank._binding(source, json.loads(proof[0]))
+                scopes.add(scope)
+            provenance = json.loads(row["provenance"])
+            native = provenance["macos_recovery"]
+            thread = _native_conversation_key(row, verified_macos=True)
+            if (
+                thread is None or native["account_id"] != row["account_id"]
+                or native["peer_id"] != row["peer_id"] or native["session_id"] != scope
+            ):
+                raise ValueError("A Mac contact message crosses its bound scope.")
+            row["source_id"] = native["source_id"]
+            sender = native.get("sender_proof") or {}
+            if (
+                row["sender_id"] == username and sender.get("row", {}).get("user_name") == username
+                and (statement := _native_statement_key(
+                    row, contact_id, thread, verified_macos=True
+                )) is not None
+            ):
+                _insert_macos_contact_reference(output, _reference_values(row), statement, thread)
+            for detail in native_details(
+                provenance, parent_id=row["id"],
+                account_id=row["account_id"], peer_id=row["peer_id"],
+            ):
+                if detail["sender_id"] == username:
+                    embedded.append((_reference_values(row, detail=detail), thread, row["peer_id"], detail))
+        for reference, thread, peer, detail in embedded:
+            _check_build_cancelled()
+            statement = _identifier("source-statement", contact_id, reference[0])
+            server = detail["source_ids"].get("svrid")
+            if (
+                isinstance(server, str) and re.fullmatch(r"-?[1-9][0-9]*", server)
+                and detail["original_chat_id"] == peer
+                and type(detail["original_message_type"]) is int
+                and detail["timestamp_value"]
+            ):
+                original = _native_text_statement_key(
+                    contact_id, thread, server, detail["original_message_type"], detail["text"]
+                )
+                if output.execute(
+                    "SELECT 1 FROM statement_members sm JOIN refs r ON r.id=sm.reference_id "
+                    "WHERE sm.statement_id=? AND r.component_path='[]' AND r.timestamp_value=?",
+                    (original, detail["timestamp_value"]),
+                ).fetchone():
+                    statement = original
+            _insert_macos_contact_reference(output, reference, statement, thread)
+    except (ValueError, TypeError, KeyError, OSError, sqlite3.DatabaseError) as error:
+        raise ContactAnalysisSourceChanged("The Mac contact source could not be verified.") from error
+
+
+def _insert_macos_contact_reference(output, reference, statement, thread):
+    output.execute("INSERT INTO refs VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)", reference)
+    output.execute(
+        "INSERT OR IGNORE INTO statement_groups VALUES(?,?,?)", (statement, reference[0], thread)
+    )
+    output.execute("INSERT INTO statement_members VALUES(?,?)", (reference[0], statement))
 
 
 def _copy_legacy_references(target, output, history, contacts):
@@ -1286,6 +1477,7 @@ def _copy_complete_event_index(target, output, history, contacts):
                     "v1.12.0-codex.0",
                     "v1.13.0-codex.0",
                     "v1.14.0-codex.0",
+                    "v1.15.0-codex.0",
                     INDEX_VERSION,
                 }
                 and info.get("source_inputs") == source_inputs
@@ -1294,7 +1486,7 @@ def _copy_complete_event_index(target, output, history, contacts):
             if (
                 not (legacy or current)
                 or info.get("native_embedded_version")
-                not in {"v1.2.1-codex.0", NATIVE_EMBEDDED_VERSION}
+                not in {"v1.2.1-codex.0", "v1.2.2-codex.0", NATIVE_EMBEDDED_VERSION}
             ):
                 return False
             for table in tables:
@@ -1316,13 +1508,113 @@ def _copy_complete_event_index(target, output, history, contacts):
                 output.executemany(
                     f"INSERT INTO {table} VALUES({marks})", [tuple(row) for row in rows]
                 )
+        if output.execute("SELECT 1 FROM refs WHERE source_id GLOB 'macos-*' LIMIT 1").fetchone():
+            _remove_macos_contact_references(output)
         restore_forwarded_copy_groups(retained, output)
         restore_reviewed_groups(retained, output)
         copy_clock_evidence(retained, output)
         _copy_forwarded_clock_evidence(retained, output)
+        if retained.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' "
+            "AND name='forwarded_author_evidence'"
+        ).fetchone():
+            _discard_misattributed_quoted_references(
+                output,
+                [row[0] for row in retained.execute(
+                    "SELECT reference_id FROM forwarded_author_evidence"
+                )],
+            )
         if _identity(target) != initial:
             raise ContactAnalysisSourceChanged("The retained contact grouping changed.")
     return True
+
+
+def _ensure_forwarded_author_evidence(output):
+    output.execute(
+        "CREATE TABLE IF NOT EXISTS forwarded_author_evidence("
+        "reference_id TEXT PRIMARY KEY,parent_message_id TEXT NOT NULL,"
+        "proof_json TEXT NOT NULL) WITHOUT ROWID"
+    )
+
+
+def _copy_forwarded_author_evidence(retained, output):
+    if not retained.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' "
+        "AND name='forwarded_author_evidence'"
+    ).fetchone():
+        return
+    _ensure_forwarded_author_evidence(output)
+    for row in retained.execute("SELECT * FROM forwarded_author_evidence"):
+        previous = output.execute(
+            "SELECT * FROM forwarded_author_evidence WHERE reference_id=?", (row[0],)
+        ).fetchone()
+        if previous is not None and tuple(previous) != tuple(row):
+            raise ContactAnalysisSourceChanged("Native author copy proofs disagree.")
+        output.execute(
+            "INSERT OR IGNORE INTO forwarded_author_evidence VALUES(?,?,?)", tuple(row)
+        )
+
+
+def _forwarded_author_evidence(connection, identifiers=None):
+    if not connection.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' "
+        "AND name='forwarded_author_evidence'"
+    ).fetchone():
+        return {}
+    where, parameters = "", []
+    if identifiers is not None:
+        parameters = sorted(set(identifiers))
+        if not parameters:
+            return {}
+        where = " WHERE reference_id IN (" + ",".join("?" for _ in parameters) + ")"
+    return {
+        row[0]: json.loads(row[1])
+        for row in connection.execute(
+            "SELECT reference_id,proof_json FROM forwarded_author_evidence" + where,
+            parameters,
+        )
+    }
+
+
+def _refresh_forwarded_authors(root, source, output, username):
+    """Attach proven missing-author occurrences to their existing native event."""
+    if not username:
+        return
+    projector = WechatForwardedAuthors(root)
+    rows = projector.linked_rows(source)
+    recovered = projector.project(rows)
+    if not recovered:
+        return
+    _ensure_forwarded_author_evidence(output)
+    for row in rows:
+        projections = recovered.get(row["id"], {})
+        values = _native_embedded_values(
+            source, [row], username, author_resolutions=recovered
+        )
+        for reference in values:
+            path = json.loads(reference[2])
+            resolution = projections.get(tuple(path[1:])) if path[:1] == ["native"] else None
+            if not resolution or resolution["sender_id"] != username:
+                continue
+            native_reference = resolution["evidence"]["native_reference_id"]
+            statement = output.execute(
+                "SELECT sm.statement_id FROM statement_members sm JOIN refs r "
+                "ON r.id=sm.reference_id WHERE r.id=?",
+                (native_reference,),
+            ).fetchone()
+            if statement is None:
+                continue
+            output.execute(
+                "INSERT OR IGNORE INTO refs VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)", reference
+            )
+            output.execute(
+                "INSERT OR REPLACE INTO statement_members VALUES(?,?)",
+                (reference[0], statement[0]),
+            )
+            output.execute(
+                "INSERT INTO forwarded_author_evidence VALUES(?,?,?)",
+                (reference[0], row["id"], _json(resolution)),
+            )
 
 
 def _ensure_forwarded_clock_evidence(output):
@@ -1587,7 +1879,127 @@ def _source_precedence_snapshot(row, provenance, snapshots):
     return metadata if isinstance(metadata, dict) else {}
 
 
-def _stage_source_precedence(output, row, reference, group, snapshots, contact_id):
+def _source_precedence_content(row, provenance, *, native):
+    """Compare explicit own and quoted text without treating contact remarks as IDs."""
+    kind = provenance.get("text_extraction_kind")
+    if kind == "plain_text" and not provenance.get("quoted_components"):
+        return "plain", row["text"], ""
+    if kind != "quoted_reply":
+        return None
+    from .wechat_history_browser import (
+        _html_quoted_reply_presentation,
+        _native_quoted_reply_presentation,
+    )
+
+    if native:
+        parts = provenance.get("text_components", [])
+        reference = provenance.get("quoted_reference")
+        if (
+            type(provenance.get("appmsg_subtype")) is not int
+            or provenance["appmsg_subtype"] != 57
+            or not isinstance(parts, list)
+            or len(parts) != 2
+            or any(not isinstance(part, dict) for part in parts)
+            or sorted(part.get("kind", "") for part in parts)
+            != ["quoted_text", "reply_text"]
+            or not isinstance(reference, dict)
+            or type(reference.get("original_message_type")) is not int
+            or reference["original_message_type"] != 1
+            or any(
+                type(part.get("original_message_type", 1)) is not int
+                or part.get("original_message_type", 1) != 1
+                for part in parts
+                if part.get("kind") == "quoted_text"
+            )
+        ):
+            return None
+        presented = _native_quoted_reply_presentation(provenance)
+    else:
+        presented = _html_quoted_reply_presentation(row["text"], provenance)
+    own = presented.get("display_text", "")
+    quoted = presented.get("quoted_reply", {}).get("text", "")
+    if (
+        not isinstance(own, str)
+        or not own.strip()
+        or not isinstance(quoted, str)
+        or not quoted.strip()
+    ):
+        return None
+    return "quoted", own, hashlib.sha256(quoted.encode()).hexdigest()
+
+
+def _global_group_source_frame(row, provenance, metadata, verified_frame=None):
+    """Recognize a literal group ID from a hash-bound HTML index and data member."""
+    locator = provenance.get("locator", {})
+    member = locator.get("member", {}) if isinstance(locator, dict) else {}
+    resolution = provenance.get("reviewed_session_resolution", {})
+    if (
+        ("reviewed_session_resolution" not in provenance or resolution is None)
+        and isinstance(verified_frame, dict)
+    ):
+        path = locator.get("member_path") if isinstance(locator, dict) else None
+        if (
+            not isinstance(path, str)
+            or not isinstance(member, dict)
+            or verified_frame.get("archive_sha256") != metadata.get("source_sha256")
+            or verified_frame.get("selected_fragment_sha256", {}).get(
+                unicodedata.normalize("NFC", path)
+            ) != member.get("sha256")
+        ):
+            return False
+        resolution = verified_frame
+    hashes = (
+        metadata.get("source_sha256"),
+        locator.get("archive_sha256") if isinstance(locator, dict) else None,
+        member.get("sha256") if isinstance(member, dict) else None,
+        resolution.get("main_html_sha256") if isinstance(resolution, dict) else None,
+    )
+    valid = (
+        isinstance(resolution, dict)
+        and all(
+            isinstance(value, str) and re.fullmatch(r"[0-9a-f]{64}", value)
+            for value in hashes
+        )
+        and hashes[0] == hashes[1]
+        and all(
+            isinstance(resolution.get(key), str) and bool(resolution[key])
+            for key in ("index_member_path", "physical_member_path", "declared_data_path")
+        )
+        and isinstance(locator.get("member_path"), str)
+        and bool(locator["member_path"])
+        and isinstance(member.get("member_path"), str)
+        and unicodedata.normalize("NFC", member["member_path"])
+        == unicodedata.normalize("NFC", locator["member_path"])
+        and row["peer_id"].endswith(("@chatroom", "@im.chatroom"))
+        and not any(char.isspace() or char == "\0" for char in row["peer_id"])
+    )
+    if not valid:
+        return False
+    index = PurePosixPath(unicodedata.normalize("NFC", resolution["index_member_path"]))
+    physical = PurePosixPath(
+        unicodedata.normalize("NFC", resolution["physical_member_path"])
+    )
+    declared = PurePosixPath(
+        unicodedata.normalize("NFC", unquote(resolution["declared_data_path"]))
+    )
+    member_path = PurePosixPath(
+        unicodedata.normalize("NFC", locator["member_path"])
+    )
+    if (
+        index != physical
+        or any(
+            path.is_absolute() or ".." in path.parts
+            for path in (index, physical, declared, member_path)
+        )
+    ):
+        return False
+    data_root = physical.parent / declared
+    return member_path.is_relative_to(data_root) and member_path != data_root
+
+
+def _stage_source_precedence(
+    output, row, reference, group, snapshots, contact_id, source_frames=None
+):
     """Stage verified event signatures; device-local numbers remain provenance only."""
     provenance = json.loads(row["provenance"])
     metadata = _source_precedence_snapshot(row, provenance, snapshots)
@@ -1612,9 +2024,7 @@ def _stage_source_precedence(output, row, reference, group, snapshots, contact_i
     )
     if (
         reference[2] != "[]"
-        or provenance.get("text_extraction_kind") != "plain_text"
         or provenance.get("forwarded_components")
-        or provenance.get("quoted_components")
         or provenance.get("resource_reference")
         or row["direction"] not in {"received", "sent"}
         or not row["sender_id"]
@@ -1623,7 +2033,11 @@ def _stage_source_precedence(output, row, reference, group, snapshots, contact_i
     locator = provenance.get("locator", {})
     if not isinstance(locator, dict):
         return
-    body_hash = hashlib.sha256(row["text"].encode()).hexdigest()
+    content = _source_precedence_content(row, provenance, native=native)
+    if content is None:
+        return
+    role, own_text, quote_hash = content
+    body_hash = hashlib.sha256(own_text.encode()).hexdigest()
     author = row["sender_id"] if native else provenance.get("sender_native_id")
     try:
         author_id = canonical_contact_id(author, authority="native_message_sender")
@@ -1641,7 +2055,7 @@ def _stage_source_precedence(output, row, reference, group, snapshots, contact_i
     if native:
         if (
             not native_metadata
-            or provenance.get("message_type") != 1
+            or provenance.get("message_type") != (49 if role == "quoted" else 1)
             or _native_statement_key(row, "", _native_conversation_key(row)) is None
         ):
             return
@@ -1661,7 +2075,7 @@ def _stage_source_precedence(output, row, reference, group, snapshots, contact_i
             or provenance.get("primary_text_sha256") != body_hash
             or provenance.get("export_msgid_namespace") != "MesLocalID"
             or locator.get("export_msgid_namespace") != "MesLocalID"
-            or str(locator.get("export_msgtype")) != "1"
+            or str(locator.get("export_msgtype")) != ("49" if role == "quoted" else "1")
             or row["kind"] not in {"direct", "group"}
             or not row["peer_id"]
         ):
@@ -1702,30 +2116,43 @@ def _stage_source_precedence(output, row, reference, group, snapshots, contact_i
             return
     except (ValueError, TypeError, KeyError, InvalidOperation, OverflowError):
         return
-    scope = _identifier("source-pair-scope", owner, row["kind"], row["peer_id"])
-    key = _identifier(
-        "local-event-corroboration",
-        scope,
-        author,
-        row["direction"],
-        stamp.replace(tzinfo=None).isoformat(),
-        body_hash,
-    )
-    output.execute(
-        "INSERT INTO source_pair_evidence VALUES(?,?,?,?,?,?,?,?,?,?)",
-        (
-            reference[0],
-            group,
-            format_name,
-            row["source_id"] + ":" + str(provenance.get("source_snapshot")),
+    scopes = [_identifier("source-pair-scope", owner, row["kind"], row["peer_id"])]
+    if row["kind"] == "group" and (
+        native
+        or _global_group_source_frame(
+            row,
+            provenance,
+            metadata,
+            (source_frames or {}).get((provenance.get("source_snapshot"), row["peer_id"])),
+        )
+    ):
+        scopes.append(_identifier("source-pair-global-group", row["peer_id"]))
+    for scope in scopes:
+        key = _identifier(
+            "local-event-corroboration",
             scope,
-            key,
-            str(local_id),
-            row["ordinal"],
-            epoch,
-            row["conversation_id"],
-        ),
-    )
+            author,
+            row["direction"],
+            stamp.replace(tzinfo=None).isoformat(),
+            role,
+            quote_hash,
+            body_hash,
+        )
+        output.execute(
+            "INSERT INTO source_pair_evidence VALUES(?,?,?,?,?,?,?,?,?,?)",
+            (
+                reference[0],
+                group,
+                format_name,
+                row["source_id"] + ":" + str(provenance.get("source_snapshot")),
+                scope,
+                key,
+                str(local_id),
+                row["ordinal"],
+                epoch,
+                row["conversation_id"],
+            ),
+        )
 
 
 def _apply_source_precedence(output):
@@ -1773,7 +2200,7 @@ def _apply_source_precedence(output):
     )
 
 
-def _refresh_source_precedence(source, output, contact_id):
+def _refresh_source_precedence(source, output, contact_id, *, root=None):
     """Reprove retained primary references without rescanning a contact's authors."""
     snapshots = (
         {
@@ -1785,6 +2212,7 @@ def _refresh_source_precedence(source, output, contact_id):
         ).fetchone()
         else {}
     )
+    source_frames = load_group_source_frames(root, snapshots) if root is not None else {}
     _create_source_precedence_tables(output)
     cursor = output.execute(
         "SELECT r.id,r.parent_message_id,r.component_path,r.source_id,r.account_key,"
@@ -1824,7 +2252,7 @@ def _refresh_source_precedence(source, output, contact_id):
                     "A retained source changed its account."
                 )
             _stage_source_precedence(
-                output, row, reference, reference[5], snapshots, contact_id
+                output, row, reference, reference[5], snapshots, contact_id, source_frames
             )
     _apply_source_precedence(output)
 
@@ -1832,13 +2260,13 @@ def _refresh_source_precedence(source, output, contact_id):
 def _create_source_precedence_tables(output):
     output.executescript(
         "CREATE TEMP TABLE source_preference(reference_id TEXT PRIMARY KEY,rank INTEGER);"
-        "CREATE TEMP TABLE source_pair_evidence(reference_id TEXT PRIMARY KEY,statement_id TEXT,"
+        "CREATE TEMP TABLE source_pair_evidence(reference_id TEXT,statement_id TEXT,"
         "format TEXT,source_key TEXT,scope TEXT,event_key TEXT,local_id TEXT,ordinal INTEGER,"
-        "epoch REAL,conversation_id TEXT);"
+        "epoch REAL,conversation_id TEXT,PRIMARY KEY(reference_id,scope));"
     )
 
 
-def _group_statements(source, output, contact_id):
+def _group_statements(source, output, contact_id, *, root=None):
     """Retain every observation, storing only event keys and reference membership."""
     snapshots = (
         {
@@ -1850,6 +2278,7 @@ def _group_statements(source, output, contact_id):
         ).fetchone()
         else {}
     )
+    source_frames = load_group_source_frames(root, snapshots) if root is not None else {}
     _create_source_precedence_tables(output)
     cursor = output.execute(
         "SELECT id,parent_message_id,component_path,source_id,account_key "
@@ -1912,7 +2341,7 @@ def _group_statements(source, output, contact_id):
             groups.append((group, reference[0], conversation_key))
             members.append((reference[0], group))
             _stage_source_precedence(
-                output, row, reference, group, snapshots, contact_id
+                output, row, reference, group, snapshots, contact_id, source_frames
             )
         output.executemany(
             "INSERT OR IGNORE INTO statement_groups VALUES(?,?,?)", groups
@@ -2166,7 +2595,7 @@ def _build_index(root, contact_id, fingerprint):
                         native_statement_key=_native_statement_key,
                         link_originals=False,
                     )
-                    _refresh_source_precedence(source, output, contact_id)
+                    _refresh_source_precedence(source, output, contact_id, root=root)
                 if not complete:
                     resolver = WechatContactRepository(root)
                     reused = _copy_legacy_references(target, output, history, contacts)
@@ -2243,7 +2672,7 @@ def _build_index(root, contact_id, fingerprint):
                                 "INSERT OR REPLACE INTO refs VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                                 _native_embedded_values(source, rows, username),
                             )
-                    _group_statements(source, output, contact_id)
+                    _group_statements(source, output, contact_id, root=root)
                 _refresh_forwarded_link_clocks(root, source, output)
                 quoted_recovery = recover_quoted_reference_clocks(
                     source,
@@ -2288,6 +2717,7 @@ def _build_index(root, contact_id, fingerprint):
                     native_thread_key=_native_conversation_key,
                 )
                 _apply_conversation_events(root, source, output, contact_id)
+                _refresh_forwarded_authors(root, source, output, username)
                 review_summary = apply_reviewed_packet_groups(
                     root,
                     source,
@@ -2297,9 +2727,19 @@ def _build_index(root, contact_id, fingerprint):
                     prepare_rows=_requests,
                     native_thread_key=_native_conversation_key,
                 )
-                # Compact text-copy grouping is an explicit display operation. The
-                # canonical index keeps the source/event proof boundaries above.
-                forwarded_copy_summary = {"status": "explicit_projection_required"}
+                forwarded_copy_summary = {"status": "not_requested", "statements_joined": 0}
+                if allows_forwarded_copy_projection(root, contact_id, username):
+                    forwarded_copy_summary = fold_contact_forwarded_copies(
+                        source,
+                        output,
+                        contact_id,
+                        username,
+                        row_select=_ROW_SELECT,
+                        prepare_rows=_requests,
+                        native_thread_key=_native_conversation_key,
+                        check_cancelled=_check_build_cancelled,
+                    )
+                _append_macos_contact_references(source, output, history, contact_id, username)
                 from .wechat_conversation_events import VERSION as event_version
 
                 output.executemany(
@@ -2371,7 +2811,10 @@ def _empty(contact, fingerprint, *, status, error=""):
     }
 
 
-def _reference_text(text, raw_provenance, raw_path, account_id, parent_id, peer_id=""):
+def _reference_text(
+    text, raw_provenance, raw_path, account_id, parent_id, peer_id="", *,
+    author_resolutions=None,
+):
     try:
         provenance = json.loads(raw_provenance)
         path = json.loads(raw_path)
@@ -2384,6 +2827,7 @@ def _reference_text(text, raw_provenance, raw_path, account_id, parent_id, peer_
                 parent_id=parent_id,
                 account_id=account_id or "",
                 peer_id=peer_id or "",
+                author_resolutions=author_resolutions or {},
             )
             return detail["text"] if detail else ""
         if path:
@@ -2400,13 +2844,86 @@ def _attach_reference_archive(connection, history):
         "ATTACH DATABASE ? AS archive",
         (history.resolve().as_uri() + "?mode=ro&immutable=1",),
     )
+    authors = {}
+    for identifier, resolution in _forwarded_author_evidence(connection).items():
+        parent, _, position = identifier.rpartition("_forwarded_")
+        if position.isdecimal():
+            authors.setdefault(parent, {})[(int(position),)] = resolution
     connection.create_function(
         "reference_text",
         6,
-        lambda *values: _reference_text(*values).casefold(),
+        lambda *values: _reference_text(
+            *values, author_resolutions=authors.get(values[4], {})
+        ).casefold(),
         deterministic=True,
     )
-    return [dict(row) for row in connection.execute("SELECT * FROM archive.partitions")]
+    accounts = [dict(row) for row in connection.execute("SELECT * FROM archive.partitions")]
+    macos = connection.execute(
+        "SELECT 1 FROM refs WHERE source_id GLOB 'macos-*' LIMIT 1"
+    ).fetchone() is not None
+    if macos:
+        from . import wechat_macos_recovery_bank as bank
+
+        try:
+            if bank._attach(connection, history) is None:
+                raise ValueError("The contact's Mac archive is unavailable.")
+            connection.execute(
+                "CREATE TEMP TABLE macos_contact_partitions ("
+                "id TEXT PRIMARY KEY, account_key TEXT, account_id TEXT, account_label TEXT,"
+                "identity_status TEXT, source_label TEXT, source_file TEXT) WITHOUT ROWID"
+            )
+            connection.execute(
+                "INSERT INTO macos_contact_partitions "
+                "SELECT s.source_id,'account:'||s.account_id,s.account_id,MIN(p.account_label),"
+                "'Verified archive ID','WeChat for Mac local database',"
+                "'WeChat for Mac local database: '||"
+                "MIN(json_extract(s.proof,'$.source.database_relative_path')) "
+                "FROM macos_recovery_bank.sources s "
+                "JOIN archive.partitions p ON p.account_key='account:'||s.account_id "
+                "AND p.account_id=s.account_id "
+                "WHERE s.source_id IN (SELECT source_id FROM refs WHERE source_id GLOB 'macos-*') "
+                "GROUP BY s.source_id HAVING MIN(s.account_id)=MAX(s.account_id)"
+            )
+            if connection.execute(
+                "SELECT 1 FROM refs r LEFT JOIN temp.macos_contact_partitions p "
+                "ON p.id=r.source_id AND p.account_key=r.account_key "
+                "WHERE r.source_id GLOB 'macos-*' AND p.id IS NULL LIMIT 1"
+            ).fetchone():
+                raise ValueError("A contact reference lost its Mac source.")
+        except (ValueError, OSError, sqlite3.DatabaseError) as error:
+            raise ContactAnalysisSourceChanged("The Mac contact source could not be verified.") from error
+        accounts.extend(dict(row) for row in connection.execute("SELECT * FROM temp.macos_contact_partitions"))
+    return accounts, macos
+
+
+def _reference_source_queries(sql, macos):
+    yield sql
+    if macos:
+        yield sql.replace(
+            "archive.messages", "macos_recovery_bank.messages"
+        ).replace("archive.partitions", "temp.macos_contact_partitions")
+
+
+@contextmanager
+def _chronological_reference_rows(connection, sql, parameters, sort, macos):
+    """Keep each source lookup indexed and merge only the ordered reference streams."""
+    with ExitStack() as stack:
+        cursors = [
+            stack.enter_context(closing(connection.execute(query, parameters)))
+            for query in _reference_source_queries(sql, macos)
+        ]
+        if not macos:
+            yield iter(cursors[0])
+            return
+        descending = sort == "newest"
+        yield merge(
+            *cursors,
+            key=lambda row: (
+                bool(row["reference_timestamp_value"]) == descending,
+                row["reference_time_sort"], row["ordinal"], row["reference_id"],
+            ),
+            reverse=descending,
+        )
 
 
 def _reference_query_parts(query):
@@ -2457,6 +2974,9 @@ def _project_reference_rows(connection, rows, contact, names, verified_accounts)
     source_contacts = {}
     quoted_clocks = {}
     forwarded_clocks = {}
+    forwarded_authors = _forwarded_author_evidence(
+        connection, [row["reference_id"] for row in rows]
+    )
     if rows and connection.execute(
         "SELECT 1 FROM sqlite_master WHERE type='table' AND name='forwarded_clock_evidence'"
     ).fetchone():
@@ -2523,6 +3043,11 @@ def _project_reference_rows(connection, rows, contact, names, verified_accounts)
         row = dict(raw)
         provenance = json.loads(row["provenance"])
         component_path = json.loads(row["component_path"])
+        author_resolution = forwarded_authors.get(row["reference_id"])
+        author_resolutions = (
+            {tuple(component_path[1:]): author_resolution}
+            if author_resolution and component_path[:1] == ["native"] else {}
+        )
         row["content_text"] = _reference_text(
             row.pop("text"),
             row["provenance"],
@@ -2530,6 +3055,7 @@ def _project_reference_rows(connection, rows, contact, names, verified_accounts)
             row["account_id"],
             row["parent_message_id"],
             row["peer_id"],
+            author_resolutions=author_resolutions,
         )
         row["id"] = row.pop("reference_id")
         row["component_path"] = component_path
@@ -2551,6 +3077,7 @@ def _project_reference_rows(connection, rows, contact, names, verified_accounts)
                 parent_id=row["parent_message_id"],
                 account_id=row["account_id"] or "",
                 peer_id=row["peer_id"] or "",
+                author_resolutions=author_resolutions,
             )
             if detail is None:
                 raise ContactAnalysisSourceChanged(
@@ -2578,8 +3105,17 @@ def _project_reference_rows(connection, rows, contact, names, verified_accounts)
                 component_path=component_path,
                 source_time=row["source_clock"],
                 original_source_ids=detail["source_ids"],
-                identity_basis="literal_native_envelope_sender_id",
+                identity_basis=detail.get(
+                    "identity_basis", "literal_native_envelope_sender_id"
+                ),
             )
+            if author_resolution:
+                row["provenance"]["native_forwarded_author_recovery"] = (
+                    author_resolution["evidence"]
+                )
+                row["quality_flags"] = list(dict.fromkeys([
+                    *row["quality_flags"], "recovered_native_forwarded_author"
+                ]))
             clock_proof = quoted_clocks.get(row["id"])
             if clock_proof and row["time_basis"].startswith(RECOVERED_TIME_BASIS):
                 row["provenance"]["quoted_clock_recovery"] = clock_proof
@@ -2633,6 +3169,16 @@ def _project_reference_rows(connection, rows, contact, names, verified_accounts)
             for key in ("source_file", "source_label"):
                 if isinstance(metadata.get(key), str) and metadata[key]:
                     row[key] = metadata[key]
+        if row["source_id"].startswith("macos-"):
+            native = provenance.get("macos_recovery", {})
+            if (
+                native.get("source_id") != row["source_id"]
+                or native.get("account_id") != row["account_id"]
+                or native.get("peer_id") != row["peer_id"]
+                or native.get("session_id") != row["conversation_id"]
+            ):
+                raise ContactAnalysisSourceChanged("A Mac contact reference crossed its source.")
+            row["source_snapshot_id"] = native["snapshot_id"]
         row["viewer_account_label"] = (
             names.account_label(
                 {**row, "partition_id": row["source_id"]},
@@ -2655,23 +3201,24 @@ def _check_reference_sources(root, fingerprint, *, contact_id=None):
     return paths
 
 
-def _statement_matches(connection, query):
+def _statement_matches(connection, query, *, macos=False):
     """Search unique statements once, retaining only compact matching IDs."""
     if not query:
         return "", ""
     connection.execute(
         "CREATE TEMP TABLE contact_statement_matches(id TEXT PRIMARY KEY) WITHOUT ROWID"
     )
-    connection.execute(
-        "INSERT INTO contact_statement_matches SELECT g.id FROM statement_groups g "
+    sql = (
+        "INSERT OR IGNORE INTO contact_statement_matches SELECT g.id FROM statement_groups g "
         "JOIN refs r ON r.id=g.reference_id "
         "CROSS JOIN archive.messages m ON m.id=r.parent_message_id "
         "JOIN archive.conversations c ON c.id=r.conversation_id "
         "JOIN archive.partitions p ON p.id=r.source_id "
         "WHERE instr(reference_text(m.text,m.provenance,r.component_path,"
-        "p.account_id,r.parent_message_id,c.peer_id),?)>0",
-        (query.casefold(),),
+        "p.account_id,r.parent_message_id,c.peer_id),?)>0"
     )
+    for statement in _reference_source_queries(sql, macos):
+        connection.execute(statement, (query.casefold(),))
     return (
         " WHERE g.id IN (SELECT id FROM contact_statement_matches)",
         " WHERE sm.statement_id IN (SELECT id FROM contact_statement_matches)",
@@ -2747,7 +3294,7 @@ def _statement_page_rows_query(where, sort):
     )
 
 
-def _statement_observations(connection, items, contact, names, verified_accounts):
+def _statement_observations(connection, items, contact, names, verified_accounts, *, macos=False):
     """Keep source clocks distinct without promoting a representative to event time."""
     if not items:
         return
@@ -2793,7 +3340,7 @@ def _statement_observations(connection, items, contact, names, verified_accounts
 
     groups = {item["statement_id"]: item for item in items}
     marks = ",".join("?" for _ in groups)
-    rows = connection.execute(
+    sql = (
         "SELECT sm.statement_id,"
         + _STATEMENT_COLUMNS
         + "FROM statement_members sm CROSS JOIN refs r ON r.id=sm.reference_id "
@@ -2801,9 +3348,14 @@ def _statement_observations(connection, items, contact, names, verified_accounts
         "JOIN archive.conversations c ON c.id=r.conversation_id "
         "JOIN archive.partitions p ON p.id=r.source_id "
         "WHERE sm.statement_id IN (" + marks + ") "
-        "ORDER BY r.account_key,r.source_id,r.id",
-        list(groups),
-    ).fetchall()
+        "ORDER BY r.account_key,r.source_id,r.id"
+    )
+    rows = [
+        row for query in _reference_source_queries(sql, macos)
+        for row in connection.execute(query, list(groups))
+    ]
+    if macos:
+        rows.sort(key=lambda row: (row["account_key"], row["source_id"], row["reference_id"]))
     fields = (
         "id",
         "parent_message_id",
@@ -2903,25 +3455,30 @@ def _query_index(
 ):
     names = WechatDisplayNames(root)
     with closing(_readonly(path, derived_cache=True)) as connection:
-        verified_accounts = _attach_reference_archive(connection, history)
-        group_where, member_where = _statement_matches(connection, query)
+        verified_accounts, macos = _attach_reference_archive(connection, history)
+        group_where, member_where = _statement_matches(connection, query, macos=macos)
         statements = connection.execute(
             "SELECT COUNT(*),COUNT(DISTINCT g.conversation_key) "
             "FROM statement_groups g" + group_where,
         ).fetchone()
+        # Walk unfiltered members in reference order to keep primary-key
+        # lookups local. Filtered queries can use the statement ID index.
+        member_index = "" if member_where else " INDEXED BY sqlite_autoindex_statement_members_1"
         observations = connection.execute(
             "SELECT COUNT(DISTINCT r.account_key),COUNT(DISTINCT r.source_id),COUNT(*) "
-            "FROM statement_members sm CROSS JOIN refs r ON r.id=sm.reference_id"
+            "FROM statement_members sm" + member_index
+            + " CROSS JOIN refs r ON r.id=sm.reference_id"
             + member_where,
         ).fetchone()
         aggregate = (*statements, observations[0], observations[1])
         total = aggregate[0]
         pages = max(1, (total + page_size - 1) // page_size)
         current = min(page, pages)
-        rows = connection.execute(
-            _statement_page_rows_query(group_where, sort),
-            [page_size, (current - 1) * page_size],
-        ).fetchall()
+        with _chronological_reference_rows(
+            connection, _statement_page_rows_query(group_where, sort),
+            [page_size, (current - 1) * page_size], sort, macos,
+        ) as stream:
+            rows = list(stream)
         items = _project_reference_rows(
             connection, rows, contact, names, verified_accounts
         )
@@ -2945,7 +3502,7 @@ def _query_index(
                 item["sequence_number"] = known_count - position
             else:
                 item["sequence_number"] = total + known_count - position
-        _statement_observations(connection, items, contact, names, verified_accounts)
+        _statement_observations(connection, items, contact, names, verified_accounts, macos=macos)
         has_forwarded_projection = bool(
             connection.execute(
                 "SELECT 1 FROM sqlite_master WHERE type='table' "
@@ -2955,10 +3512,26 @@ def _query_index(
                 "SELECT 1 FROM forwarded_copy_projection_evidence LIMIT 1"
             ).fetchone()
         )
+        if has_forwarded_projection:
+            conversation_count = connection.execute(
+                "SELECT COUNT(DISTINCT COALESCE("
+                "json_extract(e.evidence_json,'$.original_conversation_key'),"
+                "g.conversation_key)) FROM statement_groups g "
+                "JOIN statement_members sm ON sm.statement_id=g.id "
+                "LEFT JOIN forwarded_copy_projection_evidence e "
+                "ON e.reference_id=sm.reference_id" + group_where
+            ).fetchone()[0]
+            aggregate = (aggregate[0], conversation_count, *aggregate[2:])
         accounts = []
-        for raw in connection.execute(
-            "SELECT DISTINCT p.* FROM refs r JOIN archive.partitions p ON p.id=r.source_id ORDER BY p.account_key,p.id"
-        ):
+        account_query = (
+            "SELECT p.* FROM (SELECT DISTINCT source_id FROM refs) r "
+            "JOIN archive.partitions p ON p.id=r.source_id ORDER BY p.account_key,p.id"
+        )
+        source_accounts = (
+            row for statement in _reference_source_queries(account_query, macos)
+            for row in connection.execute(statement)
+        )
+        for raw in source_accounts:
             row = dict(raw)
             accounts.append(
                 {
@@ -3133,9 +3706,13 @@ def export_contact_analysis_items(
     text = str(query or "").strip()[:1024]
     names = WechatDisplayNames(root)
     with closing(_readonly(cache, derived_cache=True)) as connection:
-        verified_accounts = _attach_reference_archive(connection, history)
+        verified_accounts, macos = _attach_reference_archive(connection, history)
+        projected_sources = source_occurrences and connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' "
+            "AND name='forwarded_copy_projection_evidence'"
+        ).fetchone() is not None
         group_where = (
-            "" if source_occurrences else _statement_matches(connection, text)[0]
+            "" if source_occurrences else _statement_matches(connection, text, macos=macos)[0]
         )
         # Pin the leading index key so oldest exports reverse-scan time and ordinal.
         groups = (
@@ -3155,15 +3732,37 @@ def export_contact_analysis_items(
             else:
                 sql = _statement_export_rows_query(group_where, sort, has_time=has_time)
                 parameters = [] if has_time is None else [has_time]
-            with closing(connection.execute(sql, parameters)) as cursor:
+            with _chronological_reference_rows(connection, sql, parameters, sort, macos) as stream:
                 while True:
                     validate_contact_analysis_scope(root, scope)
-                    rows = cursor.fetchmany(200)
+                    rows = list(islice(stream, 200))
                     if not rows:
                         break
                     items = _project_reference_rows(
                         connection, rows, contact, names, verified_accounts
                     )
+                    if projected_sources:
+                        identifiers = [item["id"] for item in items]
+                        marks = ",".join("?" for _ in identifiers)
+                        original_statements = dict(
+                            connection.execute(
+                                "SELECT reference_id,json_extract(evidence_json,"
+                                "'$.original_statement_id') FROM "
+                                "forwarded_copy_projection_evidence "
+                                "WHERE reference_id IN (" + marks + ")",
+                                identifiers,
+                            )
+                        )
+                        for item in items:
+                            if item["id"] not in original_statements:
+                                continue
+                            original = original_statements[item["id"]]
+                            if not isinstance(original, str) or not original:
+                                raise ContactAnalysisSourceChanged(
+                                    "A display projection lost its original event group."
+                                )
+                            item["display_statement_id"] = item["statement_id"]
+                            item["statement_id"] = original
                     validate_contact_analysis_scope(root, scope)
                     yield from items
     validate_contact_analysis_scope(root, scope)
@@ -3175,6 +3774,7 @@ def message_source_location(local_store_root, message_id, *, page_size=100):
         canonical_message_table,
         conversation_events,
     )
+    from .wechat_macos_recovery import mark_mac_recovery_rows, validated_recovery_receipt
 
     match = _MESSAGE_KEY.fullmatch(message_id) if isinstance(message_id, str) else None
     if match is None:
@@ -3200,9 +3800,20 @@ def message_source_location(local_store_root, message_id, *, page_size=100):
             _ROW_SELECT + "WHERE m.id=?",
             (parent_id,),
         ).fetchone()
+        if row is None and not embedded and connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' "
+            "AND name='derived_message_aliases'"
+        ).fetchone():
+            alias = connection.execute(
+                "SELECT native_id FROM derived_message_aliases WHERE old_id=?",
+                (parent_id,),
+            ).fetchone()
+            if alias is not None:
+                parent_id = message_id = alias[0]
+                row = connection.execute(
+                    _ROW_SELECT + "WHERE m.id=?", (parent_id,)
+                ).fetchone()
         if row is None:
-            if embedded:
-                return None
             conversation_id = repository._timeline_conversation_id(
                 connection, parent_id
             )
@@ -3225,6 +3836,8 @@ def message_source_location(local_store_root, message_id, *, page_size=100):
             if row is None:
                 return None
         row = dict(row)
+        if timeline is not None:
+            mark_mac_recovery_rows(connection, [row])
         component_path = []
         anchor_id = "wechat_message_" + message_id
         if embedded:
@@ -3242,7 +3855,8 @@ def message_source_location(local_store_root, message_id, *, page_size=100):
                 ),
                 None,
             )
-            native_reference = (
+            macos_receipt = validated_recovery_receipt(row)
+            native_reference = detail if detail and macos_receipt else (
                 next(
                     (
                         value
@@ -3259,10 +3873,8 @@ def message_source_location(local_store_root, message_id, *, page_size=100):
             if native_reference is not None:
                 component_path = detail["path"]
                 anchor_id = detail["anchor_id"]
-            record = _forwarded_records(
-                connection,
-                [dict(row)],
-                WechatContactRepository(local_store_root),
+            record = None if macos_receipt else _forwarded_records(
+                connection, [dict(row)], WechatContactRepository(local_store_root),
             ).get(parent_id)
             if record is None and not component_path:
                 return None
@@ -3278,7 +3890,10 @@ def message_source_location(local_store_root, message_id, *, page_size=100):
             if not component_path:
                 return None
         if timeline is None:
-            timeline = repository._timeline_tables(connection, history_identity)
+            timeline = repository._timeline_tables(
+                connection, history_identity,
+                conversation_id=row["conversation_id"], strict=True,
+            )
         conversations, table, _ = timeline
         current = connection.execute(
             "SELECT c.*,p.account_label,p.account_id,p.identity_status,"
@@ -3334,6 +3949,7 @@ def message_source_location(local_store_root, message_id, *, page_size=100):
             current = _sources(local_store_root)
             if (
                 current is None
+                or macos_receipt is not None and current[2] != fingerprint
                 or {str(path.resolve()): _identity(path) for path in current[:2]}
                 != source_identities
             ):

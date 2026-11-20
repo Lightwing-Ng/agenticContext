@@ -251,7 +251,7 @@ def test_contact_loading_keeps_a_centered_shared_dialog_without_document_flashes
                 "&& !document.getElementById('cache_wait_modal').contains(document.activeElement)"
             )
             expect(
-                page.get_by_role("searchbox", name="Search contact statements")
+                page.get_by_role("searchbox", name="Search contact messages")
             ).to_be_enabled()
             page.wait_for_function(
                 """() => {
@@ -358,7 +358,7 @@ def test_dismissed_loading_keeps_an_unsubmitted_search_draft_and_focus(
             page.keyboard.press("Escape")
             expect(page.locator("#cache_wait_modal")).to_be_hidden()
             page.wait_for_function("!document.querySelector('main').inert")
-            search = page.get_by_role("searchbox", name="Search contact statements")
+            search = page.get_by_role("searchbox", name="Search contact messages")
             search.fill("An unsubmitted search draft")
             search.focus()
             scroll = page.evaluate("({x: scrollX, y: scrollY})")
@@ -410,7 +410,7 @@ def test_contact_loading_error_closes_the_spinner_and_offers_a_working_retry(
             controlled.fail.set()
             expect(page.locator("#cache_wait_modal")).to_be_hidden(timeout=12000)
             expect(
-                page.get_by_text("Statements could not be loaded.", exact=True)
+                page.get_by_text("Messages could not be loaded.", exact=True)
             ).to_be_visible()
             retry = page.get_by_role("link", name="Refresh", exact=True)
             expect(retry).to_be_visible()
@@ -472,7 +472,7 @@ def _assert_contact_poll_ready(page):
         "data-contact-analysis-state", "ready"
     )
     assert not page.evaluate("document.querySelector('main').inert")
-    assert page.get_by_text("Statements could not be loaded.", exact=True).count() == 0
+    assert page.get_by_text("Messages could not be loaded.", exact=True).count() == 0
 
 
 class ContactPollScenario:
@@ -593,7 +593,7 @@ def test_contact_poll_stops_after_bounded_failures_and_refresh_still_works(
             page.goto(_contact_url(fixture), wait_until="domcontentloaded")
             _advance_contact_poll_delays(page, [2000, 4000, 8000])
             expect(
-                page.get_by_text("Statements could not be loaded.", exact=True)
+                page.get_by_text("Messages could not be loaded.", exact=True)
             ).to_be_visible()
             expect(page.locator("#cache_wait_modal")).to_be_hidden()
             assert not page.evaluate("document.querySelector('main').inert")
@@ -629,7 +629,7 @@ def test_contact_poll_rejects_scope_mismatch_without_retrying(
         ):
             page.goto(_contact_url(fixture), wait_until="domcontentloaded")
             expect(
-                page.get_by_text("Statements could not be loaded.", exact=True)
+                page.get_by_text("Messages could not be loaded.", exact=True)
             ).to_be_visible()
             assert page.get_by_text("Synthetic wrong contact content", exact=True).count() == 0
             page.clock.run_for(30000)

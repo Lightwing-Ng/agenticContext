@@ -1,12 +1,16 @@
 """Additive references remain in the scoped, paginated WeChat timeline.
 
-Code version: v1.0.1-codex.0
+Code version: v1.0.2-codex.0
 """
 
 from __future__ import annotations
 
+from contextlib import closing
 import hashlib
+import hmac
 import json
+import os
+import shutil
 import sqlite3
 
 import pytest
@@ -306,6 +310,56 @@ def test_stale_or_invalid_sidecar_leaves_primary_text_available(store, change):
     assert len(page["messages"]) == session["message_count"]
     assert repository.resource_message(resource[0]) is None
     assert path.exists()
+
+
+def test_relocated_canonical_resource_index_keeps_its_exact_scope(store):
+    from app.core.wechat_archive_relocation import DOMAIN, FILENAME
+    from app.core.wechat_browser_snapshot import _cache_storage
+    from app.core.wechat_macos_recovery_bank import _identity
+
+    session = _session(store)
+    other = _session(store, owner="wxid_account_b")
+    image = _reference(session, "Image A", 20)
+    other_image = _reference(other, "Image B", 20)
+    catalog = _sidecar(store, [(session, image), (other, other_image)])
+    repository = WechatArchiveRepository(store)
+    history = repository.path
+    previous = {path.name: _identity(path) for path in (history, catalog)}
+    for path in (history, catalog):
+        moved = path.with_suffix(".moved")
+        shutil.copy2(path, moved)
+        os.replace(moved, path)
+
+    def indexed_ids(conversation_id=None):
+        with closing(sqlite3.connect(history.as_uri() + "?mode=ro&immutable=1", uri=True)) as connection:
+            connection.row_factory = sqlite3.Row
+            _, message_table, status = repository._resource_timeline_tables(
+                connection, _file_identity(history), conversation_id=conversation_id,
+            )
+            rows = connection.execute(
+                f"SELECT id FROM {message_table} WHERE id IN (?,?)",
+                (image[0], other_image[0]),
+            )
+            return status, {row[0] for row in rows}
+
+    assert indexed_ids() == ("stale", set())
+    directory = history.parent / "browser_cache"
+    _, key, _ = _cache_storage(directory)
+    payload = json.dumps({
+        "version": 2,
+        "files": {
+            path.name: {"previous": previous[path.name], "current": _identity(path)}
+            for path in (history, catalog)
+        },
+    }).encode()
+    receipt = history.with_name(FILENAME)
+    receipt.write_bytes(hmac.digest(key, DOMAIN + payload, "sha256") + payload)
+    receipt.chmod(0o600)
+
+    assert indexed_ids() == ("ready", {image[0], other_image[0]})
+    assert indexed_ids(session["id"]) == ("ready", {image[0]})
+    (directory / "signing.key").write_bytes(b"x" * 32)
+    assert indexed_ids(session["id"]) == ("stale", set())
 
 
 def test_absent_or_unreadable_sidecar_never_blocks_text(store):

@@ -1,6 +1,6 @@
 """Project pinned native child clocks without rewriting HTML source observations.
 
-Code version: v1.1.1-codex.0
+Code version: v1.2.0-codex.0
 """
 
 from __future__ import annotations
@@ -25,7 +25,7 @@ from .wechat_html_export import normalize_html_clock
 from .wechat_text import _FORWARDED_RESOURCES, native_components_text
 
 
-VERSION = "v1.1.1-codex.0"
+VERSION = "v1.2.0-codex.0"
 MAX_REGISTRY_BYTES = 1024 * 1024
 MAX_LINKS = 256
 MAX_INDEXED_REGISTRY_BYTES = 512 * 1024 * 1024
@@ -49,6 +49,7 @@ _PIN_KEYS = (
     "target_text_sha256", "target_provenance_sha256",
     "native_text_sha256", "native_provenance_sha256",
 )
+_HISTORY_PIN_FIELDS = ("dev", "ino", "size", "mtime_ns", "ctime_ns")
 _LINK_COLUMNS = ("target_message_id", "native_message_id", *_PIN_KEYS)
 _LINK_FILTER = " AND ".join(
     "typeof(" + key + ")='text' AND length(" + key + ")=64 AND "
@@ -235,10 +236,38 @@ def _indexed_batch(connection, columns, batch, result):
             result[link["target_message_id"]] = link
 
 
+def _matches_registry_history(registry, history, current):
+    if "source_identity" not in registry.info:
+        return True
+    previous = json.loads(registry.info["source_identity"])
+    if (
+        not isinstance(previous, list)
+        or len(previous) != len(_HISTORY_PIN_FIELDS)
+        or any(type(value) is not int for value in previous)
+    ):
+        return False
+    if tuple(previous) == current:
+        return True
+    from .wechat_archive_relocation import matches_history
+
+    return matches_history(
+        history,
+        dict(zip(_HISTORY_PIN_FIELDS, previous, strict=True)),
+        dict(zip(_HISTORY_PIN_FIELDS, current, strict=True)),
+    )
+
+
 def registry_digest(root):
-    """Fingerprint a stable local registry; unavailable evidence supplies no links."""
+    """Fingerprint the registry only while its archive authority is available."""
     try:
-        return _registry(root).digest
+        registry = _registry(root)
+        if "source_identity" in registry.info:
+            history = wechat_archive_path(registry.root)
+            if not _matches_registry_history(
+                registry, history, _path_identity(history, registry.root)
+            ):
+                return ""
+        return registry.digest
     except (OSError, ValueError, TypeError, RecursionError, sqlite3.DatabaseError):
         return ""
 
@@ -589,9 +618,12 @@ def _link(connection, target, native, link, digest, context=None, registry_info=
         raw = leaf.get("raw_timestamp", "")
         if not isinstance(raw, str) or (raw.strip() and not _epoch_placeholder_clock(raw)):
             continue
+        label = detail["timestamp_label"]
+        if "native_timestamp_precision_minutes" in detail["quality_flags"]:
+            label = label.removesuffix(":00")
         result[(number,)] = {
             "timestamp_value": detail["timestamp_value"],
-            "timestamp_label": detail["timestamp_label"],
+            "timestamp_label": label,
             "time_basis": "Recovered native packet time; " + detail["time_basis"],
             "source_clock": detail["source_clock"],
             "quality_flags": [*detail["quality_flags"], "recovered_pinned_native_forwarded_clock"],
@@ -642,14 +674,8 @@ class WechatForwardedClocks:
                 return {}
             history = wechat_archive_path(self.root)
             before = _path_identity(history, self.root)
-            if "source_identity" in registry.info:
-                pinned_identity = json.loads(registry.info["source_identity"])
-                if (
-                    not isinstance(pinned_identity, list)
-                    or any(type(value) is not int for value in pinned_identity)
-                    or tuple(pinned_identity) != before
-                ):
-                    return {}
+            if not _matches_registry_history(registry, history, before):
+                return {}
             result = {}
             with closing(_readonly(history)) as connection:
                 context = _ProjectionContext(connection)
@@ -669,6 +695,7 @@ class WechatForwardedClocks:
             if (
                 _path_identity(history, self.root) != before
                 or _path_identity(registry.path, self.root) != registry.identity
+                or not _matches_registry_history(registry, history, before)
             ):
                 return {}
             return result

@@ -1,6 +1,6 @@
 """Resource cards retain explicit source labels independently of local payloads.
 
-Code version: v1.0.0-codex.0
+Code version: v1.3.0-codex.0
 """
 
 from contextlib import closing
@@ -8,25 +8,73 @@ from copy import deepcopy
 import json
 from pathlib import Path
 import sqlite3
+from types import SimpleNamespace
 from unittest.mock import Mock
 
+from bs4 import BeautifulSoup
+from jinja2 import Environment, FileSystemLoader, select_autoescape
 import pytest
 
 from app.core.wechat_completion_json_codec import encode_json_cell
 from app.core.wechat_resources import present_resource, resource_reference
 from app.core.wechat_secondary_completions import present_retained_app_cards
-from tests.test_wechat_resources import (
-    _RenderedMarkup,
-    _text,
-    resource_macros as resource_macros,
-    resource_template as resource_template,
+
+
+@pytest.mark.parametrize(
+    ("filename", "title", "expected"),
+    [
+        ("Source report.pdf", "A separate card title", "Source report.pdf"),
+        ("", "An explicit file card title", "An explicit file card title"),
+        ("bad\x00name", "A bounded source title", "A bounded source title"),
+        ([], {}, "File"),
+        ("x" * 1025, "\x00title", "File"),
+    ],
 )
+def test_metadata_only_file_uses_a_bounded_source_name_without_payload_access(
+    filename, title, expected
+):
+    reference = {
+        "kind": "file",
+        "availability": "metadata_only",
+        "filename": filename,
+        "safe_title": title,
+    }
+    before = deepcopy(reference)
+    resolver = Mock()
+    resource = present_resource(reference, resolver)
+    assert resource["label"] == expected
+    assert resource["kind_label"] == "File"
+    assert resource["status"] == "metadata_only"
+    assert resource["can_reveal"] is False
+    assert reference == before
+    resolver.resolve.assert_not_called()
 
 
 @pytest.mark.parametrize("embedded", [False, True])
-def test_channels_uses_link_card_layout_with_literal_description_and_publisher(
-    resource_macros, embedded
-):
+def test_file_source_name_remains_escaped_text_in_ordinary_and_quoted_cards(embedded):
+    filename = '<img src="https://invalid.example/report" onerror="alert(1)">.pdf'
+    resource = present_resource(
+        {"kind": "file", "availability": "metadata_only", "filename": filename},
+        None,
+    )
+    environment = Environment(
+        loader=FileSystemLoader("app/web/templates"),
+        autoescape=select_autoescape(["html"]),
+    )
+    module = environment.get_template("_wechat_browser.html").make_module(
+        {"text_page": SimpleNamespace(messaging={}, session_detail=False, sessions=[])}
+    )
+    soup = BeautifulSoup(
+        str(module.resource_card(resource, message_id="fixture", embedded=embedded)),
+        "html.parser",
+    )
+    assert soup.select_one(".wechat-resource-label").get_text() == filename
+    assert not soup.find_all(["a", "img", "script", "button", "iframe"])
+    assert soup.select_one(".wechat-resource")["data-wechat-resource-kind"] == "file"
+
+
+@pytest.mark.parametrize("embedded", [False, True])
+def test_channels_uses_the_link_card_layout_with_literal_description_and_publisher(embedded):
     description = "原帖第一行\n<em>原样显示</em>"
     reference = {
         "kind": "app",
@@ -36,14 +84,22 @@ def test_channels_uses_link_card_layout_with_literal_description_and_publisher(
         "channels_description": description,
         "channels_nickname": "示例发布者",
     }
+    environment = Environment(
+        loader=FileSystemLoader("app/web/templates"),
+        autoescape=select_autoescape(["html"]),
+    )
+    module = environment.get_template("_wechat_browser.html").make_module(
+        {"text_page": SimpleNamespace(messaging={}, session_detail=False, sessions=[])}
+    )
     resource = present_resource(reference, None)
-    parsed = _RenderedMarkup(str(resource_macros.resource_card(resource, embedded=embedded)))
-    card = parsed.find(css_class="wechat-resource")
-    assert card.attrs["data-wechat-resource-link"] == "true"
-    assert card.attrs["data-wechat-resource-platform"] == "WeChat Channels"
-    assert _text(parsed.find(css_class="wechat-resource-label wechat-message-text")) == description
-    assert _text(parsed.find(css_class="wechat-resource-status")) == "示例发布者 · WeChat Channels"
-    assert all(parsed.find(tag=tag) is None for tag in ("a", "em", "img", "button", "iframe"))
+    soup = BeautifulSoup(
+        str(module.resource_card(resource, message_id="fixture", embedded=embedded)),
+        "html.parser",
+    )
+    assert soup.select_one(".wechat-resource")["data-wechat-resource-link"] == "true"
+    assert soup.select_one(".wechat-resource-label").get_text() == description
+    assert soup.select_one(".wechat-resource-status").get_text() == "示例发布者 · WeChat Channels"
+    assert not soup.find_all(["a", "em", "img", "button", "iframe"])
     fallback = present_resource(
         {
             key: value for key, value in reference.items()

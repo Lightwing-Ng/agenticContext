@@ -1,6 +1,6 @@
 """Configured keys and memory-only snapshots remain scoped and fail closed.
 
-Code version: v1.1.0-codex.0
+Code version: v1.1.1-codex.0
 """
 
 from dataclasses import replace
@@ -14,7 +14,6 @@ import pytest
 
 from app.core import wechat_mac_refresh_cipher as cipher
 from app.core import wechat_mac_refresh_source as source
-from app.core.owner_only_files import write_owner_only_text
 from tests.test_wechat_mac_refresh_cipher import KEY, encrypt_page, plain_page
 
 
@@ -48,7 +47,8 @@ def registry(tmp_path, monkeypatch):
         "enc_key": KEY.hex(),
         "verification": "synthetic-page-one-authenticated",
     }
-    write_owner_only_text(vault, json.dumps(row) + "\n")
+    vault.write_text(json.dumps(row) + "\n")
+    vault.chmod(0o600)
     return (
         source.KeyRegistry(key_root=tmp_path / "Keys", native_root=native),
         vault,
@@ -141,6 +141,38 @@ def test_each_current_snapshot_authenticates_the_key_and_page(registry):
         source.read_database(reference)
 
 
+@pytest.mark.parametrize("lock_pages", [0, 1])
+def test_source_proof_separates_fixed_lock_page_from_authenticated_content(lock_pages):
+    count = cipher.LOCK_BYTE_PAGE_NUMBER + 1 if lock_pages else 1
+    reference = source.KeyReference(
+        OWNER,
+        OWNER + "_synthetic",
+        "db_storage/message/message_0.db",
+        Path("/synthetic/message_0.db"),
+    )
+    proof = source._source_receipt(
+        reference,
+        "a" * 64,
+        "b" * 64,
+        {
+            "output_page_count": count,
+            "authenticated_output_page_count": count - lock_pages,
+            "lock_byte_page_count": lock_pages,
+            "encrypted_pages_authenticated": not lock_pages,
+            "content_pages_authenticated": True,
+        },
+    )
+    assert proof["page_count"] == count
+    assert proof["authenticated_page_count"] == count - lock_pages
+    assert proof["authenticated_pages"] is (not lock_pages)
+    if lock_pages:
+        assert proof["lock_byte_page_count"] == 1
+        assert proof["authenticated_content_pages"] is True
+    else:
+        assert "lock_byte_page_count" not in proof
+        assert "authenticated_content_pages" not in proof
+
+
 def test_live_group_drift_is_rejected_before_decryption(registry, monkeypatch):
     keys, _vault, database, _row = registry
     reference = keys.references(OWNER, load_keys=True)[0]
@@ -174,38 +206,6 @@ def test_nonempty_rollback_journal_and_symlinks_are_rejected(registry):
     alternate.symlink_to(database)
     with pytest.raises(source.RefreshError, match="symlink"):
         source.read_database(replace(reference, database_path=alternate))
-
-
-@pytest.mark.parametrize("lock_pages", [0, 1])
-def test_source_proof_separates_fixed_lock_page_from_authenticated_content(lock_pages):
-    count = cipher.LOCK_BYTE_PAGE_NUMBER + 1 if lock_pages else 1
-    reference = source.KeyReference(
-        OWNER,
-        OWNER + "_synthetic",
-        "db_storage/message/message_0.db",
-        Path("/synthetic/message_0.db"),
-    )
-    proof = source._source_receipt(
-        reference,
-        "a" * 64,
-        "b" * 64,
-        {
-            "output_page_count": count,
-            "authenticated_output_page_count": count - lock_pages,
-            "lock_byte_page_count": lock_pages,
-            "encrypted_pages_authenticated": not lock_pages,
-            "content_pages_authenticated": True,
-        },
-    )
-    assert proof["page_count"] == count
-    assert proof["authenticated_page_count"] == count - lock_pages
-    assert proof["authenticated_pages"] is (not lock_pages)
-    if lock_pages:
-        assert proof["lock_byte_page_count"] == 1
-        assert proof["authenticated_content_pages"] is True
-    else:
-        assert "lock_byte_page_count" not in proof
-        assert "authenticated_content_pages" not in proof
 
 
 def _group_sizes(main_bytes, wal_bytes=0, shm_bytes=0):
@@ -264,6 +264,92 @@ def test_oversize_source_groups_fail_before_read_or_decryption(
     )
     with pytest.raises(source.RefreshError, match="snapshot size"):
         source.read_database(reference)
+
+
+@pytest.mark.parametrize("memory_bytes", [None, True, 0, -1, 32.0, "34359738368"])
+def test_large_source_capacity_must_be_known_and_well_typed(monkeypatch, memory_bytes):
+    monkeypatch.setattr(
+        source,
+        "discover_compute_resources",
+        lambda: SimpleNamespace(memory_bytes=memory_bytes),
+    )
+    with pytest.raises(source.RefreshError, match="Physical memory"):
+        source._admit_snapshot(_group_sizes(1024**3 + 4096))
+
+
+def test_failed_capacity_probe_cannot_enable_a_large_read(registry, monkeypatch):
+    keys, _vault, database, _row = registry
+    reference = keys.references(OWNER, load_keys=True)[0]
+    group = _group_sizes(1024**3 + 4096)
+    monkeypatch.setattr(
+        source,
+        "identity",
+        lambda path, **_kwargs: group[str(path).removeprefix(str(database))],
+    )
+
+    def failed_probe():
+        raise OSError("synthetic unavailable physical capacity")
+
+    monkeypatch.setattr(source, "discover_compute_resources", failed_probe)
+    monkeypatch.setattr(
+        source,
+        "read_stable",
+        lambda *_args, **_kwargs: pytest.fail("unadmitted source was read"),
+    )
+    with pytest.raises(source.RefreshError, match="Physical memory"):
+        source.read_database(reference)
+
+
+def test_admitted_large_read_uses_pinned_bounds_and_existing_authentication(
+    registry, monkeypatch
+):
+    keys, _vault, database, _row = registry
+    reference = keys.references(OWNER, load_keys=True)[0]
+    encrypted = database.read_bytes()
+    group = _group_sizes(7 * 1024**3 // 4, 4 * 1024**2, 1024**2)
+    events = []
+    monkeypatch.setattr(
+        source,
+        "identity",
+        lambda path, **_kwargs: group[str(path).removeprefix(str(database))],
+    )
+
+    def probe():
+        events.append("admission")
+        return SimpleNamespace(memory_bytes=32 * 1024**3)
+
+    def bounded_read(path, maximum, **_kwargs):
+        suffix = str(path).removeprefix(str(database))
+        assert maximum == group[suffix][2]
+        events.append(suffix or "main")
+        return encrypted if not suffix else b""
+
+    monkeypatch.setattr(source, "discover_compute_resources", probe)
+    monkeypatch.setattr(source, "read_stable", bounded_read)
+    decrypt = cipher.decrypt_database
+
+    def authenticated(main, wal, key, **kwargs):
+        assert kwargs["max_database_bytes"] == 2 * 1024**3
+        events.append("authentication")
+        return decrypt(main, wal, key, **kwargs)
+
+    monkeypatch.setattr(cipher, "decrypt_database", authenticated)
+    snapshot = source.read_database(reference)
+    try:
+        assert events == ["admission", "main", "-wal", "-shm", "authentication"]
+        assert snapshot.connection.execute("PRAGMA user_version").fetchone()[0] == 123
+        assert snapshot.source["authenticated_pages"] is True
+    finally:
+        snapshot.close()
+
+
+def test_legacy_small_source_does_not_require_capacity_detection(monkeypatch):
+    monkeypatch.setattr(
+        source,
+        "discover_compute_resources",
+        lambda: pytest.fail("small source requested large-source capacity"),
+    )
+    source._admit_snapshot(_group_sizes(1024**3))
 
 
 def test_large_snapshot_admission_includes_wal_growth_and_overhead(monkeypatch):

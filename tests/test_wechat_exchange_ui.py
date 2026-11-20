@@ -1,6 +1,6 @@
 """Dataset exchange controls preserve download and preview-before-import boundaries.
 
-Code version: v1.2.1-codex.0
+Code version: v1.2.2-codex.0
 """
 
 from __future__ import annotations
@@ -436,8 +436,8 @@ def test_dismissal_releases_both_ready_and_late_preview_tokens(
         context.close()
 
 
-@pytest.mark.parametrize("width", [1023, 677, 390])
-def test_share_uses_theme_column_and_toolbar_row_without_covering_search(
+@pytest.mark.parametrize("width", [1023, 735, 390])
+def test_share_precedes_search_and_its_menu_stays_within_the_toolbar(
     disposable_browser, exchange_server, width
 ):
     context, page = _open_page(disposable_browser, exchange_server, width=width)
@@ -460,9 +460,10 @@ def test_share_uses_theme_column_and_toolbar_row_without_covering_search(
                 search: bounds('.browser-search-control'), overflow: document.documentElement.scrollWidth - innerWidth};
         }""")
         assert geometry["share"]["width"] == geometry["share"]["height"] == 32
-        assert geometry["share"]["x"] == pytest.approx(geometry["theme"]["x"], abs=1)
+        search_cap = geometry["search"]["right"] - geometry["search"]["height"] / 2
+        assert search_cap == pytest.approx(geometry["theme"]["x"], abs=1)
         assert geometry["share"]["y"] == pytest.approx(geometry["row"]["y"], abs=1)
-        assert geometry["search"]["right"] <= geometry["share"]["left"] - 8
+        assert geometry["share"]["right"] <= geometry["search"]["left"] - 8
         assert geometry["overflow"] <= 0
         trigger = page.get_by_role(
             "link", name="Export conversation as CSV", exact=True
@@ -473,13 +474,16 @@ def test_share_uses_theme_column_and_toolbar_row_without_covering_search(
         placement = menu.evaluate("""node => {
             const menu = node.getBoundingClientRect();
             const share = document.querySelector('.wechat-conversation-share').getBoundingClientRect();
+            const search = document.querySelector('.browser-search-control').getBoundingClientRect();
             const choice = node.querySelector('[role="menuitem"]');
             const rect = choice.getBoundingClientRect();
-            return {right: menu.right, shareRight: share.right, top: menu.top,
+            return {right: menu.right, searchRight: search.right, top: menu.top,
+                shareLeft: share.left,
                 shareBottom: share.bottom, left: menu.left,
                 hit: choice.contains(document.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2))};
         }""")
-        assert placement["right"] == pytest.approx(placement["shareRight"], abs=1)
+        assert placement["left"] == pytest.approx(placement["shareLeft"], abs=1)
+        assert placement["right"] <= placement["searchRight"] + 1
         assert placement["top"] >= placement["shareBottom"]
         assert placement["left"] >= 0 and placement["hit"]
     finally:

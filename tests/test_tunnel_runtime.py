@@ -1,6 +1,6 @@
 """tunnel-client supervision tests with a local fake client.
 
-Code version: v1.5.3-codex.0
+Code version: v1.5.4-codex.0
 """
 
 from __future__ import annotations
@@ -323,6 +323,27 @@ def test_manual_disconnect_blocks_project_reconnect_until_explicit_connect(
         current_revision=lambda: 3,
     ) is True
     assert len(restarts) == 3
+
+
+def test_start_disconnected_preserves_the_endpoint_for_manual_connection(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime = TunnelRuntime(
+        credentials_loader=lambda: TunnelCredentials(VALID_TUNNEL_ID, "sk-proj-test"),
+        state_root=tmp_path / "state",
+    )
+    restarts = []
+    monkeypatch.setattr(runtime, "restart", lambda: restarts.append(runtime._mcp_url))
+    endpoint = "http://127.0.0.1:8666/mcp"
+
+    runtime.enable(endpoint, auto_connect=False)
+
+    assert runtime.snapshot()["state"] == "disconnected"
+    assert restarts == []
+    assert not runtime.connect_or_fail_closed(expected_revision=1, current_revision=lambda: 1)
+    runtime.connect()
+    assert restarts == [endpoint]
 
 
 def test_outbound_proxy_prefers_the_environment(monkeypatch: pytest.MonkeyPatch) -> None:

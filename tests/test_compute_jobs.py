@@ -1,11 +1,12 @@
 """Durable compute-job lifecycle and safety contract tests.
 
-Code version: v1.6.8-codex.0
+Code version: v1.6.10-codex.0
 """
 
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from datetime import datetime, timezone
 import errno
 import hashlib
@@ -15,7 +16,7 @@ from pathlib import Path
 import signal
 import subprocess
 import sys
-from threading import Barrier, Event, Lock
+from threading import Barrier, Event, Lock, get_ident
 import time
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -105,6 +106,16 @@ def test_windows_worker_current_pid_never_needs_a_signal_or_native_query(monkeyp
     monkeypatch.setattr(compute_jobs.os, "kill", unexpected_probe)
 
     assert compute_jobs._windows_worker_may_be_alive(os.getpid()) is True
+
+
+def test_windows_worker_out_of_range_pid_cannot_be_truncated_into_a_native_query(monkeypatch):
+    import ctypes
+
+    def unexpected_query(*_args, **_kwargs):
+        pytest.fail("An out-of-range PID must retain uncertain liveness without a query.")
+
+    monkeypatch.setattr(ctypes, "WinDLL", unexpected_query, raising=False)
+    assert compute_jobs._windows_worker_may_be_alive(0x1_0000_0000) is True
 
 
 @pytest.mark.parametrize("observed,may_be_alive", [("", True), ("", False), ("different-birth", None)])
@@ -1147,6 +1158,128 @@ def test_stale_starting_job_without_worker_identity_remains_fail_closed(
     assert manager._load_metadata(job_id)["state"] == "starting"
 
 
+@pytest.mark.parametrize("reader", ["manager", "scan", "worker_ownership"])
+def test_metadata_readers_wait_for_the_published_state_transition(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    reader: str,
+) -> None:
+    workspace, _config = _prepare_workspace(tmp_path, script_body=SUCCESS_SCRIPT)
+    manager = ComputeJobManager(workspace, tmp_path / "runtime")
+    job_id = "a" * 32
+    metadata_path = manager._metadata_path(job_id)
+    metadata = {
+        "schema_version": 1,
+        "job_id": job_id,
+        "workspace": str(workspace),
+        "workspace_device": manager.workspace_device,
+        "workspace_inode": manager.workspace_inode,
+        "state": "running",
+        "pid": os.getpid(),
+        "process_identity": compute_jobs._process_identity(os.getpid()),
+        "updated_at": compute_jobs._utc_now(),
+        "revision": 0,
+    }
+    compute_jobs._atomic_write_json(metadata_path, metadata)
+    writer_entered = Event()
+    release_writer = Event()
+    reader_attempted = Event()
+    reader_finished = Event()
+    reader_thread: list[int] = []
+    original_lock = compute_jobs._metadata_file_lock
+
+    @contextmanager
+    def observed_lock(path: Path, **kwargs):
+        if reader_thread == [get_ident()]:
+            reader_attempted.set()
+        with original_lock(path, **kwargs):
+            yield
+
+    monkeypatch.setattr(compute_jobs, "_metadata_file_lock", observed_lock)
+
+    def publish(current):
+        writer_entered.set()
+        assert release_writer.wait(5), "The reader did not reach the held transition."
+        current["message"] = "Published while the reader was waiting."
+        return current
+
+    def read():
+        reader_thread.append(get_ident())
+        try:
+            if reader == "manager":
+                return manager._load_metadata(job_id)
+            if reader == "scan":
+                record, = manager._all_metadata()
+                return record
+            return compute_jobs._wait_for_worker_ownership(metadata_path)
+        finally:
+            reader_finished.set()
+            reader_attempted.set()
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        writer = executor.submit(compute_jobs._update_metadata_file, metadata_path, publish)
+        assert writer_entered.wait(5)
+        pending_reader = executor.submit(read)
+        try:
+            assert reader_attempted.wait(5)
+            assert not reader_finished.is_set(), "A reader crossed an active metadata transition."
+        finally:
+            release_writer.set()
+        updated = writer.result(timeout=5)
+        observed = pending_reader.result(timeout=5)
+    assert observed == updated
+    assert observed["revision"] == 1
+    assert observed["message"] == "Published while the reader was waiting."
+
+
+@pytest.mark.parametrize("existing_job_directory", [False, True])
+def test_unknown_metadata_reads_do_not_create_job_directories_or_locks(
+    tmp_path: Path,
+    existing_job_directory: bool,
+) -> None:
+    workspace, _config = _prepare_workspace(tmp_path, script_body=SUCCESS_SCRIPT)
+    manager = ComputeJobManager(workspace, tmp_path / "runtime")
+    job_id = "b" * 32
+    metadata_path = manager._metadata_path(job_id)
+    if existing_job_directory:
+        metadata_path.parent.mkdir()
+    before = tuple(manager.jobs_root.rglob("*"))
+
+    with pytest.raises(ComputeJobError, match="Required regular JSON file is unavailable"):
+        manager._load_metadata(job_id)
+
+    assert tuple(manager.jobs_root.rglob("*")) == before
+    assert metadata_path.parent.exists() is existing_job_directory
+    assert not metadata_path.with_name("metadata.lock").exists()
+
+
+def test_metadata_read_access_denial_is_not_retried_or_silently_skipped(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workspace, _config = _prepare_workspace(tmp_path, script_body=SUCCESS_SCRIPT)
+    manager = ComputeJobManager(workspace, tmp_path / "runtime")
+    job_id = "c" * 32
+    metadata_path = manager._metadata_path(job_id)
+    compute_jobs._atomic_write_json(metadata_path, {})
+    denied = PermissionError(errno.EACCES, "Access denied", str(metadata_path))
+    denied.winerror = 5
+    original_read = Path.read_text
+    calls = []
+
+    def deny_metadata(path: Path, *args, **kwargs):
+        if path == metadata_path:
+            calls.append(path)
+            raise denied
+        return original_read(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", deny_metadata)
+    with pytest.raises(ComputeJobError, match="Invalid JSON file") as observed:
+        manager._load_metadata(job_id)
+    assert observed.value.__cause__ is denied
+    assert calls == [metadata_path]
+
+
 def test_corrupt_job_metadata_is_never_silently_skipped(tmp_path: Path) -> None:
     workspace, _config = _prepare_workspace(tmp_path, script_body=SUCCESS_SCRIPT)
     manager = ComputeJobManager(workspace, tmp_path / "runtime")
@@ -2033,3 +2166,79 @@ def test_windows_approved_read_retains_each_apis_change_and_birth_guard(
         compute_jobs._stable_regular_file_bytes(path, maximum_bytes=4096, label="Approved entrypoint")
 
     assert path.read_bytes() == payload
+
+
+@pytest.mark.parametrize("change_at", [None, "handle", "path"])
+def test_windows_reader_uses_one_native_change_token_for_paths_and_handles(
+    tmp_path, monkeypatch, change_at,
+):
+    path = tmp_path / "approved.py"
+    payload = b"print('exact approved bytes')\r\n"
+    path.write_bytes(payload)
+    native_fstat = os.fstat
+    module_os = SimpleNamespace(**vars(os))
+    module_os.name = "nt"
+
+    def mismatched_legacy_ctime(descriptor):
+        metadata = native_fstat(descriptor)
+        fields = {
+            name: getattr(metadata, name)
+            for name in ("st_dev", "st_ino", "st_mode", "st_nlink", "st_size", "st_mtime_ns")
+        }
+        return SimpleNamespace(**fields, st_ctime_ns=metadata.st_ctime_ns + 100)
+
+    module_os.fstat = mismatched_legacy_ctime
+    monkeypatch.setattr(compute_jobs, "os", module_os)
+    if change_at == "handle":
+        native_tokens = [10, 10, 11, 11]
+    elif change_at == "path":
+        native_tokens = [10, 10, 10, 11]
+    else:
+        native_tokens = [10] * 4
+    tokens = iter(native_tokens)
+    descriptors = []
+
+    def change_time(candidate, *, descriptor=None):
+        assert candidate == path
+        descriptors.append(descriptor)
+        return next(tokens)
+
+    monkeypatch.setattr(compute_jobs, "file_change_time", change_time)
+    if change_at is None:
+        content, digest = compute_jobs._stable_regular_file_bytes(
+            path, maximum_bytes=4096, label="Approved entrypoint",
+        )
+        assert content == payload
+        assert digest == hashlib.sha256(payload).hexdigest()
+    else:
+        with pytest.raises(ComputeJobError, match="changed while"):
+            compute_jobs._stable_regular_file_bytes(
+                path, maximum_bytes=4096, label="Approved entrypoint",
+            )
+    assert len(descriptors) == 4
+    assert descriptors[0] is descriptors[-1] is None
+    assert descriptors[1] == descriptors[2] and isinstance(descriptors[1], int)
+    assert path.read_bytes() == payload
+
+
+def test_windows_reader_refuses_unavailable_change_metadata_before_payload_read(
+    tmp_path, monkeypatch,
+):
+    path = tmp_path / "approved.py"
+    path.write_bytes(b"Private approved entrypoint")
+    module_os = SimpleNamespace(**vars(os))
+    module_os.name = "nt"
+    def forbidden_open(*_args, **_kwargs):
+        pytest.fail("Payload opened before native metadata verification")
+
+    module_os.open = forbidden_open
+    monkeypatch.setattr(compute_jobs, "os", module_os)
+
+    def denied(*_args, **_kwargs):
+        raise OSError("Native change metadata denied")
+
+    monkeypatch.setattr(compute_jobs, "file_change_time", denied)
+    with pytest.raises(ComputeJobError, match="change metadata.*verified safely"):
+        compute_jobs._stable_regular_file_bytes(
+            path, maximum_bytes=4096, label="Approved entrypoint",
+        )

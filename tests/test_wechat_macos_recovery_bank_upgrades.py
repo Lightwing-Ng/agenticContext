@@ -1,6 +1,6 @@
 """Monotone App-stub shadows retain source files, native identity and stable anchors.
 
-Code version: v1.0.2-codex.0
+Code version: v1.0.3-codex.0
 """
 
 from contextlib import closing
@@ -385,6 +385,65 @@ def test_published_shadow_fails_closed_when_its_original_catalog_changes(app_stu
                 connection, _file_identity(fixture.history), strict=True
             )
     assert fixture.fixture.bank_path.read_bytes() == bank_bytes
+
+
+@pytest.mark.parametrize("clock_delta", [0, 1])
+def test_authenticated_pat_recovers_only_the_exact_inert_catalog_event(
+    app_stubs, clock_delta,
+):
+    packet = deepcopy(app_stubs.packets[1])
+    message = packet["messages"][1]
+    original = app_stubs.originals[message["server_id"]]
+    message.pop("sender_proof")
+    message.update(
+        local_type=(62 << 32) | 49,
+        create_time=message["create_time"] + clock_delta,
+        sender_id="",
+        sender_label="System Message",
+        direction="unknown",
+        text="Native actor tickled native target",
+    )
+    message["native_text"] = {
+        "text": message["text"],
+        "text_extraction_kind": "system_text",
+        "original_message_type": 49,
+        "appmsg_subtype": 62,
+        "flags": ["system_notice"],
+        "system_message_subtype": "pat",
+        "system_source_ids": {
+            "patinfo/fromusername": MEMBER,
+            "patinfo/chatusername": packet["peer_id"],
+            "patinfo/pattedusername": OWNER,
+        },
+    }
+    packet["messages"] = [message]
+    source_bytes = app_stubs.catalog.read_bytes()
+    result = _publish(app_stubs, packets=[packet], name="catalog-pat")
+    row = next(
+        row for row in _detail(app_stubs, packet["session_id"])["messages"]
+        if row["id"] == original["id"]
+    )
+    assert result["added"] == 0
+    if clock_delta:
+        assert result["upgraded"] == 0 and result["conflicts"] == 1
+        assert row["text"] == "[App message]"
+    else:
+        assert result["upgraded"] == 1 and result["conflicts"] == 0
+        assert row["text"] == message["text"] and row["direction"] == "unknown"
+        assert json.loads(row["provenance"])["system_message_subtype"] == "pat"
+    assert app_stubs.catalog.read_bytes() == source_bytes
+
+
+def test_previous_writer_bank_remains_readable(app_stubs):
+    _publish(app_stubs)
+    with sqlite3.connect(app_stubs.fixture.bank_path) as connection:
+        connection.execute(
+            "UPDATE archive_info SET value='v1.4.2-codex.0' WHERE key='code_version'"
+        )
+        connection.commit()
+        assert bank._validate_bank(connection, app_stubs.history)["code_version"] == (
+            "v1.4.2-codex.0"
+        )
 
 
 def test_main_archive_app_placeholders_are_never_shadowed(app_stubs):

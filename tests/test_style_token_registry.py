@@ -1,6 +1,6 @@
 """Regression tests for the Settings → Style tokens registry.
 
-Code version: v1.11.4-codex.0
+Code version: v1.12.0-codex.0
 """
 
 import re
@@ -262,8 +262,19 @@ def test_style_tokens_route_renders_live_demos_and_settings_navigation(client) -
     assert "data-table-header" in html
     assert "data-table-scroll" in html
     assert "data-table-body" in html
-    assert "numeric-display-v1.1.0-codex.0" in html
-    assert "scrollable-data-table-v1.0.0-codex.0" in html
+    for asset in (
+        "numeric-display",
+        "scrollable-data-table",
+        "sidebar",
+        "segmented-control",
+    ):
+        source = client.get(f"/static/{asset}.js")
+        assert source.status_code == 200
+        asset_version = re.match(
+            r"/\* Code version: (v[\w.\-]+) \*/", source.get_data(as_text=True)
+        )
+        assert asset_version is not None
+        assert f"{asset}.js?v={asset}-{asset_version[1]}" in html
     assert 'data-style-token-card="style-token-color-and-status"' not in html
     assert 'data-style-token-card="style-token-layout-and-motion"' not in html
     assert 'data-style-token-card="style-token-product-components"' not in html
@@ -290,8 +301,6 @@ def test_style_tokens_route_renders_live_demos_and_settings_navigation(client) -
     assert 'href="#frosted-glass"' in html
     assert 'data-style-token-control' in html
     assert 'href="/settings/style-tokens"' in html
-    assert 'sidebar.js?v=sidebar-v1.31.0-codex.0' in html
-    assert 'segmented-control.js?v=segmented-control-v1.0.4-codex.1' in html
 
 
 def test_cache_summary_metrics_reuse_the_foundation_metric_contract(client) -> None:

@@ -1,4 +1,5 @@
-<!-- Code version: v1.114.10-codex.0 -->
+<!-- Code version: v1.118.5-codex.0 -->
+{% from "_wechat_display_name.html" import display_name as wechat_display_name %}
 <!doctype html>
 <html lang="en-US">
 <head>
@@ -8,25 +9,25 @@
     <link rel="icon" type="image/svg+xml" href="{{ url_for('static', filename='images/favicon.svg', v=version ~ '-favicon-v1.0.1-codex.1') }}">
     <script src="{{ url_for('static', filename='language-rendering.js', v='language-rendering-v1.0.0-codex.1') }}"></script>
     <script src="{{ url_for('static', filename='theme-mode.js', v='theme-mode-v1.0.0-codex.1') }}"></script>
-    <script defer src="{{ url_for('static', filename='segmented-control.js', v='segmented-control-v1.0.4-codex.1') }}"></script>
-    <link rel="stylesheet" href="{{ url_for('static', filename='style.css', v=version ~ '-style-v2.159.4-codex.0') }}">
+    <script defer src="{{ url_for('static', filename='segmented-control.js', v='segmented-control-v1.1.0-codex.0') }}"></script>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css', v=version ~ '-style-v2.162.0-codex.0') }}">
     {% include "_cache_activity_assets.html" %}
     <script defer src="{{ url_for('static', filename='numeric-display.js', v='numeric-display-v1.1.0-codex.0') }}"></script>
-    <script defer src="{{ url_for('static', filename='scrollable-data-table.js', v='scrollable-data-table-v1.0.0-codex.0') }}"></script>
-    <link rel="stylesheet" href="{{ url_for('static', filename='browser-search.css', v='browser-search-v1.4.5-claude.0') }}">
-    {# Restore optimistic navigation before the contact-return pagehide checkpoint runs. #}
-    <script defer src="{{ url_for('static', filename='waiting-modal.js', v='waiting-modal-v1.2.0-codex.0') }}"></script>
+    <script defer src="{{ url_for('static', filename='scrollable-data-table.js', v='scrollable-data-table-v1.0.3-codex.0') }}"></script>
+    <link rel="stylesheet" href="{{ url_for('static', filename='browser-search.css', v='browser-search-v1.4.6-codex.0') }}">
+    {# Clear local navigation state before the contact-return pagehide checkpoint runs. #}
+    <script defer src="{{ url_for('static', filename='waiting-modal.js', v='waiting-modal-v1.3.0-codex.0') }}"></script>
     <script defer src="{{ url_for('static', filename='browser-sidebar-filters.js', v='browser-sidebar-filters-v1.1.0-codex.0') }}"></script>
     {% if filters.view == 'text' and filters.source == 'wechat' %}
-    <link rel="stylesheet" href="{{ url_for('static', filename='wechat-kind-badge.css', v='wechat-kind-badge-v1.0.0-codex.0') }}">
-    <link rel="stylesheet" href="{{ url_for('static', filename='browser-messaging.css', v='browser-messaging-v1.23.0-codex.0') }}">
-    <link rel="stylesheet" href="{{ url_for('static', filename='wechat-exchange.css', v='wechat-exchange-v1.2.3-codex.0') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='wechat-kind-badge.css', v='wechat-kind-badge-v1.0.1-codex.0') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='browser-messaging.css', v='browser-messaging-v1.26.4-codex.0') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='wechat-exchange.css', v='wechat-exchange-v1.4.1-codex.0') }}">
     <script defer src="{{ url_for('static', filename='wechat-exchange.js', v='wechat-exchange-v1.2.2-codex.0') }}"></script>
-    <script defer src="{{ url_for('static', filename='wechat-refresh.js', v='wechat-refresh-v1.0.0-codex.0') }}"></script>
-    <script defer src="{{ url_for('static', filename='wechat-browser-read.js', v='wechat-browser-read-v1.1.1-codex.0') }}"></script>
+    <script defer src="{{ url_for('static', filename='wechat-refresh.js', v='wechat-refresh-v1.5.0-codex.0') }}"></script>
+    <script defer src="{{ url_for('static', filename='wechat-browser-read.js', v='wechat-browser-read-v1.2.1-codex.0') }}"></script>
     <script defer src="{{ url_for('static', filename='wechat-contact-navigation.js', v='wechat-contact-navigation-v1.1.2-codex.0') }}"></script>
-    <script defer src="{{ url_for('static', filename='disclosure-motion.js', v='disclosure-motion-v1.1.0-codex.0') }}"></script>
-    <script defer src="{{ url_for('static', filename='browser-messaging.js', v='browser-messaging-v1.14.0-codex.0') }}"></script>
+    <script defer src="{{ url_for('static', filename='disclosure-motion.js', v='disclosure-motion-v1.2.0-codex.0') }}"></script>
+    <script defer src="{{ url_for('static', filename='browser-messaging.js', v='browser-messaging-v1.19.1-codex.0') }}"></script>
     {% endif %}
     <script src="{{ url_for('static', filename='responsive.js', v='responsive-v1.0.0-codex.1') }}"></script>
     <script defer src="{{ url_for('static', filename='notice-banner.js', v='notice-banner-v0.1.0-codex.1') }}"></script>
@@ -34,10 +35,10 @@
     <script defer src="{{ url_for('static', filename='local-media-browser.js', v='local-media-browser-v1.45.1-codex.0') }}"></script>
     <script defer src="{{ url_for('static', filename='browser-session-messages.js', v='browser-session-messages-v1.0.1-codex.1') }}"></script>
     <script defer src="{{ url_for('static', filename='browser-chat-ruler.js', v='browser-chat-ruler-v1.1.0-codex.0') }}"></script>
-    <script defer src="{{ url_for('static', filename='browser-chat-effects.js', v='browser-chat-effects-v1.3.0-codex.0') }}"></script>
-    <script type="module" src="{{ url_for('static', filename='browser-search.js', v='browser-search-v2.2.1-codex.1') }}"></script>
+    <script defer src="{{ url_for('static', filename='browser-chat-effects.js', v='browser-chat-effects-v1.3.2-codex.0') }}"></script>
+    <script type="module" src="{{ url_for('static', filename='browser-search.js', v='browser-search-v2.2.2-codex.0') }}"></script>
     <script defer src="{{ url_for('static', filename='select-controller.js', v='select-controller-v1.0.1') }}"></script>
-    <script defer src="{{ url_for('static', filename='browser-source-filter.js', v='browser-source-filter-v1.6.1-codex.0') }}"></script>
+    <script defer src="{{ url_for('static', filename='browser-source-filter.js', v='browser-source-filter-v1.6.2-codex.0') }}"></script>
     <script defer src="{{ url_for('static', filename='browser-filter-select.js', v='browser-filter-select-v1.2.0-codex.1') }}"></script>
     <script defer src="{{ url_for('static', filename='browser-session-actions.js', v='browser-session-actions-v1.2.0-codex.0') }}"></script>
 </head>
@@ -49,6 +50,7 @@
 {% set is_wechat_text = filters.view == "text" and filters.source == "wechat" %}
 {% set wechat_read_loading = is_wechat_text and wechat_read_job and wechat_read_job.state != "failed" and wechat_read_job.status_url %}
 {% set is_text_session_shell = filters.view == "text" and (text_page.session_detail or (is_wechat_text and wechat_read_job and filters.session)) %}
+{% set wechat_account_refresh_id = wechat_account_refresh_id|default('') %}
 {% set no_project_filter = "__no_project__" %}
 {% set is_no_project = filters.project == no_project_filter %}
 {% set project_search_copy = "Press Enter to search chats without a project." if is_no_project else ("Press Enter to search this project." if filters.project else "Press Enter to search all cached text.") %}
@@ -145,7 +147,7 @@
                     <div class="report-heading-row browser-heading-row" data-layout-role="title-heading">
                         <div class="browser-heading-copy">
                             {% if filters.view == "text" and text_page.session_detail %}
-                            <h2 class="report-heading" lang="zh-CN">{{ text_page.current_session.conversation_title }}</h2>
+                            <h2 class="report-heading" lang="zh-CN">{{ wechat_display_name(text_page.current_session.conversation_title) if is_wechat_text else text_page.current_session.conversation_title }}</h2>
                             {% elif is_wechat_text %}
                             <h2 class="report-heading">{{ "WeChat conversation" if is_text_session_shell else "WeChat conversations" }}</h2>
                             {% elif is_zhihu_text %}
@@ -258,13 +260,66 @@
                             {% elif wechat_read_loading and not is_text_session_shell and filters.account %}
                             <span class="wechat-exchange-import-button" aria-hidden="true" data-wechat-read-placeholder></span>
                             {% endif %}
+                            {% if is_wechat_text and not is_text_session_shell and wechat_account_refresh_id %}
+                            <button
+                                type="button"
+                                class="circular-icon-button global-quick-action-button browser-session-refresh-button wechat-account-refresh"
+                                aria-label="Refresh WeChat account"
+                                title="{{ 'Refresh WeChat account' if wechat_account_refresh_available else 'Refresh requires verified local WeChat keys' }}"
+                                data-wechat-account-refresh
+                                data-wechat-account-id="{{ wechat_account_refresh_id }}"
+                                data-wechat-refresh-url="{{ url_for('local_resources.browser_wechat_account_refresh') }}"
+                                {% if not wechat_account_refresh_available %}disabled{% endif %}
+                            ><span class="icon wechat-refresh-icon" aria-hidden="true"></span></button>
+                            {% endif %}
+                            {% if is_wechat_text and is_text_session_shell and (not wechat_read_job or wechat_read_loading) %}
+                            {% if not wechat_read_job and wechat_refresh_available|default(false) %}
+                            <button
+                                type="button"
+                                class="circular-icon-button global-quick-action-button browser-session-refresh-button wechat-conversation-refresh"
+                                data-wechat-conversation-refresh
+                                data-wechat-refresh-url="{{ url_for('local_resources.browser_wechat_refresh') }}"
+                                data-wechat-session-id="{{ text_page.current_session.stable_id }}"
+                                {% if not filters.q and ('page' not in request.args or text_page.current_page == text_page.total_pages) %}
+                                data-wechat-refresh-follow-page-size="{{ text_page.page_size }}"
+                                {% endif %}
+                                aria-label="Refresh chat history"
+                                title="Refresh chat history"
+                            ><span class="icon wechat-refresh-icon" aria-hidden="true"></span></button>
+                            {% else %}
+                            <span class="wechat-conversation-refresh" aria-hidden="true"{% if wechat_read_loading %} data-wechat-read-placeholder{% endif %}></span>
+                            {% endif %}
+                            {% endif %}
+                            {% if is_wechat_text and is_text_session_shell %}
+                            <div class="wechat-session-search-actions">
+                            {% endif %}
+                            {% if is_wechat_text and is_text_session_shell and wechat_read_loading %}
+                            <span class="wechat-exchange-actions" aria-hidden="true" data-wechat-read-placeholder></span>
+                            {% elif is_wechat_text and is_text_session_shell and not wechat_read_job %}
+                            {% include "_wechat_exchange_actions.html" %}
+                            {% endif %}
                             <div class="field browser-filter-field browser-search-field" data-browser-search>
+                                {% if is_text_session_shell %}
+                                <form id="browser_search_scope_form" action="{{ url_for('local_resources.browser') }}" method="get" hidden>
+                                    {% set scope_fields = {
+                                        'view': 'text', 'source': filters.source,
+                                        'project': filters.project,
+                                        'answerer': ('' if is_zhihu_text else filters.answerer),
+                                        'account': filters.account, 'chat_kind': filters.chat_kind,
+                                        'q': filters.q, 'sort': filters.sort,
+                                        'session_view': ('1' if is_zhihu_text else '0')
+                                    } %}
+                                    {% for name, value in scope_fields.items() %}
+                                    <input type="hidden" name="{{ name }}" value="{{ value }}">
+                                    {% endfor %}
+                                </form>
+                                {% endif %}
                                 <div class="browser-search-control">
                                     <span class="icon browser-search-icon" aria-hidden="true"></span>
                                     {% if is_text_session_shell %}
                                     <span class="browser-prompt-tag browser-search-session-tag" data-browser-session-tag>
                                         <span>{{ text_page.current_session.latest_author_label if is_zhihu_text else "This session" }}</span>
-                                        <button type="button" class="browser-prompt-tag-remove" data-browser-session-scope-remove aria-label="{{ 'Search all cached Zhihu answers' if is_zhihu_text else ('Search chats without a project' if is_no_project else ('Search this project' if filters.project else 'Search all cached text')) }}" title="{{ 'Remove answerer scope' if is_zhihu_text else 'Remove session filter' }}">×</button>
+                                        <button type="submit" form="browser_search_scope_form" class="browser-prompt-tag-remove" data-browser-session-scope-remove aria-label="{{ 'Search all cached Zhihu answers' if is_zhihu_text else ('Search chats without a project' if is_no_project else ('Search this project' if filters.project else 'Search all cached text')) }}" title="{{ 'Remove answerer scope' if is_zhihu_text else 'Remove session filter' }}">×</button>
                                     </span>
                                     {% endif %}
                                     <input
@@ -300,31 +355,12 @@
                                     ></div>
                                 </div>
                             </div>
-                            {% if is_wechat_text and is_text_session_shell and (not wechat_read_job or wechat_read_loading) %}
-                            {% if not wechat_read_job and wechat_refresh_available|default(false) %}
-                            <button
-                                type="button"
-                                class="circular-icon-button global-quick-action-button browser-session-refresh-button wechat-conversation-refresh"
-                                data-wechat-conversation-refresh
-                                data-wechat-refresh-url="{{ url_for('local_resources.browser_wechat_refresh') }}"
-                                data-wechat-session-id="{{ text_page.current_session.stable_id }}"
-                                aria-label="Refresh chat history"
-                                title="Refresh chat history"
-                            ><span class="icon wechat-conversation-refresh-icon" aria-hidden="true"></span></button>
-                            {% else %}
-                            <span class="wechat-conversation-refresh" aria-hidden="true"{% if wechat_read_loading %} data-wechat-read-placeholder{% endif %}></span>
-                            {% endif %}
-                            {% if wechat_read_loading %}
-                            <span class="wechat-exchange-actions" aria-hidden="true" data-wechat-read-placeholder></span>
-                            {% else %}
-                            {% include "_wechat_exchange_actions.html" %}
-                            {% endif %}
-                            {% endif %}
+                            {% if is_wechat_text and is_text_session_shell %}</div>{% endif %}
                         </div>
                     </div>
                     {% if filters.view == "media" %}
                     <div
-                        class="metric-grid browser-metric-grid{% if is_session_index or media_page.pagination_unit == 'session' %} browser-session-metric-grid{% endif %}"
+                        class="metric-grid browser-metric-grid{% if is_session_index or media_page.pagination_unit == 'session' %} browser-session-metric-grid{% endif %}" data-layout-role="content-grid"
                         aria-label="{{ 'ChatGPT session metrics' if is_session_index or media_page.pagination_unit == 'session' else 'Cached media totals' }}"
                     >
                         {% if is_session_index %}
@@ -365,7 +401,7 @@
                         {% endif %}
                     </div>
                     {% elif filters.view == "prompts" %}
-                    <div class="metric-grid browser-metric-grid browser-text-metric-grid" aria-label="Saved prompt totals">
+                    <div class="metric-grid browser-metric-grid browser-text-metric-grid" data-layout-role="content-grid" aria-label="Saved prompt totals">
                         <div class="metric-card foundation-metric-card metric-card-accent">
                             <span class="metric-label">Saved prompts</span>
                             <strong data-prompt-total data-numeric-display-value="{{ '{:,}'.format(prompt_page.total_count) }}">{{ "{:,}".format(prompt_page.total_count) }}</strong>
@@ -377,7 +413,7 @@
                     </div>
                     {% else %}
                     {% if not wechat_read_preview and (not wechat_read_job or wechat_read_loading) %}
-                    <div class="metric-grid browser-metric-grid browser-text-metric-grid{% if is_zhihu_text %} browser-zhihu-metric-grid{% endif %}"{% if wechat_read_loading %} data-wechat-read-placeholder aria-hidden="true"{% else %} aria-label="{{ 'Zhihu answerer totals' if is_zhihu_text and text_page.session_detail else ('Zhihu answer totals' if is_zhihu_text else 'Cached text totals') }}"{% endif %}>
+                    <div class="metric-grid browser-metric-grid browser-text-metric-grid{% if is_zhihu_text %} browser-zhihu-metric-grid{% endif %}" data-layout-role="content-grid"{% if wechat_read_loading %} data-wechat-read-placeholder aria-hidden="true"{% else %} aria-label="{{ 'Zhihu answerer totals' if is_zhihu_text and text_page.session_detail else ('Zhihu answer totals' if is_zhihu_text else 'Cached text totals') }}"{% endif %}>
                         {% if is_zhihu_text %}
                         <div class="metric-card foundation-metric-card metric-card-accent{% if text_page.session_detail %} browser-zhihu-answerer-metric{% endif %}">
                             <span class="metric-label">{{ "Answerer" if text_page.session_detail else "Answerers" }}</span>
@@ -398,7 +434,8 @@
                             {% if wechat_read_loading %}
                             <strong><span class="navigation-skeleton-line wechat-read-line wechat-read-metric"></span></strong>
                             {% else %}
-                            <strong>{{ '{:,}'.format(metric_values[loop.index0]) }}</strong>
+                            {% set display_value = '{:,}'.format(metric_values[loop.index0]) %}
+                            <strong data-numeric-display-value="{{ display_value }}">{{ display_value }}</strong>
                             {% endif %}
                         </div>
                         {% endfor %}
@@ -418,8 +455,8 @@
                         {% endif %}
                     </div>
                     {% endif %}
-                    {% endif %}
 
+                    {% endif %}
                     {% if filters.view == "media" and (media_page.items or is_session_index) %}
                     <div class="browser-result-summary{% if is_session_index or media_page.pagination_unit == 'session' %} browser-session-controls-row{% endif %}" aria-live="polite">
                         {% if is_session_index or media_page.pagination_unit == "session" %}
@@ -560,7 +597,7 @@
                     {% endif %}
                     {% if is_session_index and not is_all_media %}
                     <div
-                        class="browser-gallery browser-session-gallery"
+                        class="browser-gallery browser-session-gallery" data-layout-role="content-grid"
                         data-view="grid"
                         data-gallery-grid-label="ChatGPT sessions gallery"
                         data-gallery-list-label="ChatGPT sessions list"
@@ -614,7 +651,7 @@
                         {% endfor %}
                     </div>
                     {% elif filters.view == "media" %}
-                    <div class="browser-gallery" data-view="{{ 'all' if is_all_media else 'grid' }}" aria-label="{{ 'All ChatGPT media' if is_all_media else 'Cached media gallery' }}">
+                    <div class="browser-gallery" data-layout-role="content-grid" data-view="{{ 'all' if is_all_media else 'grid' }}" aria-label="{{ 'All ChatGPT media' if is_all_media else 'Cached media gallery' }}">
                         {% for item in media_page.items %}
                         <article
                             class="browser-media-card workspace-article-card{% if item.is_deleted %} is-deleted{% endif %}"
@@ -644,6 +681,7 @@
                                     class="browser-preview-media"
                                     data-preview
                                     data-media-src="{{ url_for('local_resources.browser_deleted_preview', stable_id=item.stable_id) if item.is_deleted else browser_media_url(item.relative_path) }}"
+                                    {% if item.width and item.height %}width="{{ item.width }}" height="{{ item.height }}"{% endif %}
                                     alt="{{ item.alt_text or item.title }}"
                                     loading="lazy"
                                     decoding="async"
@@ -783,7 +821,7 @@
                                 <tbody>
                                     {% for prompt in prompt_page.items %}
                                     <tr data-prompt-id="{{ prompt.stable_id }}" data-prompt-text-key="{{ prompt.text_key }}">
-                                        <td class="browser-session-table-number">{{ ((prompt_page.current_page - 1) * prompt_page.page_size) + loop.index }}</td>
+                                        <td class="browser-session-table-number">{{ '{:,}'.format(((prompt_page.current_page - 1) * prompt_page.page_size) + loop.index) }}</td>
                                         <td class="browser-prompt-table-prompt-cell">
                                             <button
                                                 type="button"
@@ -992,7 +1030,7 @@
                                         {% endfor %}
                                     {% endif %}
                                     <tr {% if text_page.session_detail %}data-chat-session-id="{{ text_page.current_session.stable_id }}" {% endif %}data-chat-message-id="{{ message.stable_id }}">
-                                        <td class="browser-session-table-number">{{ ((text_page.current_page - 1) * text_page.page_size) + loop.index }}</td>
+                                        <td class="browser-session-table-number">{{ '{:,}'.format(((text_page.current_page - 1) * text_page.page_size) + loop.index) }}</td>
                                         <td>{{ render_browser_message_time(message.last_seen_at) }}</td>
                                         <td class="browser-session-table-role">
                                             {% if is_zhihu_text %}
@@ -1089,6 +1127,7 @@
                                 type="button"
                                 class="trade-strategy-select form-select trade-strategy-trigger browser-source-filter-trigger scrollable-data-table-filter-trigger"
                                     data-browser-source-filter-trigger
+                                    disabled
                                     aria-haspopup="listbox"
                                     aria-expanded="false"
                                     aria-controls="browser_header_source_filter_options"
@@ -1151,7 +1190,7 @@
                                 <tbody>
                                     {% for session in text_page.sessions %}
                                     <tr data-chat-session-id="{{ session.stable_id }}">
-                                        <td class="browser-session-table-number">{{ ((text_page.current_page - 1) * text_page.page_size) + loop.index }}</td>
+                                        <td class="browser-session-table-number">{{ '{:,}'.format(((text_page.current_page - 1) * text_page.page_size) + loop.index) }}</td>
                                         <td>
                                             <a class="browser-session-table-title" lang="zh-CN" href="{{ url_for('local_resources.browser', view='text', source=filters.source, project=filters.project, answerer=('' if is_zhihu_text else filters.answerer), q='', sort=filters.sort, session_view='1', session=session.stable_id, session_page=filters.page, page=1) }}">{{ session.conversation_title }}</a>
                                             {% if not is_zhihu_text %}
@@ -1277,7 +1316,7 @@
                     {% if (wechat_read_loading and not wechat_read_preview) or (is_wechat_text and not wechat_read_job and (text_page.session_detail or text_page.sessions) and not text_page.pagination_items) %}
                     <div class="browser-pagination wechat-read-pagination" aria-hidden="true"{% if wechat_read_loading %} data-wechat-read-placeholder{% endif %}>
                         {% if wechat_read_loading %}
-                        {% for _ in range(4) %}<span class="navigation-skeleton-line wechat-read-line"></span>{% endfor %}
+                        {% for _ in range(4) %}<span class="navigation-skeleton-line local-store-page-placeholder"></span>{% endfor %}
                         {% endif %}
                     </div>
                     {% elif filters.view == "text" and (not wechat_read_job or wechat_read_preview) %}
@@ -1321,7 +1360,7 @@
 ) %}{% endcall %}
 {% endif %}
 
-{% if is_wechat_text and text_page.session_detail %}
+{% if is_wechat_text and (text_page.session_detail or (not is_text_session_shell and wechat_account_refresh_id)) %}
 {% call render_notice_banner(
     icon_class="browser-session-refresh-banner-icon",
     banner_class="notice-floating-banner-global browser-session-refresh-banner",
@@ -1357,9 +1396,9 @@
     </div>
 </dialog>
 
-{% if is_wechat_text and not wechat_read_job %}{% include "_wechat_exchange_import.html" %}{% endif %}
+{% if is_wechat_text %}{% include "_wechat_exchange_import.html" %}{% endif %}
 {% include "_waiting_modal.html" %}
 <script type="application/json" id="browser_media_data">{{ media_payload|tojson }}</script>
-<script src="{{ url_for('static', filename='sidebar.js', v='sidebar-v1.31.0-codex.0') }}"></script>
+<script src="{{ url_for('static', filename='sidebar.js', v='sidebar-v1.31.1-codex.0') }}"></script>
 </body>
 </html>

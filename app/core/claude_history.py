@@ -1,6 +1,6 @@
 """Browser-rendered Claude history collection and local persistence.
 
-Code version: v1.4.1-codex.0
+Code version: v1.5.0-codex.0
 """
 
 from __future__ import annotations
@@ -36,8 +36,8 @@ from .resource_persistence import (
     CLAUDE_HISTORY_FILENAME,
     CLAUDE_HISTORY_SCHEMA,
     CLAUDE_HISTORY_SCHEMA_VERSION,
-    read_parquet_rows,
-    write_parquet_rows_atomic,
+    read_resource_rows,
+    write_resource_rows_atomic,
 )
 from .safari_automation import SafariContext
 from .state import TaskSnapshot, TaskState
@@ -121,7 +121,7 @@ def _raise_if_claude_security_verification(page: Any) -> None:
 
 
 def claude_history_path(local_store_root: Path | str = LOCAL_STORE_ROOT) -> Path:
-    """Return the typed Parquet file used for Claude chat history."""
+    """Return the typed history store used for Claude chat history."""
 
     return Path(local_store_root).expanduser() / CLAUDE_HISTORY_RELATIVE_DIR / CLAUDE_HISTORY_FILENAME
 
@@ -757,13 +757,13 @@ def load_claude_conversation_messages(
 
 
 class ClaudeHistoryStore:
-    """Merge complete Claude sessions into one atomically persisted Parquet file."""
+    """Merge complete Claude sessions into one transactional history store."""
 
     def __init__(self, path: Path | str) -> None:
         self.path = Path(path)
-        rows = read_parquet_rows(self.path)
-        if self.path.exists() and rows is None:
-            raise RuntimeError(f"Claude history Parquet is unreadable: {self.path}")
+        rows = read_resource_rows(self.path)
+        if (self.path.exists() or self.path.with_suffix(".parquet").exists()) and rows is None:
+            raise RuntimeError(f"Claude history store is unreadable: {self.path}")
         self._rows: dict[str, dict[str, Any]] = {
             str(row.get("message_key")): dict(row)
             for row in rows or []
@@ -867,14 +867,14 @@ class ClaudeHistoryStore:
     def save(self) -> None:
         """Persist all cached messages with schema verification and atomic replacement."""
 
-        write_parquet_rows_atomic(self.path, self.rows, CLAUDE_HISTORY_SCHEMA)
+        write_resource_rows_atomic(self.path, self.rows, CLAUDE_HISTORY_SCHEMA)
 
 
 def build_claude_initial_snapshot(
     version: str,
     local_store_root: Path | str = LOCAL_STORE_ROOT,
 ) -> TaskSnapshot:
-    """Hydrate an idle Claude snapshot from the local Parquet cache."""
+    """Hydrate an idle Claude snapshot from the local history cache."""
 
     history_path = claude_history_path(local_store_root)
     store = ClaudeHistoryStore(history_path)
@@ -923,7 +923,7 @@ def sync_claude_history(
     should_stop: Callable[[], bool],
     local_store_root: Path | str = LOCAL_STORE_ROOT,
 ) -> dict[str, Any]:
-    """Cache all browser-rendered Claude conversations into local Parquet."""
+    """Cache all browser-rendered Claude conversations into local SQLite."""
 
     descriptor = browser_descriptors(config).get(config.claude_browser)
     if descriptor is None:

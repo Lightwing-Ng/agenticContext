@@ -1,6 +1,6 @@
 """Exercise the review capability and temporary-file HTTP boundary.
 
-Code version: v1.0.0-codex.0
+Code version: v1.0.1-codex.0
 """
 
 from __future__ import annotations
@@ -12,13 +12,14 @@ import sys
 import threading
 import time
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import pytest
 
 from app.core.config import CrawlConfig
 from app.web.app import create_app
 from app.web.config_store import SavedConfigStore
+from app.web.wechat_read_routes import WECHAT_SUMMARY_EXTENSION
 
 
 @pytest.fixture
@@ -98,16 +99,20 @@ def _preview(client, value=b"valid exchange", filename="friend.wechatx"):
 
 def test_preview_does_not_import_and_one_use_token_commits(exchange_client):
     client, calls, files, _ = exchange_client
+    summary = Mock()
+    client.application.extensions[WECHAT_SUMMARY_EXTENSION] = summary
     preview = _preview(client, filename="../../untrusted.wechatx")
     assert preview.status_code == 200
     payload = preview.get_json()
     assert payload["counts"]["accounts"] == 2 and payload["added_messages"] == 5
     assert [call[0] for call in calls] == ["preview"]
+    summary.wake.assert_not_called()
     assert files[0].name == "package.wechatx" and files[0].is_file()
     result = client.post(
         "/api/browser/wechat/exchange/import", json={"token": payload["token"]}
     )
     assert result.status_code == 200 and result.get_json()["status"] == "imported"
+    summary.wake.assert_called_once_with()
     assert [call[0] for call in calls] == ["preview", "import"]
     assert not files[0].exists()
     assert (

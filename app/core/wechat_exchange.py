@@ -1,6 +1,6 @@
 """Exchange bounded, source-scoped WeChat records without executing package content.
 
-Code version: v1.0.0-codex.0
+Code version: v1.0.1-codex.0
 """
 
 from __future__ import annotations
@@ -746,8 +746,10 @@ def _full_presentations(collector, local_store_root, family, expected_ids):
     for session in family:
         number = 1
         while True:
-            page = query_wechat_history(local_store_root, session=session, page=number, page_size=100,
-                                        persist_event_cache=False)
+            page = query_wechat_history(
+                local_store_root, session=session, page=number, page_size=100,
+                persist_event_cache=False, include_membership_history=False,
+            )
             if not page.current_session:
                 raise ValueError("A presentation conversation changed during export.")
             for item in page.items:

@@ -1,6 +1,6 @@
 """Retain source occurrences while projecting proven same-session text events.
 
-Code version: v1.9.0-codex.0
+Code version: v1.8.4-codex.0
 """
 
 from __future__ import annotations
@@ -20,10 +20,12 @@ import tempfile
 from threading import RLock
 import zlib
 
+
 from .wechat_contacts import WechatContactRepository, canonical_contact_id
 from .wechat_conversation_quotes import VERSION as _QUOTE_VERSION
 from .wechat_conversation_sequence import VERSION as _SEQUENCE_VERSION
 from .wechat_incomplete_quotes import VERSION as _INCOMPLETE_QUOTE_VERSION
+from .wechat_native_server_events import VERSION as _NATIVE_SERVER_VERSION
 from .wechat_reviewed_quote_events import (
     VERSION as _REVIEWED_QUOTE_VERSION,
     bridge_reviewed_quotes,
@@ -36,8 +38,7 @@ from .wechat_source_precedence import (
 )
 
 
-# The proof schema is unchanged by the exact-byte transport repair.
-VERSION = "v1.6.2-codex.0"
+VERSION = "v1.7.0-codex.0"
 COMPATIBLE_PROOF_VERSIONS = frozenset(
     {
         "v1.0.3-codex.0",
@@ -49,6 +50,7 @@ COMPATIBLE_PROOF_VERSIONS = frozenset(
         "v1.5.0-codex.0",
         "v1.6.0-codex.0",
         "v1.6.1-codex.0",
+        "v1.6.2-codex.0",
         VERSION,
     }
 )
@@ -208,11 +210,17 @@ def _inputs(repository, history_identity=None):
                 "mtime_ns": value.st_mtime_ns,
             }
         result[str(bank.resolve())] = bank_identity
-    from .wechat_resource_details import detail_input_identities
     from .wechat_secondary_completions import completion_input_identities
 
     result.update(completion_input_identities(history))
+    from .wechat_resource_details import detail_input_identities
+
     result.update(detail_input_identities(history))
+    from .wechat_archive_relocation import FILENAME, receipt_identity
+
+    relocation = receipt_identity(history)
+    if relocation is not None:
+        result[str(history.with_name(FILENAME))] = relocation
     review_root = history.parent.parent.parent
     review_digest = reviewed_quotes_digest(review_root)
     review_path = reviewed_quotes_path(review_root)
@@ -229,6 +237,7 @@ def _fingerprint(inputs):
             _QUOTE_VERSION,
             _SEQUENCE_VERSION,
             _INCOMPLETE_QUOTE_VERSION,
+            _NATIVE_SERVER_VERSION,
             _REVIEWED_QUOTE_VERSION,
             _SOURCE_PRECEDENCE_VERSION,
             inputs,
@@ -962,8 +971,22 @@ def conversation_events(
                 return {**cached, "status": "ready"}
             if count > MAX_ROWS:
                 return _empty("bounded", count)
-            candidates = _scan(repository, connection, session, current, message_table)
-            mapping, members = _group(candidates, current) if candidates else ({}, {})
+            if current.get("partition_id", "").startswith("ios-"):
+                from .wechat_native_server_events import project_native_server_events
+
+                candidates = []
+                mapping, members = project_native_server_events(
+                    connection,
+                    session,
+                    current,
+                    message_table,
+                    wall_clock=_wall_clock,
+                    max_rows=MAX_ROWS,
+                    max_source_bytes=MAX_SOURCE_BYTES,
+                )
+            else:
+                candidates = _scan(repository, connection, session, current, message_table)
+                mapping, members = _group(candidates, current) if candidates else ({}, {})
             if candidates:
                 mapping, members = bridge_reviewed_quotes(
                     repository,
@@ -1000,8 +1023,8 @@ def conversation_events(
             )
             temporary = Path(name)
             try:
-                with os.fdopen(descriptor, "wb") as stream:
-                    stream.write(encoded.encode("utf-8"))
+                with os.fdopen(descriptor, "w") as stream:
+                    stream.write(encoded)
                 if _inputs(repository, history_identity) != inputs:
                     raise ValueError(
                         "The conversation source changed before publication."

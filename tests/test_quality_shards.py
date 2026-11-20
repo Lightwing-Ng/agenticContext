@@ -1,6 +1,6 @@
 """Prove complete test partitions and fail-closed branch-coverage aggregation.
 
-Code version: v1.1.1-codex.0
+Code version: v1.2.0-codex.0
 """
 
 from __future__ import annotations
@@ -9,6 +9,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import subprocess
 import sys
 
@@ -24,6 +25,28 @@ ARGUMENTS = ["-q", "-p", "no:cacheprovider", "-m", "not live", "--cov=app", "--c
 MODULE_ARCS = {(-1, 1), (1, -1)}
 TRUE_ARCS = MODULE_ARCS | {(-1, 2), (2, 3), (3, -1)}
 FALSE_ARCS = MODULE_ARCS | {(-1, 2), (2, 4), (4, -1)}
+
+
+@pytest.mark.parametrize("job,consumer_steps", [
+    ("check-shards", ["Run the quality gate"]),
+    ("check-windows-shards", [
+        "Verify the first Windows browser boundary", "Run the quality gate",
+    ]),
+])
+def test_ci_browser_install_and_consumers_share_a_home_independent_cache(job, consumer_steps):
+    """The isolated test HOME must not redirect an installed browser into a missing cache."""
+    workflow = (ROOT / ".github/workflows/quality.yml").read_text(encoding="utf-8")
+    jobs = dict(re.findall(
+        r"(?ms)^  ([\w-]+):\n(.*?)(?=^  [\w-]+:\n|\Z)", workflow,
+    ))
+    steps = dict(re.findall(
+        r"(?ms)^      - name: ([^\n]+)\n(.*?)(?=^      - name: |\Z)", jobs[job],
+    ))
+    for name in ["Install Playwright Chromium", *consumer_steps]:
+        environment = re.search(r"(?m)^        env:\n((?:          [^\n]*\n)+)", steps[name])
+        assert environment is not None, f"{job}/{name} does not pin the browser cache"
+        values = dict(re.findall(r"(?m)^          ([A-Z_]+): ([^\n]+)$", environment[1]))
+        assert values.get("PLAYWRIGHT_BROWSERS_PATH") == "${{ runner.temp }}/ms-playwright", name
 
 
 @pytest.fixture
@@ -46,6 +69,19 @@ def project(tmp_path):
 
 def _write_manifest(bundle, manifest):
     (bundle / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+
+
+def _policy(project, *, path="app/probe.py", lines=70, branches=50):
+    policy = project / "synthetic-coverage-policy.json"
+    policy.write_text(json.dumps({
+        "groups": [{
+            "name": "Synthetic critical path",
+            "paths": [path],
+            "minimum_line_percent": lines,
+            "minimum_branch_percent": branches,
+        }],
+    }), encoding="utf-8")
+    return policy
 
 
 def _bundles(project, arcs=None):
@@ -211,7 +247,7 @@ def test_global_threshold_uses_combined_branch_arcs_not_partial_percentages(proj
     monkeypatch.chdir(project)
     for key, value in CONTEXT.items():
         monkeypatch.setenv(key, value)
-    assert shards.aggregate(project, artifacts, 55, "success") == expected
+    assert shards.aggregate(project, artifacts, 55, "success", policy_path=_policy(project)) == expected
     data = CoverageData(basename=str(project / "test-results/.coverage"))
     data.read()
     measured = data.measured_files()
@@ -225,6 +261,23 @@ def test_global_threshold_uses_combined_branch_arcs_not_partial_percentages(proj
     assert (report["totals"]["percent_covered"] >= 55) == covered
     with pytest.raises(ValueError, match="Every quality-shard job"):
         shards.aggregate(project, artifacts, 55, "failure")
+
+
+@pytest.mark.parametrize("condition", ["under_floor", "missing_path", "missing_policy"])
+def test_global_pass_cannot_bypass_the_critical_coverage_policy(project, monkeypatch, condition):
+    """A complete successful shard set still needs the required critical-path evidence."""
+    artifacts = _bundles(project, TRUE_ARCS)
+    monkeypatch.chdir(project)
+    for key, value in CONTEXT.items():
+        monkeypatch.setenv(key, value)
+    policy = None
+    if condition == "under_floor":
+        policy = _policy(project, lines=70, branches=75)
+    elif condition == "missing_path":
+        policy = _policy(project, path="app/missing.py")
+    assert shards.aggregate(project, artifacts, 55, "success", policy_path=policy) == 1
+    report = json.loads((project / "test-results/coverage.json").read_text())
+    assert report["totals"]["percent_covered"] >= 55
 
 
 def test_real_shard_produces_a_success_receipt_only_after_fresh_branch_data(project, monkeypatch):

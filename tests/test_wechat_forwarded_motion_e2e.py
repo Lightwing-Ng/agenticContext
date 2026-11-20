@@ -1,11 +1,12 @@
 """Forwarded disclosures reuse measured springs without losing native interaction.
 
-Code version: v1.0.1-codex.0
+Code version: v1.2.0-codex.0
 """
 
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import pytest
 from playwright.sync_api import expect
@@ -18,6 +19,86 @@ disposable_browser = forwarded_fixtures.disposable_browser
 forwarded_server = forwarded_fixtures.forwarded_server
 forwarded_activity_store = nested_fixtures.forwarded_activity_store
 nested_server = nested_fixtures.nested_server
+
+
+@pytest.mark.parametrize("width", [1280, 390])
+def test_forwarded_layout_work_scales_with_depth_not_message_count(
+    disposable_browser, forwarded_server, record_property, width
+):
+    script = (
+        Path(__file__).resolve().parents[1]
+        / "app/web/static/browser-messaging.js"
+    ).read_text()
+    layout_counts = {"open": [], "close": []}
+    for child_count in (32, 96):
+        context = disposable_browser.new_context(
+            viewport={"width": width, "height": 1000},
+            reduced_motion="no-preference",
+        )
+        page = context.new_page()
+        try:
+            # Extend only the disposable DOM before the actual adapters initialize.
+            # No archive or production message is changed by the stress specimen.
+            prefix = """(() => {
+                const transcript = document.querySelector('[data-wechat-transcript]');
+                const original = transcript.firstElementChild;
+                for (let index = transcript.children.length; index < CHILD_COUNT; index++) {
+                    const copy = original.cloneNode(true);
+                    const identifiers = new Map();
+                    copy.querySelectorAll('[id]').forEach(element => {
+                        const previous = element.id;
+                        element.id += '_stress_' + index;
+                        identifiers.set(previous, element.id);
+                    });
+                    copy.querySelectorAll('[aria-labelledby], [aria-describedby]').forEach(element => {
+                        for (const name of ['aria-labelledby', 'aria-describedby']) {
+                            if (!element.hasAttribute(name)) continue;
+                            element.setAttribute(name, element.getAttribute(name).split(' ')
+                                .map(value => identifiers.get(value) || value).join(' '));
+                        }
+                    });
+                    transcript.append(copy);
+                }
+            })();\n""".replace("CHILD_COUNT", str(child_count))
+            page.route(
+                "**/static/browser-messaging.js?*",
+                lambda route: route.fulfill(
+                    content_type="text/javascript", body=prefix + script
+                ),
+            )
+            card, details = forwarded_fixtures.open_forwarded(page, forwarded_server)
+            _settle(card)
+            _capture(card)
+            session = context.new_cdp_session(page)
+            session.send("Performance.enable")
+
+            def layouts():
+                return next(
+                    metric["value"]
+                    for metric in session.send("Performance.getMetrics")["metrics"]
+                    if metric["name"] == "LayoutCount"
+                )
+
+            for direction, key in (("open", "Enter"), ("close", "Space")):
+                details.locator(":scope > summary").press(key)
+                _sample(details, 0)
+                before = layouts()
+                frames = [_sample(details, fraction / 10) for fraction in range(1, 11)]
+                layout_counts[direction].append(layouts() - before)
+                assert all(frame["overflow"] <= 1 for frame in frames)
+                assert all(frame["clockError"] <= 1 for frame in frames)
+                assert all(frame["shadowError"] <= 1 for frame in frames)
+                _finish(card)
+                _assert_clean(details)
+            assert details.locator("[data-wechat-embedded-row]").count() == child_count
+        finally:
+            context.close()
+    record_property("synchronous_layout_counts", json.dumps(layout_counts))
+    # Equal-depth transcripts may cost more paint, but must not force a new
+    # synchronous layout for every additional message on each animation frame.
+    for values in layout_counts.values():
+        assert values[0] > 0
+        assert values[1] <= values[0] + 32, layout_counts
 
 
 def _settle(card):
@@ -195,6 +276,7 @@ def test_forwarded_spring_opens_closes_and_reverses_from_presented_geometry(
         summary = details.locator(":scope > summary")
         expect(summary).to_have_text("Chat history")
         closed = details.bounding_box()["height"]
+        closed_width = card.bounding_box()["width"]
         closed_layout = details.evaluate(
             "details => Number.parseFloat(getComputedStyle(details).height)"
         )
@@ -260,11 +342,19 @@ def test_forwarded_spring_opens_closes_and_reverses_from_presented_geometry(
         _finish(card)
         summary.press("Space")
         expect(details).to_have_attribute("open", "")
-        heights = [_sample(details, value / 10)["height"] for value in range(11)]
+        frames = [_sample(details, value / 10) for value in range(11)]
+        heights = [frame["height"] for frame in frames]
+        widths = [frame["cardWidth"] for frame in frames]
         assert all(right <= left + 0.5 for left, right in zip(heights, heights[1:]))
+        assert widths[-1] == pytest.approx(closed_width, abs=1)
+        if width == 1280:
+            assert widths[0] - closed_width > 50
+            assert closed_width + 5 < widths[2] < widths[0] - 5
+        assert all(right <= left + 0.5 for left, right in zip(widths, widths[1:]))
         _finish(card)
         expect(details).not_to_have_attribute("open", "")
         assert details.bounding_box()["height"] == pytest.approx(closed, abs=1)
+        assert card.bounding_box()["width"] == pytest.approx(widths[-1], abs=1)
         _assert_clean(details)
         assert page.evaluate("document.documentElement.scrollWidth - innerWidth") <= 1
         assert fixture.history.read_bytes() == fixture.preserved

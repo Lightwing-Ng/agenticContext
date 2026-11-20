@@ -1,6 +1,6 @@
 """Supervise OpenAI's tunnel-client so ChatGPT can reach the local MCP endpoint.
 
-Code version: v1.8.1-codex.0
+Code version: v1.8.2-codex.0
 
 The Tunnel connection has three parts:
 
@@ -521,11 +521,14 @@ class TunnelRuntime:
 
     # Public control ---------------------------------------------------------
 
-    def enable(self, mcp_url: str) -> None:
-        """Start supervising the Tunnel for this service's MCP URL."""
+    def enable(self, mcp_url: str, *, auto_connect: bool = True) -> None:
+        """Set this service's MCP URL and apply its startup connection setting."""
         with self._lock:
             self._mcp_url = mcp_url
-        self.connect()
+        if auto_connect:
+            self.connect()
+        else:
+            self.disconnect()
 
     def connect(self) -> None:
         """Enable the Tunnel and start a fresh client generation."""

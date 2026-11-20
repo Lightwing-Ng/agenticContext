@@ -1,6 +1,6 @@
 """Add preserved, copied legacy Copilot messages without replacing cached history.
 
-Code version: v1.0.0-codex.0
+Code version: v1.1.0-codex.0
 
 The capture JSON is the source of truth. Cache message keys identify local ordered
 positions, not provider message IDs. Raw Markdown and unknown provider dates remain
@@ -29,8 +29,8 @@ from .job_lock import CACHE_TASK_LOCK_NAME, CacheMaintenanceLock, CacheTaskLock
 from .resource_persistence import (
     COPILOT_HISTORY_SCHEMA,
     COPILOT_HISTORY_SCHEMA_VERSION,
-    read_parquet_rows,
-    write_parquet_rows_atomic,
+    read_resource_rows,
+    write_resource_rows_atomic,
 )
 
 
@@ -223,9 +223,11 @@ def import_copilot_legacy_capture(
     try:
         path = copilot_history_path(root)
         state_path = copilot_sync_state_path(root)
-        original = _optional_bytes(path)
-        original_state = _optional_bytes(state_path)
-        existing = read_parquet_rows(path)
+        source_path = path if path.exists() else path.with_suffix(".parquet")
+        source_state_path = state_path if state_path.exists() else state_path.with_suffix(".parquet")
+        original = _optional_bytes(source_path)
+        original_state = _optional_bytes(source_state_path)
+        existing = read_resource_rows(path)
         if original is not None and existing is None:
             raise RuntimeError("Copilot history is unreadable; legacy history was not modified.")
         rows, result = plan_copilot_legacy_import(existing or [], capture)
@@ -244,9 +246,9 @@ def import_copilot_legacy_capture(
         backup_dir.mkdir(parents=True, exist_ok=False)
         backups = {"capture.json": source}
         if original is not None:
-            backups["history.parquet"] = original
+            backups[source_path.name] = original
         if original_state is not None:
-            backups["sync-state.parquet"] = original_state
+            backups[source_state_path.name] = original_state
         for name, content in backups.items():
             target = backup_dir / name
             target.write_bytes(content)
@@ -266,8 +268,8 @@ def import_copilot_legacy_capture(
         audit_path = backup_dir / "import.json"
         audit_path.write_text(json.dumps(audit, ensure_ascii=False, indent=2), encoding="utf-8")
         if (
-            _optional_bytes(path) != original
-            or _optional_bytes(state_path) != original_state
+            _optional_bytes(path if path.exists() else path.with_suffix(".parquet")) != original
+            or _optional_bytes(state_path if state_path.exists() else state_path.with_suffix(".parquet")) != original_state
             or capture_path.read_bytes() != source
         ):
             raise RuntimeError("Copilot history or capture changed during review; history was not modified.")
@@ -276,8 +278,8 @@ def import_copilot_legacy_capture(
             if read_copilot_sync_state(root) != coverage:
                 raise RuntimeError("Legacy Copilot partial coverage readback failed; history was not modified.")
         if result["added_messages"]:
-            write_parquet_rows_atomic(path, rows, COPILOT_HISTORY_SCHEMA)
-            if read_parquet_rows(path) != rows:
+            write_resource_rows_atomic(path, rows, COPILOT_HISTORY_SCHEMA)
+            if read_resource_rows(path) != rows:
                 raise RuntimeError("Legacy Copilot history readback failed; the original backup was retained.")
         result.update(applied=True, backup_dir=str(backup_dir))
         audit.update(result)

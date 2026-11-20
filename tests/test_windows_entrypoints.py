@@ -1,4 +1,4 @@
-"""Native Windows launcher and fail-closed gate tests. Code version: v1.3.2-codex.0."""
+"""Native Windows launcher and fail-closed gate tests. Code version: v1.4.0-codex.0."""
 
 import os
 from pathlib import Path
@@ -97,6 +97,50 @@ def test_windows_gate_rejects_success_without_fresh_coverage(tmp_path, stale_rep
     assert result.returncode != 0, result.stdout + result.stderr
     assert "Pytest did not produce a fresh coverage report." in result.stdout + result.stderr
     assert "Quality gate passed." not in result.stdout
+
+
+@pytest.mark.parametrize("mode", ["empty", "passes", "fails"])
+def test_windows_gate_discovers_javascript_tests_and_rejects_empty_suites(tmp_path, mode):
+    """Discover future Node test files and propagate their native execution failures."""
+    if shutil.which("node") is None:
+        pytest.skip("Node.js is required to exercise JavaScript test discovery.")
+    scripts = tmp_path / "scripts"
+    scripts.mkdir()
+    for name in ("check.ps1", "resolve_python.ps1"):
+        shutil.copy2(PROJECT_ROOT / "scripts" / name, scripts / name)
+    static = tmp_path / "app/web/static"
+    static.mkdir(parents=True)
+    (static / "probe.js").write_text("void 0;\n", encoding="utf-8")
+    tests = tmp_path / "tests"
+    tests.mkdir()
+    (tests / "ignored.mjs").write_text("throw new Error('Must not run.');\n", encoding="utf-8")
+    if mode != "empty":
+        for name in ("test_new_behavior.mjs", "test_another_behavior.mjs"):
+            (tests / name).write_text(
+                "import test from 'node:test';\n"
+                f"test('{name}', () => {{ "
+                + ("throw new Error('Deliberate failure.');" if mode == "fails" else "")
+                + " });\n",
+                encoding="utf-8",
+            )
+    interpreter = tmp_path / "fake-python.cmd"
+    interpreter.write_text('@echo off\nif "%~1"=="-c" echo 3.13\nexit /b 0\n', encoding="utf-8")
+    environment = _windows_environment()
+    environment["AGENTIC_CONTEXT_PYTHON"] = str(interpreter)
+    result = subprocess.run(
+        [_powershell(), "-NoProfile", "-File", str(scripts / "check.ps1")],
+        env=environment, capture_output=True, text=True, timeout=60,
+        encoding="utf-8", errors="replace",
+    )
+    output = result.stdout + result.stderr
+    assert result.returncode != 0, output
+    assert "Quality gate passed." not in output
+    if mode == "empty":
+        assert "No JavaScript unit test files were found." in output
+    else:
+        assert "test_new_behavior.mjs" in output
+        assert "test_another_behavior.mjs" in output
+        assert ("[6/6] Python tests with branch coverage" in output) == (mode == "passes")
 
 
 @pytest.mark.parametrize("marker,expected", [(None, "offline"), ("live", "live")])

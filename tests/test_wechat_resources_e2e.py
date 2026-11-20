@@ -1,6 +1,6 @@
 """Media references remain visible and reveal only their mapped Mac destinations.
 
-Code version: v1.1.0-codex.0
+Code version: v1.3.3-codex.0
 """
 
 from __future__ import annotations
@@ -290,12 +290,13 @@ def test_resource_placeholders_preserve_mac_mapping_icons_and_finder_actions(
         video = page.locator('.wechat-resource[data-wechat-resource-kind="video"]')
         file = page.locator('.wechat-resource[data-wechat-resource-kind="file"]')
         article = page.locator('.wechat-resource[data-wechat-resource-link="true"]')
-        for resource, status, asset in [
-            (image, "file", "photo.stack.svg"),
-            (video, "folder", "film.circle.svg"),
-            (file, "candidate", "document.on.document.fill.svg"),
+        for resource, status, label, asset in [
+            (image, "file", "Available locally", "photo.fill.svg"),
+            (video, "folder", "Local folder only", "film.fill.svg"),
+            (file, "candidate", "Local file candidate", "document.on.document.fill.svg"),
         ]:
             expect(resource).to_have_attribute("data-wechat-resource-status", status)
+            expect(resource.locator("[data-wechat-resource-feedback]")).to_have_text(label)
             assert resource.evaluate("node => node.tagName") == "DIV"
             button = resource.locator("button[data-wechat-resource-reveal]")
             expect(button).to_have_count(1)
@@ -385,8 +386,8 @@ def test_resource_placeholders_preserve_mac_mapping_icons_and_finder_actions(
         expect(missing).to_have_attribute("data-wechat-resource-status", "missing")
         assert missing.evaluate("node => node.tagName") == "DIV"
         assert missing.get_attribute("data-wechat-resource-reveal") is None
-        expect(missing).to_contain_text("Not found on this Mac")
-        _assert_painted_svg(page, missing, "photo.stack.svg")
+        expect(missing).to_contain_text("Not found locally")
+        _assert_painted_svg(page, missing, "photo.fill.svg")
         assert str(fixture.home) not in page.content()
         fixture.opener.assert_called_once_with(fixture.video)
         fixture.file_opener.assert_not_called()

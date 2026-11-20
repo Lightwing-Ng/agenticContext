@@ -10,7 +10,7 @@ registered first because it owns the access gate and the exclusive-browser rule 
 Tunnel, Jury, iPhone, and Cache blueprints borrow through :class:`AgentSurface`.
 """
 
-# Code version: v2.10.5-codex.0
+# Code version: v2.11.1-codex.0
 
 from __future__ import annotations
 
@@ -88,6 +88,7 @@ from app.core.storage import (
     LocalMediaCatalog,
     ShadowBackupService,
     PromptStore,
+    recover_wechat_exchange_import,
 )
 from app.web.agent_routes import (
     AGENT_BLUEPRINT_NAME,
@@ -119,6 +120,7 @@ from app.web.tunnel_routes import (
     TunnelRouteContext,
     register_tunnel_routes,
 )
+from app.web.wechat_read_routes import WECHAT_SUMMARY_EXTENSION
 
 
 
@@ -332,8 +334,15 @@ def create_app(
         experiment_ids=beta_experiments,
     )
 
+    # Complete an interrupted multi-file publication before any archive reader starts.
+    recover_wechat_exchange_import(effective_local_store_root.resolve(strict=False))
     media_catalog = LocalMediaCatalog(effective_local_store_root)
     app.extensions["local_media_catalog"] = media_catalog
+    from app.core.storage import WechatSummaryWorker
+
+    wechat_summary = WechatSummaryWorker(media_catalog.local_store_root)
+    app.extensions[WECHAT_SUMMARY_EXTENSION] = wechat_summary
+    app.extensions["runtime_start"] = wechat_summary.start
     prompt_store = PromptStore(media_catalog.local_store_root)
     app.extensions["prompt_store"] = prompt_store
     agent_source_cache = AgentSourceCache(media_catalog.local_store_root)
@@ -547,6 +556,16 @@ def create_app(
             runtime_shutdown_started = True
         wechat_refresh = app.extensions.get("wechat_mac_refresh")
         wechat_read = app.extensions.get("wechat_browser_read")
+        wechat_direct_read = app.extensions.get("wechat_direct_summary_read")
+        if wechat_direct_read is not None:
+            try:
+                wechat_direct_read.shutdown(wait=True, timeout=0.5)
+            except Exception:
+                app.logger.error("Could not stop the private chat list reader during shutdown.")
+        try:
+            wechat_summary.shutdown()
+        except Exception:
+            app.logger.error("Could not stop the saved chat summary worker during shutdown.")
         if wechat_read is not None:
             try:
                 wechat_read.shutdown(wait=True, timeout=0.5)
@@ -827,13 +846,6 @@ def create_app(
     @app.after_request
     def apply_local_security_headers(response: Response) -> Response:
         """Prevent framing, MIME sniffing, and storage of Agent credentials or state."""
-        if (
-            request.endpoint == "static"
-            and request.path.endswith((".js", ".mjs"))
-            and response.status_code in {200, 206}
-        ):
-            # Host MIME registries can mislabel modules and disable their imports.
-            response.mimetype = "text/javascript"
         response.vary.update(
             ("Sec-Fetch-Site", "Sec-Fetch-Mode", "Sec-Fetch-Dest", "Sec-Fetch-User")
         )

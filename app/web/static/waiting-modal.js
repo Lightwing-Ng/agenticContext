@@ -1,4 +1,4 @@
-/* Code version: v1.2.0-codex.0 */
+/* Code version: v1.3.0-codex.0 */
 
 (function initializeWaitingModal() {
     "use strict";
@@ -39,8 +39,8 @@
             return;
         }
 
-        if (title) title.textContent = latestWait.title;
-        if (copy) copy.textContent = latestWait.copy;
+        if (title && title.textContent !== latestWait.title) title.textContent = latestWait.title;
+        if (copy && copy.textContent !== latestWait.copy) copy.textContent = latestWait.copy;
         modal.hidden = false;
     }
 
@@ -67,6 +67,18 @@
         }
 
         return {
+            update(options = {}) {
+                if (finished) return;
+                if (Object.hasOwn(options, "title")) {
+                    waitOptions.title = normalizedText(options.title, waitOptions.title);
+                }
+                if (Object.hasOwn(options, "copy")) {
+                    waitOptions.copy = normalizedText(options.copy, waitOptions.copy);
+                }
+                // Closing a notification dismisses its feedback while work continues.
+                // A later progress update must not reopen that dismissed notification.
+                if (activeWaits.has(waitToken)) renderLatestWait();
+            },
             finish() {
                 if (finished) return;
                 finished = true;

@@ -1,6 +1,6 @@
 """Validate retained schema-4 Mac revisions without writing or reparsing sources.
 
-Code version: v1.1.0-codex.0
+Code version: v1.1.1-codex.0
 
 Only the four retained monotone revision policies are accepted. New parser
 policies and revision publication remain owned by the canonical bank writer.
@@ -14,6 +14,7 @@ import re
 
 from . import wechat_text
 from .wechat_reconcile import native_quote_card_metadata_extends
+from .wechat_resource_index import CHANNELS_APP_SUBTYPE, CHANNELS_LABEL_PATHS
 
 
 MAX_REVISIONS = 32
@@ -74,6 +75,7 @@ _CARD_LABEL_FIELDS = (
     "app_name_source",
     "publisher_name",
     "publisher_name_source",
+    *CHANNELS_LABEL_PATHS,
 )
 
 
@@ -193,6 +195,10 @@ def _resource_upgrade(old_row, new_row):
         or old.get("kind") != "app"
         or new.get("kind") != "app"
         or new.get("app_metadata_version") != "1"
+        or (
+            CHANNELS_LABEL_PATHS.keys() & new.keys()
+            and new.get("app_subtype") != str(CHANNELS_APP_SUBTYPE)
+        )
         or old_row["text"] != new_row["text"]
         or old_row["text"] != "[App message]"
         or old_proof.get("text_extraction_kind") != "resource_placeholder"

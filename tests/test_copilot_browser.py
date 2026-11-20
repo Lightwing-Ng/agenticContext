@@ -1,6 +1,6 @@
 """Copilot history stays isolated, searchable, and honest about unknown timestamps.
 
-Code version: v1.0.0-codex.0
+Code version: v1.0.1-codex.0
 """
 
 from __future__ import annotations
@@ -64,7 +64,7 @@ def test_copilot_history_and_matching_other_provider_ids_remain_separate(history
     assert page.total_count == 2
     assert page.sessions[0].source == "copilot"
     assert page.sessions[0].last_seen_at == ""
-    assert chat_history_path(history_root, "copilot") == history_root / "llm/copilot/history.parquet"
+    assert chat_history_path(history_root, "copilot") == history_root / "llm/copilot/history.sqlite3"
 
 
 def test_copilot_unknown_message_date_is_not_replaced_by_capture_time(history_root):

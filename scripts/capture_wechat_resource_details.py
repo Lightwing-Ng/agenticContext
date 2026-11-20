@@ -236,7 +236,7 @@ def _native_message(context, scope, witness, reference, counts):
         return None
     try:
         message = projection._project_message(
-            row, scope.account_id, scope.kind, context.names,
+            row, scope.account_id, scope.kind, context.names, peer_id=scope.peer_id,
         )
     except (ValueError, projection.WCDBBackendUnavailableError) as error:
         counts[projection.projection_exclusion_reason(error)] += 1
@@ -389,8 +389,6 @@ def _capture(local_store, history, by_shard, counts):
 
 
 def _private_directory(path):
-    if os.open not in os.supports_dir_fd or not hasattr(os, "O_DIRECTORY"):
-        raise ValueError("Native capture output requires macOS directory handles.")
     path = path.expanduser().absolute()
     if (
         path.parent.resolve() != path.parent
@@ -470,7 +468,9 @@ def main(argv=None):
             closing(completions._readonly(completion_path)) as derived,
             closing(_readonly(repository.path)) as history,
         ):
-            if completions._metadata(derived) != completions._pins(repository.path):
+            if not completions._current_metadata(
+                derived, repository.path, completions._pins(repository.path),
+            ):
                 raise ValueError("The retained completion catalog needs current archive inputs.")
             selected, sources = _inventory(
                 derived, retained_ids, session=args.target_session, after=args.after_message_id,

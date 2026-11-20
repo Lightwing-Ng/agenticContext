@@ -1,8 +1,9 @@
 """Contact identity metadata remains inside the existing compact disclosure.
 
-Code version: v1.1.2-codex.0
+Code version: v1.2.0-codex.0
 """
 
+from copy import deepcopy
 from html.parser import HTMLParser
 from pathlib import Path
 from types import SimpleNamespace
@@ -74,6 +75,7 @@ def test_contact_fields_are_escaped_and_do_not_add_a_closed_card_row(status, nam
         },
         "contact": {"id": "wechat:contact:<synthetic>", "identity_status": status},
     }
+    preserved_provenance = deepcopy(context["provenance"])
     context["record_fields"] = compact_record_fields(context["provenance"])
     current = SimpleNamespace(
         messaging=context,
@@ -117,3 +119,4 @@ def test_contact_fields_are_escaped_and_do_not_add_a_closed_card_row(status, nam
     assert "<script>literal source text</script>" not in rendered
 
     assert "Unselected raw receipt" not in rendered
+    assert context["provenance"] == preserved_provenance

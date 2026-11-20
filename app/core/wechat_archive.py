@@ -1,9 +1,11 @@
 """Source-separated, text-only WeChat archive import and indexed local queries."""
 
-# Code version: v1.13.0-codex.0
+# Code version: v1.14.2-codex.0
 
 from __future__ import annotations
 
+from collections import Counter, OrderedDict
+from concurrent.futures import Future
 from contextlib import closing
 import gzip
 import hashlib
@@ -18,6 +20,7 @@ from pathlib import Path
 from threading import RLock
 from typing import Any, Protocol
 
+from .wechat_group_membership import group_membership_history
 from .wechat_group_names import group_name_projections, latest_group_titles
 
 
@@ -25,7 +28,44 @@ WECHAT_SOURCE = "wechat"
 WECHAT_KINDS = ("all", "direct", "group", "unclassified")
 _DISPLAY_ZONE = timezone(timedelta(hours=8))
 _RESOURCE_CACHE_LOCK = RLock()
-_RESOURCE_CACHE = {}
+_RESOURCE_CACHE = OrderedDict()
+_RESOURCE_SCOPED_CACHE = OrderedDict()
+_RESOURCE_VALIDATIONS = {}
+_RESOURCE_CACHE_LIMIT = 4
+_RESOURCE_SCOPED_CACHE_LIMIT = 64
+
+
+def _cached_resource_validation(key, validate):
+    """Share one immutable scope's validation without blocking unrelated readers."""
+    scoped = key[-1] is not None
+    cache = _RESOURCE_SCOPED_CACHE if scoped else _RESOURCE_CACHE
+    limit = _RESOURCE_SCOPED_CACHE_LIMIT if scoped else _RESOURCE_CACHE_LIMIT
+    with _RESOURCE_CACHE_LOCK:
+        if key in cache:
+            cache.move_to_end(key)
+            return cache[key]
+        pending = _RESOURCE_VALIDATIONS.get(key)
+        owner = pending is None
+        if owner:
+            pending = Future()
+            _RESOURCE_VALIDATIONS[key] = pending
+    if not owner:
+        return pending.result()
+    try:
+        corrected = validate()
+    except BaseException as error:
+        with _RESOURCE_CACHE_LOCK:
+            _RESOURCE_VALIDATIONS.pop(key, None)
+        pending.set_exception(error)
+        raise
+    with _RESOURCE_CACHE_LOCK:
+        cache[key] = corrected
+        cache.move_to_end(key)
+        while len(cache) > limit:
+            cache.popitem(last=False)
+        _RESOURCE_VALIDATIONS.pop(key, None)
+    pending.set_result(corrected)
+    return corrected
 
 
 class WechatTimelineProjectionError(ValueError):
@@ -75,6 +115,52 @@ def wechat_archive_path(local_store_root: Path | str) -> Path:
     )
 
 
+def _message_page_rows(
+    connection,
+    message_table,
+    message_where,
+    message_params,
+    *,
+    conversation_id,
+    page_size,
+    offset,
+):
+    """Select compact identities, then read only their original full source rows."""
+    order = " ORDER BY (m.time_sort=0),m.time_sort,m.ordinal,m.id"
+    identifiers = [
+        row[0]
+        for row in connection.execute(
+            "SELECT m.id FROM "
+            + message_table
+            + " m"
+            + message_where
+            + order
+            + " LIMIT ? OFFSET ?",
+            [*message_params, page_size, offset],
+        )
+    ]
+    selected = set(identifiers)
+    if len(selected) != len(identifiers):
+        raise WechatTimelineProjectionError("duplicate_page_identity")
+    rows = {}
+    for start in range(0, len(identifiers), 400):
+        batch = identifiers[start : start + 400]
+        placeholders = ",".join("?" for _ in batch)
+        # Bound parameters reach each compound-view arm's ID index on older SQLite.
+        # An IN subquery can instead materialize every full source row first.
+        for row in connection.execute(
+            "SELECT m.* FROM " + message_table + " m WHERE m.conversation_id=? "
+            "AND m.id IN (" + placeholders + ")",
+            [conversation_id, *batch],
+        ):
+            if row["id"] in rows:
+                raise WechatTimelineProjectionError("duplicate_page_source_row")
+            rows[row["id"]] = row
+    if rows.keys() != selected:
+        raise WechatTimelineProjectionError("missing_page_source_row")
+    return [rows[identifier] for identifier in identifiers]
+
+
 def wechat_history_partition_fingerprint(connection: sqlite3.Connection) -> str:
     """Identify the exact source-account partitions shared by a resource index."""
     rows = [
@@ -99,6 +185,79 @@ def _file_identity(path: Path) -> dict[str, int]:
 
 def _identifier(*parts: str) -> str:
     return hashlib.sha256("\0".join(parts).encode()).hexdigest()
+
+
+_HTML_COMPLETION_SUFFIX = "-text-completion-v1"
+
+
+def _html_group_supplements(connection, conversation_table, account):
+    """Pair verified export supplements and count only their additional source records."""
+    from .wechat_export_merge import _json
+
+    pairs = connection.execute(
+        f"SELECT b.id AS base_id,b.partition_id AS base_partition,s.id,s.partition_id,"
+        f"s.message_count,s.last_sort FROM {conversation_table} s "
+        f"JOIN {conversation_table} b ON b.account_key=s.account_key "
+        "AND b.peer_id=s.peer_id AND b.kind=s.kind AND s.partition_id=b.partition_id||? "
+        "JOIN main.partitions bp ON bp.id=b.partition_id "
+        "JOIN main.partitions sp ON sp.id=s.partition_id "
+        "WHERE s.account_key=? AND s.kind='group' AND s.peer_id LIKE '%@chatroom' "
+        "AND bp.account_key=s.account_key AND sp.account_key=s.account_key "
+        "AND bp.account_id=sp.account_id AND s.account_key='account:'||bp.account_id "
+        "AND bp.source_label='HTML export' AND sp.source_label=bp.source_label "
+        "AND bp.identity_status='Corroborated export ID' "
+        "AND sp.identity_status=bp.identity_status AND bp.source_file=sp.source_file",
+        (_HTML_COMPLETION_SUFFIX, account),
+    ).fetchall()
+    bases = Counter(pair["base_id"] for pair in pairs)
+    sources = Counter(pair["id"] for pair in pairs)
+    groups = {}
+    for pair in pairs:
+        if bases[pair["base_id"]] != 1 or sources[pair["id"]] != 1:
+            continue
+        repeated = set()
+        for row in connection.execute(
+            "SELECT id,sender_id,direction,timestamp_value,provenance "
+            "FROM main.messages WHERE conversation_id=? AND json_valid(provenance)",
+            (pair["id"],),
+        ):
+            source = json.loads(row["provenance"])
+            if not isinstance(source, dict):
+                continue
+            locator = source.get("locator")
+            record = source.get("record_id")
+            if not isinstance(locator, dict) or not isinstance(record, str):
+                continue
+            digest = locator.get("archive_sha256")
+            if (
+                not isinstance(digest, str)
+                or re.fullmatch(r"[0-9a-f]{64}", digest) is None
+                or pair["base_partition"] != "html-" + digest[:24]
+                or record != _identifier("html-text-v1", digest, _json(locator))
+                or row["id"] != _identifier(pair["partition_id"], record)
+            ):
+                continue
+            base_id = _identifier(pair["base_partition"], record)
+            base = connection.execute(
+                "SELECT provenance FROM main.messages "
+                "WHERE id=? AND conversation_id=? AND sender_id IS ? "
+                "AND direction=? AND timestamp_value=? AND json_valid(provenance)",
+                (base_id, pair["base_id"], row["sender_id"], row["direction"],
+                 row["timestamp_value"]),
+            ).fetchone()
+            if base is not None:
+                origin = json.loads(base["provenance"])
+                if (
+                    isinstance(origin, dict)
+                    and origin.get("locator") == locator
+                    and origin.get("record_id") == record
+                ):
+                    repeated.add(base_id)
+        groups[pair["base_id"]] = {
+            **dict(pair),
+            "additional_count": max(0, pair["message_count"] - len(repeated)),
+        }
+    return groups
 
 
 def _archive_file(root: Path, relative: str) -> Path:
@@ -277,7 +436,7 @@ def import_wechat_archive(
             if native and (not owner or owner != metadata.get("source_account_id")):
                 raise ValueError("Verified account metadata is inconsistent.")
             if native and (
-                hashlib.md5(owner.encode(), usedforsecurity=False).hexdigest() != metadata.get("account_hash")
+                hashlib.md5(owner.encode()).hexdigest() != metadata.get("account_hash")
                 or source_id != "ios-" + str(metadata.get("account_hash"))
             ):
                 raise ValueError(
@@ -542,7 +701,9 @@ class WechatArchiveRepository:
         parameters = (conversation_id,) if conversation_id is not None else ()
         original = {
             row["id"]: dict(row)
-            for row in connection.execute("SELECT * FROM main.conversations" + scope, parameters)
+            for row in connection.execute(
+                "SELECT * FROM main.conversations" + scope, parameters
+            )
         }
         resources = {
             row["id"]: dict(row)
@@ -659,7 +820,11 @@ class WechatArchiveRepository:
                 connection.execute(
                     "SELECT r.conversation_id,COUNT(*) FROM resource_index.messages r "
                     "JOIN main.messages m ON m.id=r.id"
-                    + (" WHERE r.conversation_id=?" if conversation_id is not None else "")
+                    + (
+                        " WHERE r.conversation_id=?"
+                        if conversation_id is not None
+                        else ""
+                    )
                     + " GROUP BY r.conversation_id",
                     parameters,
                 )
@@ -694,8 +859,13 @@ class WechatArchiveRepository:
 
     def _timeline_conversation_id(self, connection, message_id):
         """Locate a candidate scope; strict timeline validation still precedes its use."""
-        if not isinstance(message_id, str) or re.fullmatch(r"[0-9a-f]{64}", message_id) is None:
-            raise ValueError("A timeline message ID must be a canonical archive identifier.")
+        if (
+            not isinstance(message_id, str)
+            or re.fullmatch(r"[0-9a-f]{64}", message_id) is None
+        ):
+            raise ValueError(
+                "A timeline message ID must be a canonical archive identifier."
+            )
         row = connection.execute(
             "SELECT conversation_id FROM main.messages WHERE id=?", (message_id,)
         ).fetchone()
@@ -746,13 +916,18 @@ class WechatArchiveRepository:
                 identity = _file_identity(resource_path)
                 with closing(
                     sqlite3.connect(
-                        resource_path.resolve().as_uri() + "?mode=ro&immutable=1", uri=True
+                        resource_path.resolve().as_uri() + "?mode=ro&immutable=1",
+                        uri=True,
                     )
                 ) as resource:
                     ordinary = resource.execute(
                         "SELECT type,sql FROM sqlite_master WHERE name='messages'"
                     ).fetchone()
-                    if ordinary is None or ordinary[0] != "table" or "VIRTUAL" in str(ordinary[1]).upper():
+                    if (
+                        ordinary is None
+                        or ordinary[0] != "table"
+                        or "VIRTUAL" in str(ordinary[1]).upper()
+                    ):
                         raise WechatTimelineProjectionError("invalid")
                     row = resource.execute(
                         "SELECT conversation_id FROM messages WHERE id=?", (message_id,)
@@ -778,9 +953,12 @@ class WechatArchiveRepository:
         """Keep native catalog notices within their authoritative source scope."""
         if conversation_id is None:
             return True
-        if re.fullmatch(
-            r"(?:(?:main|temp)\.)?[A-Za-z_][A-Za-z0-9_]*", conversation_table
-        ) is None:
+        if (
+            re.fullmatch(
+                r"(?:(?:main|temp)\.)?[A-Za-z_][A-Za-z0-9_]*", conversation_table
+            )
+            is None
+        ):
             raise ValueError("Resource notices need a validated conversation table.")
         partition = connection.execute(
             f"SELECT p.id,p.account_id,p.account_key FROM {conversation_table} c "
@@ -815,8 +993,8 @@ class WechatArchiveRepository:
         from .wechat_media_placeholders import attach_media_placeholders
         from .wechat_macos_recovery import attach_mac_recovery
         from .wechat_macos_recovery_bank import attach_mac_recovery_bank
-        from .wechat_resource_details import attach_resource_details
         from .wechat_secondary_completions import attach_secondary_message_completions
+        from .wechat_resource_details import attach_resource_details
 
         conversations, messages, status = self._resource_timeline_tables(
             connection, history_identity, conversation_id=conversation_id
@@ -878,7 +1056,7 @@ class WechatArchiveRepository:
                 raise WechatTimelineProjectionError(completion_status)
             status = completion_status
         detail_status = "absent"
-        if include_secondary and include_resource_details:
+        if include_resource_details:
             conversations, messages, detail_status = attach_resource_details(
                 connection, self.path, conversations, messages,
                 conversation_id=conversation_id,
@@ -916,11 +1094,16 @@ class WechatArchiveRepository:
                 status = "ready"
         return conversations, messages, status
 
-    def _resource_timeline_tables(self, connection, history_identity, *, conversation_id=None):
+    def _resource_timeline_tables(
+        self, connection, history_identity, *, conversation_id=None
+    ):
         """Attach an optional pinned index and expose one chronological query surface."""
+        from .wechat_archive_relocation import HISTORY, matches, receipt_identity
         from .wechat_native_resource_revalidation import select_resource_index
 
-        resource_path = select_resource_index(self.path, conversation_id=conversation_id)
+        resource_path = select_resource_index(
+            self.path, conversation_id=conversation_id
+        )
         if not resource_path.exists():
             return "main.conversations", "main.messages", "absent"
         if (
@@ -959,9 +1142,13 @@ class WechatArchiveRepository:
                 raise ValueError(
                     "Resource indices need a source-partition fingerprint."
                 )
-            if (
-                expected_identity != history_identity
-                or _file_identity(self.path) != history_identity
+            if _file_identity(self.path) != history_identity:
+                return "main.conversations", "main.messages", "stale"
+            relocated = expected_identity != history_identity
+            relocation = receipt_identity(self.path) if relocated else None
+            if relocated and not matches(
+                self.path, resource_path.name,
+                {HISTORY: expected_identity}, {HISTORY: history_identity},
             ):
                 return "main.conversations", "main.messages", "stale"
             if fingerprint != wechat_history_partition_fingerprint(connection):
@@ -997,22 +1184,24 @@ class WechatArchiveRepository:
                 tuple(resource_identity.items()),
                 conversation_id,
             )
-            with _RESOURCE_CACHE_LOCK:
-                if key not in _RESOURCE_CACHE:
-                    corrected = (
-                        self._validate_resource_conversations(connection)
-                        if conversation_id is None
-                        else self._validate_resource_conversations(
-                            connection, conversation_id=conversation_id
-                        )
-                    )
-                    if len(_RESOURCE_CACHE) >= 4:
-                        _RESOURCE_CACHE.pop(next(iter(_RESOURCE_CACHE)))
-                    _RESOURCE_CACHE[key] = corrected
-                corrected = _RESOURCE_CACHE[key]
+            corrected = _cached_resource_validation(
+                key,
+                lambda: self._validate_resource_conversations(connection)
+                if conversation_id is None
+                else self._validate_resource_conversations(
+                    connection, conversation_id=conversation_id
+                ),
+            )
             if (
                 _file_identity(self.path) != history_identity
                 or _file_identity(resource_path) != resource_identity
+                or relocated and (
+                    receipt_identity(self.path) != relocation
+                    or not matches(
+                        self.path, resource_path.name,
+                        {HISTORY: expected_identity}, {HISTORY: history_identity},
+                    )
+                )
             ):
                 return "main.conversations", "main.messages", "stale"
             connection.execute(
@@ -1026,9 +1215,13 @@ class WechatArchiveRepository:
             resource_scope = ""
             if conversation_id is not None:
                 if not isinstance(conversation_id, str) or not conversation_id:
-                    raise ValueError("A scoped resource timeline needs a conversation ID.")
+                    raise ValueError(
+                        "A scoped resource timeline needs a conversation ID."
+                    )
                 # A TEMP scope table keeps the view's identity value parameterized.
-                connection.execute("CREATE TEMP TABLE resource_timeline_scope(id TEXT PRIMARY KEY)")
+                connection.execute(
+                    "CREATE TEMP TABLE resource_timeline_scope(id TEXT PRIMARY KEY)"
+                )
                 connection.execute(
                     "INSERT INTO resource_timeline_scope VALUES(?)", (conversation_id,)
                 )
@@ -1141,7 +1334,7 @@ class WechatArchiveRepository:
     ):
         """Read bounded server-ID candidates from the accepted message timeline.
 
-        The caller supplies the same verified source view used for paging.
+        The caller supplies the verified source view underlying the current page.
         Candidates remain separate from the page and require full reference
         proof in the presentation layer before any quote can use their metadata.
         """
@@ -1171,7 +1364,7 @@ class WechatArchiveRepository:
                 r"(?:(?:main|temp)\.)?[A-Za-z_][A-Za-z0-9_]*", message_table
             ) is None:
                 raise ValueError("Quote originals need a validated timeline table.")
-            # Paging and quote originals must use the same accepted row per ID.
+            # The accepted row includes any verified secondary completion for its ID.
             rows, byte_count = [], 0
             for candidate in connection.execute(
                 f"SELECT * FROM {message_table} WHERE conversation_id=? "
@@ -1181,9 +1374,7 @@ class WechatArchiveRepository:
             ):
                 row = dict(candidate)
                 byte_count += sum(
-                    len(value.encode())
-                    for value in row.values()
-                    if isinstance(value, str)
+                    len(value.encode()) for value in row.values() if isinstance(value, str)
                 )
                 if len(rows) >= 1000 or byte_count > 8 * 1024**2:
                     return []
@@ -1192,10 +1383,13 @@ class WechatArchiveRepository:
 
             mark_mac_recovery_rows(connection, rows)
             return rows
-        rows = []
-        if connection.execute(
-            "SELECT 1 FROM temp.sqlite_master WHERE type='table' AND name='macos_recovery_bank_validated'"
-        ).fetchone() is not None:
+        rows, byte_count = [], 0
+        if (
+            connection.execute(
+                "SELECT 1 FROM temp.sqlite_master WHERE type='table' AND name='macos_recovery_bank_validated'"
+            ).fetchone()
+            is not None
+        ):
             rows = [
                 dict(row)
                 for row in connection.execute(
@@ -1205,30 +1399,64 @@ class WechatArchiveRepository:
                     [conversation_id, *sorted(servers)],
                 )
             ]
-        if connection.execute(
-            "SELECT 1 FROM temp.sqlite_master WHERE type='table' AND name='macos_recovery_validated'"
-        ).fetchone() is not None:
-            rows.extend([
-                dict(row)
-                for row in connection.execute(
-                    "SELECT * FROM temp.macos_recovery_messages WHERE conversation_id=? "
-                    f"AND json_extract(provenance,'$.server_id') IN ({placeholders}) "
-                    "ORDER BY id LIMIT 1001",
-                    [conversation_id, *sorted(servers)],
-                )
-            ])
-        byte_count = sum(
-            len(value.encode())
-            for row in rows
-            for value in row.values()
-            if isinstance(value, str)
-        )
-        if len(rows) > 1000 or byte_count > 8 * 1024**2:
-            return []
-        if rows:
+        if (
+            connection.execute(
+                "SELECT 1 FROM temp.sqlite_master WHERE type='table' AND name='macos_recovery_validated'"
+            ).fetchone()
+            is not None
+        ):
+            from .wechat_macos_recovery import mark_mac_recovery_rows
+
+            rows.extend(
+                [
+                    dict(row)
+                    for row in connection.execute(
+                        "SELECT * FROM temp.macos_recovery_messages WHERE conversation_id=? "
+                        f"AND json_extract(provenance,'$.server_id') IN ({placeholders}) "
+                        "ORDER BY id LIMIT 1001",
+                        [conversation_id, *sorted(servers)],
+                    )
+                ]
+            )
+            byte_count = sum(
+                len(value.encode())
+                for row in rows
+                for value in row.values()
+                if isinstance(value, str)
+            )
+            if len(rows) > 1000 or byte_count > 8 * 1024**2:
+                return []
+            mark_mac_recovery_rows(connection, rows)
+        elif rows:
             from .wechat_macos_recovery import mark_mac_recovery_rows
 
             mark_mac_recovery_rows(connection, rows)
+        if (
+            connection.execute(
+                "SELECT 1 FROM temp.sqlite_master WHERE type='view' AND name='timeline_messages'"
+            ).fetchone()
+            is None
+        ):
+            return rows
+        try:
+            candidates = connection.execute(
+                "SELECT * FROM resource_index.messages WHERE conversation_id=? "
+                f"AND json_extract(provenance,'$.server_id') IN ({placeholders}) "
+                "ORDER BY id LIMIT 1001",
+                [conversation_id, *sorted(servers)],
+            )
+            for candidate in candidates:
+                row = dict(candidate)
+                byte_count += sum(
+                    len(value.encode())
+                    for value in row.values()
+                    if isinstance(value, str)
+                )
+                if len(rows) == 1000 or byte_count > 8 * 1024**2:
+                    return []
+                rows.append(row)
+        except (sqlite3.Error, ValueError, TypeError):
+            return rows
         return rows
 
     @staticmethod
@@ -1336,6 +1564,7 @@ class WechatArchiveRepository:
         page=1,
         page_size=100,
         persist_event_cache=True,
+        include_membership_history=False,
         strict_timeline=False,
     ):
         """Reuse bounded source-pinned list pages; details retain live validation."""
@@ -1352,6 +1581,7 @@ class WechatArchiveRepository:
             "page": page,
             "page_size": page_size,
             "persist_event_cache": persist_event_cache,
+            "include_membership_history": include_membership_history,
             "strict_timeline": strict_timeline,
         }
         return conversation_page(
@@ -1380,6 +1610,7 @@ class WechatArchiveRepository:
         page_size=100,
         persist_event_cache=True,
         previous_snapshot=False,
+        include_membership_history=False,
         strict_timeline=False,
     ):
         kind = kind if kind in WECHAT_KINDS else "all"
@@ -1417,9 +1648,13 @@ class WechatArchiveRepository:
                 if snapshot is None:
                     return None
             elif not session and not str(query or "").strip():
-                from .wechat_browser_snapshot import load_conversation_snapshot
-
-                snapshot = load_conversation_snapshot(self, connection, history_identity)
+                try:
+                    from .wechat_browser_snapshot import load_conversation_snapshot
+                except ImportError as error:
+                    if error.name != f"{__package__}.wechat_browser_snapshot":
+                        raise
+                else:
+                    snapshot = load_conversation_snapshot(self, connection, history_identity)
             if snapshot is not None:
                 conversation_table, resource_status, resource_accounts = snapshot
                 message_table = "main.messages"
@@ -1482,7 +1717,12 @@ class WechatArchiveRepository:
                 )
 
                 events = conversation_events(
-                    self, connection, session, current, message_table, history_identity,
+                    self,
+                    connection,
+                    session,
+                    current,
+                    message_table,
+                    history_identity,
                     persist=persist_event_cache,
                 )
                 source_message_table = message_table
@@ -1496,6 +1736,10 @@ class WechatArchiveRepository:
                 if group_name:
                     current["title"] = group_name["title"] or current["title"]
                     current["group_name_history"] = group_name
+                if include_membership_history:
+                    membership = group_membership_history(connection, message_table, current)
+                    if membership is not None:
+                        current["group_membership_history"] = membership
                 connection.execute(
                     "CREATE TEMP TABLE conversation_event_links("
                     "id TEXT PRIMARY KEY,preferred_id TEXT NOT NULL) WITHOUT ROWID"
@@ -1523,28 +1767,34 @@ class WechatArchiveRepository:
                 safe_page = min(pages, max(1, int(page)))
                 messages = [
                     dict(row)
-                    for row in connection.execute(
-                        f"SELECT m.* FROM {message_table} m"
-                        + message_where
-                        + " ORDER BY (m.time_sort=0),m.time_sort,m.ordinal,m.id LIMIT ? OFFSET ?",
-                        [*message_params, page_size, (safe_page - 1) * page_size],
+                    for row in _message_page_rows(
+                        connection,
+                        message_table,
+                        message_where,
+                        message_params,
+                        conversation_id=session,
+                        page_size=page_size,
+                        offset=(safe_page - 1) * page_size,
                     )
                 ]
                 from .wechat_macos_recovery import mark_mac_recovery_rows
-                from .wechat_secondary_completions import present_retained_app_cards
 
                 mark_mac_recovery_rows(connection, messages)
-                present_retained_app_cards(connection, messages)
                 quote_originals = self._quoted_resource_originals(
-                    connection, messages, session, message_table=source_message_table
+                    connection, messages, session, message_table=source_message_table,
                 )
+                from .wechat_secondary_completions import present_retained_app_cards
+
+                present_retained_app_cards(connection, messages)
                 return {
                     **empty,
                     "accounts": accounts,
                     "messages": messages,
                     "quote_resource_originals": quote_originals,
                     "source_snapshots": self._source_snapshots(
-                        connection, [*messages, *quote_originals], current["partition_id"]
+                        connection,
+                        [*messages, *quote_originals],
+                        current["partition_id"],
                     ),
                     "current": current,
                     "event_projection": events,
@@ -1573,6 +1823,31 @@ class WechatArchiveRepository:
                 join += " JOIN temp.wechat_search_matches s ON s.id=c.id "
                 filters = ""
                 params = []
+            supplements = {}
+            list_sort = "c.last_sort"
+            message_total = "c.message_count"
+            if account and kind == "group" and not terms:
+                supplements = _html_group_supplements(connection, conversation_table, account)
+                if supplements:
+                    connection.execute(
+                        "CREATE TEMP TABLE wechat_group_supplements("
+                        "base_id TEXT PRIMARY KEY,source_id TEXT UNIQUE,"
+                        "additional_count INTEGER,last_sort REAL) WITHOUT ROWID"
+                    )
+                    connection.executemany(
+                        "INSERT INTO temp.wechat_group_supplements VALUES(?,?,?,?)",
+                        [
+                            (base_id, item["id"], item["additional_count"], item["last_sort"])
+                            for base_id, item in supplements.items()
+                        ],
+                    )
+                    join += " LEFT JOIN temp.wechat_group_supplements h ON h.base_id=c.id "
+                    filters += (
+                        " AND NOT EXISTS (SELECT 1 FROM temp.wechat_group_supplements h "
+                        "WHERE h.source_id=c.id)"
+                    )
+                    list_sort = "MAX(c.last_sort,COALESCE(h.last_sort,c.last_sort))"
+                    message_total += "+COALESCE(h.additional_count,0)"
             titles = {}
             title_order = "c.title"
             if snapshot is None and kind in {"all", "group"}:
@@ -1605,6 +1880,7 @@ class WechatArchiveRepository:
                     summaries.items(),
                 )
                 join += " LEFT JOIN temp.conversation_event_counts e ON e.session_id=c.id "
+                message_total += "-COALESCE(e.delta,0)"
             total = connection.execute(
                 "SELECT COUNT(*)" + join + filters, params
             ).fetchone()[0]
@@ -1613,14 +1889,15 @@ class WechatArchiveRepository:
             ordering = (
                 title_order + " COLLATE NOCASE,c.id"
                 if sort == "name"
-                else "(c.last_sort=0),c.last_sort "
+                else f"({list_sort}=0),{list_sort} "
                 + ("ASC" if sort == "oldest" else "DESC")
                 + ",c.id"
             )
             conversations = [
                 dict(row)
                 for row in connection.execute(
-                    "SELECT c.*,p.account_label,p.account_id,p.identity_status,p.source_label,p.source_file"
+                    "SELECT c.*,p.account_label,p.account_id,p.identity_status,p.source_label,p.source_file,"
+                    + message_total + " AS list_message_count"
                     + join
                     + filters
                     + " ORDER BY "
@@ -1629,16 +1906,19 @@ class WechatArchiveRepository:
                     [*params, page_size, (safe_page - 1) * page_size],
                 )
             ]
+            for conversation in conversations:
+                conversation["message_count"] = conversation.pop("list_message_count")
+                if supplement := supplements.get(conversation["id"]):
+                    conversation["html_supplement"] = supplement
             message_count = 0
             if previous_snapshot:
                 if _file_identity(self.path) != history_identity:
                     return None
             else:
                 for conversation in conversations:
-                    conversation["message_count"] -= summaries.get(conversation["id"], 0)
                     conversation["title"] = titles.get(conversation["id"], conversation["title"])
                 message_count = connection.execute(
-                    "SELECT COALESCE(SUM(c.message_count-COALESCE(e.delta,0)),0)"
+                    "SELECT COALESCE(SUM(" + message_total + "),0)"
                     + join
                     + filters,
                     params,

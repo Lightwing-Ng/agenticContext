@@ -1,4 +1,4 @@
-{# Code version: v1.12.1-codex.0 #}
+{# Code version: v1.13.2-codex.0 #}
 {% from "_wechat_conversation_kind.html" import conversation_kind_badge %}
 {% set ready = analysis.status|default('ready') == 'ready' %}
 {% macro statement_columns() %}
@@ -10,40 +10,42 @@
     <div class="field browser-filter-field browser-search-field wechat-contact-search">
         <div class="browser-search-control">
             <span class="icon browser-search-icon" aria-hidden="true"></span>
-            <input type="search" name="q" form="wechat_contact_filter_form" class="browser-search-input" value="{{ contact_filters.q }}" maxlength="120" autocomplete="off" aria-label="Search contact statements" placeholder="Search statements">
+            <input type="search" name="q" form="wechat_contact_filter_form" class="browser-search-input" value="{{ contact_filters.q }}" maxlength="120" autocomplete="off" aria-label="Search contact messages" placeholder="Search messages">
         </div>
     </div>
 </div>
-<div class="metric-grid browser-metric-grid browser-text-metric-grid" aria-label="Contact statement totals">
-    {% for label, value in [('Statements', analysis.total_count), ('Conversations', analysis.conversation_count), ('Source accounts', analysis.account_count)] %}
+<div class="metric-grid browser-metric-grid browser-text-metric-grid" data-layout-role="content-grid" aria-label="Contact message totals">
+    {% for label, value in [('Text messages', analysis.total_count), ('Conversations', analysis.conversation_count), ('Source accounts', analysis.account_count)] %}
     <div class="metric-card foundation-metric-card metric-card-accent"><span class="metric-label">{{ label }}</span><strong{% if ready %} data-numeric-display-value="{{ '{:,}'.format(value) }}"{% endif %}>{{ '{:,}'.format(value) if ready else '—' }}</strong></div>
     {% endfor %}
 </div>
-<p class="wechat-contact-source-note">{% if analysis.contact.member_contact_ids|default([])|length > 1 %}User-confirmed person · {{ analysis.contact.member_contact_ids|length }} WeChat identities. {% endif %}{% if analysis.forwarded_statement_copies_collapsed|default(false) %}Repeated forwarded statements share one row; original messages and source conversations remain available.{% else %}Statements across source accounts. Verified matching messages appear once; original sources remain available.{% endif %}</p>
+{% if analysis.contact.member_contact_ids|default([])|length > 1 %}
+<p class="wechat-contact-source-note">User-confirmed person · {{ analysis.contact.member_contact_ids|length }} WeChat identities.</p>
+{% endif %}
 {% if analysis.status|default('ready') == 'indexing' %}
-<div class="browser-empty-state wechat-contact-status" role="status" aria-live="polite"><h3>Gathering statements…</h3><p>Please wait while verified statements are collected across source accounts.</p></div>
+<div class="browser-empty-state wechat-contact-status" role="status" aria-live="polite"><h3>Gathering messages…</h3><p>Collecting messages across source accounts.</p></div>
 {% elif analysis.status|default('ready') == 'error' %}
-<div class="browser-empty-state wechat-contact-status" role="status"><h3>Statements could not be loaded.</h3><p>Refresh this view to try again.</p><a class="secondary-button" href="{{ contact_page_url(1) }}">Refresh</a></div>
+<div class="browser-empty-state wechat-contact-status" role="status"><h3>Messages could not be loaded.</h3><p>{{ analysis.error|default('') or 'Refresh this view to try again.' }}</p><a class="secondary-button" href="{{ contact_page_url(1) }}">Refresh</a></div>
 {% elif analysis['items'] %}
 <div class="scrollable-data-table-shell wechat-contact-table-shell" data-scrollable-table>
-    <table class="scrollable-data-table events-table wechat-contact-table" data-table-header aria-label="Contact statement columns">
+    <table class="scrollable-data-table events-table wechat-contact-table" data-table-header aria-label="Contact message columns">
         {{ statement_columns() }}
-        <thead><tr><th scope="col">No.</th><th scope="col">Time</th><th scope="col">Statement</th><th scope="col">Conversation</th><th scope="col">Source account</th></tr></thead>
+        <thead><tr><th scope="col">No.</th><th scope="col">Time</th><th scope="col">Message</th><th scope="col">Conversation</th><th scope="col">Source account</th></tr></thead>
     </table>
-    <div class="scrollable-data-table-scroll events-table-scroll wechat-contact-table-scroll" data-table-scroll data-contact-analysis-scrollport tabindex="0" aria-label="Contact statements">
-        <table class="scrollable-data-table events-table wechat-contact-table" data-table-body aria-label="Contact statements">
+    <div class="scrollable-data-table-scroll events-table-scroll wechat-contact-table-scroll" data-table-scroll data-contact-analysis-scrollport tabindex="0" aria-label="Contact messages">
+        <table class="scrollable-data-table events-table wechat-contact-table" data-table-body aria-label="Contact messages">
             {{ statement_columns() }}
             <tbody>
                 {% for item in analysis['items'] %}
                 {% set linked_html_forward = item.reference_kind|default('') == 'native_forwarded' and (item.observations|default([])|selectattr('reference_kind', 'equalto', 'html_forwarded')|list|length) > 0 %}
                 <tr data-contact-statement-id="{{ item.statement_id|default(item.id) }}" data-contact-message-id="{{ item.id }}" data-contact-account-key="{{ item.account_key }}" data-wechat-account="{{ item.account_key }}" data-wechat-source="{{ item.source_id }}">
-                    <td data-numeric-display-cell>{{ '{:,}'.format(item.sequence_number|default((analysis.current_page - 1) * analysis.page_size + loop.index)) }}</td>
+                    <td>{{ '{:,}'.format(item.sequence_number|default((analysis.current_page - 1) * analysis.page_size + loop.index)) }}</td>
                     <td>{% if item.time_conflict|default(false) %}<span class="wechat-contact-cell-note" data-wechat-contact-time-conflict>Conflicting source times</span>{% elif item.time_uncertain|default(false) and item.has_observed_time|default(false) %}<span class="wechat-contact-cell-note" data-wechat-contact-time-uncertain>Unresolved source times</span>{% elif item.display_timestamp_value|default(item.timestamp_value) %}<time datetime="{{ item.display_timestamp_value|default(item.timestamp_value) }}" title="{{ item.time_basis|default('') }}">{{ item.timestamp_label or item.display_timestamp_label|default('Unknown time') }}</time>{% if linked_html_forward and item.time_basis|default('') == 'Source clock; timezone unknown' %}<span class="wechat-contact-cell-note" data-wechat-contact-timezone-unknown>Timezone unknown</span>{% endif %}{% else %}<span class="wechat-contact-cell-note" data-wechat-contact-unknown-time>Unknown time</span>{% endif %}</td>
                     {% set show_source_count = item.time_conflict|default(false) or item.time_uncertain|default(false) or linked_html_forward %}
                     {% set has_sources = item.observation_count|default(1) > 1 or show_source_count %}
                     <td>
                         <div class="wechat-contact-statement-entry{% if has_sources %} has-sources{% endif %}">
-                        <a class="wechat-contact-statement wechat-contact-statement-link" href="{{ item.source_url }}" data-wechat-contact-statement data-wechat-contact-source draggable="false" title="Open statement in its original conversation" lang="zh-CN">{{ item.content_text }}</a>
+                        <a class="wechat-contact-statement wechat-contact-statement-link" href="{{ item.source_url }}" data-wechat-contact-statement data-wechat-contact-source draggable="false" title="Open message in its source conversation" lang="zh-CN">{{ item.content_text }}</a>
                         {% if has_sources %}
                         <details class="ui-collapse wechat-contact-sources" data-wechat-contact-sources>
                             <summary aria-label="Show original sources" title="Show original sources{% if item.observation_count|default(1) > 1 %} · {{ '{:,}'.format(item.observation_count) }} sources{% endif %}"></summary>
@@ -74,14 +76,14 @@
     </div>
 </div>
 {% else %}
-<div class="browser-empty-state wechat-contact-status" role="status"><h3>No statements match this search.</h3><p>Try another search term.</p></div>
+<div class="browser-empty-state wechat-contact-status" role="status"><h3>No messages match this search.</h3><p>Try another search term.</p></div>
 {% endif %}
 {% if ready and pagination_items %}
-<nav class="browser-pagination local-store-pagination local-store-pagination--floating" data-layout-role="pagination" aria-label="Contact statement pages" style="--local-store-pagination-slots: {{ pagination_items|length }};">
+<nav class="browser-pagination local-store-pagination local-store-pagination--floating" data-layout-role="pagination" aria-label="Contact message pages" style="--local-store-pagination-slots: {{ pagination_items|length }};">
     <span class="local-store-pagination-indicator" aria-hidden="true"></span>
     {% for item in pagination_items %}
     {% if item.kind in ('gap', 'ellipsis') %}<span class="local-store-page-ellipsis" aria-hidden="true"><span class="local-store-page-ellipsis-dots"></span></span>
-    {% else %}<a class="local-store-page-button{% if item.kind not in ('previous', 'next') and item.page >= 1000 %} wechat-contact-page-long{% endif %}{% if item.is_active %} is-active{% endif %}{% if item.kind in ('previous', 'next') %} local-store-page-nav{% endif %}" href="{{ contact_page_url(item.page) }}" data-wait-navigation data-wait-title="Loading statements" data-wait-copy="Opening the selected page of contact statements." data-pagination-target="{{ item.page }}" data-pagination-current="{{ '1' if item.is_active else '0' }}" aria-label="{{ 'Previous statement page' if item.kind == 'previous' else ('Next statement page' if item.kind == 'next' else 'Statement page ' ~ item.page) }}"{% if item.is_active %} aria-current="page"{% endif %}>{% if item.kind == 'previous' %}<span class="icon icon-page-prev" aria-hidden="true"></span>{% elif item.kind == 'next' %}<span class="icon icon-page-next" aria-hidden="true"></span>{% else %}{{ item.page }}{% endif %}</a>{% endif %}
+    {% else %}<a class="local-store-page-button{% if item.kind not in ('previous', 'next') and item.page >= 1000 %} wechat-contact-page-long{% endif %}{% if item.is_active %} is-active{% endif %}{% if item.kind in ('previous', 'next') %} local-store-page-nav{% endif %}" href="{{ contact_page_url(item.page) }}" data-wait-navigation data-wait-title="Loading messages" data-wait-copy="Opening the selected page of contact messages." data-pagination-target="{{ item.page }}" data-pagination-current="{{ '1' if item.is_active else '0' }}" aria-label="{{ 'Previous message page' if item.kind == 'previous' else ('Next message page' if item.kind == 'next' else 'Message page ' ~ item.page) }}"{% if item.is_active %} aria-current="page"{% endif %}>{% if item.kind == 'previous' %}<span class="icon icon-page-prev" aria-hidden="true"></span>{% elif item.kind == 'next' %}<span class="icon icon-page-next" aria-hidden="true"></span>{% else %}{{ item.page }}{% endif %}</a>{% endif %}
     {% endfor %}
 </nav>
 {% endif %}

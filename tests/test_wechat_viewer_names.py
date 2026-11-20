@@ -1,6 +1,6 @@
 """Viewer names project across native identities without rewriting source evidence.
 
-Code version: v1.5.4-codex.0
+Code version: v1.6.6-codex.0
 """
 
 from __future__ import annotations
@@ -9,6 +9,7 @@ from collections import Counter
 import csv
 import hashlib
 from html import unescape
+from html.parser import HTMLParser
 from io import StringIO
 import json
 import re
@@ -35,11 +36,12 @@ from app.core.wechat_contacts import (
     initialize_contact_registry,
 )
 from app.core.wechat_display_names import display_names_path
+from app.core.wechat_text import native_components_text
 from app.web.app import create_app
 from app.web.config_store import SavedConfigStore
 from tests import test_sidebar_e2e
 from tests.test_wechat_archive import make_archive
-from tests.wechat_browser_markup import get_verified_browser_page
+from tests.wechat_browser_markup import get_verified_browser_page, parse_browser_markup
 
 
 OWNER_A = "wxid_account_a"
@@ -53,6 +55,50 @@ HTML_ONLY_OWNER = "wxid_html_only_owner"
 HTML_ONLY_ACCOUNT = "Synthetic HTML owner · _owner"
 HTML_VARIANT_TEXT = "A completion keeps a separate parent observation."
 disposable_browser = test_sidebar_e2e.disposable_browser
+
+
+class _MetricParser(HTMLParser):
+    """Read metric labels and complete values independently of inner numeric spans."""
+
+    def __init__(self):
+        super().__init__()
+        self.metrics = []
+        self._label = None
+        self._label_parts = None
+        self._value_parts = None
+        self._declared_value = None
+
+    def handle_starttag(self, tag, attributes):
+        attributes = dict(attributes)
+        if tag == "span" and "metric-label" in attributes.get("class", "").split():
+            self._label_parts = []
+        elif tag == "strong" and self._label is not None:
+            self._value_parts = []
+            self._declared_value = attributes.get("data-numeric-display-value")
+
+    def handle_data(self, value):
+        if self._label_parts is not None:
+            self._label_parts.append(value)
+        if self._value_parts is not None:
+            self._value_parts.append(value)
+
+    def handle_endtag(self, tag):
+        if tag == "span" and self._label_parts is not None:
+            self._label = "".join(self._label_parts).strip()
+            self._label_parts = None
+        elif tag == "strong" and self._value_parts is not None:
+            self.metrics.append(
+                (self._label, "".join(self._value_parts).strip(), self._declared_value)
+            )
+            self._label = self._value_parts = self._declared_value = None
+
+
+def _assert_account_source_metric(html, value):
+    metrics = _MetricParser()
+    metrics.feed(html)
+    assert [metric for metric in metrics.metrics if metric[0] == "Account sources"] == [
+        ("Account sources", str(value), str(value))
+    ]
 
 
 def _source(owner):
@@ -78,16 +124,15 @@ def _write_preference(store, contact_id, name=ALIAS):
                 "contacts": {contact_id: name} if name is not None else {},
             },
             ensure_ascii=False,
-        ),
-        encoding="utf-8",
+        )
     )
 
 
 def _set_hidden_sources(store, sources):
     path = display_names_path(store)
-    preferences = json.loads(path.read_text(encoding="utf-8"))
+    preferences = json.loads(path.read_text())
     preferences["hidden_account_sources"] = sources
-    path.write_text(json.dumps(preferences, ensure_ascii=False), encoding="utf-8")
+    path.write_text(json.dumps(preferences, ensure_ascii=False))
     return path
 
 
@@ -324,6 +369,143 @@ def test_viewer_name_follows_canonical_identity_across_sources_without_data_chan
     assert before == (fixture.history.read_bytes(), fixture.registry.read_bytes())
 
 
+@pytest.mark.parametrize("source_kind", ["new_native_snapshot", "resource_without_snapshot"])
+@pytest.mark.parametrize(
+    ("raw_label", "verified", "preference", "expected_viewer"),
+    [
+        (OTHER, True, None, "測試聯絡人"),
+        ("", True, None, "測試聯絡人"),
+        ("Unknown sender", True, None, "測試聯絡人"),
+        ("Unknown sender", False, None, None),
+        ("Unknown sender", True, "User-selected contact name", "User-selected contact name"),
+        ("Historical source nickname", True, None, None),
+        (OTHER, False, None, None),
+        (OTHER, True, OTHER, OTHER),
+        (OTHER, True, "User-selected contact name", "User-selected contact name"),
+    ],
+)
+def test_verified_native_contact_profile_fills_only_identifier_labels(
+    viewer_archive, source_kind, raw_label, verified, preference, expected_viewer
+):
+    fixture = viewer_archive
+    session = fixture.sessions[OWNER_A].stable_id
+    with sqlite3.connect(fixture.history) as connection:
+        identifier, encoded = connection.execute(
+            "SELECT id,provenance FROM messages WHERE conversation_id=? "
+            "ORDER BY ordinal LIMIT 1",
+            (session,),
+        ).fetchone()
+        provenance = json.loads(encoded)
+        provenance["server_id"] = "81985529216486895"
+        if source_kind == "new_native_snapshot":
+            connection.execute(
+                "CREATE TABLE IF NOT EXISTS source_snapshots ("
+                "id INTEGER PRIMARY KEY,snapshot_id TEXT NOT NULL,"
+                "source_id TEXT NOT NULL,metadata TEXT NOT NULL)"
+            )
+            cursor = connection.execute(
+                "INSERT INTO source_snapshots(snapshot_id,source_id,metadata) "
+                "VALUES(?,?,?)",
+                (
+                    "new-native-text-snapshot",
+                    _source(OWNER_A),
+                    json.dumps(
+                        {
+                            "source_id": _source(OWNER_A),
+                            "source_account_id": OWNER_A,
+                            "account_hash": _source(OWNER_A)[4:],
+                            "account_hash_verified": True,
+                        }
+                    ),
+                ),
+            )
+            provenance.update(
+                source_snapshot=cursor.lastrowid,
+                message_type=1,
+                text_extraction_kind="plain_text",
+            )
+        else:
+            provenance.pop("source_snapshot", None)
+            provenance.update(
+                message_type=43,
+                text_extraction_kind="resource_placeholder",
+                resource_reference={
+                    "kind": "video",
+                    "account_id": OWNER_A,
+                    "peer_id": OTHER,
+                    "availability": "metadata_only",
+                },
+            )
+            connection.execute(
+                "UPDATE messages SET text='[Video]',search_text='[video]',"
+                "quality_flags=? WHERE id=?",
+                (json.dumps(["resource_placeholder", "media_payload_not_read"]), identifier),
+            )
+        connection.execute(
+            "UPDATE messages SET sender_id=?,sender_label=?,direction='received',"
+            "provenance=? WHERE id=?",
+            (OTHER, raw_label, json.dumps(provenance), identifier),
+        )
+        connection.execute(
+            "UPDATE conversations SET title=?,peer_id=? WHERE id=?",
+            (
+                "Conversation title is not identity evidence" if verified else "測試聯絡人",
+                OTHER,
+                session,
+            ),
+        )
+    with sqlite3.connect(fixture.registry) as connection:
+        observation = contact_observation(
+            fixture.other_id,
+            source_id=_source(OWNER_A),
+            source_snapshot="older-native-contact-snapshot",
+            owner_account_id=OWNER_A,
+            kind="nickname",
+            value="測試聯絡人",
+        )
+        columns = tuple(observation)
+        connection.execute(
+            "INSERT INTO contact_observations (" + ",".join(columns) + ") VALUES("
+            + ",".join("?" for _ in columns) + ")",
+            tuple(observation[column] for column in columns),
+        )
+        if not verified:
+            connection.execute(
+                "DELETE FROM sender_bindings WHERE source_id=? AND sender_id=?",
+                (_source(OWNER_A), OTHER),
+            )
+    if preference is not None:
+        _write_preference(fixture.store, fixture.other_id, preference)
+    before = (fixture.history.read_bytes(), fixture.registry.read_bytes())
+    detail = _query(fixture, OWNER_A)
+    message = next(item for item in detail.items if item.stable_id == identifier)
+    assert message.author_label == raw_label
+    assert message.messaging["provenance"] == provenance
+    assert message.messaging["contact"]["source_display_name"] == raw_label
+    assert message.messaging["contact"]["identity_status"] == (
+        "verified" if verified else "unresolved"
+    )
+    assert message.messaging.get("viewer_display_name") == expected_viewer
+    if expected_viewer == "測試聯絡人":
+        assert message.messaging["contact"]["viewer_display_name_source"] == (
+            "verified_native_contact_profile"
+        )
+    if source_kind == "new_native_snapshot":
+        assert message.messaging["source_snapshot_id"] == "new-native-text-snapshot"
+    else:
+        assert not message.messaging.get("source_snapshot_id")
+        assert message.messaging["resource"]["kind"] == "video"
+    html = _application(fixture).test_client().get(
+        "/browser", query_string={"source": "wechat", "session": session}
+    ).get_data(as_text=True)
+    speaker_names = re.findall(r'class="wechat-speaker[^"]*"[^>]*>([^<]*)<', html)
+    assert expected_viewer or raw_label in speaker_names
+    if expected_viewer:
+        assert expected_viewer in speaker_names
+        assert "<dt>Source display name</dt><dd>" + raw_label + "</dd>" in html
+    assert before == (fixture.history.read_bytes(), fixture.registry.read_bytes())
+
+
 def test_viewer_preference_changes_and_clear_are_visible_on_the_next_query(
     viewer_archive,
 ):
@@ -452,6 +634,178 @@ def test_native_owner_alias_unifies_raw_names_across_pages_search_and_export(
     )
 
 
+def test_group_speaker_uses_verified_account_nickname_and_keeps_source_label(viewer_archive):
+    fixture = viewer_archive
+    source = _source(OWNER_A)
+    nickname = "Verified contact nickname"
+    historical = "Historical room label"
+    with sqlite3.connect(fixture.history) as connection:
+        session = connection.execute(
+            "SELECT id FROM conversations WHERE partition_id=? AND kind='group'",
+            (source,),
+        ).fetchone()[0]
+        raw_id, historical_id = [
+            row[0]
+            for row in connection.execute(
+                "SELECT id FROM messages WHERE conversation_id=? AND sender_id=? ORDER BY ordinal",
+                (session, OTHER),
+            )
+        ]
+        connection.executemany(
+            "UPDATE messages SET sender_label=? WHERE id=?",
+            [(OTHER, raw_id), (historical, historical_id)],
+        )
+    with sqlite3.connect(fixture.registry) as connection:
+        for value, owner, room in (
+            (nickname, OWNER_A, ""),
+            ("Name in another room", OWNER_A, "another-group@chatroom"),
+            ("Name from another account", OWNER_B, ""),
+        ):
+            observation = contact_observation(
+                fixture.other_id,
+                source_id=_source(owner),
+                source_snapshot="retained-native-profile",
+                owner_account_id=owner,
+                room_id=room,
+                kind="nickname",
+                value=value,
+            )
+            connection.execute(
+                "INSERT INTO contact_observations VALUES(:id,:contact_id,:source_id,"
+                ":source_snapshot,:owner_account_id,:room_id,:kind,:value,:evidence)",
+                observation,
+            )
+    before = fixture.history.read_bytes(), fixture.registry.read_bytes()
+    app = _application(fixture)
+    try:
+        response = get_verified_browser_page(
+            app.test_client(), "/browser",
+            query_string={"source": "wechat", "account": f"account:{OWNER_A}", "session": session},
+        )
+        document = parse_browser_markup(response.data)
+        for identifier, name in ((raw_id, nickname), (historical_id, historical)):
+            speaker = document.find(f".//*[@id='wechat_sender_{identifier}']")
+            assert speaker is not None
+            assert "".join(speaker.itertext()) == name
+        raw_article = document.find(f".//*[@data-chat-message-id='{raw_id}']")
+        assert raw_article is not None
+        details = raw_article.find(".//dl[@class='wechat-provenance-fields']")
+        assert details is not None
+        metadata = dict(zip(
+            (field.text for field in details.findall("dt")),
+            (value.text for value in details.findall("dd")),
+            strict=True,
+        ))
+        assert metadata["Source display name"] == OTHER
+    finally:
+        app.extensions["runtime_shutdown"]()
+    assert before == (fixture.history.read_bytes(), fixture.registry.read_bytes())
+
+
+@pytest.mark.parametrize("peer_id", [OTHER, "wxid_different_private_peer"])
+def test_private_speaker_uses_only_the_verified_peers_remark(viewer_archive, peer_id):
+    fixture = viewer_archive
+    session = fixture.sessions[OWNER_A].stable_id
+    title = "Original private chat title"
+    remark = "Verified private peer remark"
+    historical = "Historical sender label"
+    quoted_text = "Retained quoted content"
+    reply_text = "A reply from the private peer"
+    reference = {
+        "original_message_type": 1,
+        "source_sender_id": OWNER_A,
+        "source_chat_id": peer_id,
+        "source_sender_label": "Historical quoted sender",
+        "source_ids": {"svrid": "923"},
+    }
+    components = [
+        {"kind": "reply_text", "text": reply_text},
+        {"kind": "quoted_text", "text": quoted_text, **reference},
+    ]
+    with sqlite3.connect(fixture.history) as connection:
+        connection.execute(
+            "UPDATE conversations SET peer_id=?, title=? WHERE id=?",
+            (peer_id, title, session),
+        )
+        original, reply, older = connection.execute(
+            "SELECT id,provenance FROM messages WHERE conversation_id=? ORDER BY ordinal",
+            (session,),
+        ).fetchall()
+        connection.executemany(
+            "UPDATE messages SET sender_id=?,sender_label=?,direction='received' WHERE id=?",
+            [(OTHER, label, row[0]) for label, row in (
+                (OTHER, original), (OTHER, reply), (historical, older),
+            )],
+        )
+        reply_provenance = {
+            **json.loads(reply[1]),
+            "message_type": 49,
+            "text_extraction_kind": "quoted_reply",
+            "appmsg_subtype": 57,
+            "quoted_reference": reference,
+            "text_components": components,
+        }
+        connection.execute(
+            "UPDATE messages SET provenance=?,text=? WHERE id=?",
+            (json.dumps(reply_provenance), native_components_text(components), reply[0]),
+        )
+    with sqlite3.connect(fixture.registry) as connection:
+        for kind, value, owner, room in (
+            ("remark", remark, OWNER_A, ""),
+            ("nickname", "Verified contact nickname", OWNER_A, ""),
+            ("remark", "A different account's remark", OWNER_B, ""),
+            ("remark", "A remark from another room", OWNER_A, "other-room@chatroom"),
+        ):
+            observation = contact_observation(
+                fixture.other_id,
+                source_id=_source(owner),
+                source_snapshot="retained-native-contact-snapshot",
+                owner_account_id=owner,
+                room_id=room,
+                kind=kind,
+                value=value,
+            )
+            connection.execute(
+                "INSERT INTO contact_observations VALUES(:id,:contact_id,:source_id,"
+                ":source_snapshot,:owner_account_id,:room_id,:kind,:value,:evidence)",
+                observation,
+            )
+    before = fixture.history.read_bytes(), fixture.registry.read_bytes()
+    app = _application(fixture)
+    try:
+        response = get_verified_browser_page(
+            app.test_client(), "/browser",
+            query_string={"source": "wechat", "account": f"account:{OWNER_A}", "session": session},
+        )
+        document = parse_browser_markup(response.data)
+        heading = document.find(".//h2[@class='report-heading']")
+        assert heading is not None
+        assert heading.text == title
+        expected = remark if peer_id == OTHER else OTHER
+        for identifier, name in ((original[0], expected), (reply[0], expected), (older[0], historical)):
+            speaker = document.find(f".//*[@id='wechat_sender_{identifier}']")
+            assert speaker is not None
+            assert "".join(speaker.itertext()) == name
+        reply_article = document.find(f".//*[@data-chat-message-id='{reply[0]}']")
+        assert reply_article is not None
+        assert reply_article.find(".//p[@class='wechat-quoted-text']").text == quoted_text
+        assert reply_article.find(".//div[@class='wechat-message-text']").text == reply_text
+        details = reply_article.find(".//dl[@class='wechat-provenance-fields']")
+        assert details is not None
+        metadata = dict(zip(
+            (field.text for field in details.findall("dt")),
+            (value.text for value in details.findall("dd")),
+            strict=True,
+        ))
+        assert metadata["Sender ID"] == OTHER
+        assert metadata["Contact identity"] == "verified"
+        if peer_id == OTHER:
+            assert metadata["Source display name"] == OTHER
+    finally:
+        app.extensions["runtime_shutdown"]()
+    assert before == (fixture.history.read_bytes(), fixture.registry.read_bytes())
+
+
 def _application(fixture):
     with patch(
         "app.web.app.SavedConfigStore.load",
@@ -570,7 +924,7 @@ def test_corroborated_sources_share_only_viewer_labels_and_keep_export_provenanc
     html = response.get_data(as_text=True)
     assert response.status_code == 200
     assert html.count(f'<option value="{account}"') == 1
-    assert re.search(r"Account sources</span>\s*<strong>6</strong>", html)
+    _assert_account_source_metric(html, 6)
     for session_id, origin in fixture.export_sessions.items():
         page = query_chat_history(
             fixture.store, source="wechat", account=account, session=session_id
@@ -688,7 +1042,7 @@ def test_trusted_accounts_group_without_aliases_and_keep_all_source_records(
     assert re.findall(rf'<option value="{account}"[^>]*>(.*?)</option>', html) == [
         RAW_ACCOUNT
     ]
-    assert re.search(r"Account sources</span>\s*<strong>6</strong>", html)
+    _assert_account_source_metric(html, 6)
     for session_id, origin in fixture.export_sessions.items():
         detail = query_chat_history(
             fixture.store, source="wechat", account=account, session=session_id
@@ -805,12 +1159,12 @@ def _prepare_html_only_owner(fixture):
             (session_id,),
         )
     path = display_names_path(fixture.store)
-    preferences = json.loads(path.read_text(encoding="utf-8"))
+    preferences = json.loads(path.read_text())
     identifier = canonical_contact_id(
         HTML_ONLY_OWNER, authority="corroborated_export_username"
     )
     preferences["contacts"][identifier] = "A native-only preference must stay unused"
-    path.write_text(json.dumps(preferences, ensure_ascii=False), encoding="utf-8")
+    path.write_text(json.dumps(preferences, ensure_ascii=False))
     return fixture
 
 
@@ -857,7 +1211,7 @@ def test_corroborated_only_options_keep_sources_variants_and_exports(viewer_arch
     assert re.findall(rf'<option value="{account}"[^>]*>(.*?)</option>', html) == [
         HTML_ONLY_ACCOUNT
     ]
-    assert re.search(r"Account sources</span>\s*<strong>6</strong>", html)
+    _assert_account_source_metric(html, 6)
     message_ids = set()
     for session_id, origin in fixture.export_sessions.items():
         detail = query_chat_history(
@@ -912,7 +1266,7 @@ def test_hidden_account_option_preserves_old_links_search_exports_and_raw_record
     )
     expected_export = build_chat_history_markdown(baseline_detail)
     preference = _set_hidden_sources(fixture.store, [source])
-    contacts = json.loads(preference.read_text(encoding="utf-8"))["contacts"]
+    contacts = json.loads(preference.read_text())["contacts"]
     before = (
         fixture.history.read_bytes(),
         fixture.registry.read_bytes(),
@@ -951,7 +1305,7 @@ def test_hidden_account_option_preserves_old_links_search_exports_and_raw_record
         client, "/browser", query_string={"view": "text", "source": "wechat"}
     ).get_data(as_text=True)
     assert f'<option value="{account}"' not in normal_html
-    assert re.search(r"Account sources</span>\s*<strong>6</strong>", normal_html)
+    _assert_account_source_metric(normal_html, 6)
     for extra in ({}, {"session": fixture.unknown_session}):
         response = get_verified_browser_page(
             client,
@@ -971,7 +1325,7 @@ def test_hidden_account_option_preserves_old_links_search_exports_and_raw_record
         assert "disabled" not in option[1]
         assert html.count(f'<option value="{account}"') == 1
         assert "Unavailable source account" not in html
-        assert re.search(r"Account sources</span>\s*<strong>1</strong>", html)
+        _assert_account_source_metric(html, 1)
     exported = client.get(
         f"/browser/session/{fixture.unknown_session}/export",
         query_string={"source": "wechat", "account": account},
@@ -998,7 +1352,7 @@ def test_hidden_account_option_preserves_old_links_search_exports_and_raw_record
     assert (
         restored.messaging["account_options"] == baseline.messaging["account_options"]
     )
-    assert json.loads(preference.read_text(encoding="utf-8"))["contacts"] == contacts
+    assert json.loads(preference.read_text())["contacts"] == contacts
     assert before[:2] == (fixture.history.read_bytes(), fixture.registry.read_bytes())
 
 
@@ -1032,7 +1386,7 @@ def test_hiding_one_partition_keeps_a_shared_account_selectable(
     assert len(options) == 1
     assert "selected" in options[0]
     assert "hidden" not in options[0] and "disabled" not in options[0]
-    assert re.search(r"Account sources</span>\s*<strong>3</strong>", html)
+    _assert_account_source_metric(html, 3)
     assert before == (
         fixture.history.read_bytes(),
         fixture.registry.read_bytes(),

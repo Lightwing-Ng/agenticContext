@@ -1,6 +1,6 @@
 """Compact repeated forwarded assertions while retaining independent source events.
 
-Code version: v1.1.1-codex.0
+Code version: v1.1.2-codex.0
 """
 
 from contextlib import closing
@@ -16,6 +16,8 @@ import pytest
 from app.core import wechat_contact_analysis as analysis
 from app.core import wechat_contact_forwarded_copies as projection
 from app.core.wechat_contacts import canonical_contact_id
+from app.core.wechat_archive import wechat_archive_path
+from app.core.wechat_secondary_completions import completion_input_identities
 from tests import test_wechat_forwarded_overlap as packets
 from tests import test_wechat_statement_reference_reviews as reference_reviews
 from tests import test_wechat_statement_reviews as reviews
@@ -147,6 +149,20 @@ def test_fold_keeps_all_sources_clocks_and_exact_reversible_grouping(projection_
     ).fetchone()
     assert proof[0] == "contact_forwarded_statement_projection"
     assert json.loads(proof[1])["constraint"] == ["", ""]
+    assert f.output.execute("SELECT id FROM statement_groups").fetchone()[0] not in {
+        row[0] for row in before["statement_groups"]
+    }
+    original_members = dict(before["statement_members"])
+    original_contexts = {row[0]: row[2] for row in before["statement_groups"]}
+    for reference, encoded in f.output.execute(
+        "SELECT reference_id,evidence_json FROM forwarded_copy_projection_evidence"
+    ):
+        metadata = json.loads(encoded)
+        assert metadata["original_statement_id"] == original_members[reference]
+        assert (
+            metadata["original_conversation_key"]
+            == original_contexts[original_members[reference]]
+        )
     applied = tuple(f.output.iterdump())
     assert _apply(f)["status"] == "already_applied"
     assert tuple(f.output.iterdump()) == applied
@@ -181,6 +197,14 @@ def test_copy_evidence_does_not_copy_a_person_union_restore_journal(projection_s
                 "SELECT COUNT(*) FROM forwarded_copy_projection_evidence"
             ).fetchone()[0]
             == 3
+        )
+        assert (
+            target.execute(
+                "SELECT * FROM forwarded_copy_projection_evidence ORDER BY reference_id"
+            ).fetchall()
+            == f.output.execute(
+                "SELECT * FROM forwarded_copy_projection_evidence ORDER BY reference_id"
+            ).fetchall()
         )
     finally:
         target.close()
@@ -289,6 +313,11 @@ def test_global_projection_retains_different_receiving_accounts_and_threads(
         "WHERE parent_message_id=?",
         (native, "account:" + owner, f.second),
     )
+    f.output.execute(
+        "UPDATE statement_groups SET conversation_key='Original independent private context' "
+        "WHERE id=?",
+        (packets._statement(f, f.native_refs[1]),),
+    )
     before = _snapshot(f.output)["refs"]
     assert _apply(f)["statements_joined"] == 2
     assert _snapshot(f.output)["refs"] == before
@@ -300,6 +329,10 @@ def test_global_projection_retains_different_receiving_accounts_and_threads(
     ]
     assert {row["owner"] for row in evidence} == {packets.OWNER, owner}
     assert {row["kind"] for row in evidence} == {"direct", "group"}
+    assert {row["original_conversation_key"] for row in evidence} == {
+        "same-receiving-conversation",
+        "Original independent private context",
+    }
     assert (
         f.output.execute("SELECT reference_id FROM statement_groups").fetchone()[0]
         == f.native_refs[0]
@@ -489,6 +522,7 @@ def test_one_proven_primary_remains_the_representative_without_source_rewriting(
 ):
     f = projection_store
     primary = _add_primary(f, "Native original")
+    original_event_group = packets._statement(f, primary)
     before = _snapshot(f.output)["refs"]
     result = _apply(f)
     assert result["statements_joined"] == 3
@@ -497,6 +531,15 @@ def test_one_proven_primary_remains_the_representative_without_source_rewriting(
         == primary
     )
     assert _snapshot(f.output)["refs"] == before
+    assert (
+        f.output.execute("SELECT id FROM statement_groups").fetchone()[0]
+        != original_event_group
+    )
+    encoded = f.output.execute(
+        "SELECT evidence_json FROM forwarded_copy_projection_evidence WHERE reference_id=?",
+        (primary,),
+    ).fetchone()[0]
+    assert json.loads(encoded)["original_statement_id"] == original_event_group
 
 
 def test_distinct_native_original_events_are_never_collapsed(projection_store):
@@ -659,6 +702,83 @@ def test_cancellation_rolls_back_a_partially_started_projection(projection_store
     assert tuple(f.output.iterdump()) == before
 
 
+def test_preparation_does_not_read_an_unrelated_oversized_source_snapshot(
+    projection_store, monkeypatch
+):
+    f = projection_store
+    monkeypatch.setattr(projection, "MAX_PACKET_BYTES", 8192)
+    f.source.execute(
+        "INSERT INTO source_snapshots VALUES(?,?,?,?)",
+        (999, "Unrelated snapshot", "html-unrelated", "x" * 8193),
+    )
+
+    def prepare(source, rows):
+        inventory = source.execute(
+            "SELECT id,snapshot_id,source_id,metadata FROM source_snapshots"
+        ).fetchall()
+        assert {row["id"] for row in inventory} == {1, 3}
+        assert all(len(row["metadata"]) <= 8192 for row in inventory)
+
+    result = projection.fold_contact_forwarded_copies(
+        f.source,
+        f.output,
+        CONTACT,
+        AUTHOR,
+        row_select=packets.SELECT,
+        prepare_rows=prepare,
+        native_thread_key=analysis._native_conversation_key,
+    )
+    assert result["status"] == "applied"
+    assert result["statements_joined"] == 2
+
+
+def test_a_source_write_during_preparation_rejects_all_grouping_changes(
+    projection_store,
+):
+    f = projection_store
+    before = tuple(f.output.iterdump())
+
+    def prepare(source, rows):
+        source.execute("UPDATE source_snapshots SET metadata=metadata WHERE id=1")
+
+    result = projection.fold_contact_forwarded_copies(
+        f.source,
+        f.output,
+        CONTACT,
+        AUTHOR,
+        row_select=packets.SELECT,
+        prepare_rows=prepare,
+        native_thread_key=analysis._native_conversation_key,
+    )
+    assert result["status"] == "rejected"
+    assert tuple(f.output.iterdump()) == before
+
+
+def test_previous_projection_metadata_requires_restoration_and_reproof(
+    projection_store,
+):
+    f = projection_store
+    before = _snapshot(f.output)
+    assert _apply(f)["status"] == "applied"
+    for reference, encoded in f.output.execute(
+        "SELECT reference_id,evidence_json FROM forwarded_copy_projection_evidence"
+    ).fetchall():
+        metadata = json.loads(encoded)
+        metadata["version"] = "v1.0.1-codex.0"
+        metadata.pop("original_statement_id")
+        metadata.pop("original_conversation_key")
+        f.output.execute(
+            "UPDATE forwarded_copy_projection_evidence SET evidence_json=? WHERE reference_id=?",
+            (json.dumps(metadata), reference),
+        )
+    applied = tuple(f.output.iterdump())
+    assert _apply(f)["status"] == "rejected"
+    assert tuple(f.output.iterdump()) == applied
+    projection.restore_forwarded_copy_groups(f.output, f.output)
+    assert _snapshot(f.output) == before
+    assert _apply(f)["status"] == "applied"
+
+
 @pytest.fixture
 def projection_archive_store(retained_review_store):
     """Expose an actual archive/cache pair with one extra native group receipt."""
@@ -666,6 +786,7 @@ def projection_archive_store(retained_review_store):
     f.review_path.write_text(
         json.dumps({"schema_version": 2, "packet_reviews": [], "reference_reviews": []})
     )
+    _policy_file(f.store).write_text(json.dumps(_policy()))
     with closing(sqlite3.connect(f.history)) as source, source, closing(sqlite3.connect(f.cache)) as output, output:
         source.row_factory = sqlite3.Row
         for snapshot in source.execute(
@@ -729,6 +850,7 @@ def projection_archive_store(retained_review_store):
         identities = {
             str(p.resolve()): analysis._identity(p) for p in (f.history, f.registry)
         }
+        identities.update(completion_input_identities(f.history))
         output.execute(
             "UPDATE info SET value=? WHERE key='source_inputs'",
             (_hash(analysis._json(identities)),),
@@ -763,6 +885,7 @@ def test_normal_cache_replay_restores_explicit_display_groups_without_author_res
     projection_archive_store, monkeypatch
 ):
     f = projection_archive_store
+    _policy_file(f.store).unlink()
     before = f.history.read_bytes(), f.registry.read_bytes()
     page = analysis.query_contact_analysis(f.store, CONTACT)
     assert page["status"] == "ready"
@@ -804,6 +927,190 @@ def test_normal_cache_replay_restores_explicit_display_groups_without_author_res
         assert _snapshot(output) == baseline
         info = dict(output.execute("SELECT key,value FROM info"))
         assert json.loads(info["forwarded_copy_projection"]) == {
-            "status": "explicit_projection_required"
+            "status": "not_requested", "statements_joined": 0
         }
     assert (f.history.read_bytes(), f.registry.read_bytes()) == before
+
+
+def _policy_file(root):
+    path = wechat_archive_path(root).parent / "contact_display_policies.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def _policy():
+    return {
+        "schema_version": 1,
+        "contacts": [
+            {
+                "contact_id": CONTACT,
+                "native_username": AUTHOR,
+                "collapse_forwarded_copies": True,
+            }
+        ],
+    }
+
+
+def test_only_explicit_validated_contact_policy_enables_display_projection(tmp_path):
+    root = tmp_path / "store"
+    missing = projection.contact_display_policies_digest(root)
+    assert not projection.allows_forwarded_copy_projection(root, CONTACT, AUTHOR)
+    path = _policy_file(root)
+    path.write_text(json.dumps(_policy()))
+    assert projection.allows_forwarded_copy_projection(root, CONTACT, AUTHOR)
+    assert not projection.allows_forwarded_copy_projection(root, CONTACT, packets.OTHER)
+    assert not projection.allows_forwarded_copy_projection(
+        root, "wechat:contact:" + "0" * 64, AUTHOR
+    )
+    present = projection.contact_display_policies_digest(root)
+    assert present != missing
+    path.write_text(json.dumps({"schema_version": 1, "contacts": []}))
+    assert projection.contact_display_policies_digest(root) != present
+    assert not projection.allows_forwarded_copy_projection(root, CONTACT, AUTHOR)
+
+
+@pytest.mark.parametrize(
+    "damage",
+    [
+        "malformed",
+        "duplicate_key",
+        "duplicate_contact",
+        "wrong_author",
+        "false_flag",
+        "integer_flag",
+        "missing_flag",
+        "unexpected_field",
+        "version_boolean",
+        "contacts_not_list",
+        "too_many_contacts",
+        "oversized",
+    ],
+)
+def test_invalid_or_ambiguous_contact_policies_fail_closed(tmp_path, damage):
+    root = tmp_path / "store"
+    value = _policy()
+    if damage == "duplicate_contact":
+        value["contacts"].append(deepcopy(value["contacts"][0]))
+    elif damage == "wrong_author":
+        value["contacts"][0]["native_username"] = packets.OTHER
+    elif damage == "false_flag":
+        value["contacts"][0]["collapse_forwarded_copies"] = False
+    elif damage == "integer_flag":
+        value["contacts"][0]["collapse_forwarded_copies"] = 1
+    elif damage == "missing_flag":
+        del value["contacts"][0]["collapse_forwarded_copies"]
+    elif damage == "unexpected_field":
+        value["contacts"][0]["untrusted_override"] = True
+    elif damage == "version_boolean":
+        value["schema_version"] = True
+    elif damage == "contacts_not_list":
+        value["contacts"] = {}
+    elif damage == "too_many_contacts":
+        value["contacts"] *= projection.MAX_POLICY_CONTACTS + 1
+    raw = json.dumps(value)
+    if damage == "malformed":
+        raw = "{"
+    elif damage == "duplicate_key":
+        raw = raw.replace(
+            '"schema_version": 1', '"schema_version": 1,"schema_version": 1'
+        )
+    elif damage == "oversized":
+        raw = " " * (projection.MAX_POLICY_BYTES + 1)
+    _policy_file(root).write_text(raw)
+    assert not projection.allows_forwarded_copy_projection(root, CONTACT, AUTHOR)
+
+
+def test_symlinked_policy_or_parent_is_not_followed(tmp_path):
+    root = tmp_path / "store"
+    target = tmp_path / "external-policy.json"
+    target.write_text(json.dumps(_policy()))
+    path = _policy_file(root)
+    path.symlink_to(target)
+    assert not projection.allows_forwarded_copy_projection(root, CONTACT, AUTHOR)
+    other = tmp_path / "another-root"
+    (other / "messaging").mkdir(parents=True)
+    (other / "messaging/wechat").symlink_to(path.parent, target_is_directory=True)
+    assert not projection.allows_forwarded_copy_projection(other, CONTACT, AUTHOR)
+
+
+def test_policy_identity_change_during_read_fails_closed(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    root = tmp_path / "store"
+    path = _policy_file(root)
+    path.write_text(json.dumps(_policy()))
+    original = type(path).stat
+    calls = 0
+
+    def changed_stat(current, *args, **kwargs):
+        nonlocal calls
+        result = original(current, *args, **kwargs)
+        if current == path and kwargs.get("follow_symlinks") is not False:
+            calls += 1
+            if calls == 2:
+                fields = {
+                    name: getattr(result, name)
+                    for name in dir(result)
+                    if name.startswith("st_")
+                }
+                fields["st_mtime_ns"] += 1
+                return SimpleNamespace(**fields)
+        return result
+
+    monkeypatch.setattr(type(path), "stat", changed_stat)
+    assert not projection.allows_forwarded_copy_projection(root, CONTACT, AUTHOR)
+
+
+@pytest.mark.parametrize("field,value", [("st_flags", 0x40000000), ("st_mode", 0)])
+def test_cloud_only_or_nonregular_policy_is_not_read(
+    tmp_path, monkeypatch, field, value
+):
+    root = tmp_path / "store"
+    path = _policy_file(root)
+    path.write_text(json.dumps(_policy()))
+    original = type(path).stat
+
+    def changed_stat(current, *args, **kwargs):
+        result = original(current, *args, **kwargs)
+        if current == path:
+            from types import SimpleNamespace
+
+            fields = {
+                name: getattr(result, name)
+                for name in dir(result)
+                if name.startswith("st_")
+            }
+            fields[field] = value
+            return SimpleNamespace(**fields)
+        return result
+
+    monkeypatch.setattr(type(path), "stat", changed_stat)
+    assert not projection.allows_forwarded_copy_projection(root, CONTACT, AUTHOR)
+
+
+@pytest.mark.parametrize("source", ["native", "html"])
+@pytest.mark.parametrize("message_type", [49, None, True, "unexpected"])
+def test_conflicting_forwarded_type_is_never_folded_as_plain_text(
+    projection_store, source, message_type
+):
+    f = projection_store
+    parent = f.first if source == "native" else f.html
+
+    def alter(proof):
+        part = proof[
+            "text_components" if source == "native" else "forwarded_components"
+        ][0]
+        part["original_message_type"] = message_type
+
+    _update_proof(f, parent, alter)
+    bad_ref = f.native_refs[0] if source == "native" else f.html_refs[0]
+    before = _snapshot(f.output)["refs"]
+    _apply(f)
+    assert _snapshot(f.output)["refs"] == before
+    assert (
+        f.output.execute(
+            "SELECT COUNT(*) FROM forwarded_copy_projection_evidence WHERE reference_id=?",
+            (bad_ref,),
+        ).fetchone()[0]
+        == 0
+    )

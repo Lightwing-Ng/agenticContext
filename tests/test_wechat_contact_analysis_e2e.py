@@ -1,6 +1,6 @@
 """Contact analysis uses verified identity and preserves same-tab chat navigation.
 
-Code version: v1.4.1-codex.0
+Code version: v1.4.3-codex.0
 """
 
 from __future__ import annotations
@@ -260,7 +260,7 @@ def test_merged_statement_shows_one_primary_link_and_retains_original_accounts(
         expect(rows.locator(".wechat-contact-statement")).to_have_text(
             fixture.shared_text
         )
-        metrics = page.locator('[aria-label="Contact statement totals"] strong')
+        metrics = page.locator('[aria-label="Contact message totals"] strong')
         expect(metrics).to_have_text(["1", "1", "2"])
         sources = rows.locator("details[data-wechat-contact-sources]")
         expect(sources).to_have_count(1)
@@ -427,8 +427,31 @@ def test_contact_link_aggregates_verified_accounts_and_back_restores_chat(
         position = _chat_position(page)
         assert position["top"] > 1000
         original_url = page.url
-        link.click()
+        before_navigation = []
+
+        def capture_contact_wait(message):
+            if message.text.startswith("contact-entry-wait:"):
+                before_navigation.append(json.loads(message.text.removeprefix("contact-entry-wait:")))
+
+        page.on("console", capture_contact_wait)
+        page.evaluate("""() => {
+            window.addEventListener('click', event => {
+                if (!event.target.closest('a[data-wechat-contact-link]')) return;
+                console.debug('contact-entry-wait:' + JSON.stringify({
+                    url: location.href,
+                    waiting: !document.getElementById('cache_wait_modal').hidden,
+                    title: document.getElementById('cache_wait_modal_title').textContent,
+                    scroll: document.querySelector('[data-chat-scrollport]').scrollTop,
+                }));
+            }, {once: true});
+        }""")
+        with page.expect_request("**/browser/wechat/contacts/**"):
+            link.click(no_wait_after=True)
         page.wait_for_url("**/browser/wechat/contacts/**", wait_until="networkidle")
+        assert before_navigation == [{
+            "url": original_url, "waiting": True, "title": "Loading messages",
+            "scroll": position["top"],
+        }]
         assert len(context.pages) == 1
         expect(page.locator("[data-contact-analysis]")).to_be_visible()
         expect(
@@ -449,6 +472,7 @@ def test_contact_link_aggregates_verified_accounts_and_back_restores_chat(
 
         page.go_back(wait_until="networkidle")
         expect(page).to_have_url(original_url)
+        expect(page.locator("#cache_wait_modal")).to_be_hidden()
         page.wait_for_function(
             """expected => Math.abs(document.querySelector('[data-chat-scrollport]').scrollTop - expected) <= 2""",
             arg=position["top"],
@@ -464,7 +488,7 @@ def test_contact_link_aggregates_verified_accounts_and_back_restores_chat(
         link.press("Enter")
         page.wait_for_url("**/browser/wechat/contacts/**", wait_until="networkidle")
         assert len(context.pages) == 1
-        search = page.get_by_role("searchbox", name="Search contact statements")
+        search = page.get_by_role("searchbox", name="Search contact messages")
         search.fill("B target statement")
         search.press("Enter")
         page.wait_for_load_state("networkidle")
@@ -505,7 +529,7 @@ def _large_contact_page_result(fixture):
 
 
 def _contact_pagination_geometry(page):
-    return page.get_by_role("navigation", name="Contact statement pages").evaluate(
+    return page.get_by_role("navigation", name="Contact message pages").evaluate(
         """pagination => {
         const active = pagination.querySelector('[aria-current="page"]');
         const indicator = pagination.querySelector('.local-store-pagination-indicator');
@@ -551,7 +575,7 @@ def _contact_pagination_geometry(page):
 def _assert_contact_pagination_geometry(page, current, *, animated):
     # Browser Back preserves the previous arrow's pointer position and hover state.
     page.mouse.move(0, 0)
-    page.get_by_role("navigation", name="Contact statement pages").evaluate(
+    page.get_by_role("navigation", name="Contact message pages").evaluate(
         """async pagination => {
         const transitions = pagination.getAnimations({subtree: true}).filter(animation => {
             const end = animation.effect?.getComputedTiming().endTime;
@@ -563,7 +587,7 @@ def _assert_contact_pagination_geometry(page, current, *, animated):
     if animated:
         page.wait_for_function(
             """() => {
-            const pagination = document.querySelector('[aria-label="Contact statement pages"]');
+            const pagination = document.querySelector('[aria-label="Contact message pages"]');
             const active = pagination?.querySelector('[aria-current="page"]');
             const indicator = pagination?.querySelector('.local-store-pagination-indicator');
             if (!active || !indicator || !pagination.classList.contains('is-animated')) return false;
@@ -599,7 +623,7 @@ def _assert_contact_pagination_geometry(page, current, *, animated):
 
 def _assert_contact_page_filters(page, expected_return):
     for href in (
-        page.get_by_role("navigation", name="Contact statement pages")
+        page.get_by_role("navigation", name="Contact message pages")
         .locator("a")
         .evaluate_all("links => links.map(link => link.href)")
     ):
@@ -650,7 +674,7 @@ def test_contact_large_page_controls_track_current_page_and_resize(
                 expect(page.locator("tr[data-contact-message-id]")).to_have_count(
                     2 if current == 1611 else 50
                 )
-            page.get_by_role("link", name="Previous statement page", exact=True).click()
+            page.get_by_role("link", name="Previous message page", exact=True).click()
             page.wait_for_load_state("networkidle")
             _assert_contact_pagination_geometry(page, 1610, animated=True)
             _assert_contact_page_filters(page, return_url)

@@ -1,6 +1,6 @@
 """Disposable-browser coverage for the ChatGPT Media Sessions index.
 
-Code version: v1.2.0-claude.0
+Code version: v1.2.1-codex.0
 """
 
 from __future__ import annotations
@@ -87,8 +87,13 @@ def sessions_server_url(tmp_path: Path) -> Iterator[str]:
 
 
 def _column_count(page: Page, selector: str) -> int:
+    """Count cards on the first rendered row regardless of track spans."""
     return page.locator(selector).evaluate(
-        "element => getComputedStyle(element).gridTemplateColumns.split(' ').length"
+        """element => {
+            const cards = [...element.querySelectorAll(':scope > [data-chatgpt-session-card]')];
+            const firstTop = cards[0]?.offsetTop;
+            return cards.filter(card => card.offsetTop === firstTop).length;
+        }"""
     )
 
 

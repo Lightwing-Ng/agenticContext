@@ -83,7 +83,7 @@ def test_concurrent_publisher_cannot_replace_another_sessions_new_bank(bank_arch
         assert (
             hashlib.sha256(published).hexdigest() == winning_receipt["candidate_sha256"]
         )
-        with pytest.raises(ValueError, match="source identities changed"):
+        with pytest.raises(ValueError, match="Canonical inputs changed before reuse or publication"):
             bank.publish_mac_recovery_bank(fixture.root, stale_candidate, stale_receipt)
         assert fixture.bank_path.read_bytes() == published
         assert fixture.history.read_bytes() == history_before

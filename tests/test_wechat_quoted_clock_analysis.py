@@ -1,6 +1,6 @@
 """Contact cache upgrades recover original clocks without borrowing reply authors.
 
-Code version: v1.1.4-codex.0
+Code version: v1.1.5-codex.0
 """
 
 from contextlib import closing
@@ -26,13 +26,13 @@ OWNER = "wxid_quoted_clock_owner"
 TARGET = "wxid_quoted_clock_target"
 OTHER = "wxid_quoted_clock_original_author"
 MEMBER = "wxid_quoted_clock_associated_identity"
-ROOM = "888800001111@chatroom"
+ROOM = "98000000001@chatroom"
 BODY = "Original statement; preserve  two spaces\nAnd a literal second line."
 REPLY = "The current author's separate reply."
 MEMBER_BODY = "The associated identity's own statement."
-ORIGINAL_TIME = "2026-01-02T10:00:00+08:00"
-REPLY_TIME = "2026-01-02T10:02:57+08:00"
-ORIGINAL_SERVER = "9000000000000000001"
+ORIGINAL_TIME = "2023-02-28T14:52:25+08:00"
+REPLY_TIME = "2023-02-28T14:55:22+08:00"
+ORIGINAL_SERVER = "3365480705523997094"
 LEGACY_CLOCK_RULE = "v0.0.0-synthetic-unknown-clocks"
 
 
@@ -90,7 +90,7 @@ def quoted_clock_store(tmp_path):
                 TARGET,
                 native_components_text(components),
                 REPLY_TIME,
-                "9000000000000000002",
+                "4001703475893116384",
                 message_type=49,
                 appmsg_subtype=57,
                 text_extraction_kind="quoted_reply",
@@ -105,8 +105,8 @@ def quoted_clock_store(tmp_path):
                     "member",
                     MEMBER,
                     MEMBER_BODY,
-                    "2026-01-02T10:03:35+08:00",
-                    "9000000000000000003",
+                    "2023-02-28T14:56:00+08:00",
+                    "4001703475893116385",
                 )
             )
         merge(tmp_path, [metadata], records, "synthetic-ipad-clock-snapshot")
@@ -248,7 +248,7 @@ def test_complete_index_recovers_quoted_original_clock_without_rescanning(
     assert recovered["has_time"] == 1
     assert recovered["timestamp_value"] == ORIGINAL_TIME
     assert recovered["timestamp_value"] != REPLY_TIME
-    assert recovered["timestamp_label"] == "2 Jan 2026 10:00:00"
+    assert recovered["timestamp_label"] == "28 Feb 2023 14:52:25"
     assert recovered["time_basis"].startswith("Recovered original message time; ")
     assert recovered["source_clock"] == ""
     after = _reference_state(cache)

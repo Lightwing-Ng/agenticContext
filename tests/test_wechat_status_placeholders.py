@@ -22,10 +22,10 @@ from app.core.wechat_history_browser import (
 from tests.test_wechat_archive import make_archive
 
 
-STATUS_A = "${wxid_synthetic_status_a@textstatusicon}"
-STATUS_B = "${wxid_synthetic_status_b@textstatusicon}"
-RAW_NOTICE = f"I {STATUS_A} tickled ⻩测试联系人{STATUS_B}'s intrusive打扰"
-DISPLAY_NOTICE = "I tickled ⻩测试联系人's intrusive打扰"
+STATUS_A = "${wxid_fixturepeer000@textstatusicon}"
+STATUS_B = "${wxid_fixturepeer001@textstatusicon}"
+RAW_NOTICE = f"I {STATUS_A} tickled ⻘小禾{STATUS_B}'s canvas画布"
+DISPLAY_NOTICE = "I tickled ⻘小禾's canvas画布"
 
 
 @pytest.mark.parametrize(

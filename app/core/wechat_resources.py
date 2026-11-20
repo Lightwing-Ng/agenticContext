@@ -1,6 +1,6 @@
 """Present persistent WeChat resource references without exposing host paths.
 
-Code version: v1.3.1-codex.0
+Code version: v1.6.0-codex.0
 """
 
 from __future__ import annotations
@@ -25,10 +25,10 @@ RESOURCE_LABELS = {
     "unknown": "Message attachment",
 }
 _STATUS_LABELS = {
-    "file": "Show in Finder",
+    "file": "Available locally",
     "candidate": "Local file candidate",
-    "folder": "Mac folder",
-    "missing": "Not found on this Mac",
+    "folder": "Local folder only",
+    "missing": "Not found locally",
 }
 _DIGEST = re.compile(r"[0-9a-f]{64}")
 _CHANNELS_NAME = "WeChat Channels"
@@ -36,7 +36,7 @@ _CHANNELS_FALLBACK_TITLE = "当前微信版本不支持展示该内容，请升�
 
 
 def _card_label(value):
-    """Keep a bounded original label as inert text without accepting markup."""
+    """Accept a bounded source label as inert text, never as markup or a URL."""
     if (
         not isinstance(value, str)
         or not value.strip()
@@ -176,19 +176,27 @@ def present_resource(reference, resolver):
     )
     if reference.get("availability") == "metadata_only":
         label = RESOURCE_LABELS[reference["kind"]]
+        publisher = ""
+        if reference["kind"] == "file":
+            label = (
+                _card_label(reference.get("filename"))
+                or _card_label(reference.get("safe_title"))
+                or label
+            )
+        elif reference["kind"] == "app":
+            label, publisher = _app_card_text(reference)
         resource = {
             "kind": reference["kind"],
-            "kind_label": label,
+            "kind_label": RESOURCE_LABELS[reference["kind"]],
             "label": label,
+            "publisher_name": publisher,
             "status": "metadata_only",
             "status_label": "Metadata only",
             "action_label": "",
             "can_reveal": False,
         }
-        if reference["kind"] == "app":
-            resource["label"], resource["publisher_name"] = _app_card_text(reference)
-            if reference.get("app_subtype") == "5":
-                resource["is_link"] = True
+        if reference["kind"] == "app" and reference.get("app_subtype") == "5":
+            resource["is_link"] = True
         if channels:
             resource.update(is_link=True, platform_label=_CHANNELS_NAME)
         return resource
@@ -214,6 +222,12 @@ def present_resource(reference, resolver):
         app_label, resource["publisher_name"] = _app_card_text(reference)
         if not isinstance(filename, str) or not filename:
             resource["label"] = app_label
+    elif reference["kind"] == "file":
+        resource["label"] = (
+            _card_label(filename)
+            or _card_label(reference.get("safe_title"))
+            or RESOURCE_LABELS["file"]
+        )
     if channels:
         resource.update(is_link=True, platform_label=_CHANNELS_NAME)
     return resource

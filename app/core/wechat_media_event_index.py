@@ -1,11 +1,10 @@
 """Read a published global metadata timeline without opening media payloads.
 
-Code version: v1.1.0-codex.0
+Code version: v1.1.2-codex.0
 """
 
 from __future__ import annotations
 
-from collections import Counter
 from contextlib import closing
 import hashlib
 import json
@@ -37,6 +36,7 @@ SCHEMA = MEDIA_EVENT_SCHEMA
 MAX_SOURCES = 4096
 MAX_CONVERSATIONS = 100_000
 MAX_SOURCE_METADATA_BYTES = 16 * 1024**2
+MEMBERSHIP_BATCH_SIZE = 256
 _HEX = re.compile(r"[0-9a-f]{64}")
 _TABLE = re.compile(r"(?:(?:main|temp)\.)?[A-Za-z_][A-Za-z0-9_]*")
 _COLUMNS = (
@@ -258,7 +258,7 @@ def _source_proofs(connection):
     return result
 
 
-def _validated_conversations(connection, history_identity):
+def _validated_conversations(connection, history_identity, *, history_path=None):
     _validate_schema(connection)
     info = dict(
         connection.execute("SELECT key,value FROM media_event_index.archive_info")
@@ -280,9 +280,15 @@ def _validated_conversations(connection, history_identity):
             "A media publication requires an exact primary identity receipt."
         )
     if pinned_identity != history_identity:
-        raise _StaleIndex(
-            "The media event publication refers to another primary archive."
-        )
+        from .wechat_archive_relocation import HISTORY, matches
+
+        if history_path is None or not matches(
+            history_path, "media_events.sqlite3",
+            {HISTORY: pinned_identity}, {HISTORY: history_identity},
+        ):
+            raise _StaleIndex(
+                "The media event publication refers to another primary archive."
+            )
     sources = _source_proofs(connection)
     conversations = _rows(
         connection, "SELECT * FROM media_event_index.conversations LIMIT 100001"
@@ -371,11 +377,14 @@ def _validated_conversations(connection, history_identity):
 
 
 def _attach_verified(connection, history_path):
+    from .wechat_archive_relocation import receipt_identity
+
     path, status = _local_index(history_path)
     if status != "ready":
         return path, status, []
     identity = _file_identity(path)
     history_identity = _file_identity(Path(history_path))
+    relocation = receipt_identity(history_path)
     connection.execute(
         "ATTACH DATABASE ? AS media_event_index",
         (path.resolve().as_uri() + "?mode=ro&immutable=1",),
@@ -385,11 +394,14 @@ def _attach_verified(connection, history_path):
         tuple(identity.items()),
         str(Path(history_path).resolve()),
         tuple(history_identity.items()),
+        str(relocation),
     )
     with _LOCK:
         conversations = _VALIDATED.get(key)
     if conversations is None:
-        conversations = _validated_conversations(connection, history_identity)
+        conversations = _validated_conversations(
+            connection, history_identity, history_path=history_path,
+        )
         with _LOCK:
             if len(_VALIDATED) >= 4:
                 _VALIDATED.pop(next(iter(_VALIDATED)))
@@ -397,6 +409,7 @@ def _attach_verified(connection, history_path):
     if (
         _file_identity(path) != identity
         or _file_identity(Path(history_path)) != history_identity
+        or receipt_identity(history_path) != relocation
     ):
         raise _StaleIndex("The media metadata changed during source verification.")
     return path, "ready", conversations
@@ -428,7 +441,7 @@ def attach_media_event_index(
         if not selected:
             return *default, "absent"
         # Flatten summary views once before per-conversation lookups. Their
-        # message timelines remain lazy and retain their original source scope.
+        # message timelines remain lazy and retain indexed candidate filtering.
         connection.execute(
             "CREATE TEMP TABLE media_event_input_conversations AS "
             f"SELECT * FROM {conversation_table}"
@@ -446,22 +459,40 @@ def attach_media_event_index(
             [(value["id"],) for value in selected],
         )
         connection.execute(
-            f"CREATE TEMP VIEW media_event_timeline_messages AS SELECT * FROM {message_table} UNION ALL SELECT e.* FROM media_event_index.messages e WHERE e.conversation_id IN (SELECT id FROM temp.media_event_selected_conversations) AND NOT EXISTS(SELECT 1 FROM {message_table} b WHERE b.id=e.id)"
+            "CREATE TEMP TABLE media_event_input_membership(id TEXT PRIMARY KEY) WITHOUT ROWID"
         )
-        duplicates = Counter()
-        if (
-            conversation_id is None
-            and connection.execute(
-                "SELECT 1 FROM temp.sqlite_master WHERE type='table' AND name='media_placeholder_messages'"
-            ).fetchone()
-        ):
-            duplicates.update(
-                dict(
-                    connection.execute(
-                        "SELECT e.conversation_id,COUNT(*) FROM temp.media_placeholder_messages p CROSS JOIN media_event_index.messages e ON e.id=p.id GROUP BY e.conversation_id"
-                    )
-                )
+        membership_query = (
+            "INSERT OR IGNORE INTO media_event_input_membership "
+            f"SELECT b.id FROM {message_table} b WHERE b.id IN ("
+        )
+        if conversation_id is None:
+            connection.execute(
+                membership_query
+                + "SELECT e.id FROM media_event_index.messages e WHERE e.conversation_id "
+                "IN (SELECT id FROM temp.media_event_selected_conversations))"
             )
+        else:
+            # Bound IDs reach upstream indexes on SQLite versions that cannot
+            # push an IN subquery through the scoped compound timeline view.
+            with closing(connection.execute(
+                "SELECT id FROM media_event_index.messages WHERE conversation_id=?",
+                (conversation_id,),
+            )) as candidates:
+                while batch := candidates.fetchmany(MEMBERSHIP_BATCH_SIZE):
+                    placeholders = ",".join("?" for _ in batch)
+                    connection.execute(
+                        membership_query + placeholders + ")", [row[0] for row in batch]
+                    )
+        connection.execute(
+            f"CREATE TEMP VIEW media_event_timeline_messages AS SELECT * FROM {message_table} UNION ALL SELECT e.* FROM media_event_index.messages e WHERE e.conversation_id IN (SELECT id FROM temp.media_event_selected_conversations) AND NOT EXISTS(SELECT 1 FROM temp.media_event_input_membership b WHERE b.id=e.id)"
+        )
+        duplicates = dict(
+            connection.execute(
+                "SELECT e.conversation_id,COUNT(*) FROM temp.media_event_input_membership b "
+                "CROSS JOIN media_event_index.messages e ON e.id=b.id "
+                "GROUP BY e.conversation_id"
+            )
+        )
         connection.execute(
             f"CREATE TEMP TABLE media_event_conversation_summaries AS SELECT * FROM {conversation_table} WHERE 0"
         )
@@ -475,12 +506,7 @@ def attach_media_event_index(
                 f"SELECT * FROM {conversation_table} WHERE id=?",
                 (media["id"],),
             )
-            overlap = duplicates[media["id"]]
-            if conversation_id is not None:
-                overlap = connection.execute(
-                    f"SELECT COUNT(*) FROM media_event_index.messages e WHERE e.conversation_id=? AND EXISTS(SELECT 1 FROM {message_table} b WHERE b.id=e.id)",
-                    (media["id"],),
-                ).fetchone()[0]
+            overlap = duplicates.get(media["id"], 0)
             added = media["message_count"] - overlap
             if added < 0:
                 raise ValueError("Media event overlap exceeds its published summary.")

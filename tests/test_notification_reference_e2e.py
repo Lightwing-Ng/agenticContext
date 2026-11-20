@@ -1,6 +1,6 @@
 """Production waiting-notice and catalog reference parity.
 
-Code version: v1.2.2-codex.0
+Code version: v1.2.3-codex.0
 """
 
 from __future__ import annotations
@@ -511,7 +511,9 @@ def _access_snapshot(surface: Locator) -> dict:
             formDisplay: getComputedStyle(form).display,
             formGap: getComputedStyle(form).gap,
             formMargin: getComputedStyle(form).marginTop,
-            actionJustification: getComputedStyle(actions).justifyContent, canonicalActionJustification,
+            actionJustification: getComputedStyle(actions).justifyContent,
+            canonicalActionJustification,
+            actionDisplay: getComputedStyle(actions).display,
             actionRow: rect(actions), submit: rect(actions.querySelector('button[type="submit"]')),
             titleSize: getComputedStyle(title).fontSize,
             titleWeight: getComputedStyle(title).fontWeight,
@@ -706,6 +708,7 @@ def test_agent_access_retains_its_form_adapter_and_uses_the_approved_material(
         assert snapshot["formDisplay"] == "grid", snapshot
         assert snapshot["formGap"] == "16px", snapshot
         assert snapshot["formMargin"] == "22px", snapshot
+        assert snapshot["actionDisplay"] == "flex", snapshot
         assert snapshot["actionJustification"] == snapshot["canonicalActionJustification"], snapshot
         assert snapshot["submit"]["right"] == pytest.approx(snapshot["actionRow"]["right"], abs=0.5), snapshot
         assert snapshot["submit"]["left"] > snapshot["actionRow"]["left"], snapshot

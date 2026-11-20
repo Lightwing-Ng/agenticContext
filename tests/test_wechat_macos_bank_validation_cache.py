@@ -191,12 +191,7 @@ def test_changed_receipt_or_pin_requires_full_validation(bank_archive, monkeypat
     elif change == "symlink":
         original = path.with_suffix(".saved")
         path.rename(original)
-        try:
-            path.symlink_to(original)
-        except OSError as error:
-            if os.name == "nt" and getattr(error, "winerror", None) == 1314:
-                pytest.skip("Windows file symlinks require developer mode or elevation.")
-            raise
+        path.symlink_to(original)
 
     original_validate = bank._validate_bank
     calls = []
