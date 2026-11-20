@@ -1,4 +1,4 @@
-/* Code version: v1.2.0-codex.0 */
+/* Code version: v1.3.0-codex.0 */
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
@@ -7,7 +7,7 @@ import vm from "node:vm";
 const source = readFileSync(new URL("../app/web/static/wechat-browser-read.js", import.meta.url), "utf8");
 const flush = () => new Promise(resolve => setImmediate(resolve));
 
-function fixture(state, fetch, { preview = false, accountRefreshing = false } = {}) {
+function fixture(state, fetch, { preview = false, accountPreview = false, accountRefreshing = false } = {}) {
     const statusUrl = "/api/browser/wechat/read/synthetic-task-identifier";
     let reloads = 0;
     const location = {
@@ -34,7 +34,10 @@ function fixture(state, fetch, { preview = false, accountRefreshing = false } = 
         "[data-wechat-read-retry]": retry,
     };
     const root = {
-        dataset: { state, statusUrl, retryUrl: statusUrl, taskId: "synthetic-task", generation: "1" },
+        dataset: {
+            state, statusUrl, retryUrl: statusUrl, taskId: "synthetic-task", generation: "1",
+            wechatReadAccountPreview: String(accountPreview),
+        },
         querySelector: selector => elements[selector],
         closest: () => ({ querySelectorAll: () => [placeholder, ...previewNodes] }),
     };
@@ -172,4 +175,34 @@ test("a rejected saved view still hides the pending content", async () => {
     assert.equal(page.root.dataset.state, "failed");
     assert.ok(page.previewNodes.every(node => node.hidden));
     assert.equal(page.retry.hidden, false);
+});
+
+for (const initialState of ["running", "failed"]) {
+    test(`a failed account read keeps verified navigation from an initially ${initialState} document`, async () => {
+        const page = fixture(initialState, async () => ({
+            ok: true,
+            json: async () => ({
+                task_id: "synthetic-task", generation: 1, state: "failed",
+                message: "Saved records could not be checked. Try loading this view again.",
+            }),
+        }), { preview: true, accountPreview: true });
+        await flush();
+        assert.equal(page.root.dataset.state, "failed");
+        assert.equal(page.placeholder.hidden, true);
+        assert.ok(page.previewNodes.every(node => !node.hidden));
+        assert.match(page.copy.textContent, /Showing the last verified conversations/);
+        assert.equal(page.retry.hidden, false);
+        assert.equal(page.reloads(), 0);
+    });
+}
+
+test("a changed task identity still hides the earlier account navigation", async () => {
+    const page = fixture("running", async () => ({
+        ok: true,
+        json: async () => ({ task_id: "different-task", generation: 1, state: "failed" }),
+    }), { preview: true, accountPreview: true });
+    await flush();
+    assert.equal(page.root.dataset.state, "failed");
+    assert.ok(page.previewNodes.every(node => node.hidden));
+    assert.match(page.copy.textContent, /The saved-view task changed/);
 });

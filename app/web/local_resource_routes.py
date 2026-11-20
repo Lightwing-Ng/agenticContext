@@ -5,7 +5,7 @@ refresh service without reaching for a browser or Agent. Serialization of one st
 public shape lives here too, so a template global and a JSON response cannot drift.
 """
 
-# Code version: v1.25.5-codex.0
+# Code version: v1.25.6-codex.0
 
 from __future__ import annotations
 
@@ -526,6 +526,7 @@ def register_local_resource_routes(app: Flask, context: LocalResourceRouteContex
         force_refresh = request.args.get("refresh") == "1"
         wechat_read_job = None
         wechat_read_preview = False
+        wechat_read_account_preview = False
         prompt_page = None
         saved_prompt_keys = context.prompt_store.saved_pointer_keys()
         saved_prompt_content_keys = (
@@ -568,7 +569,10 @@ def register_local_resource_routes(app: Flask, context: LocalResourceRouteContex
                     }
                 if (
                     text_page is None
-                    and wechat_read_job["state"] == "running"
+                    and (
+                        wechat_read_job["state"] == "running"
+                        or (scoped and wechat_read_job["state"] == "failed")
+                    )
                     and not filters["session"]
                     and not filters["q"]
                 ):
@@ -584,6 +588,7 @@ def register_local_resource_routes(app: Flask, context: LocalResourceRouteContex
                     if preview is not None and preview.sessions:
                         text_page = preview
                         wechat_read_preview = True
+                        wechat_read_account_preview = scoped
                 if text_page is None:
                     text_page = ChatHistoryPage(
                         items=(), total_count=0, conversation_count=0,
@@ -701,6 +706,7 @@ def register_local_resource_routes(app: Flask, context: LocalResourceRouteContex
             text_page=text_page,
             wechat_read_job=wechat_read_job,
             wechat_read_preview=wechat_read_preview,
+            wechat_read_account_preview=wechat_read_account_preview,
             wechat_account_refresh_id=wechat_account_refresh_id,
             wechat_account_refresh_available=bool(
                 wechat_account_refresh_id

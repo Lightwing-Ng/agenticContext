@@ -1,6 +1,6 @@
 """Account lists consume only a verified shard of the current publication.
 
-Code version: v1.2.0-codex.0
+Code version: v1.3.0-codex.0
 """
 
 from contextlib import closing
@@ -300,6 +300,82 @@ def test_http_miss_waits_for_worker_and_never_falls_back_to_global_read(
         rows = html.select("tr[data-chat-session-id]")
         assert rows and {row["data-wechat-account"] for row in rows} == {account}
         assert {row["data-wechat-conversation-kind"] for row in rows} == expected_kinds
+    finally:
+        release.set()
+        app.extensions["runtime_shutdown"]()
+
+
+@pytest.mark.parametrize("preview", ("signed", "tampered", "wrong-pin"))
+def test_failed_account_view_keeps_only_the_authenticated_preview(session_app, monkeypatch, preview):
+    app, root = session_app
+    worker = app.extensions[WECHAT_SUMMARY_EXTENSION]
+    repository = WechatArchiveRepository(root)
+    contacts = contact_registry_path(root)
+    with closing(sqlite3.connect(contacts)) as connection, connection:
+        initialize_contact_registry(connection)
+    identity = _file_identity(repository.path)
+    with closing(sqlite3.connect(repository.path.as_uri() + "?mode=ro&immutable=1", uri=True)) as connection:
+        assert summary.snapshot.load_conversation_snapshot(repository, connection, identity)
+    assert summary.publish_account_summaries(repository, identity)
+
+    account = "account:wxid_account_a"
+    if preview == "tampered":
+        shard = repository.path.with_name("browser_cache") / summary._account_filename(account)
+        shard.write_bytes(shard.read_bytes() + b"tampered")
+    elif preview == "wrong-pin":
+        with closing(sqlite3.connect(contacts)) as connection, connection:
+            connection.execute("CREATE TABLE replaced_registry_fixture (value TEXT)")
+    monkeypatch.setattr(summary.snapshot, "_code_fingerprint", lambda: "reader-update")
+
+    release = Event()
+
+    def reject_publication():
+        assert release.wait(4)
+        return "failed"
+
+    monkeypatch.setattr(type(worker), "active", property(lambda _: True))
+    monkeypatch.setattr(worker, "wait_for_publication", reject_publication)
+    client = app.test_client()
+    parameters = {
+        "view": "text", "source": "wechat", "session_view": "1", "account": account, "chat_kind": "all",
+    }
+
+    def saved_view(state):
+        response = client.get("/browser", query_string=parameters)
+        assert response.status_code == 200
+        html = BeautifulSoup(response.data, "html.parser")
+        panel = html.select_one("[data-wechat-read-pending]")
+        assert panel["data-state"] == state
+        rows = html.select("tr[data-chat-session-id]")
+        assert bool(rows) is (preview == "signed")
+        assert panel.has_attr("data-wechat-read-account-preview") is (preview == "signed")
+        assert html.select_one("[data-chat-message-id], .browser-metric-grid [data-numeric-display-value]") is None
+        if rows:
+            assert {row["data-wechat-account"] for row in rows} == {account}
+            assert "last verified snapshot" in html.select_one("[data-wechat-read-preview]").get_text()
+        if state == "failed":
+            assert "Saved records could not be checked" in panel.select_one("[data-wechat-read-copy]").get_text()
+            assert not panel.select_one("[data-wechat-read-retry]").has_attr("hidden")
+        return panel, [row["data-chat-session-id"] for row in rows]
+
+    def wait_until_failed(status_url):
+        deadline = time.monotonic() + 3
+        while (status := client.get(status_url).json["state"]) == "running":
+            assert time.monotonic() < deadline
+            time.sleep(0.005)
+        assert status == "failed"
+
+    try:
+        pending, previous = saved_view("running")
+        release.set()
+        wait_until_failed(pending["data-status-url"])
+        failed, after_reload = saved_view("failed")
+        assert after_reload == previous
+        retried = client.post(failed["data-retry-url"]).json
+        assert retried["task_id"] != failed["data-task-id"]
+        wait_until_failed(retried["status_url"])
+        _, after_retry = saved_view("failed")
+        assert after_retry == previous
     finally:
         release.set()
         app.extensions["runtime_shutdown"]()

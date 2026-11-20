@@ -1,4 +1,4 @@
-/* Code version: v1.2.2-codex.0 */
+/* Code version: v1.2.3-codex.0 */
 
 (function initializeWechatReadPage() {
     "use strict";
@@ -18,6 +18,7 @@
     const copy = root.querySelector("[data-wechat-read-copy]");
     const retry = root.querySelector("[data-wechat-read-retry]");
     const placeholders = root.closest(".browser-workspace").querySelectorAll("[data-wechat-read-placeholder]");
+    const keepAccountPreview = root.dataset.wechatReadAccountPreview === "true";
     let stopped = false;
     let reads = 0;
     let failedReads = 0;
@@ -112,7 +113,11 @@
                 }
                 failedReads = 0;
                 if (snapshot.state === "succeeded") { ready(snapshot); return; }
-                if (snapshot.state !== "running") { fail(snapshot.message || "Saved records could not be checked. Try again."); return; }
+                if (snapshot.state !== "running") {
+                    fail(snapshot.message || "Saved records could not be checked. Try again.",
+                        keepAccountPreview && snapshot.state === "failed");
+                    return;
+                }
             } catch (_) {
                 if (stopped || run !== pollRun || window.location.href !== originalUrl) return;
                 failedReads += 1;
@@ -161,6 +166,8 @@
         stopped = false;
         if (resumable) poll();
     });
-    if (root.dataset.state === "failed" || !statusUrl) fail(copy?.textContent || "Try loading this view again.");
+    if (root.dataset.state === "failed" || !statusUrl) {
+        fail(copy?.textContent || "Try loading this view again.", keepAccountPreview);
+    }
     else poll();
 })();

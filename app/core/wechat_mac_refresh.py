@@ -1,6 +1,6 @@
 """Run explicit, bounded Mac WeChat refreshes in background workers.
 
-Code version: v1.8.0-codex.0
+Code version: v1.8.1-codex.0
 """
 
 from __future__ import annotations
@@ -8,6 +8,7 @@ from __future__ import annotations
 from contextlib import closing
 from dataclasses import dataclass
 from itertools import chain
+import logging
 import os
 from pathlib import Path
 import platform
@@ -20,6 +21,7 @@ import sys
 import tempfile
 import time
 from threading import Event, RLock, Thread
+from traceback import walk_tb
 
 from . import wechat_macos_recovery_bank as bank
 from .owner_only_files import ensure_owner_only_directory
@@ -58,6 +60,37 @@ MAX_TASKS = 32
 MAX_PACKET_BYTES = 128 * 1024**2
 FREE_SPACE_RESERVE = 512 * 1024**2
 RECEIPT_CHECKPOINT_INTERVAL = 10
+_LOGGER = logging.getLogger(__name__)
+_PUBLICATION_MODULES = {
+    __name__,
+    "app.core.wechat_completion_clone",
+    "app.core.wechat_macos_bank_validation_cache",
+    "app.core.wechat_macos_bank_v4_reader",
+    "app.core.wechat_macos_recovery_bank",
+    "app.core.wechat_macos_reparse",
+}
+
+
+def _log_publication_failure(error):
+    """Record a bounded code location while keeping source exception text private."""
+    category, code = "unexpected", None
+    if isinstance(error, sqlite3.Error):
+        category, code = "sqlite", getattr(error, "sqlite_errorcode", None)
+    elif isinstance(error, OSError):
+        category, code = "filesystem", error.errno
+    elif isinstance(error, ValueError):
+        category = "validation"
+    location = __name__
+    for frame, line in walk_tb(error.__traceback__):
+        module = frame.f_globals.get("__name__")
+        if module in _PUBLICATION_MODULES:
+            location = f"{module}:{line}"
+    _LOGGER.warning(
+        "WeChat archive publication failed (%s, code=%s, step=%s).",
+        category,
+        code if type(code) is int else None,
+        location,
+    )
 
 
 @dataclass(frozen=True)
@@ -528,6 +561,7 @@ class WechatMacRefreshService:
             if isinstance(error, AccountRefreshDeadlineExceeded):
                 message = ACCOUNT_TIMEOUT_MESSAGE
             elif phase == "saving":
+                _log_publication_failure(error)
                 message = publication_failure_message(error)
             self._update(
                 token,

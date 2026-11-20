@@ -1,6 +1,6 @@
 """Exercise durable web refresh status without reading native WeChat data.
 
-Code version: v1.0.0-codex.0
+Code version: v1.0.1-codex.0
 """
 
 from hashlib import sha256
@@ -171,3 +171,23 @@ def test_worker_instances_keep_status_in_memory(tmp_path, monkeypatch):
     assert service.status(started["task_id"])["state"] == "succeeded"
     assert _service(tmp_path, monkeypatch).status(started["task_id"]) is None
     assert list(tmp_path.iterdir()) == []
+
+
+
+def test_publication_failure_logs_only_bounded_diagnostics(tmp_path, monkeypatch, caplog):
+    monkeypatch.setattr(refresh, "sys", SimpleNamespace(version_info=(3, 14)))
+    service = _service(tmp_path, monkeypatch)
+
+    def fail(token, _owner):
+        service._update(token, phase="saving")
+        raise OSError(5, "private-source-error-text", "/private/source-database")
+
+    monkeypatch.setattr(service, "_run_account", fail)
+    started = service.start_account(_ACCOUNT)
+    service.shutdown()
+
+    result = service.status(started["task_id"])
+    assert result["message"] == refresh.FAILED_MESSAGE
+    assert "filesystem, code=5, step=app.core.wechat_mac_refresh:" in caplog.text
+    assert "private-source-error-text" not in caplog.text
+    assert "/private/source-database" not in caplog.text
