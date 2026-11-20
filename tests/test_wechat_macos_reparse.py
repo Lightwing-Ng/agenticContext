@@ -1,6 +1,6 @@
 """Same native bytes may gain bounded semantics without rewriting prior observations.
 
-Code version: v1.3.1-codex.0
+Code version: v1.3.2-codex.0
 """
 
 from contextlib import closing
@@ -11,6 +11,7 @@ import sqlite3
 
 import pytest
 
+from app.core import wechat_macos_bank_v4_reader as legacy_reader
 from app.core import wechat_macos_recovery_bank as bank
 from app.core import wechat_macos_reparse as repair
 from app.core import wechat_macos_recovery_revalidation as revalidation
@@ -197,6 +198,41 @@ def _app_card_packets(fixture, *, prior_title=False):
     if prior_title:
         old["messages"][0]["resource"]["safe_title"] = "Original source title"
     return old, new
+
+
+def test_historical_card_reconstruction_preserves_the_sealed_projection(bank_archive, monkeypatch):
+    fixture = bank_archive
+    _old, current = _app_card_packets(fixture)
+    project = bank._row
+
+    def historical_row(packet, message):
+        row = project(packet, message)
+        proof = json.loads(row[11])
+        proof.pop("app_card_metadata", None)
+        row[11] = bank._json(proof)
+        return row
+
+    with monkeypatch.context() as legacy:
+        legacy.setattr(bank, "_row", historical_row)
+        fixtures._publish(fixture, packets=[current], name="legacy-signed-card")
+    untouched = _rows(fixture.bank_path, "occurrences")
+    candidate, receipt = fixtures._stage(fixture, packets=[current], name="card-signed-revision")
+    assert receipt["reparsed"] == 1
+    assert _rows(candidate, "occurrences") == untouched
+
+    with closing(sqlite3.connect(candidate)) as connection:
+        connection.row_factory = sqlite3.Row
+        occurrence = dict(connection.execute("SELECT * FROM occurrences").fetchone())
+        message = json.loads(occurrence["proof"])
+        message["resource"]["publisher_name"] = "An unsealed publisher"
+        rejected = {**occurrence, "proof": bank._json(message)}
+        for checker in (legacy_reader, repair):
+            checker.validate(connection)
+            assert checker.historical_occurrence(connection, occurrence)
+            assert not checker.historical_occurrence(connection, rejected)
+
+    bank.publish_mac_recovery_bank(fixture.root, candidate, receipt)
+    assert _rows(fixture.bank_path, "occurrences") == untouched
 
 
 @pytest.mark.parametrize("prior_title", [False, True])

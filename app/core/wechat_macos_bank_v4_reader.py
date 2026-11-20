@@ -1,6 +1,6 @@
 """Validate retained schema-4 Mac revisions without writing or reparsing sources.
 
-Code version: v1.1.1-codex.0
+Code version: v1.2.0-codex.0
 
 Only the four retained monotone revision policies are accepted. New parser
 policies and revision publication remain owned by the canonical bank writer.
@@ -13,6 +13,7 @@ import json
 import re
 
 from . import wechat_text
+from .wechat_macos_reparse import matches_legacy_card_occurrence
 from .wechat_reconcile import native_quote_card_metadata_extends
 from .wechat_resource_index import CHANNELS_APP_SUBTYPE, CHANNELS_LABEL_PATHS
 
@@ -508,20 +509,25 @@ def historical_occurrence(connection, occurrence, *, schema="main"):
     if metadata is not None:
         proof["app_card_metadata"] = metadata
         projected["provenance"] = bank._json(proof)
+    signature = bank._event_signature(projected)
     rows = connection.execute(
-        f"SELECT prior_row FROM {schema}.projection_revisions WHERE message_id=? AND prior_signature=?",
+        f"SELECT prior_row,reason FROM {schema}.projection_revisions "
+        "WHERE message_id=? AND prior_signature=?",
         (occurrence["canonical_id"], occurrence["signature"]),
     )
-    for record in rows:
-        prior = json.loads(record[0])
+    for prior_row, reason in rows:
+        prior = json.loads(prior_row)
         raw, _digest = _identity(prior)
         if (
             packet["account_id"] == raw["account_id"]
             and packet["peer_id"] == raw["peer_id"]
             and message["server_id"] == raw["server_id"]
-            and bank._event_signature(projected)
-            == bank._event_signature(prior)
-            == occurrence["signature"]
+            and bank._event_signature(prior) == occurrence["signature"]
+            and (
+                signature == occurrence["signature"]
+                or reason == "app_card_metadata_completion"
+                and matches_legacy_card_occurrence(projected, prior, packet, occurrence)
+            )
         ):
             return True
     return False

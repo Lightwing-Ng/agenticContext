@@ -1,6 +1,6 @@
 """Journal closed, monotone parser repairs of the same authenticated native row.
 
-Code version: v1.2.2-codex.0
+Code version: v1.3.0-codex.0
 """
 
 from __future__ import annotations
@@ -595,6 +595,33 @@ def validate(connection):
             )
 
 
+def matches_legacy_card_occurrence(projected, prior, packet, occurrence):
+    """Reproduce a sealed card signature made before the derived label field."""
+    bank = _bank()
+    prior_proof = json.loads(prior["provenance"])
+    current_proof = json.loads(projected["provenance"])
+    reference = current_proof.get("resource_reference")
+    if (
+        "app_card_metadata" in prior_proof
+        or not isinstance(current_proof.get("app_card_metadata"), dict)
+        or not isinstance(reference, dict)
+        or reference.get("kind") != "app"
+        or reference != prior_proof.get("resource_reference")
+        or bank._sha(packet) != occurrence["source_id"]
+        or _identity(prior) != _identity(projected)
+    ):
+        return False
+    old_source = prior_proof["macos_recovery"]
+    new_source = current_proof["macos_recovery"]
+    if any(old_source[key] != new_source[key] for key in (
+        "source_id", "snapshot_id", "main_sha256", "wal_sha256",
+    )):
+        return False
+    del current_proof["app_card_metadata"]
+    historical = {**projected, "provenance": bank._json(current_proof)}
+    return bank._event_signature(historical) == occurrence["signature"]
+
+
 def historical_occurrence(connection, occurrence, *, schema="main"):
     """Accept an unchanged occurrence only through a sealed prior projection of its row."""
     bank = _bank()
@@ -619,20 +646,25 @@ def historical_occurrence(connection, occurrence, *, schema="main"):
         item[1] for item in connection.execute(f"PRAGMA {schema}.table_info(messages)")
     ]
     projected = dict(zip(columns, bank._row(packet, message), strict=True))
+    signature = bank._event_signature(projected)
     rows = connection.execute(
-        f"SELECT prior_row FROM {schema}.projection_revisions WHERE message_id=? AND prior_signature=?",
+        f"SELECT prior_row,reason FROM {schema}.projection_revisions "
+        "WHERE message_id=? AND prior_signature=?",
         (occurrence["canonical_id"], occurrence["signature"]),
     )
-    for record in rows:
-        prior = json.loads(record[0])
+    for prior_row, reason in rows:
+        prior = json.loads(prior_row)
         raw, _digest = _identity(prior)
         if (
             packet["account_id"] == raw["account_id"]
             and packet["peer_id"] == raw["peer_id"]
             and message["server_id"] == raw["server_id"]
-            and bank._event_signature(projected)
-            == bank._event_signature(prior)
-            == occurrence["signature"]
+            and bank._event_signature(prior) == occurrence["signature"]
+            and (
+                signature == occurrence["signature"]
+                or reason == "app_card_metadata_completion"
+                and matches_legacy_card_occurrence(projected, prior, packet, occurrence)
+            )
         ):
             return True
     return False
