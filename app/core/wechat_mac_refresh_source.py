@@ -1,6 +1,6 @@
 """Read configured Mac WeChat sources into authenticated memory-only snapshots.
 
-Code version: v1.0.1-codex.0
+Code version: v1.1.0-codex.0
 """
 
 from __future__ import annotations
@@ -15,10 +15,14 @@ import sqlite3
 import stat
 
 from . import wechat_mac_refresh_cipher as cipher
+from .compute_resources import discover_compute_resources
 from .owner_only_files import owner_only_problem
 
 
-MAX_DATABASE_BYTES = 1024**3
+MAX_DATABASE_BYTES = 2 * 1024**3
+LEGACY_DATABASE_BYTES = 1024**3
+MAX_SHM_BYTES = 16 * 1024**2
+SNAPSHOT_MEMORY_OVERHEAD = 512 * 1024**2
 MAX_VAULT_BYTES = 1024**2
 MAX_KEY_FILES = 32
 MAX_KEY_RECORDS = 512
@@ -31,6 +35,10 @@ _GROUP_SUFFIXES = ("", "-wal", "-shm", "-journal")
 
 class RefreshError(ValueError):
     """A source cannot be refreshed faithfully within the supported boundary."""
+
+
+class SourceAccountBindingUnavailable(RefreshError):
+    """An authenticated shard lacks independently revalidated account witnesses."""
 
 
 @dataclass(frozen=True)
@@ -48,9 +56,72 @@ class AuthenticatedDatabase:
     source: dict
     account_directory: str
     partial: bool
+    wal_tail_status: str = "unknown"
 
     def close(self):
         self.connection.close()
+
+
+def _admit_snapshot(group):
+    """Bound large snapshots before allocation using conservative physical capacity."""
+    main_bytes = group[""][2]
+    wal_bytes = group["-wal"][2] if group["-wal"] else 0
+    shm_bytes = group["-shm"][2] if group["-shm"] else 0
+    if (
+        main_bytes > MAX_DATABASE_BYTES
+        or wal_bytes > cipher.MAX_WAL_BYTES
+        or shm_bytes > MAX_SHM_BYTES
+    ):
+        raise RefreshError("The source group exceeds its bounded snapshot size.")
+    # A committed WAL can grow the output, but every new page needs WAL bytes.
+    output_bytes = min(MAX_DATABASE_BYTES, main_bytes + wal_bytes)
+    if output_bytes <= LEGACY_DATABASE_BYTES:
+        return
+    estimated_bytes = (
+        4 * output_bytes
+        + 2 * wal_bytes
+        + shm_bytes
+        + SNAPSHOT_MEMORY_OVERHEAD
+    )
+    try:
+        memory_bytes = discover_compute_resources().memory_bytes
+    except (AttributeError, OSError, TypeError, ValueError):
+        raise RefreshError(
+            "Physical memory is unavailable for large-source admission."
+        ) from None
+    if type(memory_bytes) is not int or memory_bytes <= 0:
+        raise RefreshError(
+            "Physical memory is unavailable for large-source admission."
+        )
+    if estimated_bytes > memory_bytes // 4:
+        raise RefreshError(
+            "The large source exceeds the conservative snapshot memory budget."
+        )
+
+
+def _source_receipt(reference, main_sha, wal_sha, crypto):
+    """Keep physical and authenticated content-page counts distinct in source proof."""
+    source = {
+        "source_id": "macos-refresh-"
+        + hashlib.sha256(
+            (reference.account_id + "\0" + reference.relative_path).encode()
+        ).hexdigest()[:32],
+        "snapshot_id": "committed-"
+        + hashlib.sha256((main_sha + wal_sha).encode()).hexdigest(),
+        "main_sha256": main_sha,
+        "wal_sha256": wal_sha,
+        "database_relative_path": reference.relative_path,
+        "integrity_check": "ok",
+        "authenticated_pages": crypto["encrypted_pages_authenticated"],
+        "page_count": crypto["output_page_count"],
+        "authenticated_page_count": crypto["authenticated_output_page_count"],
+    }
+    if crypto["lock_byte_page_count"]:
+        source.update(
+            lock_byte_page_count=crypto["lock_byte_page_count"],
+            authenticated_content_pages=crypto["content_pages_authenticated"],
+        )
+    return source
 
 
 def _checked_path(path):
@@ -210,14 +281,15 @@ def read_database(reference, *, check_cancel=None):
     }
     if before["-journal"] is not None and before["-journal"][2]:
         raise RefreshError("A nonempty rollback journal requires a separate recovery.")
-    main = read_stable(path, MAX_DATABASE_BYTES)
+    _admit_snapshot(before)
+    main = read_stable(path, before[""][2])
     wal = (
-        read_stable(Path(str(path) + "-wal"), cipher.MAX_WAL_BYTES)
+        read_stable(Path(str(path) + "-wal"), before["-wal"][2])
         if before["-wal"]
         else b""
     )
     if before["-shm"]:
-        read_stable(Path(str(path) + "-shm"), 16 * 1024**2)
+        read_stable(Path(str(path) + "-shm"), before["-shm"][2])
     after = {
         suffix: identity(Path(str(path) + suffix), optional=bool(suffix))
         for suffix in _GROUP_SUFFIXES
@@ -256,26 +328,10 @@ def read_database(reference, *, check_cancel=None):
             raise RefreshError(
                 "The authenticated committed database failed its integrity check."
             )
-        source_id = (
-            "macos-refresh-"
-            + hashlib.sha256(
-                (reference.account_id + "\0" + reference.relative_path).encode()
-            ).hexdigest()[:32]
-        )
-        source = {
-            "source_id": source_id,
-            "snapshot_id": "committed-"
-            + hashlib.sha256((main_sha + wal_sha).encode()).hexdigest(),
-            "main_sha256": main_sha,
-            "wal_sha256": wal_sha,
-            "database_relative_path": reference.relative_path,
-            "integrity_check": "ok",
-            "authenticated_pages": True,
-            "page_count": crypto["output_page_count"],
-            "authenticated_page_count": crypto["output_page_count"],
-        }
+        source = _source_receipt(reference, main_sha, wal_sha, crypto)
         return AuthenticatedDatabase(
-            connection, source, reference.account_directory, not crypto["complete"]
+            connection, source, reference.account_directory, not crypto["complete"],
+            crypto.get("tail_status", "unknown"),
         )
     except BaseException:
         connection.close()

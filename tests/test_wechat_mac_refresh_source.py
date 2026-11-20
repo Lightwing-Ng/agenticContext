@@ -1,6 +1,6 @@
 """Configured keys and memory-only snapshots remain scoped and fail closed.
 
-Code version: v1.0.1-codex.0
+Code version: v1.1.0-codex.0
 """
 
 from dataclasses import replace
@@ -8,6 +8,7 @@ import json
 from pathlib import Path
 import sqlite3
 import sys
+from types import SimpleNamespace
 
 import pytest
 
@@ -173,3 +174,145 @@ def test_nonempty_rollback_journal_and_symlinks_are_rejected(registry):
     alternate.symlink_to(database)
     with pytest.raises(source.RefreshError, match="symlink"):
         source.read_database(replace(reference, database_path=alternate))
+
+
+@pytest.mark.parametrize("lock_pages", [0, 1])
+def test_source_proof_separates_fixed_lock_page_from_authenticated_content(lock_pages):
+    count = cipher.LOCK_BYTE_PAGE_NUMBER + 1 if lock_pages else 1
+    reference = source.KeyReference(
+        OWNER,
+        OWNER + "_synthetic",
+        "db_storage/message/message_0.db",
+        Path("/synthetic/message_0.db"),
+    )
+    proof = source._source_receipt(
+        reference,
+        "a" * 64,
+        "b" * 64,
+        {
+            "output_page_count": count,
+            "authenticated_output_page_count": count - lock_pages,
+            "lock_byte_page_count": lock_pages,
+            "encrypted_pages_authenticated": not lock_pages,
+            "content_pages_authenticated": True,
+        },
+    )
+    assert proof["page_count"] == count
+    assert proof["authenticated_page_count"] == count - lock_pages
+    assert proof["authenticated_pages"] is (not lock_pages)
+    if lock_pages:
+        assert proof["lock_byte_page_count"] == 1
+        assert proof["authenticated_content_pages"] is True
+    else:
+        assert "lock_byte_page_count" not in proof
+        assert "authenticated_content_pages" not in proof
+
+
+def _group_sizes(main_bytes, wal_bytes=0, shm_bytes=0):
+    def entry(size):
+        return (1, 1, size, 1, 1)
+
+    return {
+        "": entry(main_bytes),
+        "-wal": entry(wal_bytes) if wal_bytes else None,
+        "-shm": entry(shm_bytes) if shm_bytes else None,
+        "-journal": None,
+    }
+
+
+@pytest.mark.parametrize("main_bytes", [1024**3 + 4096, 2 * 1024**3])
+def test_large_sources_with_sufficient_capacity_are_admitted_without_allocating(
+    monkeypatch, main_bytes
+):
+    monkeypatch.setattr(
+        source,
+        "discover_compute_resources",
+        lambda: SimpleNamespace(memory_bytes=64 * 1024**3),
+    )
+    source._admit_snapshot(_group_sizes(main_bytes))
+    assert source.MAX_DATABASE_BYTES == cipher.MAX_DATABASE_BYTES == 2 * 1024**3
+
+
+@pytest.mark.parametrize(
+    ("main_bytes", "wal_bytes", "shm_bytes"),
+    [
+        (2 * 1024**3 + 4096, 0, 0),
+        (4096, cipher.MAX_WAL_BYTES + 1, 0),
+        (4096, 0, source.MAX_SHM_BYTES + 1),
+    ],
+)
+def test_oversize_source_groups_fail_before_read_or_decryption(
+    registry, monkeypatch, main_bytes, wal_bytes, shm_bytes
+):
+    keys, _vault, database, _row = registry
+    reference = keys.references(OWNER, load_keys=True)[0]
+    group = _group_sizes(main_bytes, wal_bytes, shm_bytes)
+    monkeypatch.setattr(
+        source,
+        "identity",
+        lambda path, **_kwargs: group[str(path).removeprefix(str(database))],
+    )
+    monkeypatch.setattr(
+        source,
+        "read_stable",
+        lambda *_args, **_kwargs: pytest.fail("oversize group was read"),
+    )
+    monkeypatch.setattr(
+        cipher,
+        "decrypt_database",
+        lambda *_args, **_kwargs: pytest.fail("oversize group was decrypted"),
+    )
+    with pytest.raises(source.RefreshError, match="snapshot size"):
+        source.read_database(reference)
+
+
+def test_large_snapshot_admission_includes_wal_growth_and_overhead(monkeypatch):
+    group = _group_sizes(1024**3, 4 * 1024**2, 1024**2)
+    output_bound = group[""][2] + group["-wal"][2]
+    estimated = (
+        4 * output_bound
+        + 2 * group["-wal"][2]
+        + group["-shm"][2]
+        + source.SNAPSHOT_MEMORY_OVERHEAD
+    )
+    monkeypatch.setattr(
+        source,
+        "discover_compute_resources",
+        lambda: SimpleNamespace(memory_bytes=4 * estimated),
+    )
+    source._admit_snapshot(group)
+    monkeypatch.setattr(
+        source,
+        "discover_compute_resources",
+        lambda: SimpleNamespace(memory_bytes=4 * estimated - 1),
+    )
+    with pytest.raises(source.RefreshError, match="memory budget"):
+        source._admit_snapshot(group)
+
+
+def test_source_growth_cannot_exceed_the_previously_admitted_read(registry, monkeypatch):
+    keys, _vault, database, _row = registry
+    reference = keys.references(OWNER, load_keys=True)[0]
+    admitted_size = database.stat().st_size
+    admit = source._admit_snapshot
+
+    def grow_after_admission(group):
+        admit(group)
+        with database.open("ab") as output:
+            output.write(b"a concurrent page growth")
+
+    monkeypatch.setattr(source, "_admit_snapshot", grow_after_admission)
+    monkeypatch.setattr(
+        cipher,
+        "decrypt_database",
+        lambda *_args, **_kwargs: pytest.fail("grown group was decrypted"),
+    )
+    read = source.read_stable
+
+    def bounded_read(path, maximum, **kwargs):
+        assert maximum == admitted_size
+        return read(path, maximum, **kwargs)
+
+    monkeypatch.setattr(source, "read_stable", bounded_read)
+    with pytest.raises(source.RefreshError, match="bounded and owner-only"):
+        source.read_database(reference)

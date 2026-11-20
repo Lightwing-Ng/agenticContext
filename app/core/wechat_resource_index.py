@@ -1,6 +1,6 @@
 """Index native resource references without copying or decoding media payloads.
 
-Code version: v1.1.0-codex.0
+Code version: v1.2.0-codex.0
 """
 
 from __future__ import annotations
@@ -19,6 +19,7 @@ from xml.etree import ElementTree
 
 from .owner_only_files import ensure_owner_only
 from .wechat_archive import _identifier, _time_fields, wechat_archive_path
+from .wechat_wcdb import WCDBBackendUnavailableError, WCDBDecodeError, decode_wcdb_text
 
 
 _CHAT = re.compile(r"Chat_([0-9a-f]{32})")
@@ -44,7 +45,20 @@ _LABELS = {
 }
 _DECLARATION = re.compile(r"<!\s*(?:DOCTYPE|ENTITY)\b", re.IGNORECASE)
 _MAX_XML = 256 * 1024
-_APP_LABEL_FIELDS = ("safe_title", "publisher_name", "app_name")
+_GROUP_SENDER = re.compile(r"[A-Za-z0-9_.@-]{1,256}")
+CHANNELS_APP_SUBTYPE = 51
+CHANNELS_LABEL_PATHS = {
+    "channels_description": "finderFeed/desc",
+    "channels_nickname": "finderFeed/nickname",
+}
+_APP_LABEL_FIELDS = (
+    "safe_title",
+    "publisher_name",
+    "publisher_name_source",
+    "app_name",
+    "app_name_source",
+    *CHANNELS_LABEL_PATHS,
+)
 _MAX_PEERS = 200_000
 _SCHEMA = """
 CREATE TABLE messages (
@@ -322,6 +336,34 @@ def _resource_metadata(owner_root, root, peer, pinned):
     return browse, indexed
 
 
+def _app_label_values(document, app, subtype):
+    paths = [
+        ("safe_title", "title"),
+        ("publisher_name", "sourcedisplayname"),
+        ("app_name", "appinfo/appname"),
+    ]
+    if subtype == str(CHANNELS_APP_SUBTYPE) and len(app.findall("finderFeed")) == 1:
+        paths.extend(CHANNELS_LABEL_PATHS.items())
+    labels = {}
+    for key, path in paths:
+        leaves = [(leaf, "appmsg/" + path) for leaf in app.findall(path)]
+        if key == "app_name" and app is not document:
+            leaves += [(leaf, path) for leaf in document.findall(path)]
+        if len(leaves) == 1 and not len(leaves[0][0]):
+            value = _app_label(leaves[0][0].text)
+            if value:
+                labels[key] = value
+                if key in {"publisher_name", "app_name"}:
+                    labels[key + "_source"] = leaves[0][1]
+    return labels
+
+
+def _app_labels(payload, group, received):
+    """Return inert card labels without URLs, keys, or media metadata."""
+    app = _app_metadata(payload, group, received)
+    return {key: app[key] for key in _APP_LABEL_FIELDS if key in app}
+
+
 def _app_metadata(payload, group, received):
     result = {}
     if isinstance(payload, bytes):
@@ -335,40 +377,43 @@ def _app_metadata(payload, group, received):
         or _DECLARATION.search(payload)
     ):
         return result
-    if group and received and ":\n" in payload:
-        sender, payload = payload.split(":\n", 1)
-        if re.fullmatch(r"[A-Za-z0-9_.@-]{1,256}", sender):
-            result["sender_id"] = sender
+    if group and received:
+        for separator in (":\r\n", ":\n"):
+            sender, found, content = payload.partition(separator)
+            if found and _GROUP_SENDER.fullmatch(sender):
+                result["sender_id"] = sender
+                payload = content
+                break
     try:
         document = ElementTree.fromstring(payload)
     except (ElementTree.ParseError, ValueError):
         return result
     if sum(1 for _ in document.iter()) > 4096:
         return result
-    app = document if document.tag == "appmsg" else document.find("appmsg")
-    if app is None:
+    apps = [document] if document.tag == "appmsg" else document.findall("appmsg")
+    if len(apps) != 1:
         return result
+    app = apps[0]
     subtype = app.findtext("type", "")
     result["subtype"] = subtype
     result["kind"] = {"2": "image", "3": "audio", "4": "video", "6": "file"}.get(
         subtype, "app"
     )
     types = app.findall("type")
-    if subtype == "5" and len(types) == 1 and len(types[0]) == 0:
-        result.update(app_subtype="5", availability="metadata_only")
-        labels = {}
-        for key, parent, path in (
-            ("safe_title", app, "title"),
-            ("publisher_name", app, "sourcedisplayname"),
-            ("app_name", document, "appinfo/appname"),
-        ):
-            nodes = parent.findall(path)
-            if len(nodes) == 1 and len(nodes[0]) == 0:
-                value = _app_label(nodes[0].text)
-                if value:
-                    labels[key] = value
-        if labels:
-            result.update(labels, app_metadata_version="1")
+    if (
+        len(types) == 1
+        and not len(types[0])
+        and subtype.isascii()
+        and subtype.isdecimal()
+        and len(subtype) <= 6
+    ):
+        result["app_subtype"] = subtype
+        if subtype in {"5", str(CHANNELS_APP_SUBTYPE)}:
+            result["availability"] = "metadata_only"
+        if result["kind"] == "app":
+            labels = _app_label_values(document, app, subtype)
+            if labels:
+                result.update(labels, app_metadata_version="1")
     if subtype == "6":
         result["filename"] = _string(app.findtext("title", ""))
         result["file_extension"] = _extension(app.findtext("appattach/fileext", ""))
@@ -416,13 +461,21 @@ def _table_rows(connection, table):
     if not required <= columns:
         raise ValueError("A native message table lacks required resource metadata.")
     marker = '"WCDB_CT_Message"' if "WCDB_CT_Message" in columns else "0"
-    return connection.execute(
+    rows = connection.execute(
         f"SELECT MesLocalID,MesSvrID,CreateTime,Type,Des,CASE WHEN Type=49 AND "
         f"length(Message)<={_MAX_XML} AND (typeof(Message)='text' OR "
-        f"(typeof(Message)='blob' AND COALESCE({marker},0) IN (0,1))) "
-        f'THEN Message ELSE NULL END AS metadata_payload FROM "{table}" '
+        f"(typeof(Message)='blob' AND COALESCE({marker},0) IN (0,1,4,5))) "
+        f"THEN Message ELSE NULL END AS metadata_payload, "
+        f'COALESCE({marker},0) AS metadata_marker FROM "{table}" '
         f"WHERE Type IN ({','.join(str(value) for value in _KINDS)}) ORDER BY MesLocalID"
     )
+    for local, server, epoch, typ, direction, payload, compression in rows:
+        if isinstance(payload, bytes) and compression in (4, 5):
+            try:
+                payload = decode_wcdb_text(payload, compression, limit=_MAX_XML)
+            except (WCDBBackendUnavailableError, WCDBDecodeError):
+                payload = None
+        yield local, server, epoch, typ, direction, payload
 
 
 def build_resource_index(local_store_root, preservation_snapshot, *, account_ids=()):
@@ -621,9 +674,7 @@ def build_resource_index(local_store_root, preservation_snapshot, *, account_ids
                                             "byte_size",
                                             "app_subtype",
                                             "availability",
-                                            "safe_title",
-                                            "publisher_name",
-                                            "app_name",
+                                            *_APP_LABEL_FIELDS,
                                             "app_metadata_version",
                                         }
                                     }

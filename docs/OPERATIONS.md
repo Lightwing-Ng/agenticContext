@@ -1,6 +1,62 @@
 # Operations guide
 
-Documentation version: `v1.53.3-codex.0`
+Documentation version: `v1.54.0-codex.0`
+
+## Bounded native resource details
+
+`resource_details.json` is an optional, owner-private runtime overlay limited to
+20,000 entries and 32 MiB. It accepts the original flat format and a compact
+transport with SHA-keyed shared native source headers and conversation scopes.
+Limits reject a whole oversized batch rather than silently truncating it.
+It is applied after the existing secondary completion
+timeline and before SQL search, pagination, source jumps, and CSV export. Each
+entry pins the complete upstream row and exact account/group context, retaining
+one independently authenticated Mac packet. Account binding and exact server ID,
+type, sender, and source clock are replayed before applying the entry. An
+upstream change or conflicting known field invalidates the overlay instead of
+guessing a replacement.
+
+This adapter can fill an absent author from an authenticated envelope mapping
+and add existing versioned app-card title/source fields. It does not retain raw
+media XML or attachment keys, change source IDs/body/clocks/direction, rewrite
+the primary resource catalog, or reinterpret an XML media-owner attribute as a
+message author. The source disclosure identifies the additional Mac evidence.
+Registry appearance, changes and removal invalidate reader/contact caches and
+stop an export whose pinned inputs changed. Review a bounded candidate and
+retain a rollback before atomic publication under the global repair guard.
+
+`scripts/repair_wechat_resource_details.py stage` takes explicit private packet
+files, a new candidate and a new review report in the canonical workstation.
+If capture manifests are present, their exact message IDs and upstream row hashes
+constrain staging. A changed or no-longer-active row is never restored from a
+stale base-catalog inventory. Native shadow replacements can already contain a
+fully parsed reply, forward or text record; these are not resource-detail gaps.
+Existing valid details are retained, quarantined conflicts are excluded, and
+ambiguous or contradictory new witnesses are reported rather than selected.
+
+Review the stage counters before using the separate `publish` command with
+the report, an external rollback path, and a new result receipt. Publication
+checks the candidate digest and all source identities again, preserves the old
+registry, then atomically replaces only the small runtime overlay. Exact replay
+does not rewrite the live registry or invalidate its caches. Stale prior entries
+require explicit source revalidation rather than an unchecked row-hash rebase.
+Source packet extraction remains separate and must authenticate the selected
+account and shard before producing witnesses; readable pages alone do not prove
+that account binding is sufficient.
+
+`scripts/capture_wechat_resource_details.py --local-store local_store` inventories
+historical app cards with retained native sender evidence and missing labels.
+Use Python 3.14 or newer for compressed source cells. Add `--limit` and `--output`
+to capture a bounded batch into a private workstation, optionally restricted by
+`--target-session`. Resume with the returned cursor in `--after-message-id`.
+The output records uncovered candidates and can be passed directly to `stage`
+with `--packet`. Capture reads the source without changing the archive.
+
+Transcript reads automatically reuse subtype and labels already present in an
+active matching native witness. For a missing group text author, a manifest can
+pin an independently authenticated original message by room, server ID, time,
+and body. The author's native identifier determines the displayed name through
+the same group-name lookup used for other messages.
 
 ## iPhone
 

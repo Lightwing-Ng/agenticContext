@@ -1,6 +1,6 @@
 """Persist authenticated conversation summaries after full timeline validation.
 
-Code version: v1.1.0-codex.0
+Code version: v1.2.0-codex.0
 """
 
 from __future__ import annotations
@@ -489,16 +489,18 @@ def load_conversation_snapshot(repository, connection, history_identity):
     return result
 
 
-def _completion_identity(value):
+def _preview_source_identity(value, *, inode_key):
     return (
         isinstance(value, dict)
-        and value.keys() == {"dev", "ino", "size", "mtime_ns", "ctime_ns"}
+        and value.keys() == {"dev", inode_key, "size", "mtime_ns", "ctime_ns"}
         and all(type(field) is int for field in value.values())
         and value["size"] > 0
     )
 
 
-def _preview_pin_matches(previous, current, completion_path):
+def _preview_pin_matches(previous, current, completion_path, detail_path):
+    from .wechat_resource_details import MAX_BYTES
+
     if (
         not isinstance(previous, dict)
         or previous.keys() != current.keys()
@@ -511,28 +513,40 @@ def _preview_pin_matches(previous, current, completion_path):
     new_inputs = current["inputs"]
     if old_inputs == new_inputs:
         return previous["code"] != current["code"]
-    return (
-        isinstance(old_inputs, dict)
-        and old_inputs.keys() | {completion_path} == new_inputs.keys()
-        and (completion_path not in old_inputs or _completion_identity(old_inputs[completion_path]))
-        and _completion_identity(new_inputs.get(completion_path))
-        and old_inputs.get(completion_path) != new_inputs[completion_path]
-        and all(
-            identity == new_inputs[path]
-            for path, identity in old_inputs.items()
-            if path != completion_path
-        )
-    )
+    if not isinstance(old_inputs, dict):
+        return False
+    changed = {
+        path for path in old_inputs.keys() | new_inputs.keys()
+        if path not in old_inputs or path not in new_inputs or old_inputs[path] != new_inputs[path]
+    }
+    if changed - {completion_path, detail_path}:
+        return False
+    # A signed navigation preview contains historical counts and hides bodies.
+    if completion_path in changed and (
+        not _preview_source_identity(new_inputs.get(completion_path), inode_key="ino")
+        or completion_path in old_inputs
+        and not _preview_source_identity(old_inputs[completion_path], inode_key="ino")
+    ):
+        return False
+    for inputs in (old_inputs, new_inputs):
+        detail = inputs.get(detail_path)
+        if detail_path in changed and detail is not None and (
+            not _preview_source_identity(detail, inode_key="inode") or detail["size"] > MAX_BYTES
+        ):
+            return False
+    return True
 
 
 def load_previous_conversation_snapshot(repository, connection, history_identity):
-    """Install a verified preview after a reader or secondary completion change."""
+    """Install a signed preview after a reader or verified overlay change."""
+    from .wechat_resource_details import FILENAME as DETAIL_FILENAME
     from .wechat_secondary_completions import FILENAME
 
     directory = repository.path.parent / "browser_cache"
     key_path = directory / "signing.key"
     snapshot_path = directory / "conversations.snapshot"
-    completion_path = str(repository.path.with_name(FILENAME).absolute())
+    completion_path = str(repository.path.with_name(FILENAME).resolve())
+    detail_path = str(repository.path.with_name(DETAIL_FILENAME).resolve())
     try:
         pin = _pin(repository, history_identity)
         directory_identity = _directory_identity(directory)
@@ -540,7 +554,7 @@ def load_previous_conversation_snapshot(repository, connection, history_identity
         encoded, snapshot_identity = _read_private(snapshot_path, MAX_SNAPSHOT_BYTES)
         payload = _decode_snapshot(encoded, key)
         previous = payload.get("pin") if isinstance(payload, dict) else None
-        if not _preview_pin_matches(previous, pin, completion_path) or not _valid_payload(
+        if not _preview_pin_matches(previous, pin, completion_path, detail_path) or not _valid_payload(
             payload, previous
         ):
             return None

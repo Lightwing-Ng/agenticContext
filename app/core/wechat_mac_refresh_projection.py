@@ -1,6 +1,6 @@
 """Project only an authenticated requested peer into the existing Mac bank contract.
 
-Code version: v1.2.0-codex.0
+Code version: v1.3.0-codex.0
 """
 
 from __future__ import annotations
@@ -10,7 +10,7 @@ from concurrent.futures import ProcessPoolExecutor, wait
 from concurrent.futures.process import BrokenProcessPool
 from contextlib import contextmanager
 from copy import deepcopy
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 import hashlib
 from itertools import chain
@@ -22,7 +22,8 @@ import sqlite3
 from . import wechat_macos_recovery_bank as bank
 from .compute_resources import discover_compute_resources
 from .wechat_archive import WechatArchiveRepository, _file_identity, wechat_archive_path
-from .wechat_mac_refresh_source import MAX_NAMES, RefreshError
+from .wechat_mac_refresh_source import MAX_NAMES, RefreshError, SourceAccountBindingUnavailable
+from .wechat_resource_details import detail_input_identities
 from .wechat_resource_index import _APP_LABEL_FIELDS, _KINDS, _LABELS, _app_metadata
 from .wechat_text import extract_wechat_text
 from .wechat_secondary_completions import completion_input_identities
@@ -47,6 +48,7 @@ _SOURCE_BINDING_FIELDS = (
 )
 MAX_ARCHIVE_ANCHOR_ROWS = 1_000_000
 MAX_NATIVE_TABLES = 10_000
+MAX_LEARNED_WITNESSES = 32
 _PROJECTION_BATCH_ROWS = 512
 _PROJECTION_BATCH_BYTES = 16 * 1024**2
 _PROJECTION_IN_FLIGHT = 4
@@ -76,7 +78,10 @@ class ConversationComparison:
             raise RefreshError("The archive comparison belongs to another conversation.")
         if bank._inputs(history_path) != self._baseline:
             raise RefreshError("The archive changed during refresh. Try again shortly.")
-        overlay_inputs = completion_input_identities(history_path)
+        overlay_inputs = (
+            completion_input_identities(history_path),
+            detail_input_identities(history_path),
+        )
         if self._overlay_inputs is None:
             self._overlay_inputs = overlay_inputs
         elif overlay_inputs != self._overlay_inputs:
@@ -90,6 +95,64 @@ class ConversationComparison:
             self.require_current(history_path, scope)
             self._indexes = indexes
         return self._indexes
+
+
+@dataclass(frozen=True)
+class SourceProjectionContext:
+    """Reuse metadata from one unchanged authenticated memory-only snapshot."""
+
+    account_id: str
+    database: object = field(repr=False)
+    tables: frozenset = field(repr=False)
+    names: dict = field(repr=False)
+    peer_rows: dict = field(repr=False)
+    source_digest: str = field(repr=False)
+    total_changes: int = field(repr=False)
+    schema_version: int = field(repr=False)
+
+    def require_current(self, database, account_id):
+        if (
+            database is not self.database
+            or account_id != self.account_id
+            or bank._sha([database.source, database.account_directory])
+            != self.source_digest
+            or database.connection.total_changes != self.total_changes
+            or database.connection.execute("PRAGMA schema_version").fetchone()[0]
+            != self.schema_version
+        ):
+            raise RefreshError("The authenticated projection context changed.")
+
+
+def _source_names(native):
+    tables = frozenset(
+        row[0]
+        for row in native.execute("SELECT name FROM sqlite_master WHERE type='table'")
+    )
+    if len(tables) > MAX_NATIVE_TABLES:
+        raise RefreshError("The native database exceeds its bounded table budget.")
+    names, peer_rows = {}, {}
+    for row in native.execute(
+        "SELECT rowid,user_name,is_session FROM Name2Id LIMIT ?", (MAX_NAMES + 1,)
+    ):
+        if len(names) >= MAX_NAMES:
+            raise RefreshError("The native name index exceeds its bounded row budget.")
+        value = dict(row)
+        names[value["rowid"]] = value
+        peer_rows.setdefault(value["user_name"], value)
+    return tables, names, peer_rows
+
+
+def prepare_source_context(account_id, database):
+    """Bind one unchanged authenticated database to an exact owner and name index."""
+    native = database.connection
+    tables, names, peer_rows = _source_names(native)
+    _owner_row(names, account_id)
+    return SourceProjectionContext(
+        account_id, database, tables, names, peer_rows,
+        bank._sha([database.source, database.account_directory]),
+        native.total_changes,
+        native.execute("PRAGMA schema_version").fetchone()[0],
+    )
 
 
 def projection_exclusion_reason(error):
@@ -143,6 +206,21 @@ def _table(peer):
 
 def _name_proof(row):
     return {"row": row, "row_sha256": bank._sha(row)}
+
+
+def _owner_row(names, owner):
+    """Require one exact authenticated owner mapping without assuming its local ID."""
+    matches = [row for row in names.values() if row["user_name"] == owner]
+    if len(matches) != 1:
+        raise RefreshError(
+            "The authenticated native owner needs one unambiguous name row."
+        )
+    try:
+        return bank._name_proof(_name_proof(matches[0]), owner)
+    except ValueError:
+        raise RefreshError(
+            "The authenticated native owner mapping is invalid."
+        ) from None
 
 
 def _comparison_signature(row):
@@ -289,17 +367,15 @@ def _project_message(row, owner, kind, names, *, text_limit=MAX_TEXT_BYTES):
             },
         )
         if typ == 49:
-            message["resource"]["app_subtype"] = str(row["local_type"] >> 32)
-            if row["local_type"] >> 32 == 5:
-                metadata = _app_metadata(decoded, False, False)
-                if metadata.get("app_subtype") == "5":
-                    message["resource"].update(
-                        {
-                            key: metadata[key]
-                            for key in (*_APP_LABEL_FIELDS, "app_metadata_version")
-                            if key in metadata
-                        }
-                    )
+            subtype = str(row["local_type"] >> 32)
+            message["resource"]["app_subtype"] = subtype
+            metadata = _app_metadata(decoded, False, False)
+            if metadata.get("app_subtype") == subtype:
+                message["resource"].update({
+                    key: metadata[key]
+                    for key in (*_APP_LABEL_FIELDS, "app_metadata_version")
+                    if key in metadata
+                })
     return message
 
 
@@ -604,11 +680,37 @@ def _global_binding(
     peer_rows,
     tables,
     check_cancel,
+    *,
+    learned_witnesses=(),
 ):
+    owner_row = _owner_row(names, scope.account_id)
+    owner_proof = _name_proof(owner_row)
     selected = []
-    for coordinate in _stored_witnesses(
+    coordinates = _stored_witnesses(
         local_store_root, scope, source, directory, check_cancel
-    ):
+    )
+    if learned_witnesses:
+        if (
+            not isinstance(learned_witnesses, (tuple, list))
+            or len(learned_witnesses) > MAX_LEARNED_WITNESSES
+        ):
+            raise RefreshError("The learned source witness pool exceeds its budget.")
+        candidates = sorted(
+            [*learned_witnesses, *coordinates],
+            key=lambda value: value.get("direction") != "sent",
+        )
+        selected_coordinates = {}
+        for coordinate in candidates:
+            key = (
+                coordinate["table"],
+                coordinate["local_id"],
+                coordinate["archive_message_id"],
+            )
+            selected_coordinates.setdefault(key, coordinate)
+            if len(selected_coordinates) >= MAX_LEARNED_WITNESSES:
+                break
+        coordinates = list(selected_coordinates.values())
+    for coordinate in coordinates:
         check_cancel()
         peer = coordinate["peer_id"]
         table = _table(peer)
@@ -651,7 +753,11 @@ def _global_binding(
         if message["server_id"] != coordinate["server_id"]:
             continue
         anchor = _archive_anchor(archived, row, message, peer, peer_rows[peer])
-        if anchor and (message["direction"] != "sent" or row["real_sender_id"] == 2):
+        if anchor and (
+            message["direction"] != "sent"
+            or row["real_sender_id"] == owner_row["rowid"]
+            and message["sender_proof"] == owner_proof
+        ):
             if not any(
                 item["peer_id"] == peer and item["direction"] == message["direction"]
                 for item in selected
@@ -665,14 +771,14 @@ def _global_binding(
                 item for item in selected if item["peer_id"] != sent["peer_id"]
             )
             return {
-                "schema_version": 1,
+                "schema_version": 1 if owner_row["rowid"] == 2 else 2,
                 "account_id": scope.account_id,
                 "account_directory": directory,
-                "owner_proof": _name_proof(names[2]),
+                "owner_proof": owner_proof,
                 "source": {field: source[field] for field in _SOURCE_BINDING_FIELDS},
                 "anchors": [sent, other],
             }
-    raise RefreshError(
+    raise SourceAccountBindingUnavailable(
         "This database has insufficient independently revalidated account evidence."
     )
 
@@ -692,23 +798,8 @@ def prepare_packet(
     check_cancel = check_cancel if check_cancel is not None else lambda: None
     check_cancel()
     native = database.connection
-    tables = {
-        row[0]
-        for row in native.execute("SELECT name FROM sqlite_master WHERE type='table'")
-    }
-    if len(tables) > MAX_NATIVE_TABLES:
-        raise RefreshError("The native database exceeds its bounded table budget.")
+    tables, names, peer_rows = _source_names(native)
     table = _table(scope.peer_id)
-    names = {}
-    peer_rows = {}
-    for row in native.execute(
-        "SELECT rowid,user_name,is_session FROM Name2Id LIMIT ?", (MAX_NAMES + 1,)
-    ):
-        if len(names) >= MAX_NAMES:
-            raise RefreshError("The native name index exceeds its bounded row budget.")
-        value = dict(row)
-        names[value["rowid"]] = value
-        peer_rows.setdefault(value["user_name"], value)
     if names.get(2, {}).get("user_name") != scope.account_id:
         raise RefreshError(
             "The authenticated native owner does not match this conversation."
