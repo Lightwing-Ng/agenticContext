@@ -1,6 +1,6 @@
 """Isolated local-page to authenticated MCP workflow acceptance.
 
-Code version: v1.3.1-codex.0
+Code version: v1.3.2-codex.0
 """
 
 from __future__ import annotations
@@ -247,7 +247,7 @@ def test_selected_project_completes_authenticated_crud_check_and_review(
             {**pinned, "command": "python -m pytest -q test_smoke.py"},
             request_id=9,
         )
-        assert checked["isError"] is False
+        assert checked["isError"] is False, json.dumps(observation(checked), indent=2)
         assert observation(checked)["exit_code"] == 0
 
         reviewed = mcp_call(client, "review_changes", pinned, request_id=10)

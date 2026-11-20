@@ -13,8 +13,9 @@ from unittest.mock import patch
 
 import pytest
 
+from app.core import wechat_browser_snapshot
 from app.core import wechat_export_merge as export_merge
-from app.core.wechat_archive import _identifier
+from app.core.wechat_archive import WechatArchiveRepository, _identifier
 from app.core.wechat_contacts import WechatContactRepository
 from app.core.wechat_context_links import WechatContextLinks
 from app.core.wechat_export_merge import merge_wechat_export
@@ -158,6 +159,60 @@ def _target(fixture):
                 "SELECT * FROM messages WHERE id=?", (fixture["target_id"],)
             ).fetchone()
         )
+
+
+def test_account_group_list_folds_verified_supplement_before_pagination(
+    tmp_path, monkeypatch,
+):
+    fixture = context_link_fixture(tmp_path)
+    with sqlite3.connect(fixture["history"]) as connection:
+        connection.row_factory = sqlite3.Row
+        base_id = _target(fixture)["conversation_id"]
+        supplement = dict(connection.execute(
+            "SELECT * FROM messages WHERE id=?", (fixture["source_id"],)
+        ).fetchone())
+        supplement_id = supplement["conversation_id"]
+        extra_id = _identifier("unique test supplement")
+        supplement.update(id=extra_id, ordinal=supplement["ordinal"] + 1, provenance="{}")
+        columns = ",".join(supplement)
+        values = ",".join("?" for _ in supplement)
+        connection.execute(
+            f"INSERT INTO messages({columns}) VALUES({values})", tuple(supplement.values())
+        )
+        connection.execute(
+            "UPDATE conversations SET message_count=2 WHERE id=?", (supplement_id,)
+        )
+        distinct_id = "wechat:" + _identifier("different room with the same name")
+        connection.execute(
+            "INSERT INTO conversations SELECT ?,partition_id,account_key,?,title,kind,"
+            "0,0,0,'','','' FROM conversations WHERE id=?",
+            (distinct_id, "distinct@chatroom", base_id),
+        )
+
+    def snapshot(*_args):
+        return "main.conversations", "absent", None
+
+    monkeypatch.setattr(wechat_browser_snapshot, "load_conversation_snapshot", snapshot)
+    monkeypatch.setattr(wechat_browser_snapshot, "load_previous_conversation_snapshot", snapshot)
+    repository = WechatArchiveRepository(tmp_path)
+    before = fixture["history"].read_bytes()
+    for previous in (False, True):
+        result = repository._query_uncached(
+            account="account:wxid_owner_a", kind="group", page_size=1,
+            previous_snapshot=previous,
+        )
+        assert result["count"] == result["pages"] == 2
+        row, = result["conversations"]
+        assert row["id"] == base_id
+        assert row["message_count"] == 2
+        assert row["html_supplement"]["id"] == supplement_id
+        assert row["html_supplement"]["additional_count"] == 1
+    detail = repository._query_uncached(
+        account="account:wxid_owner_a", kind="group", session=supplement_id,
+        persist_event_cache=False,
+    )
+    assert {row["id"] for row in detail["messages"]} == {fixture["source_id"], extra_id}
+    assert fixture["history"].read_bytes() == before
 
 
 def test_verified_completion_preserves_old_leaves_and_uses_its_own_source_proof(

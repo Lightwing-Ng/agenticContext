@@ -1,6 +1,6 @@
 """Resolve WeChat identities while retaining account-specific contact observations.
 
-Code version: v1.3.2-codex.0
+Code version: v1.3.4-codex.0
 
 A contact identifies a platform identity, not an assumed real-world person.
 Syntax classifies identifiers; only explicit native evidence authorizes linking.
@@ -655,6 +655,158 @@ def _forwarded_native_proof(source, conversation, members, component, parent_con
     }
 
 
+
+def _retained_source_name_context(
+    connection, contact, message, selected_bindings, all_bindings
+):
+    """Read an attested prior name context without creating a new observation."""
+    marker = "native_contact_snapshot_identity_binding_v1"
+    aliases = [
+        (binding, _object_evidence(binding["evidence"]))
+        for binding in selected_bindings
+        if _object_evidence(binding["evidence"]).get("kind") == marker
+    ]
+    if not aliases:
+        return None
+    invalid = {"status": "invalid_retained_source_name_context"}
+    if len(aliases) != 1:
+        return invalid
+    binding, proof = aliases[0]
+    try:
+        source = message["source_id"]
+        snapshot = message.get("source_snapshot_id") or ""
+        owner = message.get("account_id") or ""
+        sender = message.get("sender_id")
+        room = (
+            message.get("peer_id", "")
+            if message.get("conversation_kind") == "group"
+            else ""
+        )
+        account_hash = hashlib.md5(
+            owner.encode(), usedforsecurity=False
+        ).hexdigest()
+        relative = f"Documents/{account_hash}/DB/WCDB_Contact.sqlite"
+        prior = proof["prior_name_context_snapshot"]
+        expected_contact = canonical_contact_id(
+            sender,
+            authority="native_contact_username",
+            namespace=contact["namespace"],
+            realm=contact["realm"],
+        )
+        if not (
+            owner
+            and isinstance(snapshot, str)
+            and snapshot
+            and isinstance(prior, str)
+            and prior
+            and prior != snapshot
+            and source == "ios-" + account_hash
+            and contact["identity_status"] == "verified"
+            and contact["id"] == expected_contact == binding["contact_id"]
+            and contact["username"] == sender
+            and binding["authority"] == "native_contact_username"
+            and binding["source_id"] == source == proof["source_id"]
+            and binding["sender_id"] == sender == proof["native_username"]
+            and binding["source_snapshot"] == snapshot == proof["snapshot_id"]
+            and binding["room_id"] == ""
+            and proof["owner_account_id"] == owner
+            and proof["account_hash"] == account_hash
+            and proof["database_relative_path"] == relative
+            and proof["file_id"]
+            == hashlib.sha1(
+                ("AppDomain-com.tencent.xin-" + relative).encode(),
+                usedforsecurity=False,
+            ).hexdigest()
+            and re.fullmatch(r"[0-9a-f]{64}", proof["database_sha256"])
+            and re.fullmatch(r"[0-9a-f]{64}", proof["source_metadata_sha256"])
+            and proof["native_table"] == "Friend"
+            and proof["native_column"] == "userName"
+            and type(proof["native_rowid"]) is int
+            and proof["native_rowid"] > 0
+            and proof["native_openim_appid"] == contact["realm"]
+            and proof["names_imported_or_ranked"] is False
+            and proof["backup_time_is_name_update_time"] is False
+        ):
+            return invalid
+        key_fields = ("source_id", "sender_id", "source_snapshot", "room_id")
+        alias_key = tuple(binding[key] for key in key_fields)
+        prior_rows = [
+            dict(row)
+            for row in all_bindings
+            if tuple(row[key] for key in key_fields) != alias_key
+        ]
+        generic = sorted(
+            (
+                row
+                for row in prior_rows
+                if row["room_id"] == ""
+                and _object_evidence(row["evidence"]).get("kind") != marker
+            ),
+            key=lambda row: (row["source_snapshot"], row["room_id"]),
+        )
+        if not (
+            generic
+            and all(
+                row["source_id"] == source
+                and row["sender_id"] == sender
+                and row["contact_id"] == contact["id"]
+                and row["authority"] in CANONICAL_AUTHORITIES
+                for row in prior_rows
+            )
+            and any(row["source_snapshot"] == prior for row in generic)
+            and hashlib.sha256(_json(generic).encode()).hexdigest()
+            == proof["generic_anchor_sha256"]
+        ):
+            return invalid
+        first = connection.execute(
+            "SELECT * FROM contact_observations WHERE contact_id=? "
+            "AND source_id=? AND source_snapshot=? AND owner_account_id=? "
+            "AND room_id IN ('',?) AND value!='' "
+            "AND kind IN ('remark','room_display_name','nickname','alias') "
+            "ORDER BY CASE kind WHEN 'remark' THEN 0 "
+            "WHEN 'room_display_name' THEN 1 WHEN 'nickname' THEN 2 "
+            "WHEN 'alias' THEN 3 ELSE 99 END,(room_id=''),value COLLATE NOCASE,value,id LIMIT 1",
+            (contact["id"], source, prior, owner, room),
+        ).fetchone()
+        if first is None:
+            return {"status": "retained_source_name_context_unavailable"}
+        first = dict(first)
+        conflict = connection.execute(
+            "SELECT 1 FROM contact_observations WHERE contact_id=? "
+            "AND source_id=? AND source_snapshot=? AND owner_account_id=? "
+            "AND room_id=? AND kind=? AND value!='' AND value!=? LIMIT 1",
+            (
+                contact["id"], source, prior, owner, first["room_id"],
+                first["kind"], first["value"],
+            ),
+        ).fetchone()
+        if conflict is not None:
+            return {"status": "conflicting_retained_source_name_context"}
+        return {
+            "status": "retained_source_name_context",
+            "value": first["value"],
+            "observation_id": first["id"],
+            "observation_sha256": hashlib.sha256(
+                _json(first).encode()
+            ).hexdigest(),
+            "original_source_id": first["source_id"],
+            "original_source_snapshot": first["source_snapshot"],
+            "original_owner_account_id": first["owner_account_id"],
+            "original_room_id": first["room_id"],
+            "original_kind": first["kind"],
+            "native_binding_snapshot": snapshot,
+            "native_contact_database_sha256": proof["database_sha256"],
+            "source_metadata_sha256": proof["source_metadata_sha256"],
+            "generic_anchor_sha256": proof["generic_anchor_sha256"],
+            "name_observation_copied": False,
+            "name_update_time_inferred": False,
+            "verification_basis": "sealed_native_binding_and_retained_registry_rows",
+            "native_database_reopened": False,
+        }
+    except (KeyError, TypeError, ValueError, AttributeError):
+        return invalid
+
+
 class WechatContactRepository:
     """Resolve a page from a read-only identity sidecar without rewriting messages."""
 
@@ -1172,6 +1324,7 @@ class WechatContactRepository:
             )
         result = {}
         preferred_names = {}
+        retained_name_contexts = {}
         profiles = {}
         binding_evidence = {}
         for message in messages:
@@ -1269,7 +1422,8 @@ class WechatContactRepository:
                 message.get("account_id") or "",
                 room,
             )
-            if context not in preferred_names:
+            name_context = (*context, message.get("sender_id"), _json(values))
+            if name_context not in preferred_names:
                 preferred = connection.execute(
                     "SELECT value FROM contact_observations WHERE contact_id=? AND source_id=? "
                     "AND source_snapshot IN ('',?) AND owner_account_id IN ('',?) "
@@ -1280,16 +1434,35 @@ class WechatContactRepository:
                     "(source_snapshot=''),(room_id=''),value COLLATE NOCASE,value,id LIMIT 1",
                     context,
                 ).fetchone()
-                preferred_names[context] = preferred[0] if preferred else ""
+                retained = None
+                if preferred is None:
+                    retained = _retained_source_name_context(
+                        connection,
+                        contact,
+                        message,
+                        values,
+                        bindings.get(
+                            (message["source_id"], message.get("sender_id")), ()
+                        ),
+                    )
+                preferred_names[name_context] = preferred[0] if preferred else (
+                    retained["value"]
+                    if retained
+                    and retained["status"] == "retained_source_name_context"
+                    else ""
+                )
+                retained_name_contexts[name_context] = (
+                    {key: value for key, value in retained.items() if key != "value"}
+                    if retained
+                    else None
+                )
             corroborated = any(
                 item["authority"] == MESSAGE_BINDING_AUTHORITY for item in values
             )
             evidence_context = (
                 *context,
                 message.get("sender_id"),
-                message["id"]
-                if corroborated or message["id"] in forwarded_proofs
-                else "",
+                message["id"] if corroborated else "",
             )
             if evidence_context not in binding_evidence:
                 binding_evidence[evidence_context] = [
@@ -1326,8 +1499,13 @@ class WechatContactRepository:
                 "identity_status": contact["identity_status"],
                 "identifiers": identifiers.get(contact["id"], []),
                 "source_display_name": str(message.get("sender_label") or ""),
-                "preferred_name": preferred_names[context]
+                "preferred_name": preferred_names[name_context]
                 or str(message.get("sender_label") or display),
+                **(
+                    {"preferred_name_context": retained_name_contexts[name_context]}
+                    if retained_name_contexts[name_context] is not None
+                    else {}
+                ),
                 "evidence": binding_evidence[evidence_context],
                 "resolution_reason": FORWARDED_BINDING_AUTHORITY
                 if message["id"] in forwarded_proofs

@@ -1,6 +1,6 @@
 """Project verified native quoted-speaker names without rewriting source labels.
 
-Code version: v1.2.1-codex.0
+Code version: v1.3.0-codex.0
 """
 
 from __future__ import annotations
@@ -43,6 +43,66 @@ def _quoted_author(reference, peer):
     if chat and chat not in {sender, peer}:
         return ""
     return sender
+
+
+def _literal_group_quoted_author(reference, peer, reply_sender):
+    """Select a literal legacy username for a scoped native contact lookup."""
+    if (
+        not isinstance(peer, str)
+        or _EXACT_ROOM.fullmatch(peer) is None
+        or reference.get("source_sender_id") != peer
+    ):
+        return ""
+    candidate = reference.get("source_chat_id", "")
+    identity = classify_wechat_identifier(candidate)
+    return (
+        candidate
+        if candidate != reply_sender
+        and identity["kind"] == "wechat_identity"
+        and not identity["requires_realm"]
+        else ""
+    )
+
+
+def _verified_literal_quote_contact(contact, request):
+    """Require the exact registered identity and an applicable native binding."""
+    if (
+        contact.get("identity_status") != "verified"
+        or contact.get("namespace") != "wechat"
+        or contact.get("realm") != ""
+        or contact.get("registry_persisted", True) is not True
+        or contact.get("id") != canonical_contact_id(
+            request["sender_id"], authority="native_message_sender",
+            namespace="wechat", realm="",
+        )
+    ):
+        return False
+    evidence = contact.get("evidence")
+    return isinstance(evidence, (tuple, list)) and any(
+        isinstance(binding, dict)
+        and binding.get("authority") in {"native_contact_username", "native_message_sender"}
+        and binding.get("source_id") == request["source_id"]
+        and binding.get("source_snapshot") in {"", request["source_snapshot_id"]}
+        and binding.get("room_id") in {"", request["peer_id"]}
+        for binding in evidence
+    )
+
+
+def _literal_quote_remark(repository, contact_id, request):
+    """Read a complete bounded owner scope before selecting one retained remark."""
+    observed = repository.query_observations(
+        contact_id, page_size=256, source_id=request["source_id"],
+        owner_account_id=request["account_id"],
+    )
+    if len(observed["items"]) != observed["total_count"]:
+        return ""
+    remarks = {
+        item["value"] for item in observed["items"]
+        if item["kind"] == "remark"
+        and item["room_id"] in {"", request["peer_id"]}
+        and item["value"].strip()
+    }
+    return next(iter(remarks)) if len(remarks) == 1 else ""
 
 
 def _exact_original_quoted_author(reference, peer, original_sender, reply_sender):

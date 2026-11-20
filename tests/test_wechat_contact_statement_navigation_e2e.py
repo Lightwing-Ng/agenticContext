@@ -1,4 +1,4 @@
-"""Contact statements navigate precisely while preserving plain-text selection.
+"""Contact messages navigate precisely while preserving plain-text selection.
 
 Code version: v1.2.0-codex.0
 """
@@ -178,20 +178,23 @@ def test_merged_statement_keeps_one_primary_link_and_discloses_original_sources(
         expect(sources).to_have_count(1)
         expect(sources).not_to_have_attribute("open", "")
         expect(sources.locator(".ui-collapse-body")).not_to_be_visible()
+        expect(sources.locator("summary")).to_have_attribute(
+            "title", "Show original sources · 2 sources"
+        )
+        observations = sources.locator("[data-wechat-contact-observation]")
+        expect(observations).to_have_count(len(fixture.originals))
+        for message_id, account_key in fixture.originals.items():
+            observation = sources.locator(
+                f'[data-wechat-contact-observation="{message_id}"]'
+            )
+            expect(observation).to_have_attribute("data-contact-account-key", account_key)
+            expect(observation).not_to_be_visible()
+            expect(observation.locator("a[data-wechat-contact-source]")).to_have_attribute(
+                "href", "/browser/wechat/messages/" + message_id
+            )
         expect(
             row.locator(".wechat-contact-statement-entry.has-sources")
         ).to_have_count(1)
-        observations = sources.locator("[data-wechat-contact-observation]")
-        expect(observations).to_have_count(2)
-        assert set(observations.evaluate_all(
-            "nodes => nodes.map(node => node.dataset.wechatContactObservation)"
-        )) == set(fixture.originals)
-        assert set(observations.evaluate_all(
-            "nodes => nodes.map(node => node.dataset.contactAccountKey)"
-        )) == set(fixture.originals.values())
-        assert set(sources.locator("a[data-wechat-contact-source]").evaluate_all(
-            "nodes => nodes.map(node => node.getAttribute('href'))"
-        )) == {"/browser/wechat/messages/" + identifier for identifier in fixture.originals}
         expect(row).not_to_contain_text("2 sources")
         source_id = row.get_attribute("data-contact-message-id")
         assert source_id in fixture.originals
@@ -208,5 +211,7 @@ def test_merged_statement_keeps_one_primary_link_and_discloses_original_sources(
         expect(returned.locator("a[data-wechat-contact-statement]")).to_have_count(1)
         expect(returned.locator("details[data-wechat-contact-sources]")).not_to_have_attribute("open", "")
         assert fixture.before == (fixture.history.read_bytes(), fixture.registry.read_bytes())
+        expect(returned.locator("details[data-wechat-contact-sources]")).to_have_count(1)
+        expect(returned.locator("details[data-wechat-contact-sources] .ui-collapse-body")).not_to_be_visible()
     finally:
         context.close()

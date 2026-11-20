@@ -1,11 +1,12 @@
 """Corroborate missing HTML clocks without rewriting native or export observations.
 
-Code version: v1.0.2-codex.0
+Code version: v1.1.0-codex.0
 """
 
 from __future__ import annotations
 
 from contextlib import closing
+from copy import deepcopy
 
 from datetime import datetime
 import hashlib
@@ -17,6 +18,7 @@ import pytest
 from app.core import wechat_contact_analysis as analysis
 from app.core import wechat_forwarded_origins as origins
 from app.core.wechat_archive import _identifier
+from app.core.wechat_contacts import canonical_contact_id
 from tests import test_wechat_forwarded_original_precedence as fixtures
 
 
@@ -75,6 +77,198 @@ def _reference_rows(fixture):
             ).fetchall()
             for table in ("refs", "statement_groups", "statement_members")
         }
+
+
+_MIXED_ROOM = "verified-mixed-packet@chatroom"
+_CAPTION = "A rendered app caption with no original type"
+_CAPTION_ID = hashlib.sha256(b"Synthetic app caption position").hexdigest()[:32]
+
+
+def _mixed_group_packets(fixture):
+    _remove_originals(fixture)
+
+    def native(proof):
+        proof["locator"]["table"] = "Chat_" + hashlib.md5(
+            _MIXED_ROOM.encode(), usedforsecurity=False
+        ).hexdigest()
+        for index, part in enumerate(proof["text_components"], 1):
+            part["forwarded_item_path"] = [index]
+            part["source_create_time"] = "0"
+            if part["kind"] == "forwarded_resource":
+                part.update(
+                    resource_kind="app",
+                    forwarded_data_type=5,
+                    source_data_id=_CAPTION_ID,
+                    source_timestamp="2020-08-12 13:46",
+                )
+
+    def html(proof):
+        parts = proof["forwarded_components"]
+        for part in parts:
+            part.update(type="1", text_kind="plain_text", raw_timestamp="0")
+        parts.insert(
+            3,
+            {
+                **deepcopy(parts[2]),
+                "export_msgid": "413_" + _CAPTION_ID,
+                "type": "",
+                "text": _CAPTION,
+                "text_kind": "forwarded_rendered_text",
+                "flags": ["forwarded_original_type_unavailable"],
+            },
+        )
+        fixtures._reindex_html(parts)
+
+    fixtures._update_proof(fixture, fixture.native_parent, native)
+    fixtures._update_proof(fixture, fixture.html_parent, html)
+    with sqlite3.connect(fixture.history) as connection:
+        for parent in (fixture.native_parent, fixture.html_parent):
+            connection.execute(
+                "UPDATE conversations SET kind='group',peer_id=? WHERE id="
+                "(SELECT conversation_id FROM messages WHERE id=?)",
+                (_MIXED_ROOM, parent),
+            )
+        connection.row_factory = sqlite3.Row
+        row = connection.execute(
+            "SELECT * FROM messages WHERE id=?", (fixture.html_parent,)
+        ).fetchone()
+        proof = json.loads(row["provenance"])
+        snapshot = proof["source_snapshot"]
+        metadata = json.loads(
+            connection.execute(
+                "SELECT metadata FROM source_snapshots WHERE id=?", (snapshot,)
+            ).fetchone()[0]
+        )
+        metadata["source_conversation_catalog"][0].update(
+            index_avatar_native_id=_MIXED_ROOM, conversation_kind="group"
+        )
+        connection.execute(
+            "UPDATE source_snapshots SET metadata=? WHERE id=?",
+            (json.dumps(metadata), snapshot),
+        )
+    return row, proof, metadata
+
+
+def _cross_owner_group_packet(fixture, row, proof, metadata):
+    owner = "wxid_second_packet_receiver"
+    digest = hashlib.sha256(b"A second verified receiving export").hexdigest()
+    source_id = "html-" + digest[:24]
+    metadata.update(
+        source_id=source_id,
+        source_sha256=digest,
+        source_account_id=owner,
+        owner_evidence={
+            "native_username": owner,
+            "native_contact_id": canonical_contact_id(owner, authority="native_account_owner"),
+        },
+    )
+    proof["locator"].update(archive_sha256=digest, export_msgid="419")
+    for part in proof["forwarded_components"]:
+        part["export_msgid"] = "419_" + part["export_msgid"].partition("_")[2]
+    record_id = _identifier("html-text-v1", digest, fixtures._json(proof["locator"]))
+    fixtures.merge_wechat_export(
+        fixture.store,
+        source=metadata,
+        snapshot_id=digest,
+        records=[{
+            "extraction_record_id": record_id,
+            "conversation_key": _MIXED_ROOM,
+            "peer_id": _MIXED_ROOM,
+            "title": "A second receiving export",
+            "kind": "group",
+            "sender_id": row["sender_id"],
+            "sender_label": row["sender_label"],
+            "direction": "received",
+            "text": row["text"],
+            "sent_at_raw": row["timestamp_value"],
+            "provenance": proof,
+            "flags": [],
+        }],
+    )
+    return source_id
+
+
+@pytest.mark.parametrize("same_owner_anchor", [True, False, "wrong room"])
+def test_mixed_group_packets_prefer_native_only_with_a_same_owner_anchor(
+    forwarded_origin_store, same_owner_anchor,
+):
+    fixture = forwarded_origin_store
+    row, proof, metadata = _mixed_group_packets(fixture)
+    cross_source = _cross_owner_group_packet(fixture, row, proof, metadata)
+    if same_owner_anchor is False:
+        with sqlite3.connect(fixture.history) as connection:
+            connection.execute("DELETE FROM messages WHERE id=?", (fixture.html_parent,))
+    elif same_owner_anchor == "wrong room":
+        peer = "unrelated-mixed-packet@chatroom"
+        with sqlite3.connect(fixture.history) as connection:
+            connection.execute(
+                "UPDATE conversations SET peer_id=? WHERE partition_id=?", (peer, cross_source)
+            )
+            metadata["source_conversation_catalog"][0]["index_avatar_native_id"] = peer
+            connection.execute(
+                "UPDATE source_snapshots SET metadata=? WHERE source_id=?",
+                (json.dumps(metadata), cross_source),
+            )
+    before = fixture.history.read_bytes(), fixture.registry.read_bytes()
+    page = analysis.query_contact_analysis(fixture.store, CID)
+    assert page["status"] == "ready"
+    items = page["items"]
+    captions = [item for item in items if item["content_text"] == _CAPTION]
+    assert len(captions) == (2 if same_owner_anchor else 1)
+    assert all(item["reference_kind"] == "html_forwarded" for item in captions)
+    assert all(item["observation_count"] == 1 for item in captions)
+    texts = [item for item in items if item["content_text"] != _CAPTION]
+    assert len(texts) == (6 if same_owner_anchor is True else 12)
+    if same_owner_anchor is True:
+        for item in texts:
+            assert item["source_label"] == "iPad archive"
+            assert item["reference_kind"] == "native_forwarded"
+            assert item["observation_count"] == 3
+            assert "precision: minute" in item["time_basis"]
+            assert {origin["source_id"] for origin in item["observations"]} == {
+                fixture.native_source, fixture.html_source, cross_source,
+            }
+            assert all(
+                origin["timestamp_value"] == "" and origin["source_clock"] == "0"
+                for origin in item["observations"]
+                if origin["source_id"] != fixture.native_source
+            )
+    elif same_owner_anchor is False:
+        assert all(item["observation_count"] == 1 for item in texts)
+    else:
+        assert sum(
+            item["source_id"] == cross_source and item["observation_count"] == 1
+            for item in texts
+        ) == 6
+        assert sum(
+            item["source_id"] == fixture.native_source and item["observation_count"] == 2
+            for item in texts
+        ) == 6
+    assert before == (fixture.history.read_bytes(), fixture.registry.read_bytes())
+
+
+@pytest.mark.parametrize("conflict", ["child clock", "child ID", "typed caption"])
+def test_mixed_group_packet_conflict_keeps_html_text_independent(
+    forwarded_origin_store, conflict,
+):
+    fixture = forwarded_origin_store
+    _mixed_group_packets(fixture)
+
+    def damage(proof):
+        parts = proof["forwarded_components"]
+        if conflict == "child clock":
+            parts[1]["raw_timestamp"] = "2020-08-13 13:46:45"
+        elif conflict == "child ID":
+            parts[1]["export_msgid"] = "413_" + "d" * 32
+        else:
+            parts[3]["type"] = "1"
+            parts[3]["flags"] = []
+
+    fixtures._update_proof(fixture, fixture.html_parent, damage)
+    page = analysis.query_contact_analysis(fixture.store, CID)
+    assert page["status"] == "ready"
+    assert page["total_count"] == page["observation_count"] == 13
+    assert sum(item["source_id"] == fixture.html_source for item in page["items"]) == 7
 
 
 @pytest.mark.parametrize("raw", [None, "", "   ", "1970-01-01 08:00:00", "0"])

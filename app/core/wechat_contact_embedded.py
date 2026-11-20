@@ -1,6 +1,6 @@
 """Reference literal native authors without copying text or inventing conversations.
 
-Code version: v1.2.2-codex.0
+Code version: v1.3.0-codex.0
 """
 
 from __future__ import annotations
@@ -21,7 +21,7 @@ from .wechat_quoted_contacts import _quoted_author
 from .wechat_reconcile import native_text_metadata
 
 
-VERSION = "v1.2.2-codex.0"
+VERSION = "v1.3.0-codex.0"
 CANDIDATE_INDEX_VERSION = "v1.1.0-codex.0"
 _LOCK = Lock()
 
@@ -305,7 +305,29 @@ def _quote_detail(component, *, parent_id, number, position=(), peer_id=""):
     }
 
 
-def native_details(provenance, *, parent_id, account_id, peer_id=""):
+def _recovered_forwarded_author(component, position, author_resolutions):
+    """Read an already verified copy proof without replacing a literal author."""
+    if component.get("source_sender_id") or not isinstance(author_resolutions, dict):
+        return None
+    resolution = author_resolutions.get(tuple(position))
+    if not isinstance(resolution, dict):
+        return None
+    sender = resolution.get("sender_id")
+    if (
+        not isinstance(sender, str)
+        or not sender
+        or sender != sender.strip()
+        or resolution.get("identity_basis")
+        != "verified_complete_native_transcript_copy"
+        or not isinstance(resolution.get("evidence"), dict)
+    ):
+        return None
+    return resolution
+
+
+def native_details(
+    provenance, *, parent_id, account_id, peer_id="", author_resolutions=None
+):
     """Expose source assertions, keeping quotes and forwarded authors distinct."""
     if (
         not isinstance(provenance, dict)
@@ -362,16 +384,24 @@ def native_details(provenance, *, parent_id, account_id, peer_id=""):
                 text = replies[0] if len(replies) == 1 else ""
             else:
                 continue
-            if not text.strip() or not component.get("source_sender_id"):
+            recovery = _recovered_forwarded_author(
+                component, position, author_resolutions
+            )
+            sender = component.get("source_sender_id") or (
+                recovery["sender_id"] if recovery else ""
+            )
+            if not text.strip() or not sender:
                 continue
             yield {
                 "path": ["native", *position],
                 "id": _path_key(parent_id, position),
                 "anchor_id": "wechat_message_" + _path_key(parent_id, position),
                 "text": text,
-                "sender_id": component["source_sender_id"],
+                "sender_id": sender,
                 "sender_label": child.author_label,
-                "direction": context["direction"],
+                "direction": ("sent" if sender == account_id else "received")
+                if recovery
+                else context["direction"],
                 "timestamp_value": child.last_seen_at,
                 "timestamp_label": context["timestamp_label"],
                 "time_basis": context["time_basis"],
@@ -387,6 +417,14 @@ def native_details(provenance, *, parent_id, account_id, peer_id=""):
                 "original_conversation_unknown": not bool(
                     component.get("source_chat_id")
                 ),
+                **(
+                    {
+                        "identity_basis": recovery["identity_basis"],
+                        "author_recovery": recovery["evidence"],
+                    }
+                    if recovery
+                    else {}
+                ),
             }
     if provenance.get("text_extraction_kind") != "quoted_reply":
         return
@@ -398,7 +436,9 @@ def native_details(provenance, *, parent_id, account_id, peer_id=""):
             yield detail
 
 
-def native_detail(provenance, path, *, parent_id, account_id, peer_id=""):
+def native_detail(
+    provenance, path, *, parent_id, account_id, peer_id="", author_resolutions=None
+):
     if (
         not isinstance(path, list)
         or len(path) < 2
@@ -420,6 +460,7 @@ def native_detail(provenance, path, *, parent_id, account_id, peer_id=""):
                 parent_id=parent_id,
                 account_id=account_id,
                 peer_id=peer_id,
+                author_resolutions=author_resolutions,
             )
             if item["path"] == path
         ),

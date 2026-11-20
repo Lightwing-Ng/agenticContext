@@ -908,18 +908,195 @@ def test_sidecar_created_during_ctime_hash_is_rejected(tmp_path, monkeypatch):
     assert path.read_bytes() == before
 
 
-def test_baseline_hash_must_finish_under_unchanged_identity(tmp_path, monkeypatch):
+@pytest.mark.parametrize("changed_input", ["main", "policy", "both"])
+@pytest.mark.parametrize("apply", [False, True])
+def test_baseline_hash_accepts_verified_ctime_only_drift(
+    tmp_path, monkeypatch, changed_input, apply
+):
     metadata, _ = seed(tmp_path)
     path = wechat_archive_path(tmp_path)
+    policy = path.with_name("exclusions.json")
+    policy.write_text('{"schema_version":1,"sources":[],"note":"AAAA"}')
+    before_main, before_policy = path.read_bytes(), policy.read_bytes()
+    before_rows = retained(tmp_path)
+    targets = {
+        "main": {path},
+        "policy": {policy},
+        "both": {path, policy},
+    }[changed_input]
+    sha256 = restore._stream_sha256
+    calls = {}
+
+    def drifting_sha256(original):
+        digest = sha256(original)
+        calls[original] = calls.get(original, 0) + 1
+        if original in targets and calls[original] == 1:
+            change_ctime_only(original)
+        return digest
+
+    monkeypatch.setattr(restore, "_stream_sha256", drifting_sha256)
+    result = run(
+        tmp_path, [metadata], [record(metadata, "new", server_id="456")],
+        apply=apply,
+    )
+    assert result["published"] is apply
+    assert result["inserted_messages"] == 1
+    assert result["original_main_sha256"] == hashlib.sha256(before_main).hexdigest()
+    assert result["exclusions_sha256"] == hashlib.sha256(before_policy).hexdigest()
+    assert all(calls[target] >= 2 for target in targets)
+    assert policy.read_bytes() == before_policy
+    if apply:
+        assert all(item in rows(tmp_path) for item in before_rows["messages"])
+        assert rows(tmp_path, "partitions") == before_rows["partitions"]
+    else:
+        assert path.read_bytes() == before_main
+        assert retained(tmp_path) == before_rows
+
+
+@pytest.mark.parametrize("changed_input", ["main", "policy"])
+@pytest.mark.parametrize("change", ["size", "inode", "mtime", "content"])
+def test_baseline_hash_rejects_changed_inputs_before_cloning(
+    tmp_path, monkeypatch, changed_input, change
+):
+    metadata, _ = seed(tmp_path)
+    path = wechat_archive_path(tmp_path)
+    with sqlite3.connect(path) as connection:
+        connection.execute("INSERT INTO archive_info VALUES('early-fixture','AAAA')")
+    policy = path.with_name("exclusions.json")
+    policy.write_text('{"schema_version":1,"sources":[],"note":"AAAA"}')
+    target = path if changed_input == "main" else policy
+    initial = target.stat()
+    sha256 = restore._stream_sha256
+    changed = False
+    externally_changed = None
+
+    def drifting_sha256(original):
+        nonlocal changed, externally_changed
+        digest = sha256(original)
+        if original != target or changed:
+            return digest
+        changed = True
+        if change == "size":
+            with target.open("ab") as output:
+                output.write(b" ")
+        elif change == "inode":
+            replacement = target.with_name(target.name + ".replacement")
+            replacement.write_bytes(target.read_bytes())
+            os.replace(replacement, target)
+            os.utime(target, ns=(initial.st_atime_ns, initial.st_mtime_ns))
+        elif change == "mtime":
+            os.utime(
+                target, ns=(initial.st_atime_ns, initial.st_mtime_ns + 1_000_000)
+            )
+        else:
+            if changed_input == "main":
+                with sqlite3.connect(target) as connection:
+                    connection.execute(
+                        "UPDATE archive_info SET value='BBBB' WHERE key='early-fixture'"
+                    )
+            else:
+                target.write_text(target.read_text().replace("AAAA", "BBBB"))
+            os.utime(target, ns=(initial.st_atime_ns, initial.st_mtime_ns))
+            assert target.stat().st_size == initial.st_size
+        externally_changed = target.read_bytes()
+        return digest
+
+    def refuse_clone(*args):
+        pytest.fail("Changed initial inputs must be rejected before staging.")
+
+    monkeypatch.setattr(restore, "_stream_sha256", drifting_sha256)
+    monkeypatch.setattr(restore, "_clonefile", refuse_clone)
+    with pytest.raises(ValueError, match="while hashing original bytes"):
+        run(tmp_path, [metadata], [record(metadata, "new", server_id="456")])
+    assert changed
+    assert target.read_bytes() == externally_changed
+
+
+@pytest.mark.parametrize("suffix", ["-wal", "-shm", "-journal"])
+def test_baseline_hash_rejects_new_sidecars_before_cloning(
+    tmp_path, monkeypatch, suffix
+):
+    metadata, _ = seed(tmp_path)
+    path = wechat_archive_path(tmp_path)
+    before = path.read_bytes()
+    sha256 = restore._stream_sha256
+    changed = False
+
+    def drifting_sha256(original):
+        nonlocal changed
+        digest = sha256(original)
+        if original == path and not changed:
+            changed = True
+            path.with_name(path.name + suffix).write_bytes(b"")
+        return digest
+
+    def refuse_clone(*args):
+        pytest.fail("A new initial sidecar must prevent staging.")
+
+    monkeypatch.setattr(restore, "_stream_sha256", drifting_sha256)
+    monkeypatch.setattr(restore, "_clonefile", refuse_clone)
+    with pytest.raises(ValueError, match="while hashing original bytes"):
+        run(tmp_path, [metadata], [record(metadata, "new", server_id="456")])
+    assert path.read_bytes() == before
+
+
+def test_baseline_hash_rejects_policy_created_after_initial_inspection(
+    tmp_path, monkeypatch
+):
+    metadata, _ = seed(tmp_path)
+    path = wechat_archive_path(tmp_path)
+    policy = path.with_name("exclusions.json")
+    assert not policy.exists()
     before = path.read_bytes()
     sha256 = restore._stream_sha256
 
     def drifting_sha256(original):
         digest = sha256(original)
-        change_ctime_only(original)
+        if original == path:
+            policy.write_text('{"schema_version":1,"sources":[]}')
         return digest
 
+    def refuse_clone(*args):
+        pytest.fail("A new exclusions policy must prevent staging.")
+
     monkeypatch.setattr(restore, "_stream_sha256", drifting_sha256)
+    monkeypatch.setattr(restore, "_clonefile", refuse_clone)
     with pytest.raises(ValueError, match="while hashing original bytes"):
         run(tmp_path, [metadata], [record(metadata, "new", server_id="456")])
     assert path.read_bytes() == before
+
+
+def test_policy_parsing_cannot_use_rules_bound_to_a_later_hash(
+    tmp_path, monkeypatch
+):
+    metadata, _ = seed(tmp_path)
+    path = wechat_archive_path(tmp_path)
+    policy = path.with_name("exclusions.json")
+    other_source = source("wxid_excluded_other")["source_id"]
+    original_policy = json.dumps(
+        {"schema_version": 1, "sources": [{"source_id": other_source}]}
+    )
+    policy.write_text(original_policy)
+    initial = policy.stat()
+    before = path.read_bytes()
+    parse = restore._source_exclusions
+
+    def parse_then_change_rules(original):
+        parsed = parse(original)
+        if original == policy:
+            policy.write_text(
+                original_policy.replace(other_source, metadata["source_id"])
+            )
+            os.utime(policy, ns=(initial.st_atime_ns, initial.st_mtime_ns))
+            assert policy.stat().st_size == initial.st_size
+        return parsed
+
+    def refuse_clone(*args):
+        pytest.fail("Parsed exclusions must be bound to their original bytes.")
+
+    monkeypatch.setattr(restore, "_source_exclusions", parse_then_change_rules)
+    monkeypatch.setattr(restore, "_clonefile", refuse_clone)
+    with pytest.raises(ValueError, match="while hashing original bytes"):
+        run(tmp_path, [metadata], [record(metadata, "new", server_id="456")])
+    assert path.read_bytes() == before
+    assert metadata["source_id"] in parse(policy)

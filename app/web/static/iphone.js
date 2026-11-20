@@ -1,4 +1,4 @@
-/* Code version: v1.1.2-codex.0 */
+/* Code version: v1.1.3-codex.0 */
 /*
  * iPhone Agent mode page: setup steps, live preview polling, and phone controls.
  *
@@ -11,6 +11,8 @@
 
     const root = document.querySelector("[data-iphone-root]");
     if (!root) return;
+    const springEasing = getComputedStyle(document.documentElement)
+        .getPropertyValue("--motion-spring-080").trim() || "linear";
 
     const FRAME_INTERVAL_MS = 250;
     const SLOW_FRAME_INTERVAL_MS = 1000;
@@ -1011,20 +1013,19 @@
             : "";
         const frames = gesture.kind === "drag"
             ? [
-                {transform: "translate(0, 0) scale(.96)", opacity: 0},
-                {transform: "translate(0, 0) scale(1)", opacity: 1, offset: 80 / duration},
-                {transform: "translate(0, 0) scale(.92)", opacity: 1, offset: 200 / duration, easing: "cubic-bezier(.3,0,.2,1)"},
-                {transform: delta + " scale(.92)", opacity: 1, offset: (movement + 200) / duration},
-                {transform: delta + " scale(1.06)", opacity: 1, offset: (movement + 380) / duration},
+                {transform: "translate(0, 0) scale(.96)", opacity: 0, easing: springEasing},
+                {transform: "translate(0, 0) scale(1)", opacity: 1, offset: 80 / duration, easing: springEasing},
+                {transform: "translate(0, 0) scale(.92)", opacity: 1, offset: 200 / duration},
+                {transform: delta + " scale(.92)", opacity: 1, offset: (movement + 200) / duration, easing: springEasing},
+                {transform: delta + " scale(1)", opacity: 1, offset: (movement + 380) / duration},
                 {transform: delta + " scale(1)", opacity: 1, offset: (duration - 350) / duration},
                 {transform: delta + " scale(1)", opacity: 1, offset: (duration - 200) / duration},
                 {transform: delta + " scale(.98)", opacity: 0},
             ]
             : [
-                {transform: "scale(.96)", opacity: 0},
-                {transform: "scale(1)", opacity: 1, offset: 0.06},
-                {transform: "scale(.9)", opacity: 1, offset: 0.16},
-                {transform: "scale(1.06)", opacity: 1, offset: 0.28},
+                {transform: "scale(.96)", opacity: 0, easing: springEasing},
+                {transform: "scale(1)", opacity: 1, offset: 0.06, easing: springEasing},
+                {transform: "scale(.9)", opacity: 1, offset: 0.16, easing: springEasing},
                 {transform: "scale(1)", opacity: 1, offset: 0.4},
                 {transform: "scale(1)", opacity: 1, offset: 0.875},
                 {transform: "scale(.98)", opacity: 0},

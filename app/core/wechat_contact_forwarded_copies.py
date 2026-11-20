@@ -1,6 +1,6 @@
 """Fold contact-level forwarded statement copies without inventing event identity.
 
-Code version: v1.0.1-codex.0
+Code version: v1.1.0-codex.0
 """
 
 from __future__ import annotations
@@ -10,7 +10,9 @@ import hashlib
 import json
 import re
 import sqlite3
+import stat
 
+from .wechat_archive import wechat_archive_path
 from .wechat_contacts import canonical_contact_id
 from .wechat_forwarded_origins import _metadata, _native_scope, _native_time, _stamp
 from .wechat_html_export import normalize_html_clock
@@ -23,11 +25,13 @@ from .wechat_statement_reviews import (
 )
 
 
-VERSION = "v1.0.1-codex.0"
+VERSION = "v1.1.0-codex.0"
 BASIS = "contact_forwarded_statement_projection"
 MAX_REFERENCES = 200_000
 MAX_PACKET_BYTES = 16 * 1024**2
 MAX_SOURCE_BYTES = 256 * 1024**2
+MAX_POLICY_BYTES = 64 * 1024
+MAX_POLICY_CONTACTS = 64
 _SERVER = re.compile(r"-?[1-9][0-9]*")
 _TABLES = (
     "forwarded_copy_projection_groups",
@@ -112,6 +116,106 @@ def _json(value):
 
 def _sha(value):
     return hashlib.sha256(value.encode()).hexdigest()
+
+
+def _policy_bytes(root):
+    path = wechat_archive_path(root).parent / "contact_display_policies.json"
+    try:
+        if any(part.is_symlink() for part in (path, *path.parents)):
+            return "unavailable", b""
+        before = path.stat()
+        if (
+            not stat.S_ISREG(before.st_mode)
+            or getattr(before, "st_flags", 0) & 0x40000000
+        ):
+            return "unavailable", b""
+        if before.st_size > MAX_POLICY_BYTES:
+            return "oversized", b""
+        with path.open("rb") as stream:
+            raw = stream.read(MAX_POLICY_BYTES + 1)
+        after = path.stat()
+        if (
+            before.st_dev,
+            before.st_ino,
+            before.st_size,
+            before.st_mtime_ns,
+            before.st_ctime_ns,
+        ) != (
+            after.st_dev,
+            after.st_ino,
+            after.st_size,
+            after.st_mtime_ns,
+            after.st_ctime_ns,
+        ):
+            return "changed", b""
+        return ("oversized" if len(raw) > MAX_POLICY_BYTES else "present"), raw
+    except FileNotFoundError:
+        return "missing", b""
+    except OSError:
+        return "unavailable", b""
+
+
+def contact_display_policies_digest(local_store_root):
+    """Pin a small local display preference, including unusable or absent states."""
+    status, raw = _policy_bytes(local_store_root)
+    return _sha(_json([VERSION, status, hashlib.sha256(raw).hexdigest()]))
+
+
+def _unique_policy_fields(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError("Duplicate contact display policy field.")
+        result[key] = value
+    return result
+
+
+def allows_forwarded_copy_projection(local_store_root, contact_id, username):
+    """Apply only an explicit whole-contact preference pinned to its native ID."""
+    status, raw = _policy_bytes(local_store_root)
+    if status != "present":
+        return False
+    try:
+        value = json.loads(raw, object_pairs_hook=_unique_policy_fields)
+        if (
+            not isinstance(value, dict)
+            or set(value) != {"schema_version", "contacts"}
+            or type(value["schema_version"]) is not int
+            or value["schema_version"] != 1
+            or not isinstance(value["contacts"], list)
+            or len(value["contacts"]) > MAX_POLICY_CONTACTS
+        ):
+            return False
+        ids, authors, allowed = set(), set(), False
+        for policy in value["contacts"]:
+            if (
+                not isinstance(policy, dict)
+                or set(policy)
+                != {"contact_id", "native_username", "collapse_forwarded_copies"}
+                or policy["collapse_forwarded_copies"] is not True
+                or not isinstance(policy["contact_id"], str)
+                or not isinstance(policy["native_username"], str)
+                or policy["contact_id"] in ids
+                or policy["native_username"] in authors
+                or canonical_contact_id(
+                    policy["native_username"], authority="native_message_sender"
+                )
+                != policy["contact_id"]
+            ):
+                return False
+            ids.add(policy["contact_id"])
+            authors.add(policy["native_username"])
+            allowed |= (
+                policy["contact_id"] == contact_id
+                and policy["native_username"] == username
+            )
+        return allowed
+    except (ValueError, TypeError, KeyError, UnicodeError, RecursionError):
+        return False
+
+
+def _display_group_id(key):
+    return _sha(_json([BASIS, key]))
 
 
 def _rows(cursor):
@@ -208,7 +312,10 @@ def restore_forwarded_copy_groups(retained, output):
             value is None
             or value[0] != proof["statement_id"]
             or proof["basis"] != BASIS
-            or value[0] not in group_map
+            or (
+                value[0] not in group_map
+                and value[0] != _display_group_id(proof["projection_key"])
+            )
             or output.execute("SELECT 1 FROM refs WHERE id=?", (reference,)).fetchone()
             is None
         ):
@@ -490,7 +597,8 @@ def _candidate(
             return None, "unverified_native_source"
         if path:
             if (
-                proof.get("message_type") != 49
+                type(proof.get("message_type")) is not int
+                or proof.get("message_type") != 49
                 or proof.get("text_extraction_kind") != "forwarded_text"
                 or proof.get("appmsg_subtype") not in {None, 19}
             ):
@@ -502,7 +610,8 @@ def _candidate(
             role = "forward"
         else:
             if (
-                proof.get("message_type") != 1
+                type(proof.get("message_type")) is not int
+                or proof.get("message_type") != 1
                 or proof.get("text_extraction_kind") != "plain_text"
             ):
                 return None, "unsupported_native_role"
@@ -521,6 +630,14 @@ def _candidate(
             }:
                 return None, "unsupported_html_role"
             part = _html_component(proof, path, locator)
+            if ("type" in part and str(part["type"]) not in {"", "1"}) or (
+                "original_message_type" in part
+                and (
+                    type(part["original_message_type"]) is not int
+                    or part["original_message_type"] != 1
+                )
+            ):
+                return None, "conflicting_forwarded_type"
             author, body = part.get("sender_native_id"), part.get("text")
             stamp, precision = _member_clock(part, native=False)
             constraint, role = _constraint(part), "forward"
@@ -684,6 +801,13 @@ def fold_contact_forwarded_copies(
                 row[0]
                 for row in output.execute("SELECT reference_id FROM " + _TABLES[1])
             }
+            journal_members = dict(output.execute("SELECT * FROM " + _TABLES[1]))
+            journal_contexts = {
+                row[0]: row[1]
+                for row in output.execute(
+                    "SELECT id,conversation_key FROM " + _TABLES[0]
+                )
+            }
             used_groups = {proof["statement_id"] for proof in proofs}
             actual_ids = set().union(*(group_members[g] for g in used_groups))
             if proof_ids != journal_ids or actual_ids != proof_ids:
@@ -692,8 +816,14 @@ def fold_contact_forwarded_copies(
                 )
             for proof in proofs:
                 candidate = candidates.get(proof["reference_id"])
+                metadata = json.loads(proof["evidence_json"])
+                original_statement = journal_members[proof["reference_id"]]
                 if (
                     candidate is None
+                    or metadata.get("version") != VERSION
+                    or metadata.get("original_statement_id") != original_statement
+                    or metadata.get("original_conversation_key")
+                    != journal_contexts.get(original_statement)
                     or proof["source_pin_sha256"] != _sha(_json(candidate["pin"]))
                     or memberships[proof["reference_id"]] != proof["statement_id"]
                     or groups[proof["statement_id"]]["reference_id"]
@@ -773,12 +903,13 @@ def fold_contact_forwarded_copies(
                         v["id"],
                     ),
                 )
-            winner = memberships[preferred["id"]]
-            if (
-                len(cohort_groups) == 1
-                and groups[winner]["reference_id"] == preferred["id"]
-            ):
+            if len(cohort_groups) == 1:
                 continue
+            winner = _display_group_id(key)
+            if winner in groups:
+                raise ValueError(
+                    "A display projection ID collides with an existing event group."
+                )
             plans.append((key, values, preferred, winner, cohort_groups))
     except _Bounded:
         return {
@@ -813,6 +944,18 @@ def fold_contact_forwarded_copies(
                         for field in ("id", "reference_id", "conversation_key")
                     ),
                 )
+            output.executemany(
+                "DELETE FROM statement_groups WHERE id=?",
+                [(group,) for group in cohort_groups],
+            )
+            output.execute(
+                "INSERT INTO statement_groups VALUES(?,?,?)",
+                (
+                    winner,
+                    preferred["id"],
+                    groups[memberships[preferred["id"]]]["conversation_key"],
+                ),
+            )
             for value in values:
                 identifier = value["id"]
                 output.execute(
@@ -820,7 +963,15 @@ def fold_contact_forwarded_copies(
                     (identifier, memberships[identifier]),
                 )
                 evidence = {k: v for k, v in value.items() if k != "pin"}
-                evidence.update(version=VERSION, basis=BASIS, source_pins=value["pin"])
+                evidence.update(
+                    version=VERSION,
+                    basis=BASIS,
+                    source_pins=value["pin"],
+                    original_statement_id=memberships[identifier],
+                    original_conversation_key=groups[memberships[identifier]][
+                        "conversation_key"
+                    ],
+                )
                 output.execute(
                     "INSERT INTO " + _TABLES[2] + " VALUES(?,?,?,?,?,?,?)",
                     (
@@ -837,14 +988,6 @@ def fold_contact_forwarded_copies(
                     "UPDATE statement_members SET statement_id=? WHERE reference_id=?",
                     (winner, identifier),
                 )
-            output.execute(
-                "UPDATE statement_groups SET reference_id=? WHERE id=?",
-                (preferred["id"], winner),
-            )
-            output.executemany(
-                "DELETE FROM statement_groups WHERE id=?",
-                [(g,) for g in cohort_groups if g != winner],
-            )
         check_cancelled()
         if source.total_changes != source_changes:
             raise _Changed(

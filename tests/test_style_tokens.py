@@ -1,6 +1,6 @@
 """Regression tests for synchronized sibling-project color tokens.
 
-Code version: v1.89.8-codex.0
+Code version: v1.90.3-codex.0
 """
 
 import hashlib
@@ -47,7 +47,9 @@ def test_process_list_catalog_publishes_the_production_component() -> None:
     catalog_template = (
         PROJECT_ROOT / "app/web/templates/settings_style_tokens.html"
     ).read_text(encoding="utf-8")
-    assert "style-v2.159.4-codex.0" in catalog_template
+    stylesheet_version = re.match(r"/\* Code version: (v[\w.\-]+) \*/", _stylesheet())
+    assert stylesheet_version is not None
+    assert f"-style-{stylesheet_version[1]}" in catalog_template
 
 
 def test_agent_session_scrollport_preserves_physical_effect_bleed() -> None:
@@ -1723,8 +1725,8 @@ def test_browser_pagination_matches_the_sibling_floating_control_states() -> Non
     assert "box-shadow: var(--frosted-glass-shadow-active);" in ellipsis_hover_rule
 
 
-def test_motion_tokens_match_the_sibling_non_linear_motion_contract() -> None:
-    """Keep shared transitions valid and aligned with the sibling motion foundation."""
+def test_motion_tokens_match_the_shared_spring_contract() -> None:
+    """Resolve finite motion through the shared damping-ratio 0.80 spring."""
     stylesheet = _stylesheet()
 
     for token in (
@@ -1732,13 +1734,15 @@ def test_motion_tokens_match_the_sibling_non_linear_motion_contract() -> None:
         "--motion-duration-standard: 240ms;",
         "--motion-duration-emphasized: 420ms;",
         "--motion-duration-spatial: 560ms;",
-        "--motion-standard: cubic-bezier(0.2, 0, 0, 1);",
-        "--motion-emphasized: cubic-bezier(0.16, 1, 0.3, 1);",
-        "--motion-inertial: cubic-bezier(0.16, 1, 0.3, 1);",
-        "--motion-bouncy: cubic-bezier(0.34, 1.56, 0.64, 1);",
-        "--motion-overshoot: cubic-bezier(0.34, 1.32, 0.64, 1);",
+        "--motion-spring-080: linear(0, .02939, .10213, .19948",
+        "--motion-standard: var(--motion-spring-080);",
+        "--motion-emphasized: var(--motion-spring-080);",
+        "--motion-inertial: var(--motion-spring-080);",
+        "--motion-bouncy: var(--motion-spring-080);",
+        "--motion-overshoot: var(--motion-spring-080);",
     ):
         assert token in stylesheet
+    assert "cubic-bezier(" not in stylesheet
 
 
 def test_agent_response_pagination_ellipsis_has_a_visible_hover_affordance() -> None:
@@ -1906,6 +1910,24 @@ def test_segmented_control_uses_the_sibling_generic_pill_contract() -> None:
     assert "font-weight: var(--font-weight-regular);" in option_rule
     assert "font-weight: var(--font-weight-bold);" not in option_rule
     assert "font-weight: var(--font-weight-bold);" in selected_rule
+    for token in (
+        "background: var(--frosted-glass-background);",
+        "box-shadow: var(--frosted-glass-shadow);",
+        "backdrop-filter: var(--frosted-glass-blur);",
+    ):
+        assert token in control_rule
+    assert "white-space: nowrap;" in option_rule
+    assert "overflow-wrap: normal;" in option_rule
+    assert "box-shadow:" not in style_token_rule
+    for token in (
+        '.segmented-control-option:has(input:disabled) > span,',
+        '.segmented-control-option[aria-disabled="true"] > span,',
+        "opacity: 0.55;",
+        '.segmented-control[data-segmented-overflow="1"]',
+        "var(--mode-switch-thumb-shadow-start-edge)",
+        "var(--mode-switch-thumb-shadow-end-edge)",
+    ):
+        assert token in stylesheet
     for token in ("width: fit-content;", "max-width: 100%;", "margin-inline: auto;"):
         assert token in control_rule
     for token in ("width: fit-content;", "max-width: 100%;", "justify-self: center;"):
@@ -2517,9 +2539,9 @@ def test_browser_content_mode_reuses_the_sibling_optimistic_navigation_skeleton(
 def test_agent_workspace_reuses_shared_glass_and_responsive_tokens() -> None:
     """Keep the fourth dock item and Agent workspace aligned with the shared shell."""
     stylesheet = _stylesheet()
+    assert re.match(r"/\* Code version: v\d+\.\d+\.\d+(?:-[\w.]+)? \*/", stylesheet)
 
     for token in (
-        "/* Code version: v2.159.4-codex.0 */",
         "transform var(--sidebar-motion-duration) var(--motion-emphasized);",
         ".dock-icon-agent",
         'mask: url("/static/images/arrow.uturn.up.circle.svg")',
@@ -3924,12 +3946,13 @@ def test_agent_activity_expansion_uses_shared_gel_motion() -> None:
     keyframes = stylesheet[keyframes_start:stylesheet.index("\n}\n\n@media", keyframes_start)]
     for token in (
         "transform: translate3d(0, -6px, 0) scale3d(0.985, 0.94, 1);",
-        "transform: translate3d(0, 2px, 0) scale3d(1.01, 1.015, 1);",
         "transform: translate3d(0, 0, 0) scale3d(1, 1, 1);",
         "filter: saturate(82%);",
-        "filter: saturate(108%);",
+        "filter: saturate(100%);",
     ):
         assert token in keyframes
+    assert "translate3d(0, 2px, 0)" not in keyframes
+    assert "saturate(108%)" not in keyframes
 
 
 def test_agent_sidebar_primary_comboboxes_use_the_compact_form_height() -> None:

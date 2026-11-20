@@ -1,6 +1,6 @@
 """Validate installed distributions against the project's declared constraints.
 
-Code version: v1.0.1-codex.1
+Code version: v1.1.0-codex.0
 """
 
 from __future__ import annotations
@@ -30,13 +30,15 @@ RUNTIME_DISTRIBUTIONS = frozenset(
 )
 MODE_DISTRIBUTIONS = {
     "runtime": RUNTIME_DISTRIBUTIONS,
-    "test": RUNTIME_DISTRIBUTIONS | {canonicalize_name("pytest")},
+    "test": RUNTIME_DISTRIBUTIONS
+    | {canonicalize_name("pytest"), canonicalize_name("beautifulsoup4")},
     "quality": RUNTIME_DISTRIBUTIONS
     | {
         canonicalize_name("pip-audit"),
         canonicalize_name("pytest"),
         canonicalize_name("pytest-cov"),
         canonicalize_name("ruff"),
+        canonicalize_name("beautifulsoup4"),
     },
 }
 

@@ -1,6 +1,6 @@
 """Present native nontext quote references without opening attachment payloads.
 
-Code version: v1.1.1-codex.0
+Code version: v1.2.4-codex.0
 """
 
 from __future__ import annotations
@@ -9,18 +9,68 @@ from collections import defaultdict
 
 from .wechat_quote_padding import MAX_PAGE_ITEMS, _HEX, _key, _proof, _server
 from .wechat_quoted_contacts import _exact_original_quoted_author, _native_quote
-from .wechat_reconcile import native_text_metadata
-from .wechat_resource_index import _KINDS
+from .wechat_reconcile import native_text_metadata, validate_quoted_app_card_metadata
+from .wechat_resource_index import CHANNELS_LABEL_PATHS, _KINDS
 from .wechat_resources import present_resource, resource_reference
 from .wechat_text import native_components_text
 
 
-VERSION = "v1.1.1-codex.0"
+VERSION = "v1.2.4-codex.0"
 REFERENCE_BASIS = "native_nontext_quote_type_v1"
 ORIGINAL_BASIS = "exact_native_resource_original_v1"
 NESTED_REFERENCE_BASIS = "native_forwarded_nontext_quote_type_v1"
+INLINE_APP_BASIS = "native_inline_quoted_app_card_v1"
+NESTED_INLINE_APP_BASIS = "native_forwarded_inline_quoted_app_card_v1"
+MACOS_NESTED_INLINE_APP_BASIS = "authenticated_macos_forwarded_inline_quoted_app_card_v1"
 MAX_NESTED_ITEMS = 4_096
 MAX_NESTED_DEPTH = 32
+
+
+def _inline_app_resource(reference):
+    metadata = reference.get("app_card_metadata")
+    if metadata is None or reference.get("original_message_type") != 49:
+        return None
+    try:
+        metadata = validate_quoted_app_card_metadata(metadata)
+    except (ValueError, TypeError):
+        return None
+    return {
+        "kind": "file" if metadata["appmsg_subtype"] == 6 else "app",
+        "availability": "metadata_only",
+        "app_subtype": str(metadata["appmsg_subtype"]),
+        **{key: value for key, value in metadata.items() if key not in {"schema_version", "appmsg_subtype"}},
+    }
+
+
+def _merge_app_resources(inline, original):
+    """Combine complementary inert facts; conflicts preserve only the caller's type."""
+    if inline is None:
+        return original
+    filename = original.get("filename")
+    if (
+        inline["kind"] == "file"
+        and isinstance(filename, str)
+        and filename.strip()
+        and inline.get("safe_title")
+        and filename != inline["safe_title"]
+    ):
+        return None
+    fields = (
+        "kind", "app_subtype", "safe_title", "publisher_name",
+        "publisher_name_source", "app_name", "app_name_source",
+        *CHANNELS_LABEL_PATHS,
+    )
+    if any(
+        key in original and original[key] is not None and original[key] != ""
+        and key in inline and original[key] != inline[key]
+        for key in fields
+    ):
+        return None
+    merged = dict(original)
+    for key, value in inline.items():
+        if key not in merged or merged[key] is None or merged[key] == "":
+            merged[key] = value
+    return merged
 
 
 def _missing_resource_quote(item, *, embedded=False):
@@ -149,13 +199,22 @@ def _exact_resource_original(item, by_server, partitions, names, snapshots):
     )
 
 
-def _project_nested_resources(items, partitions, names, snapshots):
+def _project_nested_resources(
+    items, partitions, names, snapshots, *, authenticate_parent=None, inline_only=False,
+    inline_basis=NESTED_INLINE_APP_BASIS,
+):
     remaining = MAX_NESTED_ITEMS
     source_remaining = MAX_NESTED_ITEMS
+    managed_bases = (
+        {inline_basis} if inline_only else {NESTED_REFERENCE_BASIS, inline_basis}
+    )
 
     def source_quotes(parent):
         nonlocal source_remaining
-        if _proof(parent, partitions, names, snapshots) is None:
+        if authenticate_parent is not None:
+            if authenticate_parent(parent) is None:
+                return None
+        elif _proof(parent, partitions, names, snapshots) is None:
             return None
         proof = parent.messaging["provenance"]
         if proof.get("message_type") != 49 or proof.get("text_extraction_kind") not in {
@@ -208,18 +267,21 @@ def _project_nested_resources(items, partitions, names, snapshots):
             if not isinstance(context, dict):
                 continue
             quote = context.get("quoted_reply")
-            if isinstance(quote, dict) and quote.get("resource_basis") == NESTED_REFERENCE_BASIS:
+            if isinstance(quote, dict) and quote.get("resource_basis") in managed_bases:
                 for field in ("resource", "resource_basis", "resource_original"):
                     quote.pop(field, None)
             candidate = _missing_resource_quote(child, embedded=True)
             proof = context.get("provenance")
             component = proof.get("embedded_forwarded_component") if isinstance(proof, dict) else None
             if trusted and components is not None and candidate is not None and component in components:
-                quote, _reference, kind = candidate
-                if "resource" not in quote:
-                    quote["resource_basis"] = NESTED_REFERENCE_BASIS
+                quote, reference, kind = candidate
+                inline = _inline_app_resource(reference)
+                if "resource" not in quote and (inline is not None or not inline_only):
+                    quote["resource_basis"] = (
+                        inline_basis if inline is not None else NESTED_REFERENCE_BASIS
+                    )
                     quote["resource"] = present_resource(
-                        {"kind": kind, "availability": "metadata_only"}, None
+                        inline or {"kind": kind, "availability": "metadata_only"}, None
                     )
             visit(
                 context.get("forwarded_record"), components,
@@ -270,6 +332,7 @@ def project_native_quoted_resources(
         if isinstance(quote, dict) and quote.get("resource_basis") in {
             REFERENCE_BASIS,
             ORIGINAL_BASIS,
+            INLINE_APP_BASIS,
         }:
             for field in ("resource", "resource_basis", "resource_original"):
                 quote.pop(field, None)
@@ -287,6 +350,10 @@ def project_native_quoted_resources(
             "peer_id": item.messaging["peer_id"],
         }
         quote["resource_basis"] = REFERENCE_BASIS
+        inline = _inline_app_resource(reference)
+        if inline is not None:
+            resource.update(inline)
+            quote["resource_basis"] = INLINE_APP_BASIS
         key = _key(item, reference.get("source_ids", {}).get("svrid"))
         original = _exact_original(
             item,
@@ -298,15 +365,19 @@ def project_native_quoted_resources(
             source_snapshots,
         )
         if original is not None:
-            original_item, resource = original
-            quote["resource_basis"] = ORIGINAL_BASIS
-            quote["resource_original"] = {
-                "message_id": original_item.stable_id,
-                "server_id": original_item.messaging["provenance"]["server_id"],
-                "source_snapshot": original_item.messaging["provenance"][
-                    "source_snapshot"
-                ],
-            }
+            original_item, original_resource = original
+            merged = _merge_app_resources(inline, original_resource)
+            if merged is None:
+                resource = {"kind": kind, "availability": "metadata_only"}
+                quote["resource_basis"] = REFERENCE_BASIS
+            else:
+                resource = merged
+                quote["resource_basis"] = ORIGINAL_BASIS
+                quote["resource_original"] = {
+                    "message_id": original_item.stable_id,
+                    "server_id": original_item.messaging["provenance"]["server_id"],
+                    "source_snapshot": original_item.messaging["provenance"]["source_snapshot"],
+                }
         # Metadata-only presentation returns before consulting any resolver.
         quote["resource"] = present_resource(resource, None)
     _project_nested_resources(items, partitions, display_names, source_snapshots)

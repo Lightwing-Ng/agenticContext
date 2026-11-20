@@ -1,5 +1,5 @@
 # agenticContext Windows quality gate.
-# Code version: v1.7.2-codex.0
+# Code version: v1.8.0-codex.0
 
 $ErrorActionPreference = "Stop"
 $ProjectRoot = Split-Path -Parent $PSScriptRoot
@@ -77,7 +77,16 @@ try {
     }
 
     Write-Host "[5/6] JavaScript unit tests"
-    & node --test tests/test_agent_optimization.mjs tests/test_beta_engines.mjs tests/test_browser_chat_ruler.mjs tests/test_numeric_display.mjs tests/test_pagination_boundaries.mjs tests/test_select_controller.mjs tests/test_wechat_browser_read_timeout.mjs
+    $jsTestFiles = @(
+        Get-ChildItem -Path "tests" -Filter "test_*.mjs" -File |
+            Sort-Object Name |
+            ForEach-Object { $_.FullName }
+    )
+    if ($jsTestFiles.Count -eq 0) {
+        Write-Error "No JavaScript unit test files were found."
+        exit 1
+    }
+    & node --test @jsTestFiles
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
     Write-Host "[6/6] Python tests with branch coverage"
@@ -104,10 +113,11 @@ try {
     if (-not $CoverageReport -or $CoverageReport.LastWriteTimeUtc -lt $CoverageStartedAt) {
         throw "Pytest did not produce a fresh coverage report."
     }
-
     if ($IsSharded) {
         Write-Host "Quality shard passed. Complete platform coverage aggregation is still required."
     } else {
+        & $Python @PythonArgs scripts/check_coverage.py test-results/coverage.json --policy scripts/coverage_policy.json
+        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
         Write-Host "Quality gate passed."
     }
     exit 0

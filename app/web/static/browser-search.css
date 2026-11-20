@@ -1,4 +1,4 @@
-/* Code version: v1.4.5-claude.0 */
+/* Code version: v1.4.6-codex.0 */
 
 .browser-heading-copy {
     display: flex;
@@ -141,6 +141,7 @@
     overflow-y: auto;
     border: var(--glass-popover-border);
     border-radius: var(--radius-soft);
+    corner-shape: var(--corner-shape-continuous);
     background: var(--frosted-glass-opaque-background, var(--glass-popover-background));
     background-clip: padding-box;
     box-shadow: var(--glass-popover-shadow), 0 12px 24px var(--theme-shadow-ambient);
@@ -210,6 +211,7 @@
 .browser-search-match {
     padding: 0 0.05em;
     border-radius: 3px;
+    corner-shape: var(--corner-shape-continuous);
     background: color-mix(in srgb, var(--accent-surface-soft) 82%, transparent);
     color: var(--accent-text);
     font-weight: var(--font-weight-bold);

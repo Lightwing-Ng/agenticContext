@@ -24,6 +24,7 @@ from app.core import wechat_contact_analysis as analysis
 from app.core.config import CrawlConfig
 from app.core.wechat_archive import wechat_archive_path
 from app.core.wechat_contacts import contact_registry_path, initialize_contact_registry
+from app.core.wechat_secondary_completions import completion_input_identities
 from app.core.wechat_text import native_components_text
 from app.web.app import create_app
 from app.web.config_store import SavedConfigStore
@@ -1066,6 +1067,7 @@ def test_legacy_misattributed_primary_quote_is_removed_only_from_derived_referen
         str(path.resolve()): analysis._identity(path)
         for path in (fixture.history, fixture.registry)
     }
+    identities.update(completion_input_identities(fixture.history))
     fingerprint = hashlib.sha256(
         analysis._json([old_version, identities]).encode()
     ).hexdigest()

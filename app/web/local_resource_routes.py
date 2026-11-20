@@ -5,12 +5,14 @@ refresh service without reaching for a browser or Agent. Serialization of one st
 public shape lives here too, so a template global and a JSON response cannot drift.
 """
 
-# Code version: v1.22.2-codex.0
+# Code version: v1.25.4-codex.0
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+import json
 import re
+import time
 from typing import Any
 from urllib.parse import quote, urlsplit
 
@@ -222,16 +224,19 @@ def serialize_prompt_item(item) -> dict[str, Any]:
 
 def register_local_resource_routes(app: Flask, context: LocalResourceRouteContext) -> None:
     """Register the Local resources pages, media transport, and prompt API."""
-    from app.core.storage import ChatHistoryPage, WechatBrowserReadService, WechatMacRefreshService
+    from app.core.storage import (
+        ACCOUNT_SUMMARY_KINDS, WechatBrowserReadService, WechatMacRefreshService,
+        account_summary_pin, read_account_summary,
+    )
     from app.web.wechat_read_routes import (
-        WECHAT_READ_EXTENSION,
-        read_job_payload,
-        register_wechat_read_routes,
+        WECHAT_DIRECT_READ_EXTENSION, WECHAT_READ_EXTENSION, WECHAT_SUMMARY_EXTENSION,
+        read_job_payload, register_wechat_read_routes,
     )
     from app.web.wechat_refresh_routes import (
         WECHAT_REFRESH_EXTENSION,
         conversation_refresh_available,
         register_wechat_refresh_routes,
+        selected_refresh_account,
     )
 
     blueprint = Blueprint(LOCAL_RESOURCES_BLUEPRINT_NAME, __name__)
@@ -242,7 +247,33 @@ def register_local_resource_routes(app: Flask, context: LocalResourceRouteContex
         context.media_catalog.local_store_root,
         query_history=lambda *args, **kwargs: query_chat_history(*args, **kwargs),
     )
+    root = context.media_catalog.local_store_root
+
+    def scoped_page(parameters, *, previous=False):
+        return read_account_summary(
+            root, account=parameters["account"], sort=parameters["sort"], page=parameters["page"],
+            chat_kind=parameters["chat_kind"], previous=previous,
+        )
+
+    def await_scoped_page(parameters):
+        worker = app.extensions[WECHAT_SUMMARY_EXTENSION]
+        deadline = time.monotonic() + 1_800
+        while time.monotonic() < deadline:
+            page = scoped_page(parameters)
+            if page is not None:
+                return page
+            if worker.wait_for_publication() in {"failed", "stopped"}:
+                break
+        raise ValueError("A verified account summary is unavailable.")
+
+    app.extensions[WECHAT_DIRECT_READ_EXTENSION] = WechatBrowserReadService(
+        root, loader=await_scoped_page, validator=lambda _: None,
+        pin=lambda: json.dumps(account_summary_pin(root), sort_keys=True),
+    )
     register_wechat_read_routes(blueprint)
+    from app.web.wechat_group_roster_routes import register_wechat_group_roster_routes
+
+    register_wechat_group_roster_routes(blueprint, root)
     app.template_global("browser_media_url")(browser_media_url)
     app.template_global("wechat_contact_analysis_url")(wechat_contact_analysis_url)
     app.template_filter("wechat_source_clock")(format_wechat_source_clock)
@@ -253,6 +284,7 @@ def register_local_resource_routes(app: Flask, context: LocalResourceRouteContex
         from app.core.storage import (
             build_local_store_pagination,
             ContactAnalysisSourceChanged,
+            ContactAnalysisUnavailable,
             query_contact_analysis,
         )
 
@@ -270,9 +302,12 @@ def register_local_resource_routes(app: Flask, context: LocalResourceRouteContex
             )
         except ValueError:
             abort(404)
-        except ContactAnalysisSourceChanged:
+        except (ContactAnalysisSourceChanged, ContactAnalysisUnavailable) as error:
             analysis = {
-                "status": "indexing",
+                "status": (
+                    "error" if isinstance(error, ContactAnalysisUnavailable) else "indexing"
+                ),
+                "error": str(error),
                 "contact": {
                     "id": contact_id,
                     "display_name": "Contact analysis",
@@ -374,6 +409,7 @@ def register_local_resource_routes(app: Flask, context: LocalResourceRouteContex
         """Stream every filtered statement without writing an export to local storage."""
         from app.core.storage import (
             ContactAnalysisSourceChanged,
+            ContactAnalysisUnavailable,
             contact_analysis_export_context,
             export_contact_analysis_items,
         )
@@ -391,7 +427,7 @@ def register_local_resource_routes(app: Flask, context: LocalResourceRouteContex
             if analysis["status"] != "ready":
                 abort(
                     503,
-                    description="Contact statements are not ready. Please try again shortly.",
+                    description="Contact messages are not ready. Please try again shortly.",
                 )
             items = export_contact_analysis_items(
                 context.media_catalog.local_store_root,
@@ -403,6 +439,8 @@ def register_local_resource_routes(app: Flask, context: LocalResourceRouteContex
             first = next(items, None)
         except ValueError:
             abort(404)
+        except ContactAnalysisUnavailable as error:
+            abort(503, description=str(error))
         except ContactAnalysisSourceChanged:
             abort(
                 503,
@@ -496,21 +534,31 @@ def register_local_resource_routes(app: Flask, context: LocalResourceRouteContex
         if filters["view"] == "text":
             media_items = () if filters["source"] == "wechat" else context.media_catalog.snapshot(force_refresh=force_refresh)
             parameters = dict(
-                query=filters["q"],
-                sort=filters["sort"],
-                page=filters["page"],
-                session_view=filters["session_view"],
-                session=filters["session"],
-                answerer=filters["answerer"],
-                project=filters["project"],
-                account=filters["account"],
-                chat_kind=filters["chat_kind"],
+                query=filters["q"], sort=filters["sort"], page=filters["page"],
+                session_view=filters["session_view"], session=filters["session"],
+                answerer=filters["answerer"], project=filters["project"],
+                account=filters["account"], chat_kind=filters["chat_kind"],
             )
             if filters["source"] == "wechat":
+                from app.core.storage import ChatHistoryPage
+
+                summary_worker = app.extensions.get(WECHAT_SUMMARY_EXTENSION)
+                scoped = bool(
+                    summary_worker and summary_worker.active
+                    and filters["account"] and filters["chat_kind"] in ACCOUNT_SUMMARY_KINDS
+                    and not filters["session"] and not filters["q"]
+                    # Archives without an identity registry retain the existing read path.
+                    and summary_worker.repository.path.with_name("contacts.sqlite3").exists()
+                )
                 try:
-                    text_page, public = app.extensions[WECHAT_READ_EXTENSION].acquire(parameters)
+                    text_page = scoped_page(parameters) if scoped else None
                     if text_page is None:
-                        wechat_read_job = read_job_payload(public)
+                        extension = WECHAT_DIRECT_READ_EXTENSION if scoped else WECHAT_READ_EXTENSION
+                        if scoped:
+                            summary_worker.wake(recheck=True)
+                        text_page, public = app.extensions[extension].acquire(parameters)
+                        if text_page is None:
+                            wechat_read_job = read_job_payload(public)
                 except (OSError, ValueError, RuntimeError):
                     text_page = None
                     wechat_read_job = {
@@ -524,13 +572,15 @@ def register_local_resource_routes(app: Flask, context: LocalResourceRouteContex
                     and not filters["session"]
                     and not filters["q"]
                 ):
-                    from app.core.storage import query_wechat_history
+                    if scoped:
+                        preview = scoped_page(parameters, previous=True)
+                    else:
+                        from app.core.storage import query_wechat_history
 
-                    preview = query_wechat_history(
-                        context.media_catalog.local_store_root,
-                        account=filters["account"], chat_kind=filters["chat_kind"],
-                        sort=filters["sort"], page=filters["page"], previous_snapshot=True,
-                    )
+                        preview = query_wechat_history(
+                            root, account=filters["account"], chat_kind=filters["chat_kind"],
+                            sort=filters["sort"], page=filters["page"], previous_snapshot=True,
+                        )
                     if preview is not None and preview.sessions:
                         text_page = preview
                         wechat_read_preview = True
@@ -606,6 +656,44 @@ def register_local_resource_routes(app: Flask, context: LocalResourceRouteContex
             text_page=None if wechat_read_preview else text_page,
             prompt_page=prompt_page,
         )
+        if (
+            filters["source"] == "wechat" and text_page
+            and text_page.current_session
+            and "group_roster" in (text_page.current_session.messaging or {})
+        ):
+            from app.core.storage import roster_source_available
+            from app.web.wechat_group_roster_routes import roster_capture_feedback
+
+            current_session = text_page.current_session
+            # Request-specific controls must not modify a cached conversation.
+            origin = dict(current_session.messaging)
+            origin["group_roster_capture_available"] = bool(
+                is_loopback_address(request.remote_addr)
+                and origin["group_roster"]["status"] != "invalid"
+                and roster_source_available(origin.get("account_id") or "")
+            )
+            feedback = request.args.get("roster_result")
+            if feedback == "saved" and (
+                (origin["group_roster"].get("current") or {}).get("id")
+                != request.args.get("roster_snapshot", "")
+            ):
+                feedback = ""
+            origin["group_roster_capture_feedback"] = roster_capture_feedback(feedback)
+            if not origin["group_roster_capture_available"]:
+                origin["group_roster_capture_note"] = (
+                    "A verified local contact database is required to save a member snapshot."
+                )
+            text_page = replace(text_page, current_session=replace(current_session, messaging=origin))
+        wechat_account_refresh_id = ""
+        if (
+            is_loopback_address(request.remote_addr)
+            and filters["source"] == "wechat"
+            and not filters["session"]
+            and text_page is not None
+        ):
+            wechat_account_refresh_id = selected_refresh_account(
+                filters["account"], text_page.messaging,
+            )
         return render_template(
             "browser.html",
             **local_resource_source_context(),
@@ -613,6 +701,11 @@ def register_local_resource_routes(app: Flask, context: LocalResourceRouteContex
             text_page=text_page,
             wechat_read_job=wechat_read_job,
             wechat_read_preview=wechat_read_preview,
+            wechat_account_refresh_id=wechat_account_refresh_id,
+            wechat_account_refresh_available=bool(
+                wechat_account_refresh_id
+                and app.extensions[WECHAT_REFRESH_EXTENSION].account_available(wechat_account_refresh_id)
+            ),
             wechat_refresh_available=bool(
                 is_loopback_address(request.remote_addr)
                 and filters["view"] == "text"

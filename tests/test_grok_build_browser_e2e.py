@@ -1,4 +1,6 @@
-"""Isolated Grok Build cache and Local resources navigation. Code version: v1.0.1-codex.0."""
+"""Isolated Grok Build cache and Local resources navigation."""
+
+# Code version: v1.1.2-codex.0
 
 from collections.abc import Iterator
 import re
@@ -31,7 +33,7 @@ def grok_build_browser_server(tmp_path_factory: pytest.TempPathFactory) -> Itera
     (source_folder / "sessions").mkdir(parents=True)
     for source, text in (("grok", "The web chat prompt."), ("grok_build", "Review the local parser.")):
         write_parquet_rows_atomic(
-            root / "llm" / source / "history.parquet",
+            root / "llm" / source / "history.sqlite3",
             [_row(source, "shared-id", text)],
             GROK_HISTORY_SCHEMA,
         )

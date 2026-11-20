@@ -1,14 +1,15 @@
 """Account and conversation-type filters share desktop and narrow UI contracts.
 
-Code version: v1.8.2-codex.0
+Code version: v1.9.4-codex.0
 """
 
 from __future__ import annotations
 
 from base64 import b64decode
 import csv
-from io import BytesIO, StringIO
+from datetime import datetime
 import json
+from io import BytesIO, StringIO
 import math
 import re
 import sqlite3
@@ -23,6 +24,7 @@ from werkzeug.serving import make_server
 
 from app.core.config import CrawlConfig
 from app.core.wechat_archive import import_wechat_archive, wechat_archive_path
+from app.core.wechat_history_browser import query_wechat_history
 from app.web.app import create_app
 from app.web.config_store import SavedConfigStore
 from tests import test_sidebar_e2e
@@ -33,6 +35,7 @@ from tests.test_browser_chat_effects_e2e import (
     _wait_for_effect_sync,
 )
 from tests.test_wechat_archive import make_archive
+from tests.test_wechat_reconcile import merge, record, source
 
 
 disposable_browser = test_sidebar_e2e.disposable_browser
@@ -73,52 +76,14 @@ def _assert_directional_shadow_pixels(page, geometry, direction):
     finally:
         _set_effect_layer_visibility(page, "")
     difference = ImageChops.difference(painted.crop(crop), hidden.crop(crop))
-    changed_pixels = sum(
-        max(difference.getpixel((x, y))) >= 1
-        for x in range(difference.width)
-        for y in range(difference.height)
+    assert (
+        sum(
+            max(difference.getpixel((x, y))) >= 1
+            for x in range(difference.width)
+            for y in range(difference.height)
+        )
+        >= 24
     )
-    if changed_pixels < 24:
-        details = page.evaluate("""({id, crop}) => {
-            const card = document.getElementById(id);
-            const pane = card?.closest('[data-browser-chat-pane]');
-            const list = pane?.querySelector('[data-chat-scrollport]');
-            const layer = pane?.querySelector('[data-chat-effects]');
-            if (!card || !pane || !list || !layer) return {missingStructure: true};
-            const effect = [...layer.querySelectorAll('[data-chat-effect-for]')]
-                .find(node => node.dataset.chatEffectFor === id);
-            const rect = node => {
-                if (!node) return null;
-                const box = node.getBoundingClientRect();
-                return {left: box.left, right: box.right, top: box.top,
-                    bottom: box.bottom, width: box.width, height: box.height};
-            };
-            const style = node => {
-                if (!node) return null;
-                const value = getComputedStyle(node);
-                return {display: value.display, visibility: value.visibility,
-                    opacity: value.opacity, shadow: value.boxShadow,
-                    clip: value.clipPath, transform: value.transform};
-            };
-            const hit = document.elementFromPoint((crop[0] + crop[2]) / 2, (crop[1] + crop[3]) / 2);
-            return {phase: 'after-restored-visible-render-frames',
-                viewport: [innerWidth, innerHeight], deviceScale: devicePixelRatio,
-                cropHit: hit ? {tag: hit.tagName, id: hit.id, classes: hit.className} : null,
-                fonts: document.fonts.status,
-                documentState: document.readyState,
-                sidebarExpanded: document.querySelector('#sidebar_toggle')?.getAttribute('aria-expanded'),
-                list: rect(list), client: [list.clientWidth, list.clientHeight],
-                scroll: [list.scrollWidth, list.scrollHeight, list.scrollTop],
-                card: rect(card), effect: rect(effect), effectStyle: style(effect),
-                layer: rect(layer), layerStyle: style(layer),
-                trackStyle: style(layer.querySelector('.browser-chat-effect-track'))};
-        }""", {"id": target["id"], "crop": crop})
-        print("Directional shadow comparison: " + json.dumps({
-            "direction": direction, "changedPixels": changed_pixels, "crop": crop,
-            "imageSize": painted.size, "measuredList": boundary,
-            "measuredCard": target["box"], "presented": details,
-        }, separators=(",", ":")))
-    assert changed_pixels >= 24
 
 
 def _assert_wechat_effect_geometry(page):
@@ -243,6 +208,115 @@ def _assert_conversation_kind_badges(page, selector, theme):
     assert page.evaluate("document.documentElement.scrollWidth <= window.innerWidth")
 
 
+def _conversation_table_geometry(page):
+    page.evaluate("""async () => {
+        await document.fonts.ready;
+        await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    }""")
+    return page.locator(".wechat-conversations").evaluate("""shell => {
+        const header = shell.querySelector(':scope > table[data-table-header]');
+        const scroll = shell.querySelector(':scope > [data-table-scroll]');
+        const body = scroll?.querySelector('table[data-table-body]');
+        if (!header || !scroll || !body) return {canonical: false};
+        const rectangle = element => {
+            const box = element.getBoundingClientRect();
+            return {left: box.left, right: box.right, top: box.top,
+                bottom: box.bottom, width: box.width};
+        };
+        return {
+            canonical: shell.classList.contains('scrollable-data-table-shell'),
+            declaredHeaderHeight: parseFloat(shell.style.getPropertyValue(
+                '--scrollable-data-table-header-height')),
+            layoutHeaderHeight: header.offsetHeight,
+            declaredScrollbar: parseFloat(shell.style.getPropertyValue(
+                '--scrollable-data-table-scrollbar-width')),
+            scrollbar: scroll.offsetWidth - scroll.clientWidth,
+            scrollLeft: scroll.scrollLeft,
+            headerTranslate: getComputedStyle(header).translate,
+            declaredHeaderTranslate: header.style.translate,
+            scrollWidth: scroll.scrollWidth,
+            clientWidth: scroll.clientWidth,
+            header: rectangle(header),
+            headings: [...header.rows[0].cells].map(rectangle),
+            cells: [...body.tBodies[0].rows[0].cells].map(rectangle),
+            documentOverflow: Math.max(document.documentElement.scrollWidth,
+                document.body.scrollWidth) - innerWidth,
+        };
+    }""")
+
+
+def _assert_conversation_table_columns(geometry):
+    assert geometry["canonical"], geometry
+    assert geometry["declaredHeaderHeight"] == geometry["layoutHeaderHeight"] > 0
+    assert geometry["declaredScrollbar"] == geometry["scrollbar"]
+    assert len(geometry["headings"]) == len(geometry["cells"]) == 4
+    for index, (heading, cell) in enumerate(
+        zip(geometry["headings"], geometry["cells"], strict=True)
+    ):
+        extra = geometry["scrollbar"] if index == 3 else 0
+        assert heading["left"] == pytest.approx(cell["left"], abs=1), (
+            geometry["headerTranslate"],
+            geometry["declaredHeaderTranslate"],
+            geometry["scrollLeft"],
+            geometry,
+        )
+        assert heading["width"] == pytest.approx(cell["width"] + extra, abs=1), geometry
+        assert geometry["header"]["bottom"] <= cell["top"] + 1, geometry
+    assert geometry["documentOverflow"] <= 1, geometry
+
+
+def _assert_conversation_table_controller(page, *, narrow):
+    geometry = _conversation_table_geometry(page)
+    _assert_conversation_table_columns(geometry)
+    shell = page.locator(".wechat-conversations")
+    previous_transform = shell.evaluate("""shell => {
+        const previous = shell.style.transform;
+        shell.style.transform = 'scale(0.9)';
+        shell.style.removeProperty('--scrollable-data-table-header-height');
+        window.dispatchEvent(new Event('resize'));
+        return previous;
+    }""")
+    try:
+        transformed = _conversation_table_geometry(page)
+        assert (
+            transformed["declaredHeaderHeight"] == transformed["layoutHeaderHeight"] > 0
+        ), transformed
+    finally:
+        shell.evaluate(
+            """(shell, previous) => {
+            if (previous) shell.style.transform = previous;
+            else shell.style.removeProperty('transform');
+            shell.style.removeProperty('--scrollable-data-table-header-height');
+            window.dispatchEvent(new Event('resize'));
+        }""",
+            previous_transform,
+        )
+    geometry = _conversation_table_geometry(page)
+    _assert_conversation_table_columns(geometry)
+    if narrow:
+        assert geometry["scrollWidth"] > geometry["clientWidth"], geometry
+        port = shell.locator(":scope > [data-table-scroll]")
+        port.evaluate("port => { port.scrollLeft = port.scrollWidth; }")
+        page.wait_for_function(
+            """() => {
+                const shell = document.querySelector('.wechat-conversations');
+                const header = shell.querySelector(':scope > table[data-table-header]');
+                const port = shell.querySelector(':scope > [data-table-scroll]');
+                const translation = parseFloat(getComputedStyle(header).translate);
+                return port.scrollLeft > 0 && Number.isFinite(translation)
+                    && Math.abs(translation + port.scrollLeft) < 0.01;
+            }""",
+            timeout=5_000,
+        )
+        scrolled = _conversation_table_geometry(page)
+        _assert_conversation_table_columns(scrolled)
+        assert scrolled["scrollLeft"] > 0
+        assert scrolled["header"]["left"] == pytest.approx(
+            geometry["header"]["left"] - scrolled["scrollLeft"], abs=1
+        ), scrolled
+        port.evaluate("port => { port.scrollLeft = 0; }")
+
+
 @pytest.fixture(scope="module")
 def wechat_server(tmp_path_factory):
     sandbox = tmp_path_factory.mktemp("wechat-browser")
@@ -273,6 +347,85 @@ def wechat_server(tmp_path_factory):
     finally:
         server.shutdown()
         thread.join(timeout=5)
+
+
+@pytest.fixture(scope="module")
+def wechat_rename_url(tmp_path_factory):
+    sandbox = tmp_path_factory.mktemp("wechat-renames")
+    store = sandbox / "store"
+    owner = source()
+    timestamps = (
+        "2026-10-11T13:18:37+00:00",
+        "2023-11-06T01:04:52+00:00",
+        "2021-04-08T18:53:41+00:00",
+    )
+    merge(store, [owner], [
+        record(
+            owner, str(index), peer="123456@chatroom",
+            text=f'You changed the group name to "Name {index}"',
+            message_type=10000, text_extraction_kind="system_text", flags=["system_notice"],
+            sender_id="", direction="unknown", server_id=str(500 + index),
+            sent_at_utc_iso=stamp, unix_timestamp=int(datetime.fromisoformat(stamp).timestamp()),
+        )
+        for index, stamp in enumerate(timestamps)
+    ])
+    session = query_wechat_history(store, chat_kind="group").sessions[0]
+    with patch("app.web.app.SavedConfigStore.load", return_value=SavedConfigStore(CrawlConfig())):
+        app = create_app(
+            store, computer_use_settings_path=sandbox / "agent.json",
+            computer_use_runtime_root=sandbox / "runtime", agent_external_operations_enabled=False,
+        )
+    server = make_server("127.0.0.1", 0, app, threaded=True)
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        query = urlencode({"view": "text", "source": "wechat", "session": session.stable_id})
+        yield f"http://127.0.0.1:{server.server_port}/browser?{query}"
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+        app.extensions["runtime_shutdown"]()
+
+
+@pytest.mark.parametrize("width", [819, 390])
+def test_group_name_history_dates_align_character_columns(disposable_browser, wechat_rename_url, width):
+    context = disposable_browser.new_context(
+        viewport={"width": width, "height": 1018}, reduced_motion="reduce",
+    )
+    try:
+        page = context.new_page()
+        page.goto(wechat_rename_url, wait_until="networkidle")
+        toggle = page.locator("#sidebar_toggle")
+        if toggle.get_attribute("aria-expanded") == "true":
+            toggle.click()
+        history = page.locator(".wechat-group-name-history")
+        history.locator("summary").click()
+        dates = history.locator("tbody time")
+        expect(dates.last).to_be_visible()
+        expect(dates).to_have_text([
+            "11 Oct 2026 21:18:37", "6 Nov 2023 09:04:52", "9 Apr 2021 02:53:41",
+        ])
+        columns = dates.evaluate_all("""async dates => {
+            await document.fonts.ready;
+            function characterLeft(part, index) {
+                const text = part.firstChild;
+                const offset = index < 0 ? text.length + index : index;
+                const range = document.createRange();
+                range.setStart(text, offset);
+                range.setEnd(text, offset + 1);
+                return range.getBoundingClientRect().left;
+            }
+            return dates.map(date => {
+                const [day, month, year, clock] = date.children;
+                return [characterLeft(day, -1), characterLeft(month, 0), characterLeft(year, -1),
+                    ...Array.from(clock.textContent, (_, index) => characterLeft(clock, index))];
+            });
+        }""")
+        for row in columns[1:]:
+            assert row == pytest.approx(columns[0], abs=0.05)
+    finally:
+        context.close()
 
 
 @pytest.mark.parametrize("width", [1280, 390])
@@ -323,6 +476,7 @@ def test_filters_pagination_and_human_message_variants(
             )
         if page.locator("#sidebar_toggle").get_attribute("aria-expanded") == "true":
             page.locator("#sidebar_toggle").click()
+        _assert_conversation_table_controller(page, narrow=width == 390)
         page.get_by_role("link", name="Official fixture", exact=True).click()
         expect(page.locator(".wechat-conversation-context")).to_have_attribute(
             "data-wechat-conversation-kind", "direct"
@@ -426,23 +580,26 @@ def test_filters_pagination_and_human_message_variants(
             return {
                 size: [share.width, share.height],
                 iconSize: [icon.width, icon.height],
-                rowCenterDifference: Math.abs(share.top + share.height / 2 - row.top - row.height / 2),
-                rightDifference: Math.abs(share.right - theme.right),
-                searchGap: share.left - search.right,
-                rowsSeparate: theme.bottom <= share.top,
-                titleClearsTheme: title.right <= theme.left + 1,
+                centerDifference: Math.abs(share.top + share.height / 2 - row.top - row.height / 2),
+                searchAxisDifference: Math.abs(search.right - search.height / 2 - theme.left - theme.width / 2),
+                searchClearsShare: share.right <= search.left - 8,
+                titleClearsActions: title.right <= theme.left + 1,
             };
         }""")
         assert share_geometry["size"] == [32, 32], share_geometry
         assert share_geometry["iconSize"] == [18, 18], share_geometry
-        assert share_geometry["rowCenterDifference"] <= 1, share_geometry
-        assert share_geometry["rightDifference"] <= 1, share_geometry
-        assert share_geometry["searchGap"] >= 8, share_geometry
-        assert share_geometry["rowsSeparate"], share_geometry
-        assert share_geometry["titleClearsTheme"], share_geometry
-        page.locator("#browser_search_input").focus()
+        assert share_geometry["centerDifference"] <= 1, share_geometry
+        assert share_geometry["searchAxisDifference"] <= 1, share_geometry
+        assert share_geometry["searchClearsShare"], share_geometry
+        assert share_geometry["titleClearsActions"], share_geometry
+        share.focus()
+        expect(share).to_have_attribute("aria-expanded", "true")
+        page.keyboard.press("Escape")
+        expect(share).to_have_attribute("aria-expanded", "false")
         page.keyboard.press("Tab")
-        expect(share).to_be_focused()
+        expect(page.locator("[data-browser-session-scope-remove]")).to_be_focused()
+        page.keyboard.press("Tab")
+        expect(page.locator("#browser_search_input")).to_be_focused()
         expect(
             page.locator(".wechat-conversation-labels .wechat-kind-badge")
         ).to_have_text("Group chat")
@@ -631,7 +788,6 @@ def _assert_navigation_wait_spinner_painted(pixels, state):
     ) >= 80
 
 
-
 @pytest.mark.parametrize("width", [1280, 390])
 @pytest.mark.parametrize(
     ("activation", "motion"), [("click", "no-preference"), ("enter", "reduce")]
@@ -765,7 +921,6 @@ def test_conversation_back_paints_shared_waiting_card_before_delayed_navigation(
         context.close()
 
 
-
 @pytest.mark.parametrize("width", [1280, 390])
 @pytest.mark.parametrize(
     ("initial", "mode", "title"),
@@ -839,7 +994,6 @@ def test_content_modes_reuse_centered_waiting_card_without_replacing_content(
         for route in pending:
             route.abort()
         context.close()
-
 
 
 @pytest.mark.parametrize("width", [1280, 390])
@@ -1060,6 +1214,8 @@ def test_partial_message_shadow_does_not_draw_blank_body_below_scrollport(
             wait_until="networkidle",
         )
         page.get_by_role("link", name="Same title", exact=True).click()
+        # Deferred messaging scripts establish bubble widths before scroll geometry is measured.
+        page.wait_for_load_state("domcontentloaded")
         if page.locator("#sidebar_toggle").get_attribute("aria-expanded") == "true":
             page.locator("#sidebar_toggle").click()
         page.evaluate("document.fonts.ready")

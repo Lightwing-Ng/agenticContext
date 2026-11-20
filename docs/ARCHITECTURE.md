@@ -1,6 +1,6 @@
 # Architecture guide
 
-Documentation version: `v1.77.3-codex.0`
+Documentation version: `v1.78.5-codex.0`
 
 ## Runtime flow
 
@@ -90,6 +90,75 @@ that every Web module reaches Core only through the five façades, that no Core 
 reach a project only through the published `WorkspaceAccess` surface. A Web module may depend on any
 subset of the façades; the regression no longer freezes one module's exact façade list.
 
+## Media metadata persistence
+
+ChatGPT and Grok media catalogs, the Grok download manifest and work queue, and
+the X media cache index use native row-based SQLite files. Their canonical names
+retain the original stem with a `.sqlite3` extension. `media_sqlite.py` stores the
+exact Arrow schema and provenance separately from typed SQL columns. Primary keys
+identify a file, asset, media identity, or relative post directory; scalar indexes
+support content hashes, paths, source conversations, and task status queries.
+
+Hot catalog updates serialize only dirty keys. An atomic mixed upsert/delete
+transaction handles visual deduplication, and queue claims use a status-and-attempt
+compare-and-swap transaction. ChatGPT and X retain process-local fast indexes.
+Grok also consults current persisted identities, hashes, and task state so resumed
+operations use durable records. Disk-query benchmarks exclude existing memory hits
+and do not measure complete download-loop throughput. Explicit snapshot replacement
+remains for seeding, validated schema repair, and migration.
+
+An absent canonical database permits a read-only legacy Parquet fallback. Existing
+corrupt or incompatible SQLite state fails closed. First explicit writes can import
+compatible legacy metadata but retain its original file. The X index inside the
+LLM root remains in the separate compressed history format; filename similarity
+does not allow either backend to overwrite the other format. Deleted-resource
+records, saved prompts, and Agent discovery caches are outside this migration.
+
+See [media SQLite storage](MEDIA_SQLITE_STORAGE.md) for the migration, benchmark,
+storage-accounting, and rollback boundaries.
+
+## LLM history persistence
+
+`local_store/llm/<source>/history.sqlite3` is each provider's canonical text store.
+Copilot's directory and coverage evidence use `legacy-catalog.sqlite3` and
+`sync-state.sqlite3`; the LLM-root media index uses `.cache_catalog.sqlite3`.
+`resource_persistence.py` dispatches neutral `read_resource_rows` and
+`write_resource_rows_atomic` calls by format. A missing SQLite path may read its
+legacy Parquet counterpart without creating or changing files. An existing invalid
+SQLite store fails closed; it must not be replaced by a legacy fallback silently.
+Media catalogs outside the LLM root, Agent discovery, and saved prompts retain their
+existing formats and ownership boundaries.
+
+`llm_sqlite.py` stores Zstandard-compressed Arrow IPC payloads in 32 buckets
+selected by a stable SHA-256 of each conversation ID. Every payload includes an
+explicit original row ordinal. The original ordinals and exact Arrow validation
+schema preserve duplicates, provider-specific provenance, and complete export order. New writes
+use storage format version 3; version 2 JSON payloads remain readable through the
+same public APIs. `conversation_groups`
+maps conversation IDs to `row_groups` through primary-key lookups. A detail or
+message lookup decompresses its matching bucket and filters that bucket's rows.
+`llm_history_index.py` derives compact compressed JSON session summaries for overview
+navigation without decoding transcript bodies. Summary version 2 retains metadata
+only and omits message-body previews. These summaries are projections, not another
+source of truth.
+
+The indexed browser path preserves the existing session, project, metadata overlay,
+ordering, and pagination contracts. Text search and the dedicated Zhihu grouping
+path still use full-history processing. Full exports necessarily decode the complete
+archive. SQLite uses `DELETE` journal mode and `synchronous=FULL`, with transactional
+updates to changed buckets. Snapshot callers still prepare all input rows; changed
+global ordinals can cause additional buckets to be rewritten. This design targets
+interactive local access and storage density; it does not claim optimal performance
+for every workload. The WeChat database remains separate and unchanged.
+
+The offline Gemini Takeout importer uses the same typed SQLite payload and browser summaries.
+Its preview distinguishes canonical SQLite authority from a read-only Parquet baseline;
+publication compares both identities and retains an exact backup in the baseline's own format.
+Version 2 import receipts bind both formats. Legacy version 1 receipts recover only their
+original Parquet publication and never silently adopt an independently migrated SQLite file.
+Fresh SQLite temporary files receive the verified owner-only POSIX mode or native Windows DACL
+before transcript bytes are written.
+
 ## Application layers
 
 - `app/core/config.py`: runtime defaults, persisted settings, paths, and input normalization.
@@ -107,16 +176,16 @@ subset of the façades; the regression no longer freezes one module's exact faç
   API traversal, normalized message persistence, and the independent Grok Text worker.
 - `app/core/copilot_history.py`, `copilot_history_store.py`, `copilot_sync_state.py`,
   and `copilot_history_service.py`: authenticated Microsoft Copilot all-chats
-  cursor traversal, ordered rendered transcript capture, isolated atomic Parquet persistence, and
+  cursor traversal, ordered rendered transcript capture, isolated transactional SQLite persistence, and
   the text-only worker. Safari uses the existing exclusive browser lease. Unknown
   source times stay empty; failed, interrupted, or shorter captures cannot replace
   a prior session. An empty provider `syncState` establishes exhaustion of the
   current catalog; it cannot establish coverage of separate legacy Copilot or Bing
   history surfaces. Successful synchronization also requires every discovered
   session to be processed without failure.
-  A separate `llm/copilot/sync-state.parquet` manifest keeps this evidence across
+  A separate `llm/copilot/sync-state.sqlite3` manifest keeps this evidence across
   restarts, without inferring completeness from the archive size. Missing legacy
-  evidence remains unverified. Local resources consumes `llm/copilot/history.parquet`
+  evidence remains unverified. Local resources consumes `llm/copilot/history.sqlite3`
   through the common history reader. The v1.43.1 real acceptance traversed two
   current-catalog pages containing 17 unique sessions, read two sessions with four
   messages, and was deliberately stopped. The durable 17-session, 74-message archive
@@ -124,7 +193,7 @@ subset of the façades; the regression no longer freezes one module's exact faç
   `copilot.microsoft.com/chats/<short-id>`. Its 357 visible titles were preserved.
   Nineteen verified native HTTP catalog responses then supplied 377 physical records
   and 357 distinct provider IDs. `copilot_legacy_catalog.py` preserves these in a
-  separate typed `llm/copilot/legacy-catalog.parquet`, including original observations
+  separate typed `llm/copilot/legacy-catalog.sqlite3`, including original observations
   and response hashes. Its metadata timestamps are not message dates; derived
   conversation URLs are explicitly labeled. Cached response enumeration does not
   prove current cursor exhaustion. Application v1.43.2 reads this evidence on sync
@@ -149,7 +218,7 @@ subset of the façades; the regression no longer freezes one module's exact faç
   persistence, and the ordinary Zhihu Cache worker.
 - `app/core/codex_history.py` and `app/core/codex_history_service.py`: read-only local
   Codex transcript import and its independent text-only Cache worker. Explicit user
-  and assistant message records are cumulatively merged into `llm/codex/history.parquet`;
+  and assistant message records are cumulatively merged into `llm/codex/history.sqlite3`;
   webpage ChatGPT history, browser sessions, and source transcripts remain separate.
 - `app/core/scraper.py` and `app/core/browser_sessions.py`: X timeline discovery and browser
   session probing for Chrome, Edge, and Safari.
@@ -215,7 +284,7 @@ subset of the façades; the regression no longer freezes one module's exact faç
 - `app/core/cache_catalog.py` and `app/core/local_media_browser.py`: durable local indexes,
   media discovery, secure path resolution, deletion tombstones, and restoration.
 - `app/core/resource_persistence.py` and `app/core/history_rows.py`: ordered provider-specific
-  Parquet schemas, atomic persistence, and pure conversation-row partitioning, comparison, and
+  validation schemas, format-aware persistence, and pure conversation-row partitioning, comparison, and
   deterministic ordering. Provider stores retain their distinct replace, merge, and save timing.
 - `app/core/logging_setup.py`: process-wide JSON-line logging.
 - `app/web/app.py`: the composition root. It configures Flask, builds the services, installs the
@@ -758,7 +827,7 @@ authenticated Edge session cloned into an isolated Chromium context
   -> paginated /rest/app-chat/conversations API
   -> response-node tree and batched load-responses API
   -> GrokHistoryStore
-  -> local_store/llm/grok/history.parquet
+  -> local_store/llm/grok/history.sqlite3
 ```
 
 Grok Text is deliberately separate from the Grok media runtime. Conversation pagination
@@ -776,7 +845,7 @@ selected Edge or Chrome profile cloned into an isolated Chromium context
   -> blank input: paginated MEMBER_VOTEUP_ANSWER activity targets
   -> answerer URL: paginated /api/v4/members/<token>/answers records
   -> isolated answer-body HTML, portable Markdown, and allowlisted source links
-  -> cumulative atomic local_store/llm/zhihu/history.parquet merge
+  -> cumulative transactional local_store/llm/zhihu/history.sqlite3 merge
   -> Local resources source=zhihu
 ```
 
@@ -850,39 +919,32 @@ That adapter reuses the shared page/session/message contracts with optional mess
 Queries enforce account and conversation-type scope for both details and exports, and paginate
 directly in read-only SQLite. Passive page reads never import archives or download media.
 The saved-view reader runs one conversation worker and one list and search worker under a shared
-task and result budget. List pages recheck published conversation-count proofs before and after
-reading. A successful Mac recovery bank validation writes an owner-private, authenticated
-receipt for the exact bank, input identities, reader code, and runtime. Conversation binding
-and shadow checks still run at their original scope. The contact registry is checked once per
+task and result budget. Conversation timeline reads validate the requested scope and can
+reuse completed global proofs. List pages recheck published conversation-count proofs before
+and after reading. A successful Mac recovery bank validation writes an owner-private,
+authenticated receipt for the exact bank, input identities, reader code, and runtime. An
+unchanged receipt allows a restart to reuse the whole-bank proof. Conversation binding and
+shadow checks still run at their original scope. The contact registry is checked once per
 published file identity. A conversation search computes the matching IDs once for its rows,
 pagination, and totals.
 The Web layer continues to use the storage facade. Its Local resources source registry includes
 WeChat without adding a Cache execution page or media/prompt source.
 
-`wechat_wcdb.py` decodes explicitly selected text cells with strict UTF-8, compression-marker,
-frame, and output-size validation. Plaintext works on the supported Python baseline; compressed
-cells require the optional standard-library `compression.zstd` backend available in Python 3.14
-and the matching dictionary when the frame requires one. Missing backends or dictionaries and
-malformed frames raise explicit errors instead of returning replacement or partial text. The
-caller must retain original databases and raw cells for deferred decoding; this decoder does not
-persist those bytes itself. `wechat_identity.py` reads bounded native account/contact metadata
-without treating mutable names or location hashes as account identities.
+On macOS, a per-conversation refresh stages its recovery bank in the operating system's
+private user temporary directory so desktop sync does not keep the candidate open. The
+temporary directory must be on the archive volume. Publication still verifies the closed
+candidate and current archive identities before an atomic replacement.
 
-`wechat_text.py` extracts known plain, app, forwarded, quoted, and system text with bounded XML
-parsing. Unsupported envelopes remain unresolved. Forwarded and quoted text retains its embedded
-source evidence instead of becoming an independent conversation or an asserted original speaker.
-These helpers do not open attachments, media files, thumbnails, or external resources.
-
-`wechat_reconcile.py` adds explicitly classified native text through a temporary SQLite snapshot
-and atomic publication. It verifies owner/directory and peer/table hashes, preserves exclusions,
-and records source snapshots and per-message evidence. A shared nonzero server ID can corroborate
-an existing message only within the same verified account and conversation, with equal text and
-compatible sender, direction, and comparable time. Missing IDs are not fuzzy-matched; conflicts
-remain separate variants. Existing message, partition, and conversation identity fingerprints
-must remain unchanged; conversation aggregates may grow. Source provenance and unknown clock
-semantics remain explicit, and unique original-message totals are not inferred from row counts.
-Neither these primitives nor a text archive establish complete decoding, recovery of absent
-records, or Finder-restorable backup completeness.
+Native quoted app cards may retain a bounded `app_card_metadata` projection from
+their own explicit embedded XML envelope. Only literal title, public-account
+name, application name and their exact source paths are admitted; URLs, media
+credentials and article bodies are excluded. This remains quote evidence under
+the parent message's authenticated account, room and native-row identity. It does
+not create an independently recovered original message or assert media availability.
+An exact retained original must agree with the embedded card before labels merge.
+Same-row parser repairs may add only missing card metadata, preserve the original
+reply, reference identity and clocks, and retain the prior projection in the
+existing semantic-revision journal.
 
 `wechat_payments.py` retains bounded native payment-card copy and projects its type and
 currency without asserting settlement, claim state, balances, or undocumented numeric units.
@@ -1086,6 +1148,18 @@ HTML child time. A new archive publication requires a new inventory and assessme
 stale, conflicting, or unsupported evidence never supplies a parent-time fallback.
 See [Operations](OPERATIONS.md#recover-html-forwarded-child-clocks) for the CLI workflow.
 
+`wechat_forwarded_authors.py` recovers missing embedded author identifiers only from
+hash-pinned, complete native transcript copies. The local `forwarded_author_links.json`
+registry contains parent identifiers and source hashes, not another copy of message bodies.
+Both receiving accounts, snapshots, record locators, ordered opaque child identifiers,
+literal bodies, and each child's own second-level clock must validate. Packets require at
+least three text children and two explicit authors; conflicts, nested packets, resources,
+missing clocks, and nickname-only matches remain unresolved. Source sender fields and
+clocks are immutable. Conversation cards expose a derived identity proof, while contact
+indexes attach each recovered occurrence to its already accepted native statement group.
+Withdrawing or invalidating the pointer removes only those derived occurrences during an
+incremental cache upgrade. Table, search, person associations, and CSV reuse the same proof.
+
 The first request queues one bounded background build. Its private `contact_activity/` SQLite
 cache stores message IDs and ordering/source metadata, not another copy of chat text. Warm
 pagination fetches only the selected primary-key messages, and search stays within those
@@ -1102,10 +1176,39 @@ pagination adapters settle the result before the modal closes. Page exit aborts 
 ends the waiting state; late JSON responses cannot overwrite a later page. Dismissed waiting
 notifications retain unsubmitted search text, selection, focus, and scroll across completion.
 
+An unreadable, cloud-only, or invalid contact-association registry fails closed as an
+actionable `503/error` response, using the existing error fragment and ending polling.
+It must never masquerade as a queued build or silently omit person associations.
+A registry identity race or active source journal remains a retryable `202/indexing`
+response. The request does not hydrate configuration or source archives implicitly.
+
 The analysis view reuses the standard shell, metrics, search, select, pagination, and fixed-header
 table. `wechat-contact-navigation.js` merges a scoped return checkpoint into the existing browser
 history entry. Back navigation restores the exact URL, nested chat scroll position, open source
 disclosures, and focus without creating a new tab or merging unrelated history state.
+
+Contact headings rank retained nickname evidence before remarks, aliases, and source labels;
+hash-ordered observation pagination must not promote a raw username above a readable nickname.
+Explicit display overrides remain authoritative, while native identity keys stay unchanged.
+
+Proven redundant Excel and HTML plain-text observations may be retired through
+`wechat_derived_redundancy.py`, `wechat_derived_retirement.py`, and
+`wechat_derived_publication.py`. A source-pinned plan requires a literal native group ID,
+independently verified author, exact body, compatible second-level clock, unique native
+server event, and at least three order-consistent anchors. Names, local export IDs, and
+clock/text equality alone never authorize retirement. Unknown export owners and timezones
+remain unknown. Quoted, forwarded, system, financial-card, resource, and unmatched records
+stay outside this plain-text rule.
+
+Only the proven derived rows leave the active history. Compact `derived_message_aliases`
+retain original IDs, locators, source metadata, uncertainty, and proof hashes without another
+body copy; old browser source links resolve to the retained native occurrence. Native rows
+and unrelated exports remain unchanged. APFS candidates use bounded transactions with
+fresh space checks before every batch. Compressed scoped rollback records live in the
+OneDrive workstation, rather than another full history archive. Publication verifies and
+rebinds only already-current resource pins after indexed membership checks; stale or cold
+sidecars remain explicitly unvalidated. Row retirement alone does not prove reclaimed disk
+space and does not run a full-database vacuum.
 
 `_wechat_browser.html` and `browser-messaging.css` reuse the existing table, select, card,
 collapse, theme, and pagination primitives. Sent/received messages branch by direction, group
@@ -1224,10 +1327,37 @@ the previous catalog, verifies input identities and integrity, and atomically re
 This refresh covers the existing catalog, not previously unindexed device backups. Native
 server ID `"0"` means unavailable; it never establishes an event match on its own.
 
+`stage_native_media_supplement()` can add explicitly audited metadata from a resident native
+database. It requires independent primary observations of the exact snapshot, account,
+database path, native file ID, and database digest, then verifies the full source file and
+rereads only the recorded metadata columns. Same-account HTML containers can retain those
+native primary observations without changing their existing routing. Supplemental events
+retain their actual native account scope. Positive server IDs require matching time, type,
+direction, and peer before deduplication; unavailable server IDs require exact source-file
+and local-row evidence. Type 50 remains an `Other message`, and opaque Type 49 remains an
+`App message`. Recorded status fields do not assert delivery. The primary archive and media
+payloads remain unchanged. Future full refreshes reprove these independent primary receipts.
+
+`stage_extended_native_resource_revalidation()` provides a bounded alternative for an
+explicit conversation set. It revalidates previous covered rows as well as newly selected
+scopes, so extending one conversation cannot discard another conversation's newer metadata.
+An optional metadata-only supplement must agree with the native account, preserved database
+digest, complete preservation manifest, and an exact current native text witness. Sealed
+reads recheck the witness and source receipts without reopening cloud inputs. Exact native
+event matches share one placeholder; independently proven clock variants remain separate.
+The explicit publication helper retains a rollback, checks source identities under the
+maintenance lock, and atomically replaces only the derived fallback. A supplemented scope
+also pins the canonical catalog identity before taking precedence for that conversation.
+Neither ordinary browsing nor this refresh changes the primary text archive or reads media
+payload files. The existing resource bubbles, SVGs, Finder actions, and CSV transport are reused.
+
 Session notices use the selected conversation's verified source scope. An HTML session does
 not inherit an unrelated native catalog failure, while its own media-index failures remain
 visible. Native sessions and global views retain applicable resource-index warnings. This
 presentation scope does not change the source dependencies used by export or navigation.
+HTML media membership checks first probe selected candidate IDs through the input timeline's
+indexed branches, then reuse a small temporary ID table for duplicate counts and pagination.
+They retain global ID membership semantics without scanning unrelated shared-body messages.
 
 `wechat_resource_index.py` reads preserved native message and file-metadata databases, never
 the media payload files. Main text records and their corroborating source observations are
@@ -1252,6 +1382,54 @@ stored reference ID, reloads the pinned source scope, and resolves the destinati
 browser-provided paths are ignored. It reuses the existing native file-manager adapters and
 the application's shared cross-origin request guard. Resolved Mac paths stay out of HTML
 and JSON responses. No Mac database decryption or media decoding is performed.
+
+The separate `wechat_mac_refresh` service updates one existing private or group
+conversation from locally configured Mac database keys. A loopback-only POST accepts
+only the canonical session ID; the server resolves its account and native peer and
+returns an opaque background-job status URL. Page rendering exposes only eligibility,
+never keys or native paths. Official accounts and unclassified conversations are not
+refresh targets. Keys remain in the existing owner-private host registry.
+
+The refresh reader authenticates SQLCipher pages and committed WAL frames from a
+stable main/WAL group snapshot, then queries a memory-only SQLite database. It does
+not acquire keys, attach to WeChat, automate its UI, or retain attachment binaries.
+The main-file cap is 2 GiB, matching the cipher reader; WAL and SHM caps remain
+64 MiB and 16 MiB. Snapshots that may exceed the former 1 GiB boundary require a
+conservative working-memory estimate within one quarter of detected physical RAM.
+The estimate includes possible WAL growth, buffer copies, SHM and 512 MiB of
+overhead. Unknown capacity rejects large reads. This capacity policy does not
+measure currently free memory. Each read is also bounded by its admitted file size.
+For 4,096-byte pages, SQLite's fixed lock-byte page is number 262,145. The reader
+preserves that main-file page only when all 4,096 bytes are zero, rejects nonzero
+contents and WAL frames targeting the page, and authenticates every content page.
+The source proof reports physical and authenticated counts separately; only this
+case adds `lock_byte_page_count=1` and `authenticated_content_pages=true`, while
+`authenticated_pages=false` records that the physical reserved page has no HMAC.
+Full SQLite integrity checking remains mandatory. Recovery bank `v1.3.0-codex.0`
+accepts this closed proof extension and preserves schema-3 compatibility with
+`v1.2.0-codex.0`, `v1.2.1-codex.0` and `v1.2.2-codex.0` banks.
+The fixed position follows SQLite's [lock-byte page format](https://www.sqlite.org/fileformat.html#the_lock_byte_page).
+Account, peer and existing archive anchors must satisfy the canonical recovery-bank
+proof contract. The reader requires one exact authenticated `Name2Id` owner row;
+its local row ID is source-specific. Account-binding schema 1 retains its fixed
+row-2 contract. New schema-2 bindings retain the exact current owner row and two
+cross-peer primary Type 1 witnesses, including a sent message from that exact row.
+Existing two-local-anchor scope binding remains supported. Refresh comparison
+projects only the selected conversation and keeps strict target-proof validation.
+An authenticated shard with insufficient independent account witnesses raises a
+distinct source-local error. Refresh marks that shard unavailable, closes it and
+continues other independently bound shards with partial coverage. Invalid timelines,
+owner mappings, configuration or source drift, cryptographic failures and cancellation
+still abort publication. No account proof or unrelated-body search is substituted.
+Publication reuses the existing staged bank and all-input identity
+checks under the canonical cross-process publication lock. Missing keys, unsupported
+or undecodable sources, and source races remain explicit partial or failure states;
+one readable shard never establishes complete account coverage.
+Python 3.13 application hosts delegate the same pipeline to a probed Python 3.14 or
+newer local worker for standard-library Zstd support. The fixed module, server-owned
+root and canonical session ID define its command; keys and message bodies never
+enter arguments or the bounded, whitelisted status transport. Parent EOF and explicit
+cancellation reach the final publication guard.
 
 ### ChatGPT image cache
 
@@ -1299,7 +1477,7 @@ selected authenticated Safari session
   -> one standard task-owned background window
   -> Gemini virtualized conversation navigation
   -> rendered user-query and model-response extraction
-  -> atomic local_store/llm/gemini/history.parquet replacement
+  -> transactional local_store/llm/gemini/history.sqlite3 commit
   -> native window close with Safari window-ID verification
 ```
 
@@ -1309,12 +1487,8 @@ and never leaves a hidden or blank reusable shell. Window creation, session prob
 X likes collection share this context so failure paths still run exact-window cleanup.
 The context restores the user's previous frontmost application after Safari window work,
 and JavaScript execution is bounded by a macOS-only AppleScript timeout. Conversation rows are
-published atomically. Browser refreshes keep existing rows unless an exact positional prefix
-and reliable source timestamps prove an append-only extension. Short or conflicting snapshots
-leave the cached session intact and report incomplete status. Authoritative replacement remains
-a separate store operation. The offline [Takeout importer](GEMINI_TAKEOUT_IMPORT.md) supplements
-history under the full maintenance lock, preserves raw source and backups, and records uncertain
-alignment rather than inferring missing source facts.
+replaced atomically per session, so a stopped run preserves every previously verified
+session without duplicating messages.
 The Windows path uses the Edge/Chromium controller and does not use a Safari window or
 AppleScript. Its approved `.ps1` verification paths run through PowerShell, and
 `taskkill /T /F` is used for process-tree cleanup where applicable.
@@ -1519,9 +1693,7 @@ Doctor. The service never replays a local Action or continues automatically.
 | --- | --- | --- |
 | `local_store/` | User media, source catalogs, queues, manifests, and deletion previews | Ignored except `.gitkeep` |
 | `local_store/prompt/` | Snapshot-backed saved prompts retaining source pointers for traceability; a media prompt without cached text history keeps a content-derived key | Ignored except `.gitkeep` |
-| `local_store/messaging/wechat/history.sqlite3` | Source-separated, text-only human-message index; no media payloads | Ignored |
-| `local_store/messaging/wechat/contacts.sqlite3` | Native contact identities, scoped name observations, and pinned speaker corroboration | Ignored |
-| `local_store/llm/zhihu/history.parquet` | Formal Zhihu answer text, rich-text source, and source links indexed by Local resources | Ignored |
+| `local_store/llm/zhihu/history.sqlite3` | Formal Zhihu answer text, rich-text source, and source links indexed by Local resources | Ignored |
 | `local_store/messaging/wechat/history.sqlite3` | Source-separated, text-only human-message index; no media payloads | Ignored |
 | `local_store/messaging/wechat/resource_references.sqlite3` | Additive media/file reference metadata, source locators, and pinned archive identity; no payload copies | Ignored |
 | `local_store/messaging/wechat/secondary_message_completions.sqlite3` | Reproducible, source-pinned sender, quote, and invitation completions with replayable evidence; no media payloads | Ignored |

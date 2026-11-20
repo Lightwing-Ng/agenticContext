@@ -1,6 +1,6 @@
 """Adapt observed ChatGPT component text for display without changing stored history.
 
-Code version: v1.0.1-codex.0
+Code version: v1.1.1-codex.0
 Component attributes remain inert source data. This adapter never emits HTML or
 interprets JSX expressions, and unsupported components retain their source text.
 """
@@ -97,13 +97,7 @@ class _CitationParser(HTMLParser):
         self.source = source
         self.offsets = [0] + [match.end() for match in re.finditer("\n", source)]
         self.starts: set[int] = set()
-
-    def handle_comment(self, data):
-        line, column = self.getpos()
-        offset = self.offsets[line - 1] + column
-        if self.source.startswith("<![", offset):
-            # Newer HTMLParser releases report malformed marked sections as comments.
-            raise AssertionError("Uncertain marked-section source")
+        self.malformed_declaration = False
 
     def handle_starttag(self, tag, attrs):
         if tag == "cite":
@@ -111,6 +105,13 @@ class _CitationParser(HTMLParser):
             self.starts.add(self.offsets[line - 1] + column)
 
     handle_startendtag = handle_starttag
+
+    def handle_comment(self, data):
+        line, column = self.getpos()
+        position = self.offsets[line - 1] + column
+        if self.source.startswith("<![", position):
+            # Tolerant runtimes report malformed marked sections as bogus comments.
+            self.malformed_declaration = True
 
 
 def _remove_citations(text: str) -> str:
@@ -122,6 +123,8 @@ def _remove_citations(text: str) -> str:
         parser.close()
     except AssertionError:
         # HTMLParser rejects malformed marked sections; preserve uncertain source.
+        return text
+    if parser.malformed_declaration:
         return text
     pieces = []
     start = 0
@@ -148,13 +151,17 @@ class _Node:
     children: list["_Node | str"] = field(default_factory=list)
 
 
+class _ComponentBoundaryReached(Exception):
+    """Stop scanning once the selected component has closed."""
+
+
 class _ComponentParser(HTMLParser):
     """Read a balanced component tree while retaining an exact source boundary."""
 
-    def __init__(self, source: str) -> None:
+    def __init__(self, source: str, last_numeric_reference: int) -> None:
         super().__init__(convert_charrefs=True)
         self.source = source
-        self.offsets = [0] + [match.end() for match in re.finditer("\n", source)]
+        self.last_numeric_reference = last_numeric_reference
         self.root: _Node | None = None
         self.stack: list[_Node] = []
         self.end: int | None = None
@@ -189,8 +196,13 @@ class _ComponentParser(HTMLParser):
             del self.stack[matches[-1]:]
         if not self.stack:
             line, column = self.getpos()
-            position = self.offsets[line - 1] + column
-            self.end = self.source.find(">", position) + 1
+            line_start = 0
+            for _ in range(line - 1):
+                line_start = self.source.index("\n", line_start) + 1
+            self.end = self.source.find(">", line_start + column) + 1
+            # A later numeric character reference can still raise during decoding.
+            if self.end > self.last_numeric_reference:
+                raise _ComponentBoundaryReached
 
     def handle_data(self, data):
         if self.end is None and self.stack:
@@ -304,14 +316,18 @@ def format_chatgpt_display_markdown(value: object) -> str:
         return text
     masked, replacements = _protect_code(text)
     masked = _remove_citations(masked)
+    last_numeric_reference = masked.rfind("&#")
     pieces = []
     start = 0
     while match := _ROOT.search(masked, start):
         root_start = match.start() + len(match.group()) - len(match.group().lstrip())
-        parser = _ComponentParser(masked[root_start:])
+        suffix = masked[root_start:]
+        parser = _ComponentParser(suffix, last_numeric_reference - root_start)
         try:
-            parser.feed(masked[root_start:])
+            parser.feed(suffix)
             parser.close()
+        except _ComponentBoundaryReached:
+            pass
         except AssertionError:
             # A complete preceding component is still usable when later prose is malformed.
             if parser.end is None:

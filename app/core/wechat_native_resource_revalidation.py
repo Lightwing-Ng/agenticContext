@@ -6,7 +6,7 @@ Code version: v1.1.2-codex.0
 from __future__ import annotations
 
 from collections import Counter, defaultdict
-from contextlib import closing
+from contextlib import ExitStack, closing
 from datetime import UTC, datetime
 import hashlib
 import json
@@ -207,10 +207,11 @@ def _validate_row(row, conversation, owner, receipts, snapshots):
         raise ValueError("Native resource metadata lacks its original reference.")
     path = _relative(proof.get("source_relative_path"), owner)
     backup, digest = proof.get("backup_id"), proof.get("source_sha256")
+    basis = proof.get("source_checksum_basis")
     if (
         receipts.get((backup, path)) != digest
         or not digest
-        or proof.get("source_checksum_basis") != "preservation_manifest"
+        or basis not in {"preservation_manifest", "primary_source_database_receipt"}
     ):
         raise ValueError(
             "A native resource differs from its preserved database receipt."
@@ -222,6 +223,16 @@ def _validate_row(row, conversation, owner, receipts, snapshots):
     ]
     if not matches:
         raise ValueError("A native resource has no current source snapshot proof.")
+    if basis == "primary_source_database_receipt":
+        snapshot = snapshots.get(proof.get("source_snapshot"))
+        if (
+            snapshot is None
+            or snapshot[0] != backup
+            or snapshot[1].get(path) != digest
+            or proof.get("source_snapshot_metadata_sha256")
+            != snapshot[2]["metadata_sha256"]
+        ):
+            raise ValueError("A native resource lost its primary source receipt.")
     local, signature = _anchor(proof, row["direction"], locator)
     epoch = proof["unix_timestamp"]
     try:
@@ -237,17 +248,37 @@ def _validate_row(row, conversation, owner, receipts, snapshots):
         != expected_time
     ):
         raise ValueError("A native resource changed its recorded timestamp projection.")
-    table = (
-        "Chat_"
-        + hashlib.md5(
-            conversation["peer_id"].encode(), usedforsecurity=False
-        ).hexdigest()
-    )
-    expected_id = _identifier(
-        "wechat-resource-reference-v1",
+    if conversation["peer_id"]:
+        table = (
+            "Chat_"
+            + hashlib.md5(
+                conversation["peer_id"].encode(), usedforsecurity=False
+            ).hexdigest()
+        )
+    else:
+        peer_hash = proof.get("unresolved_peer_hash")
+        if (
+            conversation["kind"] != "unclassified"
+            or not isinstance(peer_hash, str)
+            or re.fullmatch(r"[0-9a-f]{32}", peer_hash) is None
+            or conversation["id"]
+            != "wechat:" + _identifier(conversation["partition_id"], peer_hash)
+        ):
+            raise ValueError("An unresolved native resource lost its exact table hash.")
+        table = "Chat_" + peer_hash
+    scheme = proof.get("record_id_scheme", "wechat-resource-reference-v1")
+    if scheme not in {"wechat-resource-reference-v1", "wechat-resource-reference-v2"}:
+        raise ValueError("A native resource has an unsupported record identifier scheme.")
+    identity = (
+        scheme,
         owner,
         backup,
         "AppDomain-com.tencent.xin/" + path,
+    )
+    if scheme == "wechat-resource-reference-v2":
+        identity += (digest,)
+    expected_id = _identifier(
+        *identity,
         table,
         str(local),
     )
@@ -283,34 +314,89 @@ def _validate_row(row, conversation, owner, receipts, snapshots):
     return (backup, path, digest, table, local), signature, matches, kind
 
 
-def _content_digest(connection):
+def _content_digest(connection, *, proof_metadata=None):
     digest = hashlib.sha256()
     total_rows = total_bytes = 0
-    for table, order in (
+    tables = [
         ("messages", "id"),
         ("conversations", "id"),
         ("revalidation_source_proofs", "source_snapshot_id"),
-    ):
+    ]
+    if connection.execute(
+        "SELECT 1 FROM sqlite_master WHERE name='revalidation_native_witnesses'"
+    ).fetchone():
+        tables.append(("revalidation_native_witnesses", "message_id"))
+    for table, order in tables:
         digest.update(table.encode() + b"\0")
         for row in connection.execute(f"SELECT * FROM {table} ORDER BY {order}"):
             encoded = _json(tuple(row)).encode()
             total_rows += 1
             total_bytes += len(encoded)
-            if total_rows > MAX_ROWS + MAX_SCOPES + 4096 or total_bytes > 2 * MAX_BYTES:
+            if total_rows > MAX_ROWS + MAX_SCOPES + 8192 or total_bytes > 2 * MAX_BYTES:
                 raise ValueError(
                     "The native fallback exceeds its sealed metadata budget."
                 )
             digest.update(len(encoded).to_bytes(8, "big") + encoded)
+    if proof_metadata is None:
+        proof_metadata = dict(connection.execute("SELECT key,value FROM archive_info"))
+    extra = {
+        key: proof_metadata[key]
+        for key in (
+            "supplemental_metadata",
+            "canonical_file_identity",
+            "supplement_source_receipts",
+        )
+        if key in proof_metadata
+    }
+    if extra:
+        digest.update(b"supplemental-native-proof-v1\0" + _json(extra).encode())
     return digest.hexdigest()
 
 
+def _clock_variant(row, signature, others, report):
+    """Keep independently proven native clocks without inventing one timestamp."""
+    if any(value[1][2:] != signature[2:] for value in others):
+        raise ValueError(
+            "A native server ID has conflicting type or direction evidence."
+        )
+    conflict = {
+        "resource_id": row["id"],
+        "other_ids": [value[0] for value in others],
+        "unix_timestamp": signature[1],
+        "other_unix_timestamps": sorted({value[1][1] for value in others}),
+        "basis": "same_verified_account_peer_server_with_distinct_native_clocks",
+    }
+    report.setdefault("source_clock_conflicts", []).append(conflict)
+    result = dict(row)
+    proof, flags = json.loads(row["provenance"]), json.loads(row["quality_flags"])
+    proof["native_resource_clock_conflict"] = conflict
+    if "native_resource_source_clock_conflict" not in flags:
+        flags.append("native_resource_source_clock_conflict")
+    result["provenance"], result["quality_flags"] = _json(proof), _json(flags)
+    return result
+
+
 def stage_native_resource_revalidation(
-    local_store_root, candidate_path, *, conversation_ids
+    local_store_root,
+    candidate_path,
+    *,
+    conversation_ids,
+    supplemental_path=None,
+    _preserved_path=None,
 ):
     """Build only explicitly verified scopes; preserve all original sidecar rows."""
     history_path = wechat_archive_path(local_store_root).absolute()
     original = history_path.with_name("resource_references.sqlite3")
     identities = {history_path: _resident(history_path), original: _resident(original)}
+    supplemental = Path(supplemental_path).absolute() if supplemental_path else None
+    if supplemental is not None:
+        if supplemental in {history_path, original}:
+            raise ValueError("Select a separate native metadata supplement.")
+        identities[supplemental] = _resident(supplemental)
+    preserved_path = Path(_preserved_path).absolute() if _preserved_path else None
+    if preserved_path is not None:
+        identities[preserved_path] = _resident(preserved_path)
+    has_extra_sources = supplemental is not None or preserved_path is not None
     selected = tuple(dict.fromkeys(conversation_ids))
     if (
         not selected
@@ -341,22 +427,69 @@ def stage_native_resource_revalidation(
         "cloud_inputs_hydrated": 0,
         "published": False,
     }
+    if supplemental is not None:
+        report.update(
+            supplemental_path=str(supplemental),
+            supplemental_identity=identities[supplemental],
+        )
     proofs, rows_to_write, summaries, kinds, accounts = {}, [], [], Counter(), Counter()
+    receipt_values, witnesses = {}, {}
     total_metadata_bytes = 0
     total_metadata_rows = 0
-    with _readonly(history_path) as history, _readonly(original) as source:
+    with ExitStack() as stack:
+        history = stack.enter_context(_readonly(history_path))
+        source = stack.enter_context(_readonly(original))
+        sources = [source]
+        from .wechat_native_resource_receipts import (
+            extend_scoped_receipts,
+            load_supplement_receipts,
+            WITNESS_SCHEMA,
+        )
+
+        if preserved_path is not None:
+            prior_source = stack.enter_context(_readonly(preserved_path))
+            sources.append(prior_source)
+            for receipt in load_supplement_receipts(history, prior_source, sealed=True):
+                receipt_values[
+                    (receipt["source_snapshot_id"], receipt["database_relative_path"])
+                ] = receipt
+        if supplemental is not None:
+            supplement_source = stack.enter_context(_readonly(supplemental))
+            sources.append(supplement_source)
+            for receipt in load_supplement_receipts(history, supplement_source):
+                key = receipt["source_snapshot_id"], receipt["database_relative_path"]
+                if key in receipt_values and any(
+                    receipt_values[key][field] != receipt[field]
+                    for field in (
+                        "database_sha256",
+                        "metadata_sha256",
+                        "manifest_sha256",
+                    )
+                ):
+                    raise ValueError(
+                        "A supplemental receipt conflicts with prior sealed metadata."
+                    )
+                receipt_values[key] = receipt
         fingerprint = wechat_history_partition_fingerprint(history)
         for cid in selected:
             conversation = history.execute(
                 "SELECT * FROM conversations WHERE id=?", (cid,)
             ).fetchone()
-            prior = source.execute(
-                "SELECT * FROM conversations WHERE id=?", (cid,)
-            ).fetchone()
-            if conversation is None or prior is None or not conversation["peer_id"]:
+            priors = [
+                prior
+                for metadata in sources
+                if (
+                    prior := metadata.execute(
+                        "SELECT * FROM conversations WHERE id=?", (cid,)
+                    ).fetchone()
+                )
+                is not None
+            ]
+            if conversation is None or not priors or not conversation["peer_id"]:
                 raise ValueError("A selected native resource scope is not published.")
             if any(
                 conversation[key] != prior[key]
+                for prior in priors
                 for key in ("partition_id", "account_key", "peer_id", "kind")
             ):
                 raise ValueError(
@@ -368,13 +501,36 @@ def stage_native_resource_revalidation(
             if partition is None:
                 raise ValueError("A selected resource account is unavailable.")
             owner, receipts, snapshots = _receipts(history, partition)
+            if receipt_values:
+                (owner, receipts, snapshots), native_witnesses = extend_scoped_receipts(
+                    history,
+                    conversation,
+                    (owner, receipts, snapshots),
+                    receipt_values.values(),
+                )
+                for witness in native_witnesses:
+                    witnesses[witness[0]] = witness
             current = _current_anchors(history, conversation, owner, snapshots)
+            current_servers = defaultdict(list)
+            if has_extra_sources:
+                for values in current.values():
+                    for identifier, signature in values:
+                        if signature[0] is not None:
+                            current_servers[signature[0]].append(
+                                (identifier, signature)
+                            )
+            selected_events = {}
+            selected_servers = defaultdict(list)
             batch = []
             byte_count = 0
             for number, row in enumerate(
-                source.execute(
-                    "SELECT * FROM messages WHERE conversation_id=? ORDER BY time_sort,ordinal,id LIMIT ?",
-                    (cid, MAX_ROWS + 1),
+                (
+                    row
+                    for metadata in sources
+                    for row in metadata.execute(
+                        "SELECT * FROM messages WHERE conversation_id=? ORDER BY time_sort,ordinal,id LIMIT ?",
+                        (cid, MAX_ROWS + 1),
+                    )
                 ),
                 1,
             ):
@@ -395,6 +551,44 @@ def stage_native_resource_revalidation(
                 for proof in matches:
                     proofs[proof["source_snapshot_id"]] = proof
                 existing = current.get(key, ())
+                basis = (
+                    "same_snapshot_database_sha256_table_row_server_time_type_direction"
+                )
+                if has_extra_sources:
+                    server = signature[0]
+                    if not existing and server is not None:
+                        alternatives = current_servers.get(server, ())
+                        existing = [
+                            value for value in alternatives if value[1] == signature
+                        ]
+                        if alternatives and not existing:
+                            row = _clock_variant(row, signature, alternatives, report)
+                        basis = "same_verified_account_peer_server_time_type_direction"
+                    prior_event = selected_events.get(key)
+                    if prior_event is not None:
+                        if prior_event[1] != signature:
+                            raise ValueError(
+                                "A shared native locator has conflicting event evidence."
+                            )
+                    elif server is not None:
+                        alternatives = selected_servers.get(server, ())
+                        prior_event = next(
+                            (value for value in alternatives if value[1] == signature),
+                            None,
+                        )
+                        if alternatives and prior_event is None:
+                            row = _clock_variant(row, signature, alternatives, report)
+                    if prior_event is not None:
+                        report["excluded_existing_events"].append(
+                            {
+                                "resource_id": row["id"],
+                                "primary_ids": [prior_event[0]],
+                                "basis": "same_verified_account_peer_server_time_type_direction"
+                                if server is not None
+                                else basis,
+                            }
+                        )
+                        continue
                 if existing:
                     if any(value[1] != signature for value in existing):
                         raise ValueError(
@@ -404,7 +598,7 @@ def stage_native_resource_revalidation(
                         {
                             "resource_id": row["id"],
                             "primary_ids": [value[0] for value in existing],
-                            "basis": "same_snapshot_database_sha256_table_row_server_time_type_direction",
+                            "basis": basis,
                         }
                     )
                     continue
@@ -414,7 +608,12 @@ def stage_native_resource_revalidation(
                     raise ValueError(
                         "A native resource ID already has unrelated primary evidence."
                     )
-                batch.append(tuple(row))
+                batch.append(
+                    tuple(row.values()) if isinstance(row, dict) else tuple(row)
+                )
+                selected_events[key] = (row["id"], signature)
+                if signature[0] is not None:
+                    selected_servers[signature[0]].append((row["id"], signature))
                 kinds[kind] += 1
                 accounts[owner] += 1
             if not batch:
@@ -470,6 +669,12 @@ def stage_native_resource_revalidation(
                 "INSERT INTO revalidation_source_proofs VALUES(?,?,?,?)",
                 [tuple(proof.values()) for proof in proofs.values()],
             )
+            if witnesses:
+                output.executescript(WITNESS_SCHEMA)
+                output.executemany(
+                    "INSERT INTO revalidation_native_witnesses VALUES(?,?,?,?,?,?,?,?)",
+                    witnesses.values(),
+                )
             info = {
                 "schema_version": "1",
                 "proof_version": VERSION,
@@ -482,6 +687,16 @@ def stage_native_resource_revalidation(
                 "content_sha256": _content_digest(output),
                 "report": _json(report),
             }
+            if has_extra_sources:
+                info.update(
+                    supplemental_metadata="1",
+                    canonical_file_identity=_json(identities[original]),
+                )
+            if receipt_values:
+                info["supplement_source_receipts"] = _json(
+                    list(receipt_values.values())
+                )
+            info["content_sha256"] = _content_digest(output, proof_metadata=info)
             output.executemany("INSERT INTO archive_info VALUES(?,?)", info.items())
             output.commit()
             if output.execute("PRAGMA quick_check").fetchall() != [("ok",)]:
@@ -490,7 +705,7 @@ def stage_native_resource_revalidation(
                 )
         if any(_resident(path) != identity for path, identity in identities.items()):
             raise ValueError("A source changed before native candidate completion.")
-        with candidate.open("r+b") as stream:
+        with candidate.open("rb") as stream:
             os.fsync(stream.fileno())
         report["candidate_bytes"] = candidate.stat().st_size
         return report
@@ -520,6 +735,9 @@ def _verified_coverage(history, path, *, prior_pin=False):
                 pin != identity
                 or info.get("history_partitions_sha256")
                 != wechat_history_partition_fingerprint(primary)
+                or info.get("supplemental_metadata") == "1"
+                and json.loads(info.get("canonical_file_identity", "null"))
+                != _resident(history.with_name("resource_references.sqlite3"))
             )
             or not isinstance(covered, list)
             or not 1 <= len(covered) <= MAX_SCOPES
@@ -552,6 +770,9 @@ def _verified_coverage(history, path, *, prior_pin=False):
                 != proof["metadata_sha256"]
             ):
                 raise ValueError("A preserved native resource source proof changed.")
+        from .wechat_native_resource_receipts import verify_native_witnesses
+
+        verify_native_witnesses(primary, source)
     if _resident(history) != identity or _resident(path) != file_identity:
         raise ValueError("A native coverage input changed during verification.")
     return tuple(covered)
@@ -570,7 +791,7 @@ def _sha256(path):
 
 
 def stage_extended_native_resource_revalidation(
-    local_store_root, candidate_path, *, conversation_ids
+    local_store_root, candidate_path, *, conversation_ids, supplemental_path=None
 ):
     """Reprove requested scopes together with every previously sealed scope.
 
@@ -593,22 +814,31 @@ def stage_extended_native_resource_revalidation(
         raise ValueError("Select at least one native resource scope to extend.")
     selected = tuple(dict.fromkeys((*preserved, *requested)))
     report = stage_native_resource_revalidation(
-        local_store_root, candidate_path, conversation_ids=selected
+        local_store_root,
+        candidate_path,
+        conversation_ids=selected,
+        supplemental_path=supplemental_path,
+        _preserved_path=fallback if fallback_identity is not None else None,
     )
     candidate = Path(candidate_path).absolute()
+    candidate_identity = _resident(candidate)
     if (
         _resident(history) != identity
         or _optional_resident(fallback) != fallback_identity
     ):
-        candidate.unlink()
+        if _optional_resident(candidate) == candidate_identity:
+            candidate.unlink()
         raise ValueError("Native coverage changed while staging its extension.")
+    candidate_digest = _sha256(candidate)
+    if _resident(candidate) != candidate_identity:
+        raise ValueError("The staged native candidate changed before review.")
     return {
         **report,
         "requested_conversations": list(requested),
         "preserved_conversations": list(preserved),
         "fallback_identity": fallback_identity,
-        "candidate_identity": _resident(candidate),
-        "candidate_sha256": _sha256(candidate),
+        "candidate_identity": candidate_identity,
+        "candidate_sha256": candidate_digest,
     }
 
 
@@ -644,7 +874,9 @@ def publish_native_resource_revalidation(local_store_root, report, *, rollback_p
         or rollback.parent.is_symlink()
         or os.path.lexists(rollback)
     ):
-        raise ValueError("Select an untouched local candidate and external rollback path.")
+        raise ValueError(
+            "Select an untouched local candidate and external rollback path."
+        )
     maintenance = CacheMaintenanceLock(
         CacheTaskLock(Path(local_store_root) / CACHE_TASK_LOCK_NAME)
     )
@@ -652,6 +884,7 @@ def publish_native_resource_revalidation(local_store_root, report, *, rollback_p
         raise RuntimeError("Finish the active cache task before publishing metadata.")
     swapped = False
     try:
+
         def unchanged():
             if (
                 _resident(history) != report["history_identity"]
@@ -659,14 +892,17 @@ def publish_native_resource_revalidation(local_store_root, report, *, rollback_p
                 or _optional_resident(fallback) != report["fallback_identity"]
                 or _resident(candidate) != report["candidate_identity"]
                 or _sha256(candidate) != report["candidate_sha256"]
+                or "supplemental_path" in report
+                and _resident(Path(report["supplemental_path"]))
+                != report["supplemental_identity"]
             ):
                 raise ValueError("A reviewed native metadata input changed.")
 
         unchanged()
         covered = _verified_coverage(history, candidate)
-        if set(covered) != {
-            item["id"] for item in report["conversations"]
-        } or not set(report["preserved_conversations"]).issubset(covered):
+        if set(covered) != {item["id"] for item in report["conversations"]} or not set(
+            report["preserved_conversations"]
+        ).issubset(covered):
             raise ValueError("The candidate would discard reviewed native coverage.")
         if report["fallback_identity"] is not None:
             _clonefile(fallback, rollback)
@@ -717,6 +953,23 @@ def select_resource_index(history_path, *, conversation_id=None):
         return canonical
     try:
         identity = _resident(history)
+        # A supplemental publication contains the entire selected canonical
+        # scope plus independently verified newer native observations. Prefer
+        # that union only while its exact canonical input remains unchanged.
+        if os.path.lexists(fallback) and os.path.lexists(canonical):
+            try:
+                _resident(fallback)
+                with _readonly(fallback) as source:
+                    info = dict(source.execute("SELECT key,value FROM archive_info"))
+                if (
+                    info.get("supplemental_metadata") == "1"
+                    and json.loads(info.get("canonical_file_identity", "null"))
+                    == _resident(canonical)
+                    and conversation_id in _verified_coverage(history, fallback)
+                ):
+                    return fallback
+            except (OSError, sqlite3.Error, ValueError, TypeError, KeyError):
+                pass
         with _readonly(history) as primary:
             fingerprint = wechat_history_partition_fingerprint(primary)
             if canonical.exists():
@@ -743,46 +996,9 @@ def select_resource_index(history_path, *, conversation_id=None):
                     ):
                         return canonical
             fallback_identity = _resident(fallback)
-            with _readonly(fallback) as source:
-                info = dict(source.execute("SELECT key,value FROM archive_info"))
-                covered = json.loads(info.get("covered_conversations", "null"))
-                if (
-                    info.get("schema_version") != "1"
-                    or info.get("proof_version") not in _COMPATIBLE_PROOFS
-                    or info.get("published") != "1"
-                    or info.get("coverage_scope")
-                    != "explicit_verified_conversations_only"
-                    or json.loads(info.get("history_file_identity", "null")) != identity
-                    or info.get("history_partitions_sha256") != fingerprint
-                    or not isinstance(covered, list)
-                    or not 1 <= len(covered) <= MAX_SCOPES
-                    or set(covered)
-                    != {
-                        row[0] for row in source.execute("SELECT id FROM conversations")
-                    }
-                    or conversation_id is not None
-                    and conversation_id not in covered
-                    or info.get("content_sha256") != _content_digest(source)
-                ):
-                    return canonical
-                proofs = source.execute(
-                    "SELECT * FROM revalidation_source_proofs LIMIT 4097"
-                ).fetchall()
-                if not 1 <= len(proofs) <= 4096:
-                    return canonical
-                for proof in proofs:
-                    row = primary.execute(
-                        "SELECT snapshot_id,source_id,metadata FROM source_snapshots WHERE id=?",
-                        (proof["source_snapshot_id"],),
-                    ).fetchone()
-                    if (
-                        row is None
-                        or row["snapshot_id"] != proof["snapshot_id"]
-                        or row["source_id"] != proof["source_id"]
-                        or hashlib.sha256(row["metadata"].encode()).hexdigest()
-                        != proof["metadata_sha256"]
-                    ):
-                        return canonical
+            covered = _verified_coverage(history, fallback)
+            if conversation_id not in covered:
+                return canonical
             if (
                 _resident(history) == identity
                 and _resident(fallback) == fallback_identity

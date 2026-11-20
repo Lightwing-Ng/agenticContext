@@ -1,11 +1,12 @@
 """Regression tests for document navigation across the local request boundary.
 
-Code version: v1.0.0-codex.0
+Code version: v1.1.0-codex.0
 """
 
 from __future__ import annotations
 
 from collections.abc import Iterator
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -27,6 +28,7 @@ def navigation_client(tmp_path: Path) -> Iterator[FlaskClient]:
     """Exercise real routes with disposable state and no external browser operations."""
     application = create_app(
         tmp_path / "local_store",
+        computer_use_settings_path=tmp_path / "agent_settings.json",
         agent_external_operations_enabled=False,
     )
     application.config.update(TESTING=True)
@@ -35,10 +37,14 @@ def navigation_client(tmp_path: Path) -> Iterator[FlaskClient]:
     application.extensions["runtime_shutdown"]()
 
 
+@pytest.mark.parametrize("platform", ("chatgpt", "claude", "gemini", "grok"))
 def test_user_activated_document_navigation_reaches_the_start_page(
     navigation_client: FlaskClient,
+    platform: str,
 ) -> None:
-    """An explicit browser navigation must reach the page through its normal redirect."""
+    """An explicit navigation opens Agent with the saved platform selection."""
+    settings_store = navigation_client.application.extensions["computer_use_settings"]
+    settings_store.update(replace(settings_store.settings, platform=platform))
     response = navigation_client.get(
         "/",
         headers=NAVIGATION_HEADERS,
@@ -48,7 +54,9 @@ def test_user_activated_document_navigation_reaches_the_start_page(
     assert response.status_code == 200
     assert response.history
     assert response.history[0].status_code == 302
-    assert "Cache" in response.get_data(as_text=True)
+    assert response.history[0].headers["Location"] == "/agent"
+    assert response.request.path == f"/agent/tunnel/{platform}"
+    assert 'id="agent_sidebar"' in response.get_data(as_text=True)
 
 
 def test_document_navigation_headers_do_not_authorize_cross_site_writes(

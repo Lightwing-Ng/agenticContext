@@ -1,6 +1,6 @@
 """Browser session probing helpers for supported cache sources."""
 
-# Code version: v1.28.2-codex.0
+# Code version: v1.28.3-codex.0
 
 from __future__ import annotations
 
@@ -697,7 +697,7 @@ def _probe_gemini_session(
             "account_name": "Google account",
             "message": (
                 f"{descriptor.label} verified an authenticated Gemini session. "
-                "A background browser window will cache rendered sessions to Parquet."
+                "A background browser window will cache rendered sessions locally."
             ),
         }
 

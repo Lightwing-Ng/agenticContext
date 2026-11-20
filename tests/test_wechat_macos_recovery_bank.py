@@ -1,12 +1,11 @@
 """Indexed Mac recovery keeps authenticated scopes, literal roles and original bytes.
 
-Code version: v1.0.2-codex.0
+Code version: v1.0.3-codex.0
 """
 
 from copy import deepcopy
 import hashlib
 import json
-import os
 import sqlite3
 import stat
 from types import SimpleNamespace
@@ -16,8 +15,13 @@ import pytest
 
 from app.core import wechat_macos_recovery as legacy
 from app.core import wechat_macos_recovery_bank as bank
-from app.core.owner_only_files import owner_only_problem
 from app.core.wechat_archive import WechatArchiveRepository, _identifier, _time_fields
+from app.core.wechat_contacts import (
+    canonical_contact_id,
+    contact_observation,
+    contact_registry_path,
+    initialize_contact_registry,
+)
 from app.core.wechat_history_browser import query_wechat_history
 from app.core.wechat_text import extract_wechat_text
 from tests import test_wechat_macos_recovery as recovery_fixtures
@@ -237,9 +241,7 @@ def test_bank_adds_authenticated_direct_and_group_events_without_changing_histor
     assert not fixture.bank_path.exists()
     assert fixture.history.read_bytes() == original
     bank.publish_mac_recovery_bank(fixture.root, candidate, receipt)
-    assert owner_only_problem(fixture.bank_path) == ""
-    if os.name != "nt":
-        assert stat.S_IMODE(fixture.bank_path.stat().st_mode) == 0o600
+    assert stat.S_IMODE(fixture.bank_path.stat().st_mode) == 0o600
     assert fixture.history.read_bytes() == original
     assert _detail(fixture, fixture.direct_session)["count"] == 7
     group = _detail(fixture, fixture.group_session)
@@ -260,6 +262,106 @@ def test_bank_adds_authenticated_direct_and_group_events_without_changing_histor
         == 16
     )
     assert fixture.history.read_bytes() == original
+
+
+def test_bank_direct_text_quotes_resolve_filtered_original_authors(bank_archive):
+    fixture = bank_archive
+    excerpt = "The original literal excerpt"
+    remark = "Verified account remark"
+    original = _message(60, 1, raw=excerpt, sender=PEER)
+    cases = (
+        ("Explicit", OWNER, PEER, "", 0, excerpt, "Historical peer label"),
+        ("Inverted", PEER, OWNER, PEER, -1, excerpt, "Historical owner label"),
+        ("Different text", PEER, OWNER, PEER, -1,
+         "A different literal excerpt", "Only a captured source label"),
+        ("Different time", PEER, OWNER, PEER, -2, excerpt, "Another captured source label"),
+    )
+    packet = fixture.direct
+    packet["messages"] = [original]
+    for local_id, (case, sender, source_sender, source_chat, offset, text, label) in enumerate(
+        cases, 61
+    ):
+        epoch = original["create_time"] + offset
+        packet["messages"].append(_message(
+            local_id, 49, sender=sender,
+            raw=(
+                "<msg><appmsg><type>57</type>"
+                f"<title>Filtered reply {case}</title><refermsg><type>1</type>"
+                f"<svrid>{original['server_id']}</svrid><fromusr>{source_sender}</fromusr>"
+                f"<chatusr>{source_chat}</chatusr><displayname>{label}</displayname>"
+                f"<createtime>{epoch}</createtime><content>{text}</content>"
+                "</refermsg></appmsg></msg>"
+            ),
+        ))
+    registry = contact_registry_path(fixture.root)
+    partition = "ios-" + hashlib.md5(OWNER.encode(), usedforsecurity=False).hexdigest()
+    identifiers = {
+        sender: canonical_contact_id(sender, authority="native_contact_username")
+        for sender in (PEER, OWNER)
+    }
+    with sqlite3.connect(registry) as connection:
+        initialize_contact_registry(connection)
+        for sender, identifier in identifiers.items():
+            connection.execute(
+                "INSERT INTO contacts VALUES(?,?,?,?,?,?)",
+                (identifier, "wechat", "", sender, "wechat_account", "verified"),
+            )
+            connection.execute(
+                "INSERT INTO contact_identifiers VALUES(?,?,?,?,?)",
+                (identifier, "native_username", sender, "", "native_contact_username"),
+            )
+            connection.execute(
+                "INSERT INTO sender_bindings VALUES(?,?,?,?,?,?,?)",
+                (partition, sender, "", "", identifier, "native_contact_username", "{}"),
+            )
+        for sender, owner, kind, value in (
+            (PEER, OWNER, "remark", remark),
+            (PEER, OWNER, "nickname", "Historical account nickname"),
+            (PEER, "wxid_other_account", "remark", "Another account's remark"),
+            (OWNER, OWNER, "nickname", "The viewing account"),
+        ):
+            observation = contact_observation(
+                identifiers[sender],
+                source_id="ios-" + hashlib.md5(owner.encode(), usedforsecurity=False).hexdigest(),
+                source_snapshot="older-native-contact-snapshot",
+                owner_account_id=owner,
+                kind=kind,
+                value=value,
+            )
+            connection.execute(
+                "INSERT INTO contact_observations VALUES(:id,:contact_id,:source_id,"
+                ":source_snapshot,:owner_account_id,:room_id,:kind,:value,:evidence)",
+                observation,
+            )
+    _publish(fixture, packets=[packet])
+    sources = (fixture.history, registry, fixture.bank_path)
+    sources_before = tuple(path.read_bytes() for path in sources)
+    page = query_wechat_history(
+        fixture.root,
+        account="account:" + OWNER,
+        chat_kind="direct",
+        query="Filtered reply",
+        session=fixture.direct_session,
+        persist_event_cache=False,
+        strict_timeline=True,
+    )
+    assert len(page.items) == len(cases)
+    replies = {item.messaging["display_text"]: item for item in page.items}
+    for scenario, stored in zip(cases, packet["messages"][1:], strict=True):
+        case, sender, source_sender, _chat, _offset, text, label = scenario
+        item = replies["Filtered reply " + case]
+        quote = item.messaging["quoted_reply"]
+        assert item.author_label == sender
+        assert quote["speaker"] == label
+        assert quote["text"] == text
+        assert quote["reference"] == stored["native_text"]["quoted_reference"]
+        assert quote["reference"]["source_sender_id"] == source_sender
+        if case in {"Explicit", "Inverted"}:
+            assert quote["viewer_display_name"] == remark
+            assert quote["contact"]["id"] == identifiers[PEER]
+        else:
+            assert not quote.get("viewer_display_name")
+    assert tuple(path.read_bytes() for path in sources) == sources_before
 
 
 def test_bank_preserves_text_system_forwarded_and_metadata_only_resource_roles(

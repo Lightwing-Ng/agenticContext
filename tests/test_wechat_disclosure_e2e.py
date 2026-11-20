@@ -1,9 +1,11 @@
 """WeChat provenance keeps physical motion, native disclosure, and aligned shadows.
 
-Code version: v1.0.2-codex.0
+Code version: v1.1.0-codex.0
 """
 
 from __future__ import annotations
+
+from pathlib import Path
 
 import pytest
 from playwright.sync_api import expect
@@ -287,8 +289,9 @@ def test_wechat_provenance_motion_does_not_require_scroll_timeline(
         context.close()
 
 
+@pytest.mark.parametrize("deferred_shadow", [False, True])
 def test_wechat_provenance_shadows_follow_presented_spring_frames(
-    disposable_browser, wechat_server
+    disposable_browser, wechat_server, deferred_shadow
 ):
     context = disposable_browser.new_context(
         viewport={"width": 812, "height": 1000}, reduced_motion="no-preference"
@@ -297,36 +300,62 @@ def test_wechat_provenance_shadows_follow_presented_spring_frames(
     errors = []
     page.on("pageerror", lambda error: errors.append(str(error)))
     try:
+        if deferred_shadow:
+            script = (
+                Path(__file__).resolve().parents[1]
+                / "app/web/static/browser-chat-effects.js"
+            ).read_text()
+            delayed = script.replace(
+                "if (effect.style[property] !== value) effect.style[property] = value;",
+                """if (effect.style[property] !== value) {
+                    if (property === 'height') setTimeout(() => { effect.style[property] = value; }, 80);
+                    else effect.style[property] = value;
+                }""",
+            )
+            assert delayed != script
+            page.route(
+                "**/static/browser-chat-effects.js?*",
+                lambda route: route.fulfill(
+                    content_type="text/javascript", body=delayed
+                ),
+            )
         card, details, _ = _open_conversation(page, wechat_server)
         samples = card.evaluate("""async card => {
             const samples = [];
             const pane = card.closest('[data-browser-chat-pane]');
             const effect = pane.querySelector(`[data-chat-effect-for="${card.id}"]`);
-            await new Promise(resolve => {
-                // Observe the layout delivered for paint. A later timer can advance
-                // the animation clock and force a layout before its observer delivery.
-                const observer = new ResizeObserver(() => {
-                    const animations = card.getAnimations({subtree: true});
-                    const running = animations.some(animation => animation.playState === 'running');
+            const details = card.querySelector('details');
+            // Observe after the production callbacks, in the same pre-paint
+            // delivery. A later timer can read a new animation layout after paint.
+            const observer = new ResizeObserver(() => {
+                if (details.hasAttribute('data-collapse-motion')) {
                     const actual = card.getBoundingClientRect();
                     const shadow = effect.getBoundingClientRect();
-                    if (running) samples.push({
+                    samples.push({
                         height: actual.height,
                         error: Math.max(...['left', 'top', 'width', 'height'].map(key =>
                             Math.abs(actual[key] - shadow[key]))),
                     });
-                });
-                const finish = () => {
-                    clearTimeout(deadline);
-                    observer.disconnect();
-                    resolve();
-                };
-                observer.observe(card);
-                card.querySelector('summary').click();
-                const deadline = setTimeout(finish, 2000);
-                Promise.allSettled(card.getAnimations({subtree: true})
-                    .map(animation => animation.finished)).then(finish);
+                }
             });
+            observer.observe(card);
+            let timer;
+            try {
+                card.querySelector('summary').click();
+                const motions = card.getAnimations({subtree: true}).filter(animation =>
+                    animation.timeline === document.timeline
+                    && Number.isFinite(animation.effect.getTiming().iterations));
+                await Promise.race([
+                    Promise.allSettled(motions.map(animation => animation.finished)),
+                    new Promise((_, reject) => {
+                        timer = setTimeout(() => reject(new Error('Disclosure did not settle')), 2000);
+                    }),
+                ]);
+                await new Promise(requestAnimationFrame);
+            } finally {
+                clearTimeout(timer);
+                observer.disconnect();
+            }
             return samples;
         }""")
         assert len(samples) >= 2, samples
@@ -334,7 +363,12 @@ def test_wechat_provenance_shadows_follow_presented_spring_frames(
             max(sample["height"] for sample in samples)
             > min(sample["height"] for sample in samples) + 5
         )
-        assert max(sample["error"] for sample in samples) <= 1, samples
+        if deferred_shadow:
+            # The strict guard must detect captured geometry applied after paint,
+            # not accept any observer-based sampling as automatically correct.
+            assert max(sample["error"] for sample in samples) > 1, samples
+        else:
+            assert max(sample["error"] for sample in samples) <= 1, samples
         expect(details).to_have_attribute("open", "")
         _assert_clean_motion(card)
         assert not errors

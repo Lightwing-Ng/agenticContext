@@ -1,11 +1,10 @@
 """Resource presentation and Finder routes retain account and host boundaries.
 
-Code version: v1.1.1-codex.0
+Code version: v1.5.1-codex.0
 """
 
 from __future__ import annotations
 
-from html.parser import HTMLParser
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -31,95 +30,11 @@ from tests.wechat_browser_markup import get_verified_browser_page, parse_browser
 OWNER = "wxid_fixture_owner"
 PEER = "fixture_peer@chatroom"
 REFERENCE = {"kind": "image", "account_id": OWNER, "peer_id": PEER}
-
-
-class _RenderedMarkup(HTMLParser):
-    def __init__(self, rendered):
-        super().__init__()
-        self.elements = []
-        self.stack = []
-        self.feed(rendered)
-
-    def handle_starttag(self, tag, attrs):
-        element = SimpleNamespace(
-            tag=tag,
-            attrs=dict(attrs),
-            text=[],
-            ancestors=tuple(self.stack),
-            parent=self.stack[-1] if self.stack else None,
-        )
-        self.elements.append(element)
-        if tag not in {
-            "area",
-            "base",
-            "br",
-            "col",
-            "embed",
-            "hr",
-            "img",
-            "input",
-            "link",
-            "meta",
-            "param",
-            "source",
-            "track",
-            "wbr",
-        }:
-            self.stack.append(element)
-
-    def handle_endtag(self, tag):
-        for index in range(len(self.stack) - 1, -1, -1):
-            if self.stack[index].tag == tag:
-                del self.stack[index:]
-                break
-
-    def handle_data(self, data):
-        for element in self.stack:
-            element.text.append(data)
-
-    def find(self, *, tag=None, css_class="", attribute=None, within=None):
-        return next(
-            (
-                element
-                for element in self.elements
-                if (tag is None or element.tag == tag)
-                and set(css_class.split())
-                <= set(element.attrs.get("class", "").split())
-                and (attribute is None or attribute in element.attrs)
-                and (
-                    within is None
-                    or any(parent is within for parent in element.ancestors)
-                )
-            ),
-            None,
-        )
-
-
-def _text(element):
-    return "".join(element.text) if element is not None else ""
-
-
-@pytest.fixture
-def resource_template():
-    from jinja2 import Environment, FileSystemLoader, select_autoescape
-
-    environment = Environment(
-        loader=FileSystemLoader("app/web/templates"),
-        autoescape=select_autoescape(["html"]),
-    )
-    return environment.get_template("_wechat_browser.html")
-
-
-@pytest.fixture
-def resource_macros(resource_template):
-    return resource_template.make_module(
-        {
-            "text_page": SimpleNamespace(
-                messaging={}, session_detail=False, sessions=[]
-            ),
-            "url_for": lambda *_args, **_kwargs: "/synthetic-resource/reveal",
-        }
-    )
+_METADATA_CARDS = (
+    ("image", "Image"), ("sticker", "Sticker"), ("video", "Video"),
+    ("audio", "Voice message"), ("file", "File"), ("app", "App message"),
+    ("unknown", "Message attachment"), ("contact", "Contact card"), ("location", "Location"),
+)
 
 
 @pytest.mark.parametrize(
@@ -139,8 +54,16 @@ def test_unverified_resource_scope_is_not_linked_to_a_mac_file(value):
     assert resource_reference(value, OWNER, PEER) is None
 
 
-@pytest.mark.parametrize("status", ["file", "candidate", "folder", "missing"])
-def test_public_presentation_retains_missing_items_without_host_path_leaks(status):
+@pytest.mark.parametrize(
+    ("status", "label"),
+    [
+        ("file", "Available locally"),
+        ("candidate", "Local file candidate"),
+        ("folder", "Local folder only"),
+        ("missing", "Not found locally"),
+    ],
+)
+def test_public_presentation_reports_local_availability_without_host_path_leaks(status, label):
     private_path = Path("/private/synthetic-wechat-account/resource")
     resolver = Mock()
     resolver.resolve.return_value = {
@@ -156,7 +79,7 @@ def test_public_presentation_retains_missing_items_without_host_path_leaks(statu
     assert item["can_reveal"] == (status != "missing")
     assert str(private_path) not in json.dumps(item)
     assert "path" not in item and "evidence" not in item
-    assert item["status_label"]
+    assert item["status_label"] == label
 
 
 @pytest.mark.parametrize(
@@ -193,6 +116,21 @@ def test_app_card_keeps_explicit_publisher_separate_from_title_and_sender(
     assert json.dumps(reference, ensure_ascii=False) == before
 
 
+def test_forwarded_conversation_does_not_acquire_an_article_publisher():
+    resource = present_resource(
+        {
+            "kind": "app",
+            "availability": "metadata_only",
+            "app_subtype": "19",
+            "safe_title": "Participants and excerpts",
+            "publisher_name": "A forwarding application",
+        },
+        None,
+    )
+    assert resource["label"] == "Chat history"
+    assert resource["publisher_name"] == ""
+
+
 @pytest.mark.parametrize(
     ("kind", "subtype", "availability", "expected"),
     [
@@ -225,7 +163,17 @@ def test_only_explicit_metadata_app_link_subtypes_use_link_presentation(
     assert resource["can_reveal"] is (availability == "file")
 
 
-def test_app_card_publisher_is_rendered_as_inert_text(resource_macros):
+def test_app_card_publisher_is_rendered_as_inert_text():
+    from bs4 import BeautifulSoup
+    from jinja2 import Environment, FileSystemLoader, select_autoescape
+
+    environment = Environment(
+        loader=FileSystemLoader("app/web/templates"),
+        autoescape=select_autoescape(["html"]),
+    )
+    module = environment.get_template("_wechat_browser.html").make_module(
+        {"text_page": SimpleNamespace(messaging={}, session_detail=False, sessions=[])}
+    )
     source = '<script>alert("source")</script>'
     resource = present_resource(
         {
@@ -237,17 +185,13 @@ def test_app_card_publisher_is_rendered_as_inert_text(resource_macros):
         },
         None,
     )
-    parsed = _RenderedMarkup(str(resource_macros.resource_card(resource)))
-    card = parsed.find(css_class="wechat-resource")
-    assert _text(parsed.find(css_class="wechat-resource-label")) == "Article"
-    assert _text(parsed.find(css_class="wechat-resource-publisher")) == source
-    assert _text(parsed.find(css_class="wechat-resource-status")) == source
-    assert card.attrs["data-wechat-resource-link"] == "true"
-    assert "Metadata only" not in _text(card)
-    assert all(
-        parsed.find(tag=tag) is None
-        for tag in ("script", "a", "img", "iframe", "button")
-    )
+    soup = BeautifulSoup(str(module.resource_card(resource)), "html.parser")
+    assert soup.select_one(".wechat-resource-label").get_text() == "Article"
+    assert soup.select_one(".wechat-resource-publisher").get_text() == source
+    assert soup.select_one(".wechat-resource-status").get_text() == source
+    assert soup.select_one(".wechat-resource")["data-wechat-resource-link"] == "true"
+    assert "Metadata only" not in soup.get_text()
+    assert not soup.find_all(["script", "a", "img", "iframe", "button"])
 
 
 @pytest.mark.parametrize(
@@ -260,8 +204,18 @@ def test_app_card_publisher_is_rendered_as_inert_text(resource_macros):
 )
 @pytest.mark.parametrize("embedded", [False, True])
 def test_link_cards_keep_only_available_publisher_without_a_separator(
-    resource_macros, publisher, app_name, expected, embedded
+    publisher, app_name, expected, embedded
 ):
+    from bs4 import BeautifulSoup
+    from jinja2 import Environment, FileSystemLoader, select_autoescape
+
+    environment = Environment(
+        loader=FileSystemLoader("app/web/templates"),
+        autoescape=select_autoescape(["html"]),
+    )
+    module = environment.get_template("_wechat_browser.html").make_module(
+        {"text_page": SimpleNamespace(messaging={}, session_detail=False, sessions=[])}
+    )
     resource = present_resource(
         {
             "kind": "app",
@@ -273,22 +227,25 @@ def test_link_cards_keep_only_available_publisher_without_a_separator(
         },
         None,
     )
-    parsed = _RenderedMarkup(
-        str(resource_macros.resource_card(resource, embedded=embedded))
+    soup = BeautifulSoup(
+        str(module.resource_card(resource, embedded=embedded)), "html.parser"
     )
-    card = parsed.find(css_class="wechat-resource")
-    assert card.attrs["data-wechat-resource-kind"] == "app"
-    assert card.attrs["data-wechat-resource-status"] == "metadata_only"
-    assert card.attrs["data-wechat-resource-link"] == "true"
-    assert "Metadata only" not in _text(card) and "·" not in _text(card)
-    status = parsed.find(css_class="wechat-resource-status")
-    assert _text(status) == expected
+    card = soup.select_one(".wechat-resource")
+    assert card["data-wechat-resource-kind"] == "app"
+    assert card["data-wechat-resource-status"] == "metadata_only"
+    assert card["data-wechat-resource-link"] == "true"
+    assert "Metadata only" not in card.get_text()
+    assert "·" not in card.get_text()
+    status = card.select_one(".wechat-resource-status")
+    assert (status.get_text() if status else "") == expected
     assert bool(status) is bool(expected)
-    assert "data-wechat-resource-reveal" not in card.attrs
+    assert not card.has_attr("data-wechat-resource-reveal")
 
 
 @pytest.mark.parametrize("placement", ["quoted", "forwarded"])
 def test_quoted_and_forwarded_link_cards_reuse_publisher_only_presentation(placement):
+    from bs4 import BeautifulSoup
+
     from tests.test_wechat_html_forwarded import _macro_message, _message_macro_module
 
     resource = present_resource(
@@ -307,79 +264,116 @@ def test_quoted_and_forwarded_link_cards_reuse_publisher_only_presentation(place
             "speaker": "Original sender",
             "resource": resource,
         }
-        container = {"css_class": "wechat-message-quote"}
+        selector = ".wechat-message-quote .wechat-resource"
     else:
         child = _macro_message()
         child.stable_id = "synthetic-nested-article"
         child.messaging["resource"] = resource
         message = _macro_message({"title": "Chat history", "items": [child]})
-        container = {"attribute": "data-wechat-forwarded"}
-    parsed = _RenderedMarkup(str(_message_macro_module().message_row(message)))
-    scope = parsed.find(**container)
-    assert scope is not None
-    card = parsed.find(css_class="wechat-resource", within=scope)
-    assert card is not None and card.attrs["data-wechat-resource-link"] == "true"
-    assert (
-        _text(parsed.find(css_class="wechat-resource-label", within=card))
-        == "Nested article"
-    )
-    assert (
-        _text(parsed.find(css_class="wechat-resource-status", within=card))
-        == "Original publisher"
-    )
-    assert "Metadata only" not in _text(card) and "·" not in _text(card)
-    assert "data-wechat-resource-reveal" not in card.attrs
+        selector = "[data-wechat-forwarded] .wechat-resource"
+    rendered = str(_message_macro_module().message_row(message))
+    card = BeautifulSoup(rendered, "html.parser").select_one(selector)
+    assert card is not None
+    assert card["data-wechat-resource-link"] == "true"
+    assert card.select_one(".wechat-resource-label").get_text() == "Nested article"
+    assert card.select_one(".wechat-resource-status").get_text() == "Original publisher"
+    assert "Metadata only" not in card.get_text()
+    assert "·" not in card.get_text()
+    assert not card.has_attr("data-wechat-resource-reveal")
 
 
-@pytest.mark.parametrize("kind", ["image", "sticker", "file", "video", "audio", "app"])
-def test_non_link_metadata_cards_keep_their_availability_status(resource_macros, kind):
-    resource = present_resource({"kind": kind, "availability": "metadata_only"}, None)
-    parsed = _RenderedMarkup(
-        str(resource_macros.resource_card(resource, embedded=True))
+@pytest.mark.parametrize("publisher", ["Original publisher", ""])
+@pytest.mark.parametrize("embedded", [False, True])
+def test_non_link_app_metadata_cards_keep_only_the_available_publisher(publisher, embedded):
+    from bs4 import BeautifulSoup
+    from jinja2 import Environment, FileSystemLoader, select_autoescape
+
+    environment = Environment(
+        loader=FileSystemLoader("app/web/templates"),
+        autoescape=select_autoescape(["html"]),
     )
-    card = parsed.find(css_class="wechat-resource")
-    assert "data-wechat-resource-link" not in card.attrs
-    assert _text(parsed.find(css_class="wechat-resource-status")) == "Metadata only"
+    module = environment.get_template("_wechat_browser.html").make_module(
+        {"text_page": SimpleNamespace(messaging={}, session_detail=False, sessions=[])}
+    )
+    resource = present_resource(
+        {
+            "kind": "app", "availability": "metadata_only", "app_subtype": "4",
+            "safe_title": "Original card title", "publisher_name": publisher,
+        },
+        None,
+    )
+    soup = BeautifulSoup(
+        str(module.resource_card(resource, embedded=embedded)), "html.parser"
+    )
+    card = soup.select_one(".wechat-resource")
+    assert not card.has_attr("data-wechat-resource-link")
+    assert card["data-wechat-resource-status"] == "metadata_only"
+    assert card.select_one(".wechat-resource-label").get_text() == "Original card title"
+    status = card.select_one(".wechat-resource-status")
+    assert (status.get_text() if status else "") == publisher
+    assert bool(status) is bool(publisher)
+    assert "Metadata only" not in card.get_text()
+    assert "·" not in card.get_text()
+    assert not card.select_one("[data-wechat-resource-reveal]")
 
 
 @pytest.mark.parametrize("embedded", [False, True])
-def test_available_resource_uses_a_separate_named_circular_finder_action(
-    resource_macros, embedded
-):
+@pytest.mark.parametrize("kind", ["image", "sticker", "file"])
+@pytest.mark.parametrize("status", ["file", "candidate", "folder", "missing"])
+def test_resolved_resource_keeps_its_status_and_separate_finder_action(embedded, kind, status):
+    from bs4 import BeautifulSoup
+    from jinja2 import Environment, FileSystemLoader, select_autoescape
+
+    environment = Environment(
+        loader=FileSystemLoader("app/web/templates"),
+        autoescape=select_autoescape(["html"]),
+    )
+    module = environment.get_template("_wechat_browser.html").make_module(
+        {
+            "text_page": SimpleNamespace(
+                messaging={}, session_detail=False, sessions=[]
+            ),
+            "url_for": lambda *_args, **_kwargs: "/synthetic-resource/reveal",
+        }
+    )
     resolver = Mock()
     resolver.resolve.return_value = {
-        "status": "file",
-        "path": Path("/private/synthetic-resource"),
+        "status": status,
+        "path": None if status == "missing" else Path("/private/synthetic-resource"),
         "label": "Show in Finder",
     }
-    resource = present_resource(REFERENCE, resolver)
-    parsed = _RenderedMarkup(
-        str(resource_macros.resource_card(resource, "synthetic-image", embedded))
-    )
-    card = parsed.find(css_class="wechat-resource")
-    assert card.tag == "div" and "data-wechat-resource-reveal" not in card.attrs
-    button = parsed.find(tag="button", attribute="data-wechat-resource-reveal")
-    if embedded:
+    resource = present_resource({**REFERENCE, "kind": kind}, resolver)
+    rendered = str(module.resource_card(resource, "synthetic-image", embedded))
+    card = BeautifulSoup(rendered, "html.parser").select_one(".wechat-resource")
+    assert card.name == "div"
+    assert card["data-wechat-resource-status"] == status
+    assert not card.has_attr("data-wechat-resource-reveal")
+    feedback = card.select_one("[data-wechat-resource-feedback]")
+    assert feedback.get_text() == resource["status_label"]
+    button = card.select_one("button[data-wechat-resource-reveal]")
+    if embedded or status == "missing":
         assert button is None
     else:
-        assert "circular-icon-button" in button.attrs["class"].split()
-        assert button.attrs["type"] == "button"
-        assert button.attrs["aria-label"] == "Image: Show in Finder"
-        assert (
-            parsed.find(css_class="icon browser-media-reveal-icon", within=button)
-            is not None
-        )
-        feedback = parsed.find(attribute="data-wechat-resource-feedback")
-        assert button.attrs["aria-describedby"] == feedback.attrs["id"]
-        assert _text(feedback) == "Show in Finder"
+        assert "circular-icon-button" in button["class"]
+        assert button["type"] == "button"
+        assert button["aria-label"] == resource["label"] + ": Show in Finder"
+        assert button.select_one(".icon.browser-media-reveal-icon") is not None
+        assert button["aria-describedby"] == feedback["id"]
 
 
 @pytest.mark.parametrize(
     ("kind", "expected"), [("group", "Group chat"), ("direct", "Private chat")]
 )
 def test_selected_conversation_header_contains_only_its_standard_kind_badge(
-    resource_template, kind, expected
+    kind, expected
 ):
+    from bs4 import BeautifulSoup
+    from jinja2 import Environment, FileSystemLoader, select_autoescape
+
+    environment = Environment(
+        loader=FileSystemLoader("app/web/templates"),
+        autoescape=select_autoescape(["html"]),
+    )
     origin = {
         "kind": kind,
         "viewer_account_label": "Synthetic account",
@@ -389,7 +383,7 @@ def test_selected_conversation_header_contains_only_its_standard_kind_badge(
         "mac_account_mapping": {"status": "mapped"},
     }
     before = json.dumps(origin)
-    rendered = resource_template.render(
+    rendered = environment.get_template("_wechat_browser.html").render(
         text_page=SimpleNamespace(
             messaging={},
             session_detail=True,
@@ -397,12 +391,77 @@ def test_selected_conversation_header_contains_only_its_standard_kind_badge(
             items=[],
         )
     )
-    parsed = _RenderedMarkup(rendered)
-    header = parsed.find(css_class="wechat-conversation-labels")
-    assert _text(header).strip() == expected
-    assert sum(element.parent is header for element in parsed.elements) == 1
-    assert _text(parsed.find(css_class="wechat-kind-badge", within=header)) == expected
+    header = BeautifulSoup(rendered, "html.parser").select_one(
+        ".wechat-conversation-labels"
+    )
+    assert header.get_text(strip=True) == expected
+    assert len(header.select(":scope > *")) == 1
+    assert header.select_one(".wechat-kind-badge").get_text() == expected
     assert json.dumps(origin) == before
+
+
+@pytest.mark.parametrize(("kind", "label"), _METADATA_CARDS)
+@pytest.mark.parametrize("embedded", [False, True])
+def test_metadata_only_resource_cards_omit_visible_availability(kind, label, embedded):
+    from bs4 import BeautifulSoup
+    from jinja2 import Environment, FileSystemLoader, select_autoescape
+
+    environment = Environment(
+        loader=FileSystemLoader("app/web/templates"), autoescape=select_autoescape(["html"])
+    )
+    module = environment.get_template("_wechat_browser.html").make_module(
+        {"text_page": SimpleNamespace(messaging={}, session_detail=False, sessions=[])}
+    )
+    resource = {
+        "kind": kind, "kind_label": label, "label": label, "status": "metadata_only",
+        "status_label": "Metadata only", "action_label": "", "can_reveal": False,
+    }
+    before = json.dumps(resource, sort_keys=True)
+    soup = BeautifulSoup(
+        str(module.resource_card(resource, embedded=embedded)), "html.parser"
+    )
+    card = soup.select_one(".wechat-resource")
+    assert card["data-wechat-resource-status"] == "metadata_only"
+    assert soup.select_one(".wechat-resource-label").get_text() == resource["label"]
+    assert soup.select_one(".wechat-resource-status") is None
+    assert "Metadata only" not in card.get_text()
+    assert not card.select_one("[data-wechat-resource-reveal]")
+    assert not card.select_one("[data-wechat-resource-feedback]")
+    assert card.select_one(".wechat-resource-icon")["aria-hidden"] == "true"
+    assert resource["status"] == "metadata_only"
+    assert resource["can_reveal"] is False
+    assert json.dumps(resource, sort_keys=True) == before
+
+
+def test_forwarded_metadata_resources_share_the_status_free_inert_cards():
+    from bs4 import BeautifulSoup
+
+    from tests.test_wechat_html_forwarded import _macro_message, _message_macro_module
+
+    children = []
+    for kind, label in _METADATA_CARDS:
+        child = _macro_message(text="")
+        child.stable_id = "synthetic-forwarded-" + kind
+        child.messaging["resource"] = {
+            "kind": kind, "kind_label": label, "label": label, "status": "metadata_only",
+            "status_label": "Metadata only", "action_label": "", "can_reveal": False,
+        }
+        children.append(child)
+    parent = _macro_message({"title": "Chat history", "items": children})
+    rendered = str(_message_macro_module().message_row(parent))
+    soup = BeautifulSoup(rendered, "html.parser")
+    cards = soup.select("[data-wechat-forwarded] .wechat-resource")
+    assert [card["data-wechat-resource-kind"] for card in cards] == [
+        kind for kind, _label in _METADATA_CARDS
+    ]
+    assert [card.select_one(".wechat-resource-label").get_text() for card in cards] == [
+        label for _kind, label in _METADATA_CARDS
+    ]
+    for card in cards:
+        assert card["data-wechat-resource-status"] == "metadata_only"
+        assert card.select_one(".wechat-resource-status") is None
+        assert "Metadata only" not in card.get_text()
+        assert not card.find_all(["a", "img", "video", "audio", "button", "script"])
 
 
 def test_finder_resolution_requires_a_current_stored_reference_and_rechecks_the_mac(

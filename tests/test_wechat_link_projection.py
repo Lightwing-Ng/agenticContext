@@ -1,6 +1,6 @@
 """Subtype-5 link labels retain direct source roles and native source pins.
 
-Code version: v1.0.0-codex.0
+Code version: v1.0.1-codex.0
 """
 
 from copy import deepcopy
@@ -58,7 +58,9 @@ def test_link_projection_keeps_leaf_labels_without_changing_original_body_pin(ki
         "app_subtype": "5",
         "safe_title": "Literal & source title",
         "publisher_name": "Original publisher",
+        "publisher_name_source": "appmsg/sourcedisplayname",
         "app_name": "Source application",
+        "app_name_source": "appinfo/appname",
         "app_metadata_version": "1",
     }
     assert message["content_sha256"] == hashlib.sha256(raw.encode()).hexdigest()
@@ -72,8 +74,6 @@ def test_link_projection_keeps_leaf_labels_without_changing_original_body_pin(ki
         "<msg><appmsg><type>5</type><title><b>Nested title</b></title></appmsg></msg>",
         "<msg><appmsg><type>5</type><title>A</title><title>B</title></appmsg></msg>",
         "<msg><appmsg><type>5</type><title>" + "x" * 1025 + "</title></appmsg></msg>",
-        "<msg><appmsg><type>19</type><title>Chat history</title>"
-        "<sourcedisplayname>Not an article publisher</sourcedisplayname></appmsg></msg>",
         "<msg><appmsg><type>5</type><type>19</type><title>Ambiguous</title></appmsg></msg>",
         "<msg><appmsg><type>5</type><url>https://example.invalid/source</url>"
         "<sourceusername>Not a publisher name</sourceusername></appmsg></msg>",
@@ -90,7 +90,7 @@ def test_ambiguous_non_link_or_unsafe_source_does_not_invent_labels(payload):
     assert "app_metadata_version" not in metadata
 
 
-def test_native_forwarded_conversation_subtype_does_not_acquire_link_labels():
+def test_mismatched_native_subtype_does_not_acquire_link_labels():
     resource = _project(subtype=19)["resource"]
     assert resource["app_subtype"] == "19"
     assert not set(_APP_LABEL_FIELDS) & resource.keys()
@@ -134,7 +134,7 @@ def test_link_labels_survive_bank_publication_and_presentation_without_rewriting
         "url",
     ],
 )
-def test_bank_rejects_unbounded_or_non_link_label_metadata(bank_archive, damage):
+def test_bank_rejects_unbounded_or_conflicting_label_metadata(bank_archive, damage):
     packet = deepcopy(bank_archive.group)
     message = _project()
     resource = message["resource"]
@@ -152,7 +152,6 @@ def test_bank_rejects_unbounded_or_non_link_label_metadata(bank_archive, damage)
         resource.pop("app_metadata_version")
     elif damage == "subtype":
         resource["app_subtype"] = "19"
-        message["local_type"] = (19 << 32) | 49
     else:
         resource["url"] = "https://example.invalid/private-resource"
     packet["messages"].append(message)

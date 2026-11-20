@@ -1,6 +1,6 @@
 # OpenClaw preservation and source attribution
 
-Documentation version: `v1.0.0-codex.0`
+Documentation version: `v1.0.1-codex.0`
 
 ## Storage contract
 
@@ -35,7 +35,7 @@ archive rather than appearing as invented user-facing messages. Attachment
 payloads remain in the archive; the text reader shows attachment markers rather
 than promising a media preview.
 
-Each provider has a separate `local_store/llm/<source>/history.parquet` and Cache
+Each provider has a separate `local_store/llm/<source>/history.sqlite3` and Cache
 page: `chatgpt_openclaw`, `gemini_openclaw`, `claude_openclaw`, `grok_openclaw`,
 `zhipu_openclaw`, `doubao_openclaw`, `other_openclaw`, and `unknown_openclaw`.
 These never merge into browser ChatGPT/Gemini or the native Codex cache. Every row
@@ -54,9 +54,6 @@ older messages. OpenClaw delivery mirrors and gateway injections remain under
 message. Exact duplicate records merge their provenance; conflicting text retains
 both versions. Repeated identical messages without IDs retain occurrence identity.
 Import merges preserve existing history after partial failure or interruption.
-Earlier synthetic IDs are replaced only when corrected records from the same
-archive prove matching content, timestamps, and every original provenance
-location. Unproven cached records remain available after a partial import.
 
 Source-specific search, session review, prompt saving, and Markdown export are
 available through `Local resources`. Provider session counts can overlap when a

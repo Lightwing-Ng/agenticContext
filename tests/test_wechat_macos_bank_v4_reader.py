@@ -1,8 +1,9 @@
 """Retained schema-4 revision proofs remain closed and source-preserving.
 
-Code version: v1.1.0-codex.0
+Code version: v1.2.2-codex.0
 """
 
+from contextlib import closing
 from copy import deepcopy
 import json
 import sqlite3
@@ -21,12 +22,21 @@ bank_archive = native.bank_archive
 
 
 def _messages(kind):
-    if kind == "card":
-        raw = "<msg><appmsg><type>5</type><title>Retained title</title><sourcedisplayname>Publisher</sourcedisplayname></appmsg></msg>"
+    if kind in {"card", "channels"}:
+        if kind == "channels":
+            subtype = 51
+            raw = (
+                "<msg><appmsg><type>51</type><title>Retained title</title>"
+                "<finderFeed><desc>Retained description</desc>"
+                "<nickname>Creator</nickname></finderFeed></appmsg></msg>"
+            )
+        else:
+            subtype = 5
+            raw = "<msg><appmsg><type>5</type><title>Retained title</title><sourcedisplayname>Publisher</sourcedisplayname></appmsg></msg>"
         new = _project_message(
             {
                 "local_id": 94,
-                "local_type": (5 << 32) | 49,
+                "local_type": (subtype << 32) | 49,
                 "server_id": 594,
                 "create_time": 1700000094,
                 "real_sender_id": 3,
@@ -64,13 +74,25 @@ def _messages(kind):
         return old, new
     raw = "<msg><appmsg><type>57</type><title>Literal reply</title><refermsg><type>49</type><svrid>451</svrid><fromusr>wxid_synthetic_original</fromusr><displayname>Original source</displayname><createtime>1700000200</createtime><content>&lt;msg&gt;&lt;appmsg&gt;&lt;type&gt;57&lt;/type&gt;&lt;title&gt;Exact quoted body&lt;/title&gt;&lt;/appmsg&gt;&lt;/msg&gt;</content></refermsg></appmsg></msg>"
     old = native._message(90, 49, raw=raw)
+    # Preserve the omission in the historical projection across parser updates.
+    held = old["native_text"]
+    held["text_components"] = held["text_components"][:1]
+    held["flags"] = ["quoted_reply_envelope", "quoted_non_text_content_omitted"]
+    held["text"] = native_components_text(held["text_components"])
+    old["text"] = held["text"]
     new = deepcopy(old)
-    if kind == "quoted_card":
+    if kind in {"quoted_card", "quoted_channels"}:
         new["native_text"]["quoted_reference"]["app_card_metadata"] = {
             "schema_version": 1,
             "appmsg_subtype": 76,
             "safe_title": "Retained quoted title",
         }
+        if kind == "quoted_channels":
+            new["native_text"]["quoted_reference"]["app_card_metadata"].update(
+                appmsg_subtype=51,
+                channels_description="Retained description",
+                channels_nickname="Creator",
+            )
         return old, new
     metadata = new["native_text"]
     metadata["text_components"].append(
@@ -153,12 +175,12 @@ def retained_v4(bank_archive, request):
     following = dict(zip(prior, bank._row(old_packet, new), strict=True))
     for column in reader._STABLE_COLUMNS:
         following[column] = prior[column]
-    if request.param in {"card", "quoted_card"}:
+    if request.param in {"card", "channels", "quoted_card", "quoted_channels"}:
         proof = json.loads(following["provenance"])
-        if request.param == "card":
+        if request.param in {"card", "channels"}:
             proof["app_card_metadata"] = reader._card_metadata(new["resource"])
         origin = (
-            "app_card_metadata_origin" if request.param == "card"
+            "app_card_metadata_origin" if request.param in {"card", "channels"}
             else "quoted_app_card_metadata_origin"
         )
         proof[origin] = {
@@ -167,9 +189,11 @@ def retained_v4(bank_archive, request):
         following["provenance"] = bank._json(proof)
     reason = {
         "card": "app_card_metadata_completion",
+        "channels": "app_card_metadata_completion",
         "forward": "forwarded_completion",
         "quote": "quoted_reply_completion",
         "quoted_card": "quoted_card_metadata_completion",
+        "quoted_channels": "quoted_card_metadata_completion",
     }[request.param]
     source_key = connection.execute("SELECT id FROM sources").fetchone()[0]
     _record(connection, prior, following, source_key, reason)
@@ -190,6 +214,49 @@ def test_closed_schema4_proofs_validate_without_rewriting_the_bank(retained_v4):
     metadata = bank._validate_bank(connection, fixture.history)
     assert metadata["schema_version"] == "4"
     assert metadata["code_version"] == "v1.4.2-codex.0"
+    assert fixture.bank_path.read_bytes() == before
+
+
+@pytest.mark.parametrize("retained_v4", ["card"], indirect=True)
+def test_scoped_bank_publication_keeps_existing_schema4_history(retained_v4):
+    fixture, connection, _prior, following, _source, _reason = retained_v4
+    before = connection.execute("SELECT * FROM projection_revisions").fetchone()
+    connection.close()
+    candidate = fixture.history.with_name("appended-v4.sqlite3")
+    packet = {
+        **fixture.group,
+        "messages": [native._message(155, 1, raw="A new scoped message")],
+    }
+    receipt = bank.stage_mac_recovery_bank(
+        fixture.root,
+        [packet],
+        candidate,
+        account_ids=(native.OWNER,),
+        conversation_id=fixture.group_session,
+        clone_baseline=True,
+    )
+    assert receipt["added"] == 1
+    bank.publish_mac_recovery_bank(fixture.root, candidate, receipt, reuse_validation=True)
+
+    with closing(sqlite3.connect(fixture.bank_path)) as published:
+        published.row_factory = sqlite3.Row
+        metadata = bank._validate_bank(published, fixture.history)
+        assert (metadata["schema_version"], metadata["code_version"]) == ("4", bank.WRITER_VERSION)
+        assert tuple(published.execute("SELECT * FROM projection_revisions").fetchone()) == tuple(before)
+        assert dict(published.execute("SELECT * FROM messages WHERE id=?", (following["id"],)).fetchone()) == following
+        assert published.execute("SELECT text FROM messages WHERE text=?", ("A new scoped message",)).fetchone()[0] == "A new scoped message"
+
+
+@pytest.mark.parametrize("retained_v4", ["channels", "quoted_channels"], indirect=True)
+def test_schema4_writer_1_5_1_validates_channels_labels(retained_v4):
+    fixture, connection, *_rest = retained_v4
+    connection.execute(
+        "UPDATE archive_info SET value='v1.5.1-codex.0' WHERE key='code_version'"
+    )
+    connection.commit()
+    before = fixture.bank_path.read_bytes()
+
+    assert bank._validate_bank(connection, fixture.history)["code_version"] == "v1.5.1-codex.0"
     assert fixture.bank_path.read_bytes() == before
 
 

@@ -1,6 +1,6 @@
 """Read-only WeChat archive queries for the Tunnel MCP tools.
 
-Code version: v1.2.2-codex.0
+Code version: v1.2.3-codex.0
 
 The tools address only the configured ``local_store/messaging/wechat`` archive.
 Callers cannot pass a filesystem path. Connections use SQLite ``mode=ro`` and
@@ -45,7 +45,7 @@ from app.core.wechat_contacts import (
 from app.core.wechat_display_names import WechatDisplayNames
 
 
-VERSION = "v1.2.2-codex.0"
+VERSION = "v1.2.3-codex.0"
 QUERY_TIMEOUT_SECONDS = 10.0
 MAX_PAGE_SIZE = 50
 MAX_TEXT_CHARACTERS = 20_000
@@ -346,10 +346,12 @@ def message_context(
                 direction="after",
                 limit=after_count,
             )
+            rows = _snapshot_source_rows(
+                connection, [*reversed(previous), target, *following]
+            )
             _require_unchanged(history, identity)
     except sqlite3.DatabaseError as exc:
         raise _unreadable(exc) from exc
-    rows = [*reversed(previous), target, *following]
     messages = [
         _public_archive_message(row, is_target=row["id"] == identifier) for row in rows
     ]
@@ -483,16 +485,26 @@ def _search_contact(
                 + " LIMIT ? OFFSET ?",
                 [*parameters, page_size, (page - 1) * page_size],
             ).fetchall()
+            parents = {row["id"]: dict(row) for row in rows}
+            projection_rows = _snapshot_source_rows(connection, rows, schema="archive")
+            for row in projection_rows:
+                # Source labels are already checked against this row's account.
+                # Keep the shared projector from rereading unchecked metadata.
+                provenance = dict(_object_or_empty(row.get("provenance")))
+                provenance.pop("source_snapshot", None)
+                row["provenance"] = json.dumps(provenance)
             projected = _project_reference_rows(
                 connection,
-                rows,
+                projection_rows,
                 {"id": contact_id},
                 names,
                 verified_accounts,
             )
-            parents = {row["id"]: dict(row) for row in rows}
             for item in projected:
                 parent = parents[item["parent_message_id"]]
+                provenance = _object_or_empty(parent.get("provenance"))
+                if "source_snapshot" in provenance:
+                    item["provenance"]["source_snapshot"] = provenance["source_snapshot"]
                 item["_source_text_sha256"] = hashlib.sha256(parent["text"].encode()).hexdigest()
             embedded_contacts = _forwarded_sender_contacts(root, projected, parents)
         validate_contact_analysis_scope(root, scope)
@@ -598,6 +610,7 @@ def _search_conversation(
                 + " LIMIT ? OFFSET ?",
                 [*parameters, page_size, (page - 1) * page_size],
             ).fetchall()
+            rows = _snapshot_source_rows(connection, rows)
             _require_unchanged(history, identity)
     except sqlite3.DatabaseError as exc:
         raise _unreadable(exc) from exc
@@ -1178,6 +1191,76 @@ def _neighbors(connection, message_table, conversation_table, target, *, directi
             (target["conversation_id"], limit - len(rows)),
         ).fetchall())
     return rows
+
+
+def _snapshot_source_rows(connection, rows, *, schema: str = "main") -> list[dict[str, Any]]:
+    """Apply each message's own snapshot labels within its source/account boundary."""
+    if schema not in {"main", "archive"}:
+        raise ValueError("Unsupported archive schema.")
+    records = [dict(row) for row in rows]
+    provenances = [_object_or_empty(row.get("provenance")) for row in records]
+    identifiers = sorted({
+        identifier
+        for proof in provenances
+        if type(identifier := proof.get("source_snapshot")) is int
+        and 0 < identifier <= 9223372036854775807
+    })
+    if not identifiers or connection.execute(
+        f"SELECT 1 FROM {schema}.sqlite_master "
+        "WHERE type='table' AND name='source_snapshots'"
+    ).fetchone() is None:
+        return records
+    snapshots = {}
+    for offset in range(0, len(identifiers), 500):
+        batch = identifiers[offset : offset + 500]
+        marks = ",".join("?" for _ in batch)
+        for row in connection.execute(
+            f"SELECT id,snapshot_id,source_id,metadata FROM {schema}.source_snapshots "
+            f"WHERE id IN ({marks})", batch,
+        ):
+            try:
+                metadata = json.loads(row["metadata"])
+            except (TypeError, ValueError):
+                continue
+            if isinstance(metadata, dict):
+                snapshots[row["id"]] = {**dict(row), "metadata": metadata}
+    for record, proof in zip(records, provenances, strict=True):
+        identifier = proof.get("source_snapshot")
+        snapshot = snapshots.get(identifier) if type(identifier) is int else None
+        if snapshot is None:
+            continue
+        source = record.get("source_id")
+        owner = record.get("account_id") or ""
+        metadata = snapshot["metadata"]
+        if (
+            not source
+            or snapshot["source_id"] != source
+            or metadata.get("source_id", source) != source
+            or metadata.get("source_account_id", owner) != owner
+        ):
+            continue
+        account_key = record.get("account_key") or (
+            "account:" + owner if owner else "source:" + source
+        )
+        if metadata.get("account_key", account_key) != account_key:
+            continue
+        account_hash = hashlib.md5(owner.encode(), usedforsecurity=False).hexdigest()
+        if (
+            source.startswith("ios-") and (not owner or source != "ios-" + account_hash)
+        ) or (
+            "account_hash" in metadata
+            and (not owner or metadata["account_hash"] != account_hash
+                 or source != "ios-" + account_hash)
+        ):
+            continue
+        if not isinstance(snapshot["snapshot_id"], str) or not snapshot["snapshot_id"]:
+            continue
+        record["source_snapshot_id"] = snapshot["snapshot_id"]
+        for key in ("source_file", "source_label"):
+            value = metadata.get(key)
+            if isinstance(value, str) and value:
+                record[key] = value
+    return records
 
 
 def _public_reference(item: dict) -> dict[str, Any]:

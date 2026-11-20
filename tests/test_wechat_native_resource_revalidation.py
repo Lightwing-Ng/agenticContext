@@ -142,7 +142,6 @@ def native_metadata(tmp_path):
             "SELECT id FROM messages WHERE conversation_id=?", (conversation["id"],)
         ).fetchone()[0]
         primary_proof = deepcopy(json.loads(resources[0][11]))
-        primary_proof.pop("resource_reference")
         primary_proof.update(
             source_snapshot=1,
             record_id="native-app",

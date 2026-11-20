@@ -1,6 +1,6 @@
 """Import local Claude Code transcripts without accessing browser or account state.
 
-Code version: v1.0.0-claude-code.0
+Code version: v1.1.0-codex.0
 """
 
 from __future__ import annotations
@@ -19,8 +19,8 @@ from .resource_persistence import (
     CLAUDE_HISTORY_FILENAME,
     CLAUDE_HISTORY_SCHEMA,
     CLAUDE_HISTORY_SCHEMA_VERSION,
-    read_parquet_rows,
-    write_parquet_rows_atomic,
+    read_resource_rows,
+    write_resource_rows_atomic,
 )
 
 
@@ -271,9 +271,9 @@ def import_claude_code_history(
     source = Path(source_directory).expanduser().absolute()
     transcripts, files, metadata, failed = _source_files(source)
     path = claude_code_history_path(local_store_root)
-    previous = read_parquet_rows(path)
-    if path.exists() and previous is None:
-        raise RuntimeError(f"Claude Code history Parquet is unreadable: {path}")
+    previous = read_resource_rows(path)
+    if (path.exists() or path.with_suffix(".parquet").exists()) and previous is None:
+        raise RuntimeError(f"Claude Code history store is unreadable: {path}")
     rows = {row["message_key"]: row for row in previous or [] if row.get("message_key")}
     stop = should_stop or (lambda: False)
     captured_at = datetime.now(UTC).isoformat().replace("+00:00", "Z")
@@ -336,7 +336,7 @@ def import_claude_code_history(
         if stopped:
             break
     if apply and result["added_or_changed"]:
-        write_parquet_rows_atomic(path, sort_history_rows(rows.values()), CLAUDE_HISTORY_SCHEMA)
+        write_resource_rows_atomic(path, sort_history_rows(rows.values()), CLAUDE_HISTORY_SCHEMA)
         result["applied"] = True
     result["sessions"] = len({row["conversation_id"] for row in rows.values()})
     result["messages"] = len(rows)

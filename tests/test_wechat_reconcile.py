@@ -1,6 +1,6 @@
 """Additive native-text reconciliation preserves original account evidence."""
 
-# Code version: v1.1.1-codex.0
+# Code version: v1.2.0-codex.0
 
 from contextlib import closing
 from copy import deepcopy
@@ -12,13 +12,117 @@ import sqlite3
 import pytest
 
 from app.core.wechat_archive import import_wechat_archive, wechat_archive_path
-from app.core.wechat_reconcile import reconcile_wechat_records
+from app.core.wechat_reconcile import (
+    native_quote_card_metadata_extends,
+    native_text_metadata,
+    reconcile_wechat_records,
+)
 from tests.test_wechat_archive import make_archive
 
 
 _CLOCK = "2021-08-07T10:59:03+00:00"
 _UNIX = int(datetime.fromisoformat(_CLOCK).timestamp())
 _SID = "9223372036854775806"
+
+
+def _quote_card_metadata():
+    return {
+        "appmsg_subtype": 57,
+        "text_extraction_kind": "quoted_reply",
+        "text_components": [{"kind": "reply_text", "text": "Literal reply"}],
+        "quoted_reference": {
+            "original_message_type": 49, "source_sender_id": "wxid_original",
+            "source_timestamp": "1700000000", "source_ids": {"svrid": "451"},
+            "app_card_metadata": {
+                "schema_version": 1, "appmsg_subtype": 76,
+                "safe_title": "广岛之恋", "app_name": "QQ音乐",
+                "app_name_source": "appinfo/appname",
+            },
+        },
+    }
+
+
+@pytest.mark.parametrize(
+    "change",
+    ["unknown", "schema_bool", "subtype_bool", "special_subtype", "nested", "long", "control", "empty", "source", "missing_source", "orphan_source", "wrong_type", "quoted_body"],
+)
+def test_quoted_app_card_schema_rejects_opaque_or_conflicting_evidence(change):
+    value = _quote_card_metadata()
+    reference = value["quoted_reference"]
+    card = reference["app_card_metadata"]
+    if change == "unknown":
+        card["url"] = "https://example.invalid/private"
+    elif change == "schema_bool":
+        card["schema_version"] = True
+    elif change == "subtype_bool":
+        card["appmsg_subtype"] = True
+    elif change == "special_subtype":
+        card["appmsg_subtype"] = 57
+    elif change == "nested":
+        card["safe_title"] = {"text": "Nested"}
+    elif change == "long":
+        card["safe_title"] = "x" * 1025
+    elif change == "control":
+        card["safe_title"] = "bad\x00label"
+    elif change == "empty":
+        card["safe_title"] = " "
+    elif change == "source":
+        card["app_name_source"] = "appmsg/url"
+    elif change == "missing_source":
+        card.pop("app_name_source")
+    elif change == "orphan_source":
+        card.pop("app_name")
+    elif change == "wrong_type":
+        reference["original_message_type"] = 3
+    else:
+        value["text_components"].append({"kind": "quoted_text", "text": "Borrowed body"})
+    with pytest.raises(ValueError):
+        native_text_metadata(value, {})
+
+
+@pytest.mark.parametrize("nested_unknown", [False, True])
+def test_quote_label_extension_never_discovers_references_inside_unknown_objects(nested_unknown):
+    old = _quote_card_metadata()
+    old["quoted_reference"].pop("app_card_metadata")
+    card = _quote_card_metadata()["quoted_reference"]["app_card_metadata"]
+    if nested_unknown:
+        old["quoted_reference"]["unexpected"] = {"quoted_reference": {"original_message_type": 49}}
+        new = deepcopy(old)
+        new["quoted_reference"]["unexpected"]["quoted_reference"]["app_card_metadata"] = card
+    else:
+        old["quoted_reference"]["unexpected"] = {}
+        new = deepcopy(old)
+        new["quoted_reference"]["unexpected"]["app_card_metadata"] = card
+    assert not native_quote_card_metadata_extends(old, new)
+
+
+@pytest.mark.parametrize(
+    "subtype,kind,accepted",
+    [(57, "quoted_reply", True), (19, "forwarded_text", False), (57, "forwarded_text", False)],
+)
+def test_top_level_quote_card_completion_requires_an_actual_quoted_reply(subtype, kind, accepted):
+    new = _quote_card_metadata()
+    new.update(appmsg_subtype=subtype, text_extraction_kind=kind)
+    old = deepcopy(new)
+    old["quoted_reference"].pop("app_card_metadata")
+    assert native_quote_card_metadata_extends(old, new) is accepted
+
+
+@pytest.mark.parametrize("original_type", [None, 1, 49, 3])
+def test_nested_quote_card_completion_requires_its_schema_known_native_type(original_type):
+    quote = _quote_card_metadata()
+    component = {
+        "kind": "forwarded_quote",
+        "appmsg_subtype": 57, "text": "Literal reply",
+        "text_components": quote["text_components"],
+        "quoted_reference": quote["quoted_reference"],
+    }
+    if original_type is not None:
+        component["original_message_type"] = original_type
+    new = {"appmsg_subtype": 19, "text_extraction_kind": "forwarded_text", "text_components": [component]}
+    old = deepcopy(new)
+    old["text_components"][0]["quoted_reference"].pop("app_card_metadata")
+    assert native_quote_card_metadata_extends(old, new) is (original_type in {None, 1, 49})
 
 
 def source(owner="wxid_account_a", *, unknown_hash=None):

@@ -84,7 +84,7 @@ def test_macos_jury_route_exposes_safari_as_a_persistable_browser(macos_jury_app
     assert 'name="browser" value="safari"' in body
     assert 'data-jury-browser-option="safari"' in body
     assert 'agent-sessions.css?v=1.9.0' in body
-    assert 'jury.css?v=jury-v1.2.0-codex.0' in body
+    assert 'jury.css?v=jury-v1.2.1-codex.0' in body
     assert 'jury.js?v=jury-v1.3.5-codex.1' in body
     assert 'data-jury-provider-row="claude" aria-disabled="true"' in body
     service.check.assert_not_called()

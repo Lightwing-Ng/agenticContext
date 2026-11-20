@@ -1,6 +1,6 @@
 """Expose only opaque read-page task state, never records or source paths.
 
-Code version: v1.0.0-codex.0
+Code version: v1.1.0-codex.0
 """
 
 import re
@@ -9,6 +9,8 @@ from flask import current_app, jsonify, url_for
 
 
 WECHAT_READ_EXTENSION = "wechat_browser_read"
+WECHAT_SUMMARY_EXTENSION = "wechat_summary_worker"
+WECHAT_DIRECT_READ_EXTENSION = "wechat_direct_summary_read"
 _TOKEN = re.compile(r"[A-Za-z0-9_-]{24,128}")
 
 
@@ -25,16 +27,21 @@ def register_wechat_read_routes(blueprint):
     def browser_wechat_read_status(token):
         from flask import request
 
-        service = current_app.extensions[WECHAT_READ_EXTENSION]
         value = None
         if _TOKEN.fullmatch(token):
-            if request.method == "POST":
-                try:
-                    value = service.retry(token)
-                except (LookupError, OSError, ValueError, RuntimeError):
-                    pass
-            else:
+            for extension in (WECHAT_READ_EXTENSION, WECHAT_DIRECT_READ_EXTENSION):
+                service = current_app.extensions.get(extension)
+                if service is None:
+                    continue
                 value = service.status(token)
+                if value is None:
+                    continue
+                if request.method == "POST":
+                    try:
+                        value = service.retry(token)
+                    except (LookupError, OSError, ValueError, RuntimeError):
+                        value = None
+                break
         if value is None:
             response = jsonify({"error": "This saved-view task has expired. Load the view again."})
             response.status_code = 404

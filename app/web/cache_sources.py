@@ -1,6 +1,6 @@
 """Presentation registry for cache source pages."""
 
-# Code version: v1.15.1-codex.0
+# Code version: v1.15.2-codex.0
 
 from __future__ import annotations
 
@@ -170,7 +170,7 @@ _CACHE_SOURCE_VIEWS = (
     ),
     CacheSourceView(
         key="codex",
-        label="Codex",
+        label="ChatGPT Codex",
         view_endpoint="cache_source",
         template_name="codex.html",
         icon_filename="images/ChatGPT-Logo.svg",

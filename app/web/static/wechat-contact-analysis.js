@@ -1,4 +1,4 @@
-/* Code version: v1.2.1-codex.0 */
+/* Code version: v1.2.2-codex.0 */
 
 (function initializeContactStatementNavigation() {
     "use strict";
@@ -110,7 +110,7 @@
         const status = content.querySelector(".wechat-contact-status");
         if (!status) return;
         const heading = document.createElement("h3");
-        heading.textContent = "Statements could not be loaded.";
+        heading.textContent = "Messages could not be loaded.";
         const message = document.createElement("p");
         message.textContent = "Refresh this view to try again.";
         const retry = document.createElement("a");
@@ -189,7 +189,7 @@
                 await acceptResult(payload, requestGeneration);
                 return;
             }
-            throw new Error("Contact statements unavailable.");
+            throw new Error("Contact messages unavailable.");
         } catch (_) {
             if (!current(requestGeneration)) return;
             if (retryableFailure && transientFailures < 3) {

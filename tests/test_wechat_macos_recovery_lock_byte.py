@@ -1,6 +1,6 @@
 """Keep the fixed SQLite lock-byte exclusion explicit in source receipts.
 
-Code version: v1.0.1-codex.0
+Code version: v1.0.3-codex.0
 """
 
 from copy import deepcopy
@@ -145,7 +145,7 @@ def test_new_proof_preserves_prior_bank_rows_and_uses_explicit_writer_version(
             assert set(rows) <= set(connection.execute(f"SELECT * FROM {table}"))
         metadata = dict(connection.execute("SELECT key,value FROM archive_info"))
         assert metadata["schema_version"] == "3"
-        assert metadata["code_version"] == bank.VERSION == "v1.4.0-codex.0"
+        assert metadata["code_version"] == bank.WRITER_VERSION
         proofs = [
             json.loads(row[0])["source"]
             for row in connection.execute("SELECT proof FROM sources")

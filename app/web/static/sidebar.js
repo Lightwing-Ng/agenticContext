@@ -1,4 +1,4 @@
-/* Code version: v1.31.0-codex.0 */
+/* Code version: v1.31.1-codex.0 */
 
 (function initializeSidebar() {
     "use strict";
@@ -18,6 +18,8 @@
     const cacheSectionPaths = new Set(["/cache/x", "/cache/grok", "/cache/grok_build", "/cache/chatgpt", "/cache/copilot", "/cache/gemini", "/cache/claude", "/cache/claude_code", "/cache/codex", "/cache/zhihu", ...openclawCacheSources.map((source) => `/cache/${source}`)]);
     const cacheSelectionPathPattern = /^\/cache\/(?:(x|grok|chatgpt|copilot|gemini|claude|zhihu)(?:\/(text|media)\/(safari|edge|chrome))?|claude_code|codex|grok_build|(?:chatgpt|gemini|claude|grok|zhipu|doubao|other|unknown)_openclaw)$/;
     const reducedMotionMedia = window.matchMedia("(prefers-reduced-motion: reduce)");
+    const springEasing = getComputedStyle(document.documentElement)
+        .getPropertyValue("--motion-spring-080").trim() || "linear";
     const sidebarGelAnimationNames = new Set([
         "workspace-sidebar-gel-open",
         "workspace-sidebar-gel-close",
@@ -264,7 +266,7 @@
                 ],
                 {
                     duration: sidebarMotionDurationMs,
-                    easing: "cubic-bezier(0.16, 1, 0.3, 1)",
+                    easing: springEasing,
                     fill: "both",
                 },
             );

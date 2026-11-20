@@ -1,4 +1,4 @@
-{# Code version: v1.40.10-codex.0 #}
+{# Code version: v1.41.2-codex.0 #}
 <!doctype html>
 <html lang="en-US">
 <head>
@@ -8,12 +8,12 @@
     <link rel="icon" type="image/svg+xml" href="{{ url_for('static', filename='images/favicon.svg', v=version ~ '-favicon-v1.0.1-codex.1') }}">
     <script src="{{ url_for('static', filename='language-rendering.js', v='language-rendering-v1.0.0-codex.1') }}"></script>
     <script src="{{ url_for('static', filename='theme-mode.js', v='theme-mode-v1.0.0-codex.1') }}"></script>
-    <link rel="stylesheet" href="{{ url_for('static', filename='style.css', v=version ~ '-style-v2.159.4-codex.0') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css', v=version ~ '-style-v2.162.0-codex.0') }}">
     {% include "_cache_activity_assets.html" %}
     <script defer src="{{ url_for('static', filename='numeric-display.js', v='numeric-display-v1.1.0-codex.0') }}"></script>
-    <script defer src="{{ url_for('static', filename='segmented-control.js', v='segmented-control-v1.0.4-codex.1') }}"></script>
+    <script defer src="{{ url_for('static', filename='segmented-control.js', v='segmented-control-v1.1.0-codex.0') }}"></script>
     <script src="{{ url_for('static', filename='responsive.js', v='responsive-v1.0.0-codex.1') }}"></script>
-    <script defer src="{{ url_for('static', filename='waiting-modal.js', v='waiting-modal-v1.2.0-codex.0') }}"></script>
+    <script defer src="{{ url_for('static', filename='waiting-modal.js', v='waiting-modal-v1.3.0-codex.0') }}"></script>
     <script defer src="{{ url_for('static', filename='browser-session-status.js', v='browser-session-status-v1.14.1-codex.0') }}"></script>
     <script defer src="{{ url_for('static', filename='browser-session-picker.js', v='browser-session-picker-v1.10.1-codex.0') }}"></script>
     <script defer src="{{ url_for('static', filename='numeric-input-format.js', v='numeric-input-format-v1.1.0-codex.1') }}"></script>
@@ -228,6 +228,7 @@
                 </header>
                 <div class="cache-workspace-content" data-layout-role="content-scrollport">
                     <article class="report-card workspace-summary-card workspace-article-card cache-overview-content-card anchor-section" id="overview" data-layout-role="result-container">
+                    <div class="cache-overview-grid" data-layout-role="content-grid">
                     <div class="metric-grid foundation-metric-grid cache-summary-metrics" aria-label="Cached resources">
                         {% block primary_metrics %}{% endblock %}
                     </div>
@@ -260,6 +261,7 @@
                     </div>
                     </section>
                     {% block source_notice %}{% endblock %}
+                    </div>
                     </article>
 
 
@@ -275,7 +277,7 @@
 
 {% include "_waiting_modal.html" %}
 {% block page_overlays %}{% endblock %}
-<script src="{{ url_for('static', filename='sidebar.js', v='sidebar-v1.31.0-codex.0') }}"></script>
+<script src="{{ url_for('static', filename='sidebar.js', v='sidebar-v1.31.1-codex.0') }}"></script>
 {% block tail %}{% endblock %}
 </body>
 </html>

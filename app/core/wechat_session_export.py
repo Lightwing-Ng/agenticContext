@@ -1,6 +1,6 @@
 """Stream one complete source-scoped WeChat timeline from pinned local inputs.
 
-Code version: v1.6.0-codex.0
+Code version: v1.6.3-codex.0
 """
 
 from __future__ import annotations
@@ -174,6 +174,13 @@ class WechatSessionExport:
             bank_identity = _identity(bank_path)
         except (OSError, ValueError, WechatSessionSourceChanged):
             bank_identity = None
+        from .wechat_resource_details import FILENAME as detail_filename, detail_input_identities
+
+        self.detail_history_path = repository.path
+        self.detail_inputs = detail_input_identities(repository.path)
+        detail_path = repository.path.with_name(detail_filename)
+        if detail_path.exists():
+            self.sources[detail_path] = _identity(detail_path)
         try:
             self.connection = sqlite3.connect(
                 repository.path.resolve().as_uri() + "?mode=ro&immutable=1", uri=True
@@ -295,18 +302,19 @@ class WechatSessionExport:
             raise
 
     def _prepare_viewer_names(self, local_store_root):
-        """Resolve aliases only when a stable local preference actually needs them."""
+        """Pin contact evidence independently of optional viewing-name preferences."""
         self.display_names = None
         self.contact_repository = None
         preferences = display_names_path(local_store_root)
         try:
             preferences_identity = _identity(preferences)
         except (OSError, ValueError, WechatSessionSourceChanged):
-            return
+            preferences_identity = None
         names = WechatDisplayNames(local_store_root)
-        if not names.names:
-            return
-        if _identity(preferences) != preferences_identity:
+        if (names.names and preferences_identity is None) or (
+            preferences_identity is not None
+            and _identity(preferences) != preferences_identity
+        ):
             raise WechatSessionSourceChanged(
                 "The viewing-name preferences changed during export."
             )
@@ -315,7 +323,8 @@ class WechatSessionExport:
             contacts_identity = _identity(contacts.path)
         except (OSError, ValueError, WechatSessionSourceChanged):
             return
-        self.sources[preferences] = preferences_identity
+        if preferences_identity is not None:
+            self.sources[preferences] = preferences_identity
         self.sources[contacts.path] = contacts_identity
         self.display_names = names
         self.contact_repository = contacts
@@ -346,6 +355,7 @@ class WechatSessionExport:
             self.connection, items, conversation["partition_id"]
         )
         requests = []
+        native_candidates = set()
         for item in items:
             provenance = json.loads(item["provenance"])
             provenance = provenance if isinstance(provenance, dict) else {}
@@ -361,6 +371,20 @@ class WechatSessionExport:
             }
             record_id = provenance.get("record_id")
             locator = provenance.get("locator")
+            owner = source_context["account_id"]
+            is_system = provenance.get("text_extraction_kind") == "system_text"
+            if (
+                isinstance(owner, str)
+                and owner
+                and source_context["partition_id"]
+                == "ios-" + hashlib.md5(owner.encode()).hexdigest()
+                and item["sender_id"]
+                and item["sender_label"] in ("", item["sender_id"], "Unknown sender")
+                and not is_system
+            ):
+                native_candidates.add(item["id"])
+            if not self.display_names.names and item["id"] not in native_candidates:
+                continue
             requests.append(
                 {
                     "id": item["id"],
@@ -376,14 +400,26 @@ class WechatSessionExport:
                     "timestamp_value": item["timestamp_value"],
                     "source_record_id": record_id if isinstance(record_id, str) else "",
                     "source_locator": locator if isinstance(locator, dict) else {},
-                    "is_system": provenance.get("text_extraction_kind")
-                    == "system_text",
+                    "is_system": is_system,
                 }
             )
+        if not requests:
+            return items
         contacts = self.contact_repository.resolve_messages(requests)
         self._check_sources()
         for item in items:
-            name = self.display_names.contact_name(contacts[item["id"]])
+            contact = contacts.get(item["id"], {})
+            name = self.display_names.contact_name(contact)
+            if (
+                not name
+                and item["id"] in native_candidates
+                and contact.get("identity_status") == "verified"
+            ):
+                name = contact.get("preferred_name") or ""
+                if name in ("", item["sender_id"], "Unknown sender"):
+                    name = contact.get("display_name") or ""
+                if name in (item["sender_id"], "Unknown sender"):
+                    name = ""
             if name:
                 item["viewer_display_name"] = name
         return items
@@ -424,7 +460,8 @@ class WechatSessionExport:
                 from .wechat_exchange_presentation import frozen_forwarded_items
 
                 frozen = frozen_forwarded_items(
-                    json.loads(item["provenance"]), self.conversation, parent_id=item["id"]
+                    json.loads(item["provenance"]), self.conversation,
+                    parent_id=item["id"],
                 )
                 if frozen:
                     item["forwarded_items"] = frozen

@@ -1,4 +1,4 @@
-/* Code version: v1.6.1-codex.0 */
+/* Code version: v1.6.2-codex.0 */
 
 (() => {
     const controllerUrl = new URL("select-controller.js?v=select-controller-v1.0.1", document.currentScript.src);
@@ -104,6 +104,8 @@
                 trigger.focus({ preventScroll: true });
             }
         });
+        // Native document navigation can expose the control before deferred scripts bind.
+        trigger.disabled = false;
     }
 
     document.addEventListener("DOMContentLoaded", async () => {

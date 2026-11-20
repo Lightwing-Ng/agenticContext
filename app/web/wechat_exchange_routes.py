@@ -1,6 +1,6 @@
 """Private, bounded WeChat exchange downloads and reviewed local imports.
 
-Code version: v1.1.1-codex.0
+Code version: v1.1.2-codex.0
 """
 
 from __future__ import annotations
@@ -14,8 +14,10 @@ import threading
 import time
 from pathlib import Path
 
-from flask import jsonify, request, send_file, url_for
+from flask import current_app, jsonify, request, send_file, url_for
 from werkzeug.exceptions import RequestEntityTooLarge
+
+from app.web.wechat_read_routes import WECHAT_SUMMARY_EXTENSION
 
 
 MAX_UPLOAD_BYTES = 256 * 1024**2
@@ -116,7 +118,7 @@ def register_wechat_exchange_routes(blueprint, context):
                 item.directory.cleanup()
 
     def prepare_export(token, item, account, kind):
-        from app.core.storage import export_conversation
+        from app.core.storage import export_wechat_conversation as export_conversation
 
         try:
             if (
@@ -238,7 +240,7 @@ def register_wechat_exchange_routes(blueprint, context):
 
     @blueprint.get("/browser/wechat/session/<session_id>/exchange")
     def browser_wechat_session_exchange(session_id):
-        from app.core.storage import export_conversation
+        from app.core.storage import export_wechat_conversation as export_conversation
 
         directory = tempfile.TemporaryDirectory(prefix="wechat-exchange-export-")
         path = Path(directory.name) / "conversation.wechatx"
@@ -281,7 +283,11 @@ def register_wechat_exchange_routes(blueprint, context):
     def browser_wechat_exchange_preview():
         nonlocal inflight
 
-        from app.core.storage import archive_state, preview_package, read_package
+        from app.core.storage import (
+            read_wechat_exchange_package as read_package,
+            wechat_exchange_archive_state as archive_state,
+            preview_wechat_exchange_package as preview_package,
+        )
 
         request.max_content_length = MAX_UPLOAD_BYTES + 1024**2
         directory = None
@@ -383,7 +389,10 @@ def register_wechat_exchange_routes(blueprint, context):
 
     @blueprint.post("/api/browser/wechat/exchange/import")
     def browser_wechat_exchange_import():
-        from app.core.storage import import_package, read_package
+        from app.core.storage import (
+            read_wechat_exchange_package as read_package,
+            import_wechat_exchange_package as import_package,
+        )
 
         payload = request.get_json(silent=True) or {}
         token = payload.get("token") if isinstance(payload, dict) else None
@@ -397,6 +406,10 @@ def register_wechat_exchange_routes(blueprint, context):
         try:
             verified = read_package(item.path)
             report = import_package(root, verified, expected_state=item.state)
+            if report.get("published"):
+                summary = current_app.extensions.get(WECHAT_SUMMARY_EXTENSION)
+                if summary is not None:
+                    summary.wake()
             response = _summary(verified, report)
             response["status"] = "duplicate" if report.get("replayed") else "imported"
             response["redirect_url"] = url_for(

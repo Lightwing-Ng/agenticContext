@@ -1,6 +1,6 @@
 """Focused regression tests for the application entrypoint.
 
-Code version: v1.5.3-codex.0
+Code version: v1.5.5-codex.0
 """
 
 from __future__ import annotations
@@ -61,6 +61,9 @@ class MainEntrypointTests(unittest.TestCase):
                 configure_logging = Mock()
                 create_app = Mock()
                 app = Mock()
+                runtime_start = Mock()
+                app.extensions = {"runtime_start": runtime_start}
+                app.run.side_effect = lambda **_options: runtime_start.assert_called_once_with()
                 create_app.return_value = app
                 runtime_modules = {
                     "app.core.config": types.SimpleNamespace(DEFAULT_HOST=host, DEFAULT_PORT=8666),
@@ -117,6 +120,34 @@ class MainEntrypointTests(unittest.TestCase):
         supervise.assert_called_once_with("127.0.0.1", 8666)
         create_app.assert_not_called()
         enable_tunnel.assert_not_called()
+
+    def test_archive_work_can_disable_reload_without_changing_debug_mode(self) -> None:
+        app = Mock()
+        runtime_modules = {
+            "app.core.config": types.SimpleNamespace(DEFAULT_HOST="127.0.0.1", DEFAULT_PORT=8666),
+            "app.core.logging_setup": types.SimpleNamespace(configure_logging=Mock()),
+            "app.core.version": types.SimpleNamespace(APP_VERSION="v1.4.0"),
+            "app.web.app": types.SimpleNamespace(create_app=Mock(return_value=app)),
+        }
+        with patch.dict(sys.modules, runtime_modules), patch.dict(
+            os.environ, {"AGENTIC_CONTEXT_DISABLE_RELOAD": "1"}, clear=True,
+        ), patch.object(
+            main, "_supervise_reloading_server",
+        ) as supervise, patch.object(
+            main, "_install_shutdown_signal_handlers",
+        ), patch.object(
+            main, "_enable_chatgpt_tunnel",
+        ), patch.object(
+            main, "_stop_runtime_services",
+        ):
+            main._start_web_console()
+
+        supervise.assert_not_called()
+        app.run.assert_called_once()
+        self.assertIs(app.run.call_args.kwargs["debug"], False)
+        self.assertIs(app.run.call_args.kwargs["use_debugger"], False)
+        self.assertIs(app.run.call_args.kwargs["use_reloader"], False)
+        self.assertIs(app.jinja_env.auto_reload, True)
 
     @unittest.skipUnless(os.name == "posix", "POSIX signal delivery is required.")
     def test_reload_supervisor_restarts_the_child_and_waits_for_its_cleanup(self) -> None:

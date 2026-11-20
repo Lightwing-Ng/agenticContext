@@ -1,6 +1,6 @@
 """Index native resource references without copying or decoding media payloads.
 
-Code version: v1.2.0-codex.0
+Code version: v1.2.1-codex.0
 """
 
 from __future__ import annotations
@@ -28,11 +28,16 @@ _MD5 = re.compile(r"[0-9a-fA-F]{32}")
 _KINDS = {
     3: "image",
     34: "audio",
+    42: "unknown",
     43: "video",
     47: "sticker",
+    48: "unknown",
     49: "app",
+    50: "unknown",
     62: "video",
     64: "unknown",
+    66: "unknown",
+    67: "unknown",
 }
 _LABELS = {
     "image": "[Image]",
@@ -336,6 +341,25 @@ def _resource_metadata(owner_root, root, peer, pinned):
     return browse, indexed
 
 
+def _group_sender_prefix(payload):
+    """Remove only a valid native sender followed by an explicit line separator."""
+    if not isinstance(payload, (str, bytes)):
+        return "", payload
+    separators = (b":\r\n", b":\n") if isinstance(payload, bytes) else (":\r\n", ":\n")
+    for separator in separators:
+        sender, found, content = payload.partition(separator)
+        if not found:
+            continue
+        if isinstance(sender, bytes):
+            try:
+                sender = sender.decode("utf-8", errors="strict")
+            except UnicodeDecodeError:
+                continue
+        if _GROUP_SENDER.fullmatch(sender):
+            return sender, content
+    return "", payload
+
+
 def _app_label_values(document, app, subtype):
     paths = [
         ("safe_title", "title"),
@@ -378,12 +402,9 @@ def _app_metadata(payload, group, received):
     ):
         return result
     if group and received:
-        for separator in (":\r\n", ":\n"):
-            sender, found, content = payload.partition(separator)
-            if found and _GROUP_SENDER.fullmatch(sender):
-                result["sender_id"] = sender
-                payload = content
-                break
+        sender, payload = _group_sender_prefix(payload)
+        if sender:
+            result["sender_id"] = sender
     try:
         document = ElementTree.fromstring(payload)
     except (ElementTree.ParseError, ValueError):

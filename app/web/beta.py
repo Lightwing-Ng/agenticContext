@@ -1,6 +1,6 @@
 """Optional browser-local experiments with no service or persistence boundary.
 
-Code version: v0.5.0-codex.0
+Code version: v0.5.1-codex.0
 """
 
 from __future__ import annotations
@@ -12,7 +12,7 @@ import os
 from flask import Blueprint, Flask, abort, render_template
 
 
-BETA_VERSION = "v0.5.0"
+BETA_VERSION = "v0.5.1"
 
 
 @dataclass(frozen=True, slots=True)

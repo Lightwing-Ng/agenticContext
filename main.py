@@ -1,6 +1,6 @@
 """Application entrypoint for agenticContext."""
 
-# Code version: v1.7.1-codex.0
+# Code version: v1.8.1-codex.0
 
 from __future__ import annotations
 
@@ -93,7 +93,10 @@ def _enable_chatgpt_tunnel(app: Any, port: int) -> None:
     if tunnel_runtime is None:
         return
     try:
-        tunnel_runtime.enable(f"http://127.0.0.1:{port}/mcp")
+        tunnel_runtime.enable(
+            f"http://127.0.0.1:{port}/mcp",
+            auto_connect=os.environ.get("AGENTIC_CONTEXT_TUNNEL_START_DISCONNECTED") != "1",
+        )
     except Exception as exc:
         LOGGER.error("Could not start the ChatGPT Tunnel: %s", exc)
 
@@ -230,7 +233,8 @@ def _start_web_console() -> None:
     from app.core.config import DEFAULT_HOST, DEFAULT_PORT
     from werkzeug.serving import is_running_from_reloader
 
-    if DEBUG and not is_running_from_reloader():
+    reload_enabled = DEBUG and os.environ.get("AGENTIC_CONTEXT_DISABLE_RELOAD") != "1"
+    if reload_enabled and not is_running_from_reloader():
         # The supervisor must not build services or start the Tunnel a second time.
         raise SystemExit(_supervise_reloading_server(DEFAULT_HOST, DEFAULT_PORT))
 
@@ -245,11 +249,15 @@ def _start_web_console() -> None:
     _enable_chatgpt_tunnel(app, DEFAULT_PORT)
     project_root = Path(__file__).resolve().parent
     try:
+        extensions = getattr(app, "extensions", {})
+        runtime_start = extensions.get("runtime_start") if isinstance(extensions, dict) else None
+        if callable(runtime_start):
+            runtime_start()
         app.run(
             host=DEFAULT_HOST,
             port=DEFAULT_PORT,
             debug=False,
-            use_reloader=DEBUG,
+            use_reloader=reload_enabled,
             use_debugger=False,
             threaded=True,
             exclude_patterns=[

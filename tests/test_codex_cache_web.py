@@ -1,6 +1,6 @@
 """Codex local Cache routing and browser interaction contracts.
 
-Code version: v1.0.0-codex.0
+Code version: v1.0.1-codex.0
 """
 
 from __future__ import annotations
@@ -15,7 +15,7 @@ def test_local_cache_has_folder_control_without_browser_or_media(client):
     response = client.get("/cache/codex?content_mode=media")
     assert response.status_code == 200
     html = response.get_data(as_text=True)
-    assert 'aria-label="Cache source: Codex"' in html
+    assert 'aria-label="Cache source: ChatGPT Codex"' in html
     assert 'name="codex_directory"' in html
     assert "Read local sessions" in html
     assert 'data-cache-page-content-mode="text"' in html

@@ -1,6 +1,6 @@
 """Partition offline tests and verify complete, fresh branch-coverage artifacts.
 
-Code version: v1.1.0-codex.0
+Code version: v1.2.0-codex.0
 """
 
 from __future__ import annotations
@@ -247,7 +247,14 @@ def verified_coverage_files(root: Path, artifacts: Path, context: dict[str, str]
     return [files[index] for index in range(1, SHARD_COUNT + 1)]
 
 
-def aggregate(root: Path, artifacts: Path, minimum: int, shard_status: str) -> int:
+def aggregate(
+    root: Path,
+    artifacts: Path,
+    minimum: int,
+    shard_status: str,
+    *,
+    policy_path: Path | None = None,
+) -> int:
     from coverage import Coverage
 
     if shard_status != "success":
@@ -263,8 +270,23 @@ def aggregate(root: Path, artifacts: Path, minimum: int, shard_status: str) -> i
     coverage.combine(data_paths=[str(path) for path in files], strict=True, keep=True)
     coverage.save()
     coverage.json_report(outfile=str(output / "coverage.json"))
-    return subprocess.run(
+    global_result = subprocess.run(
         [sys.executable, "-m", "coverage", "report", f"--rcfile={configuration}", f"--data-file={data_file}", f"--fail-under={minimum}"],
+        cwd=root,
+        check=False,
+    ).returncode
+    if global_result:
+        return global_result
+    # An explicit policy path is reserved for isolated synthetic aggregation tests.
+    policy = policy_path if policy_path is not None else root / "scripts/coverage_policy.json"
+    return subprocess.run(
+        [
+            sys.executable,
+            str(Path(__file__).with_name("check_coverage.py")),
+            str(output / "coverage.json"),
+            "--policy",
+            str(policy),
+        ],
         cwd=root,
         check=False,
     ).returncode

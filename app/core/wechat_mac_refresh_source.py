@@ -1,11 +1,12 @@
 """Read configured Mac WeChat sources into authenticated memory-only snapshots.
 
-Code version: v1.1.0-codex.0
+Code version: v1.2.0-codex.0
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from enum import StrEnum
 import hashlib
 import json
 import os
@@ -16,7 +17,6 @@ import stat
 
 from . import wechat_mac_refresh_cipher as cipher
 from .compute_resources import discover_compute_resources
-from .owner_only_files import owner_only_problem
 
 
 MAX_DATABASE_BYTES = 2 * 1024**3
@@ -35,6 +35,36 @@ _GROUP_SUFFIXES = ("", "-wal", "-shm", "-journal")
 
 class RefreshError(ValueError):
     """A source cannot be refreshed faithfully within the supported boundary."""
+
+
+class RefreshIssue(StrEnum):
+    """Fixed, public reasons for a refresh that cannot proceed."""
+
+    INVALID_CONVERSATION = "Open a verified private or group conversation to refresh it."
+    UNSUPPORTED_HOST = "Refreshing from the local WeChat database requires macOS."
+    CONFIGURATION_UNAVAILABLE = (
+        "No usable local message database configuration was found for this WeChat account. "
+        "Check that the verified key configuration and its original WeChat database files are available."
+    )
+    BUSY = "Another conversation is refreshing. Wait for it to finish, then try again."
+    ACCOUNT_UNAVAILABLE = "This account cannot be refreshed on this Mac."
+    INTERRUPTED = "The local refresh was interrupted before it could finish. Try again."
+    WORKER_START_FAILED = "The local refresh worker could not be started. Try again shortly."
+    WORKER_UNAVAILABLE = "The local refresh worker stopped before returning a result. Try again."
+    WORKER_TIMEOUT = "The local refresh worker reached its time limit. Try again."
+    INTERPRETER_UNAVAILABLE = "A compatible local WeChat refresh interpreter is unavailable."
+    MESSAGE_BUDGET = "This conversation's new records exceed the per-refresh message size limit."
+    DISK_SPACE = "Not enough free disk space is available to stage the WeChat archive update."
+    ARCHIVE_CHANGED = "The WeChat archive changed during refresh. Try again after it finishes updating."
+    VIEW_UNAVAILABLE = "The refreshed conversation is temporarily unavailable. Reopen it and try again."
+
+
+class RefreshNotice(RefreshError):
+    """An expected refresh failure with a fixed message safe to render."""
+
+    def __init__(self, issue: RefreshIssue):
+        self.issue = issue
+        super().__init__(issue.value)
 
 
 class SourceAccountBindingUnavailable(RefreshError):
@@ -158,7 +188,16 @@ def identity(path, *, optional=False):
 def read_stable(path, maximum, *, private=False):
     path = _checked_path(path)
     before = identity(path)
-    if before[2] > maximum or private and owner_only_problem(path):
+    info = path.stat()
+    if (
+        before[2] > maximum
+        or private
+        and (
+            stat.S_IMODE(info.st_mode) & 0o077
+            or hasattr(os, "getuid")
+            and info.st_uid != os.getuid()
+        )
+    ):
         raise RefreshError("The configured key file must be bounded and owner-only.")
     descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
     with os.fdopen(descriptor, "rb") as stream:
@@ -166,7 +205,7 @@ def read_stable(path, maximum, *, private=False):
         if (opened.st_dev, opened.st_ino) != before[:2]:
             raise RefreshError("A source changed before it could be read.")
         raw = stream.read(maximum + 1)
-    if len(raw) > maximum or identity(path) != before or private and owner_only_problem(path):
+    if len(raw) > maximum or identity(path) != before:
         raise RefreshError("A source changed while it was being read.")
     return raw
 

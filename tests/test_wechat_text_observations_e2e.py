@@ -38,34 +38,44 @@ def text_observation_server(tmp_path_factory):
     evidence = make_observation_fixture(store)
     history = evidence["history_path"]
     preserved = history.read_bytes()
+    preserved_context = {
+        evidence[name]: evidence[name].read_bytes()
+        for name in ("registry_path", "artifact_path")
+    }
     with closing(sqlite3.connect(history)) as connection:
         primary_count = connection.execute(
             "SELECT COUNT(*) FROM messages WHERE conversation_id=?",
             (evidence["session_id"],),
         ).fetchone()[0]
         fingerprint = wechat_history_partition_fingerprint(connection)
-    # Browser reads require a published resource index. The unit fixture's
-    # deliberately stale metadata remains useful for testing exact quote pins.
-    with closing(sqlite3.connect(evidence["resource_path"])) as resources, resources:
-        resource_rows = resources.execute(
-            "SELECT time_sort,timestamp_value,text FROM messages ORDER BY time_sort,ordinal,id"
-        ).fetchall()
-        first_sort, first_time, _ = resource_rows[0]
-        last_sort, last_time, latest_text = resource_rows[-1]
-        resources.execute(
-            "UPDATE conversations SET message_count=?,first_sort=?,last_sort=?,"
-            "first_time=?,last_time=?,latest_text=?",
-            (len(resource_rows), first_sort, last_sort, first_time, last_time, latest_text),
-        )
-        resources.execute("DELETE FROM archive_info WHERE key='history_fingerprint'")
-        resources.executemany(
+    # UI observations need a verified timeline; the general fixture stays metadata-only.
+    with closing(sqlite3.connect(evidence["resource_path"])) as connection:
+        connection.row_factory = sqlite3.Row
+        resource_rows = [tuple(row) for row in connection.execute("SELECT * FROM messages ORDER BY id")]
+        for conversation_id, in connection.execute("SELECT id FROM conversations").fetchall():
+            rows = connection.execute(
+                "SELECT * FROM messages WHERE conversation_id=? "
+                "ORDER BY (time_sort=0),time_sort,ordinal,id",
+                (conversation_id,),
+            ).fetchall()
+            first = next((row for row in rows if row["time_sort"]), rows[0])
+            last = max(rows, key=lambda row: row["time_sort"])
+            connection.execute(
+                "UPDATE conversations SET message_count=?,first_sort=?,last_sort=?,"
+                "first_time=?,last_time=?,latest_text=? WHERE id=?",
+                (len(rows), first["time_sort"], last["time_sort"], first["timestamp_value"],
+                 last["timestamp_value"], last["text"][:300], conversation_id),
+            )
+        connection.execute("DELETE FROM archive_info WHERE key='history_fingerprint'")
+        connection.executemany(
             "INSERT INTO archive_info VALUES(?,?)",
-            (
-                ("schema_version", "1"),
-                ("history_file_identity", json.dumps(_file_identity(history))),
-                ("history_partitions_sha256", fingerprint),
-            ),
+            (("schema_version", "1"), ("history_partitions_sha256", fingerprint),
+             ("history_file_identity", json.dumps(_file_identity(history)))),
         )
+        connection.commit()
+        assert [tuple(row) for row in connection.execute("SELECT * FROM messages ORDER BY id")] == resource_rows
+    assert history.read_bytes() == preserved
+    assert all(path.read_bytes() == content for path, content in preserved_context.items())
     with patch(
         "app.web.app.SavedConfigStore.load",
         return_value=SavedConfigStore(CrawlConfig()),
@@ -88,9 +98,14 @@ def text_observation_server(tmp_path_factory):
             primary_count=primary_count,
         )
     finally:
+        app.extensions["runtime_shutdown"]()
         server.shutdown()
         server.server_close()
         thread.join(timeout=5)
+        assert history.read_bytes() == preserved
+        assert all(path.read_bytes() == content for path, content in preserved_context.items())
+        with closing(sqlite3.connect(evidence["resource_path"])) as connection:
+            assert connection.execute("SELECT * FROM messages ORDER BY id").fetchall() == resource_rows
 
 
 def open_observed_quote(page, fixture):
@@ -271,7 +286,7 @@ def test_invalid_mac_observation_retains_the_original_unavailable_quote(
         else:
             value = json.loads(registry)
             value["observations"][0]["account_id"] = "wxid_wrong_synthetic_account"
-            fixture.registry_path.write_text(json.dumps(value, ensure_ascii=False), encoding="utf-8")
+            fixture.registry_path.write_text(json.dumps(value, ensure_ascii=False))
         parent = open_observed_quote(page, fixture)
         expect(parent.locator(":scope > .wechat-message-text")).to_have_text(
             fixture.original_text

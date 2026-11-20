@@ -1,4 +1,4 @@
-/* Code version: v1.2.0-claude.0 */
+/* Code version: v1.2.1-codex.0 */
 
 .page[data-cache-page] {
     width: 100%;
@@ -43,6 +43,7 @@
     height: var(--cache-activity-panel-height);
     border: var(--glass-popover-border);
     border-radius: var(--radius-soft);
+    corner-shape: var(--corner-shape-continuous);
     background: var(--glass-popover-background);
     box-shadow: var(--glass-popover-shadow);
     backdrop-filter: var(--glass-popover-blur);
@@ -77,6 +78,7 @@
     max-height: var(--cache-activity-available-height);
     padding: 16px 16px calc(var(--circular-icon-button-size) + 8px);
     border-radius: var(--radius-soft);
+    corner-shape: var(--corner-shape-continuous);
     outline: none;
     opacity: 0;
     visibility: hidden;

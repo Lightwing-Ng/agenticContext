@@ -1,6 +1,6 @@
 """Disposable-browser E2E coverage for the responsive sidebar and language boundaries.
 
-Code version: v1.58.5-codex.0
+Code version: v1.58.6-codex.0
 """
 
 from __future__ import annotations
@@ -45,6 +45,7 @@ from app.core.resource_persistence import (
     ZHIHU_HISTORY_SCHEMA,
     write_parquet_rows_atomic,
 )
+from tests.browser_launch import launch_test_browser
 
 
 OVERLAY_VIEWPORTS = (
@@ -60,7 +61,6 @@ DESKTOP_VIEWPORTS = (
     ("iPad landscape and compact desktop", 1_024, 768),
     ("wide desktop", 1_512, 982),
 )
-
 
 def _is_zhimg_request_url(url: str) -> bool:
     """Match the exact zhimg.com host or one of its subdomains."""
@@ -355,16 +355,23 @@ def seeded_zhihu_browser_server_url(tmp_path: Path) -> Iterator[str]:
         server_thread.join(timeout=5)
 
 
-def _launch_disposable_browser(playwright: Playwright) -> Browser:
-    browser_type: BrowserType = playwright.chromium
+def _launch_disposable_browser(
+    playwright: Playwright, *, engine: str = "chromium"
+) -> Browser:
+    """Launch the requested disposable engine without substituting another engine."""
+    if engine not in {"chromium", "webkit"}:
+        raise ValueError(f"Unsupported disposable browser engine: {engine}")
+    browser_type: BrowserType = getattr(playwright, engine)
+    if engine == "webkit":
+        return browser_type.launch(headless=True)
     managed_executable = Path(browser_type.executable_path)
     if managed_executable.is_file():
-        return browser_type.launch(headless=True)
+        return launch_test_browser(browser_type)
 
     launch_errors: list[str] = []
     for channel in ("chrome", "msedge"):
         try:
-            return browser_type.launch(channel=channel, headless=True)
+            return launch_test_browser(browser_type, channel=channel)
         except PlaywrightError as error:  # pragma: no cover - depends on host browser inventory
             launch_errors.append(f"{channel}: {error}")
     raise AssertionError(
@@ -535,7 +542,6 @@ def test_cache_source_switcher_reuses_the_complete_registry_across_cache_pages(
 ) -> None:
     """Verify every cache sidebar exposes the same complete source menu in Chromium."""
     from app.core.config import load_saved_config
-
     from app.web.cache_sources import CACHE_SOURCE_VIEWS
 
     expected_sources = _registered_cache_source_keys()
@@ -1383,7 +1389,9 @@ def test_zhihu_text_browser_shows_answerers_and_complete_answers(
             "Answers",
             "Last updated",
         ]
-        expect(header.locator('th[aria-sort="descending"]')).to_contain_text("Last updated")
+        expect(header.locator(".browser-session-col-updated")).to_have_attribute(
+            "aria-sort", "descending"
+        )
         expect(header.locator(".browser-session-sort-link")).to_have_attribute(
             "aria-label", "Last updated: sort oldest first"
         )
@@ -3310,7 +3318,7 @@ def test_agent_model_and_sidebar_service_triggers_follow_typography_contract(
     )
     try:
         main_button = page.locator(
-            "xpath=/html/body/main/div/section/div[2]/article/form/label/span/span/span[1]/button"
+            "#agent_prompt_form .agent-model-trigger[data-agent-combobox-trigger]"
         )
         sidebar_button = page.locator(
             "#agent_runtime_form .agent-session-mode-combobox [data-agent-combobox-trigger]"
@@ -4531,7 +4539,7 @@ def test_overlay_sidebar_is_touch_safe_across_phone_and_ipad_portraits(
 ) -> None:
     page, context = _open_page(
         disposable_browser,
-        sidebar_server_url,
+        f"{sidebar_server_url}/cache/chatgpt",
         width,
         height,
         touch=True,
@@ -5509,6 +5517,7 @@ def test_cache_sidebar_text_media_switcher_defaults_to_text(
         source_options = page.locator("[data-cache-source-switcher-option]")
         x_source_option = page.locator('[data-cache-source-switcher-option="x"]')
         expect(x_source_option).to_be_hidden()
+        expect(x_source_option).to_have_js_property("hidden", False)
         assert source_options.evaluate_all(
             "elements => elements.filter(element => !element.hidden).map(element => element.dataset.cacheSourceSwitcherOption)"
         ) == _registered_cache_source_keys()

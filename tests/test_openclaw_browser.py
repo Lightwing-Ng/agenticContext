@@ -1,6 +1,6 @@
 """Preserved OpenClaw histories keep independent identities and exports.
 
-Code version: v1.0.0-codex.0
+Code version: v1.1.0-codex.0
 """
 
 from pathlib import Path
@@ -42,7 +42,7 @@ def archive_root(tmp_path: Path) -> Path:
 
 @pytest.mark.parametrize("source,label", OPENCLAW_SOURCE_LABELS.items())
 def test_sources_do_not_merge_and_exports_keep_origin(archive_root, source, label):
-    assert chat_history_path(archive_root, source) == archive_root / "llm" / source / "history.parquet"
+    assert chat_history_path(archive_root, source) == archive_root / "llm" / source / "history.sqlite3"
     detail = query_chat_history(archive_root, source=source, session=f"{source}:same-id", session_view=True)
     assert detail.total_count == 1
     assert detail.session_detail

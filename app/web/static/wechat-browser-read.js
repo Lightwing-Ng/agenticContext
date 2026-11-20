@@ -1,4 +1,4 @@
-/* Code version: v1.1.1-codex.0 */
+/* Code version: v1.2.1-codex.0 */
 
 (function initializeWechatReadPage() {
     "use strict";
@@ -23,6 +23,7 @@
     let failedReads = 0;
     let statusUrl = root.dataset.statusUrl;
     let pollRun = 0;
+    let deferredReady = null;
     let resumable = root.dataset.state === "running" && Boolean(statusUrl);
     const wait = (milliseconds) => new Promise((resolve) => window.setTimeout(resolve, milliseconds));
 
@@ -43,15 +44,20 @@
         });
     }
 
-    function fail(message) {
+    function fail(message, keepPreview = false) {
         resumable = false;
         root.dataset.state = "failed";
+        let showingPreview = false;
         for (const placeholder of placeholders) {
+            if (keepPreview && !placeholder.hidden && placeholder.hasAttribute("data-wechat-read-preview")) {
+                showingPreview = true;
+                continue;
+            }
             placeholder.hidden = true;
             placeholder.removeAttribute("aria-busy");
         }
         if (title) title.hidden = false;
-        if (copy) copy.textContent = message;
+        if (copy) copy.textContent = showingPreview ? `${message} Showing the last verified conversations.` : message;
         if (retry) retry.hidden = false;
     }
 
@@ -60,8 +66,16 @@
             && !document.documentElement.hasAttribute("data-navigation-target");
     }
 
+    function accountRefreshIsRunning() {
+        return Boolean(document.querySelector('[data-wechat-account-refresh][aria-busy="true"]'));
+    }
+
     function ready(snapshot) {
         if (!canReloadCurrentView()) return;
+        if (accountRefreshIsRunning()) {
+            deferredReady = snapshot;
+            return;
+        }
         const previous = window.history.state;
         if (previous && typeof previous === "object" && previous[guardKey]?.url === originalUrl) {
             fail("Saved records are still being checked. Try loading this view again.");
@@ -95,20 +109,22 @@
             } catch (_) {
                 if (stopped || run !== pollRun || window.location.href !== originalUrl) return;
                 failedReads += 1;
-                if (failedReads >= 5) { fail("Lost contact with the local service. Try loading this view again."); return; }
+                if (failedReads >= 5) { fail("Lost contact with the local service. Try loading this view again.", true); return; }
             }
             await wait(reads < 4 ? 250 : 1_000);
         }
         if (run !== pollRun) return;
-        if (!stopped && window.location.href === originalUrl) fail("Saved records are still being checked. Try loading this view again.");
+        if (!stopped && window.location.href === originalUrl) fail("Saved records are still being checked. Try loading this view again.", true);
     }
 
     retry?.addEventListener("click", async () => {
+        if (retry.disabled || accountRefreshIsRunning()) return;
         retry.disabled = true;
         try {
             if (root.dataset.retryUrl) {
                 await requestTask(root.dataset.retryUrl, "POST");
             }
+            if (accountRefreshIsRunning()) return;
             if (!canReloadCurrentView()) {
                 retry.disabled = false;
                 return;
@@ -122,11 +138,17 @@
             stopped = true;
             window.location.reload();
         } catch (_) {
-            retry.disabled = false;
-            fail("The local service is unavailable. Try again shortly.");
+            retry.disabled = accountRefreshIsRunning();
+            fail("The local service is unavailable. Try again shortly.", true);
         }
     });
     window.addEventListener("pagehide", () => { stopped = true; pollRun += 1; });
+    window.addEventListener("wechat:account-refresh-settled", () => {
+        if (!deferredReady) return;
+        const snapshot = deferredReady;
+        deferredReady = null;
+        ready(snapshot);
+    });
     window.addEventListener("pageshow", (event) => {
         if (!event.persisted || window.location.href !== originalUrl) return;
         stopped = false;

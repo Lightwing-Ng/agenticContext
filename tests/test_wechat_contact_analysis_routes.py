@@ -1,10 +1,11 @@
 """Contact navigation keeps return destinations local and source links precise.
 
-Code version: v1.2.1-codex.0
+Code version: v1.3.3-codex.0
 """
 
 from __future__ import annotations
 
+import sqlite3
 from unittest.mock import patch
 from urllib.parse import parse_qs, quote, urlsplit
 
@@ -12,6 +13,7 @@ from flask import render_template
 import pytest
 
 from app.core.config import CrawlConfig
+from app.core import wechat_contact_analysis as analysis
 from app.core.wechat_contact_analysis import query_contact_analysis
 from app.web.app import create_app
 from app.web.config_store import SavedConfigStore
@@ -113,7 +115,7 @@ def test_busy_source_waits_without_reading_a_stale_cache(contact_app):
     response = app.test_client().get("/browser/wechat/contacts/" + CID)
     assert response.status_code == 202
     assert "Refresh" not in response.headers
-    assert "Gathering statements" in response.get_data(as_text=True)
+    assert "Gathering messages" in response.get_data(as_text=True)
     assert "data-contact-statement-id=" not in response.get_data(as_text=True)
     modal = (
         response.get_data(as_text=True)
@@ -142,6 +144,51 @@ def test_pending_poll_is_json_without_navigation_or_replacement_html(contact_app
     assert "Accept" in response.vary
 
 
+@pytest.mark.parametrize("accept", ["text/html", "application/json"])
+@pytest.mark.parametrize("failure", [ValueError, PermissionError])
+def test_unavailable_identity_registry_stops_waiting_and_explains_recovery(
+    contact_app, monkeypatch, accept, failure
+):
+    app, fixture = contact_app
+    cache = analysis.contact_analysis_cache_path(fixture.store, CID)
+    before = fixture.history.read_bytes(), fixture.registry.read_bytes(), cache.read_bytes()
+
+    def unavailable(*_args, **_kwargs):
+        raise failure("Synthetic identity configuration is unavailable.")
+
+    def no_job(*_args, **_kwargs):
+        raise AssertionError("An unavailable identity registry must not queue indexing.")
+
+    monkeypatch.setattr(analysis, "resolve_contact_merge", unavailable)
+    monkeypatch.setattr(analysis._WORKER, "submit", no_job)
+    response = app.test_client().get(
+        "/browser/wechat/contacts/" + CID, headers={"Accept": accept}
+    )
+    assert response.status_code == 503
+    assert "Refresh" not in response.headers
+    assert "Accept" in response.vary
+    if accept == "application/json":
+        assert response.json["status"] == "error"
+        assert response.json["contact_id"] == CID
+        assert response.cache_control.no_store
+        content = response.json["html"]
+        assert "<html" not in content
+    else:
+        content = response.get_data(as_text=True)
+        assert 'data-contact-analysis-state="error"' in content
+        assert '<main class="page wechat-contact-analysis-page" inert>' not in content
+        modal = content.split('id="cache_wait_modal"', 1)[1].split(
+            '<div class="workspace-modal-dialog">', 1
+        )[0]
+        assert "hidden" in modal
+    assert "Gathering messages" not in content
+    assert "Messages could not be loaded." in content
+    assert "contact_merges.json" in content
+    assert "available locally" in content and "then refresh" in content
+    assert "data-contact-statement-id=" not in content
+    assert (fixture.history.read_bytes(), fixture.registry.read_bytes(), cache.read_bytes()) == before
+
+
 def test_ready_poll_reuses_the_escaped_content_fragment(contact_app):
     app, _ = contact_app
     response = app.test_client().get(
@@ -154,6 +201,36 @@ def test_ready_poll_reuses_the_escaped_content_fragment(contact_app):
     assert "<html" not in response.json["html"]
     assert "<script" not in response.json["html"]
     assert response.cache_control.no_store
+
+
+def test_unavailable_identity_registry_also_refuses_csv_without_streaming(
+    contact_app, monkeypatch
+):
+    app, _ = contact_app
+
+    def unavailable(*_args, **_kwargs):
+        raise PermissionError("Synthetic identity configuration is unavailable.")
+
+    monkeypatch.setattr(analysis, "resolve_contact_merge", unavailable)
+    response = app.test_client().get("/browser/wechat/contacts/" + CID + "/export.csv")
+    assert response.status_code == 503
+    assert response.mimetype != "text/csv"
+    assert "contact_merges.json" in response.get_data(as_text=True)
+
+
+def test_unavailable_error_explanation_is_escaped(contact_app, monkeypatch):
+    app, _ = contact_app
+
+    def unavailable(*_args, **_kwargs):
+        raise analysis.ContactAnalysisUnavailable("Unavailable <identity> declaration.")
+
+    monkeypatch.setattr(analysis, "query_contact_analysis", unavailable)
+    response = app.test_client().get(
+        "/browser/wechat/contacts/" + CID, headers={"Accept": "application/json"}
+    )
+    assert response.status_code == 503
+    assert "Unavailable &lt;identity&gt; declaration." in response.json["html"]
+    assert "Unavailable <identity>" not in response.json["html"]
 
 
 def test_shared_waiting_modal_defaults_remain_closed_and_escape_optional_copy(
@@ -187,6 +264,40 @@ def test_source_link_returns_to_the_original_account_and_message(contact_app):
     assert query["account"] == [item["account_key"]]
     assert query["session"] == [item["conversation_id"]]
     assert query["chat_kind"] == [item["kind"]]
+
+
+def test_retired_derived_message_link_resolves_its_retained_native_occurrence(
+    contact_app, monkeypatch
+):
+    app, fixture = contact_app
+    item = next(
+        row for row in query_contact_analysis(fixture.store, CID)["items"]
+        if row["source_id"].startswith("ios-")
+    )
+    retired_id = "9" * 64
+    with sqlite3.connect(fixture.history) as connection:
+        connection.execute(
+            "CREATE TABLE derived_message_aliases(old_id TEXT PRIMARY KEY,native_id TEXT)"
+        )
+        connection.execute(
+            "INSERT INTO derived_message_aliases VALUES(?,?)", (retired_id, item["id"])
+        )
+    repository = analysis.WechatArchiveRepository
+    original_timeline = repository._timeline_tables
+
+    def scoped_timeline(self, connection, identity, *, conversation_id=None, strict=False):
+        assert conversation_id == item["conversation_id"]
+        assert strict
+        return original_timeline(
+            self, connection, identity, conversation_id=conversation_id, strict=strict
+        )
+
+    monkeypatch.setattr(repository, "_timeline_tables", scoped_timeline)
+    response = app.test_client().get("/browser/wechat/messages/" + retired_id)
+    assert response.status_code == 302
+    location = urlsplit(response.headers["Location"])
+    assert location.fragment == "wechat_message_" + item["id"]
+    assert parse_qs(location.query)["account"] == [item["account_key"]]
 
 
 def test_malformed_or_missing_message_source_is_not_redirected(contact_app):

@@ -1,0 +1,53 @@
+{
+  "version": "v1.0.1-codex.0",
+  "groups": [
+    {
+      "name": "LLM SQLite persistence",
+      "paths": ["app/core/llm_sqlite.py"],
+      "minimum_line_percent": 70,
+      "minimum_branch_percent": 50
+    },
+    {
+      "name": "Resource persistence",
+      "paths": ["app/core/resource_persistence.py"],
+      "minimum_line_percent": 70,
+      "minimum_branch_percent": 50
+    },
+    {
+      "name": "WeChat exchange",
+      "paths": [
+        "app/core/wechat_exchange.py",
+        "app/core/wechat_exchange_import.py",
+        "app/core/wechat_exchange_recovery.py"
+      ],
+      "minimum_line_percent": 70,
+      "minimum_branch_percent": 50
+    },
+    {
+      "name": "WeChat derived publication",
+      "paths": [
+        "app/core/wechat_shared_storage_publish.py",
+        "app/core/wechat_derived_publication.py"
+      ],
+      "minimum_line_percent": 70,
+      "minimum_branch_percent": 50
+    },
+    {
+      "name": "WeChat native restoration",
+      "paths": ["app/core/wechat_native_restore.py"],
+      "minimum_line_percent": 70,
+      "minimum_branch_percent": 50
+    },
+    {
+      "name": "WeChat Mac refresh",
+      "paths": [
+        "app/core/wechat_mac_refresh.py",
+        "app/core/wechat_mac_refresh_source.py",
+        "app/core/wechat_mac_refresh_cipher.py",
+        "app/core/wechat_mac_refresh_projection.py"
+      ],
+      "minimum_line_percent": 70,
+      "minimum_branch_percent": 50
+    }
+  ]
+}

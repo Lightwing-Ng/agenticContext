@@ -1,6 +1,6 @@
 """Stable foundation boundary for runtime configuration, identity, and task state."""
 
-# Code version: v1.4.2-codex.0
+# Code version: v1.5.1-codex.0
 
 from ..brand import PRODUCT_NAME
 from ..cache_task_coordinator import CacheTaskCoordinator, CacheTaskIdentity

@@ -48,6 +48,7 @@ def main():
     from app.core import wechat_macos_recovery_bank as bank
     from app.core import wechat_media_event_index as media
     from app.core import wechat_media_placeholders as placeholders
+    from app.core import wechat_secondary_completions as completions
     from app.core.wechat_archive import WechatArchiveRepository
 
     for owner, name in (
@@ -55,7 +56,9 @@ def main():
         (placeholders, "attach_media_placeholders"),
         (media, "attach_media_event_index"),
         (bank, "attach_mac_recovery_bank"),
+        (bank, "_parallel_bank_checks"),
         (bank, "_validate_shadow_sources"),
+        (completions, "attach_secondary_message_completions"),
     ):
         _observe(owner, name)
 

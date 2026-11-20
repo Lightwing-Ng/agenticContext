@@ -1,6 +1,6 @@
 """Native packet clock links survive projection, export, and reversible cache upgrades.
 
-Code version: v1.0.1-codex.0
+Code version: v1.1.0-codex.0
 """
 
 from contextlib import closing
@@ -11,9 +11,11 @@ import json
 import sqlite3
 
 from app.core import wechat_contact_analysis as analysis
+from app.core import wechat_macos_recovery_bank as bank
 from app.core.chat_history_browser import query_chat_history
 from app.core.wechat_forwarded import apply_forwarded_clock_evidence, project_html_forwarded
 from app.core.wechat_forwarded_clocks import WechatForwardedClocks
+from tests import test_wechat_archive_relocation as relocation_fixtures
 from tests import test_wechat_forwarded_clocks as fixtures
 from tests.test_wechat_forwarded_original_precedence import CID
 
@@ -81,6 +83,43 @@ def test_completed_tree_cannot_apply_a_clock_to_a_different_child_at_the_same_po
     assert not record["items"][0].last_seen_at
     assert not record["items"][1].last_seen_at
     assert "native_forwarded_clock_recovery" not in record["items"][0].messaging["provenance"]
+
+
+def test_contact_reuses_pinned_minute_clock_only_with_attested_history_relocation(pinned_clock_store):
+    fixture = pinned_clock_store
+
+    def set_minute_clock(proof):
+        first = proof["text_components"][fixture.native_paths[0][-1] - 1]
+        first.update(source_create_time="", source_timestamp="2019-9-4 下午4:05")
+
+    fixtures._mutate(fixture, native=True, callback=set_minute_clock)
+    fixtures._indexed_links(
+        fixture, fixtures._links(fixture, [fixture.html_parent]), fixtures._agreement_info(fixture)
+    )
+    original = fixture.history.read_bytes()
+    previous = bank._identity(fixture.history)
+    relocation_fixtures._replace_with_exact_copy(fixture.history)
+    unavailable = analysis.query_contact_analysis(fixture.store, CID)
+    target = fixture.html_parent + "_forwarded_" + str(fixture.html_paths[0][0])
+    cache = analysis.contact_analysis_cache_path(fixture.store, CID)
+
+    def cached_clock():
+        with sqlite3.connect(cache) as connection:
+            return connection.execute(
+                "SELECT timestamp_label,source_clock FROM refs WHERE id=?", (target,)
+            ).fetchone()
+
+    assert cached_clock() == ("", "1970-01-01 08:00:00")
+    receipt = relocation_fixtures._proof(fixture.history, {fixture.history: previous})
+    restored = analysis.query_contact_analysis(fixture.store, CID)
+    assert restored["source_fingerprint"] != unavailable["source_fingerprint"]
+    assert cached_clock() == ("4 Sep 2019 16:05", "1970-01-01 08:00:00")
+    assert fixture.history.read_bytes() == original
+
+    receipt.rename(receipt.with_suffix(".revoked"))
+    withdrawn = analysis.query_contact_analysis(fixture.store, CID)
+    assert withdrawn["source_fingerprint"] == unavailable["source_fingerprint"]
+    assert cached_clock() == ("", "1970-01-01 08:00:00")
 
 
 def test_existing_cache_and_csv_recover_then_revoke_only_derived_html_child_times(pinned_clock_store, monkeypatch):

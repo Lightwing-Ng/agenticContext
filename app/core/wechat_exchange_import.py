@@ -1,6 +1,6 @@
 """Import portable WeChat observations without trusting foreign identity claims.
 
-Code version: v1.0.2-codex.0
+Code version: v1.1.2-codex.0
 """
 
 from __future__ import annotations
@@ -19,7 +19,6 @@ from pathlib import Path
 import shutil
 import sqlite3
 import stat
-import subprocess
 import sys
 import tempfile
 import zlib
@@ -33,16 +32,25 @@ from .wechat_archive import (
     wechat_archive_path,
     wechat_history_partition_fingerprint,
 )
+from .wechat_derived_retirement import _no_writers
 from .wechat_export_merge import _clonefile, _manifest
 from .wechat_completion_clone import (
     sync_completion_directory as _sync_directory,
     sync_completion_file as _sync,
 )
 from .wechat_exchange_rows import MAX_ROW_BYTES, encode_typed_row, typed_cell
+from .wechat_exchange_recovery import (
+    PUBLICATION_JOURNAL_NAME,
+    capture_rollback_stages,
+    discard_publication,
+    mark_rollback_pending,
+    prepare_publication,
+    resume_publication,
+)
 from .wechat_shared_storage import shared_storage_installed
 
 
-VERSION = "v1.0.0-codex.0"
+VERSION = "v1.1.2-codex.0"
 MAX_METADATA_ROWS = 100_000
 MINIMUM_FREE_BYTES = 256 * 1024**2
 _SIDECARS = (
@@ -456,25 +464,12 @@ def _no_input_writers(path):
                 "A process currently owns an exchange publication input for writing."
             )
         return
-    result = subprocess.run(
-        ["lsof", "+c", "0", "-nP", "-Fpcfa", "--", str(path)],
-        capture_output=True,
-        text=True,
-        timeout=30,
-        check=False,
-    )
-    if result.returncode not in (0, 1) or result.stderr.strip():
+    try:
+        _no_writers(path)
+    except ValueError as error:
         raise RuntimeError(
-            "Open-file inspection failed before exchange publication."
-        )
-    command = ""
-    for line in result.stdout.splitlines():
-        if line.startswith("c"):
-            command = line[1:].casefold()
-        elif line in {"aw", "au"} and command not in {"fileproviderd", "fileprovider"}:
-            raise RuntimeError(
-                "A process currently owns an exchange publication input for writing."
-            )
+            "A process currently owns an exchange publication input for writing."
+        ) from error
 
 
 def _clone(path, prefix):
@@ -1482,6 +1477,54 @@ def preview_package(local_store_root, verified):
     return import_package(local_store_root, verified, apply=False)
 
 
+def recover_interrupted_import(local_store_root):
+    """Return absent, busy, or recovered without disrupting an active publisher."""
+    root = _safe(local_store_root)
+    directory = _safe(wechat_archive_path(root)).parent
+    if not os.path.lexists(directory / PUBLICATION_JOURNAL_NAME):
+        return "absent"
+    maintenance = CacheMaintenanceLock(CacheTaskLock(root / CACHE_TASK_LOCK_NAME))
+    if not maintenance.acquire("wechat-exchange-recovery"):
+        return "busy"
+    try:
+        recovered = resume_publication(
+            directory, lambda: archive_state(root), _no_input_writers,
+            lambda payload: _rollback_stages(directory, payload),
+        )
+        return "recovered" if recovered else "absent"
+    finally:
+        maintenance.release()
+
+
+def _rollback_stages(directory, payload):
+    """Keep original rollback clones intact until restoration itself is journaled."""
+    replacements = {}
+    for entry in payload["entries"]:
+        target = directory / entry["target"]
+        replacements[target] = (
+            _clone(directory / entry["backup"], ".wechat-exchange-rollback-stage-")
+            if entry["backup"] is not None else None
+        )
+    history = replacements[directory / "history.sqlite3"]
+    if history is not None:
+        restored_pin = _resident(history)
+        with closing(_readonly(history)) as connection:
+            fingerprint = wechat_history_partition_fingerprint(connection)
+        canonical = directory / "resource_references.sqlite3"
+        for target in sorted(replacements, key=lambda path: path != canonical):
+            stage = replacements[target]
+            if target.name == "history.sqlite3" or stage is None:
+                continue
+            previous = _info(stage)
+            canonical_pin = (
+                _resident(replacements[canonical])
+                if previous.get("supplemental_metadata") == "1"
+                and replacements.get(canonical) is not None else None
+            )
+            _repin(stage, previous, restored_pin, fingerprint, canonical_pin)
+    return capture_rollback_stages(replacements)
+
+
 def import_package(
     local_store_root,
     verified_or_path,
@@ -1498,6 +1541,8 @@ def import_package(
     """
     from .wechat_exchange import read_package
 
+    if recover_interrupted_import(local_store_root) == "busy":
+        raise RuntimeError("Another cache task owns the exchange maintenance boundary.")
     package_path = getattr(verified_or_path, "path", verified_or_path)
     verified = read_package(package_path)
     try:
@@ -1591,6 +1636,7 @@ def import_package(
                 "Another cache task owns the exchange maintenance boundary."
             )
         stage, backups, side_stages, current, published = None, {}, {}, {}, False
+        journal_prepared = False
         try:
             if archive_state(root) != state:
                 raise ValueError("The WeChat archive changed before exchange staging.")
@@ -1653,6 +1699,10 @@ def import_package(
                     "A publication input changed before exchange replacement."
                 )
             verified.assert_unchanged()
+            prepare_publication(
+                target.parent, {target: stage, **side_stages}, backups, state
+            )
+            journal_prepared = True
             os.replace(stage, target)
             published = True
             for path, candidate in side_stages.items():
@@ -1673,53 +1723,31 @@ def import_package(
                 readback="exact preserved rows, added messages, manifest and resource pins",
                 expected_state=archive_state(root),
             )
+            discard_publication(target.parent)
+            journal_prepared = False
             return report
         except BaseException:
-            if published:
+            if journal_prepared and (published or not stage.exists()):
                 try:
-                    if target in backups:
-                        os.replace(backups[target], target)
-                        restored_pin = _resident(target)
-                        with closing(_readonly(target)) as connection:
-                            restored_fingerprint = wechat_history_partition_fingerprint(
-                                connection
-                            )
-                        canonical = target.with_name("resource_references.sqlite3")
-                        for path in sorted(
-                            current,
-                            key=lambda value: (
-                                value.name != "resource_references.sqlite3"
-                            ),
-                        ):
-                            previous = current[path][1]
-                            canonical_pin = (
-                                _resident(canonical)
-                                if previous.get("supplemental_metadata") == "1"
-                                and canonical in backups
-                                else None
-                            )
-                            _repin(
-                                backups[path],
-                                previous,
-                                restored_pin,
-                                restored_fingerprint,
-                                canonical_pin,
-                            )
-                            os.replace(backups[path], path)
-                    else:
-                        target.unlink(missing_ok=True)
-                    _sync_directory(target.parent)
+                    mark_rollback_pending(target.parent)
+                    resume_publication(
+                        target.parent, lambda: archive_state(root), _no_input_writers,
+                        lambda payload: _rollback_stages(target.parent, payload),
+                    )
                 except BaseException as rollback_error:
                     backups = {}
                     raise RuntimeError(
                         "Exchange rollback requires review; retain .wechat-exchange-rollback files."
                     ) from rollback_error
+            if journal_prepared:
+                discard_publication(target.parent)
             raise
         finally:
-            if stage is not None:
+            pending_journal = os.path.lexists(target.with_name(PUBLICATION_JOURNAL_NAME))
+            if stage is not None and not pending_journal:
                 for suffix in ("", "-wal", "-shm", "-journal"):
                     Path(str(stage) + suffix).unlink(missing_ok=True)
-            for path in (*backups.values(), *side_stages.values()):
+            for path in (() if pending_journal else (*backups.values(), *side_stages.values())):
                 for suffix in ("", "-wal", "-shm", "-journal"):
                     Path(str(path) + suffix).unlink(missing_ok=True)
             maintenance.release()

@@ -1,6 +1,6 @@
 """Focused regression tests for the local web console."""
 
-# Code version: v1.155.15-codex.0
+# Code version: v1.156.10-codex.0
 
 from __future__ import annotations
 
@@ -92,6 +92,14 @@ GEMINI_LOGO_ASSET_PATH = (
     / "app/web/static/images/Google_Gemini_logo_2025_symbol.svg"
 )
 MAGNIFYING_GLASS_ASSET_PATH = Path(__file__).resolve().parents[1] / "app/web/static/images/magnifyingglass.svg"
+
+
+def _asset_version_key(filename: str) -> str:
+    source = (SIDEBAR_SCRIPT_PATH.parent / filename).read_text(encoding="utf-8")
+    version = re.search(r"Code version:\s*(v\d+\.\d+\.\d+(?:-[\w.]+)?)", source[:200])
+    if version is None:
+        raise AssertionError(f"Missing source version header: {filename}")
+    return f"{Path(filename).stem}-{version[1]}"
 
 
 class WebAppTests(unittest.TestCase):
@@ -779,7 +787,7 @@ class WebAppTests(unittest.TestCase):
         self.assertIn('id="progress_processed_label"', chatgpt_body)
         self.assertIn('cache-page.js?v=cache-page-v1.22.0-codex.0', chatgpt_body)
         self.assertIn('numeric-display.js?v=numeric-display-v1.1.0-codex.0', chatgpt_body)
-        self.assertIn('segmented-control.js?v=segmented-control-v1.0.4-codex.1', chatgpt_body)
+        self.assertIn(f'segmented-control.js?v={_asset_version_key("segmented-control.js")}', chatgpt_body)
         self.assertIn('data-cache-content-mode', chatgpt_body)
         self.assertIn('href="/cache/chatgpt/text/edge"', chatgpt_body)
         self.assertIn('href="/cache/chatgpt/media/edge"', chatgpt_body)
@@ -928,16 +936,16 @@ class WebAppTests(unittest.TestCase):
                 self.assertNotIn('aria-haspopup', dock_markup)
                 self.assertNotIn('aria-expanded', dock_markup)
                 self.assertNotIn('class="browser-picker-option-icon"', dock_markup)
-                self.assertIn('src="/static/sidebar.js?v=sidebar-v1.31.0-codex.0"', body)
+                self.assertIn(f'src="/static/sidebar.js?v={_asset_version_key("sidebar.js")}"', body)
                 self.assertIn('src="/static/responsive.js?v=responsive-v1.0.0-codex.1"', body)
-                self.assertIn("style-v2.159.4-codex.0", body)
+                self.assertIn(_asset_version_key("style.css"), body)
                 self.assertIn("/static/images/sparkles.2.svg", dock_markup)
                 self.assertIn('src="/static/theme-mode.js?v=theme-mode-v1.0.0-codex.1"', body)
                 self.assertIn('id="global_theme_toggle"', body)
                 self.assertIn('class="circular-icon-button global-quick-action-button global-theme-toggle"', body)
                 self.assertIn('class="sidebar-dock-label"', dock_markup)
                 self.assertNotIn("cachelikes:browser-sidebar-open", body)
-                self.assertIn('waiting-modal.js?v=waiting-modal-v1.2.0-codex.0', body)
+                self.assertIn(f'waiting-modal.js?v={_asset_version_key("waiting-modal.js")}', body)
                 self.assertIn('id="cache_wait_modal"', body)
                 self.assertIn('class="workspace-modal-overlay cache-wait-modal"', body)
                 self.assertIn('suggestion-loading-spinner workspace-modal-icon', body)
@@ -1033,7 +1041,7 @@ class WebAppTests(unittest.TestCase):
         self.assertIn("Cached media browser", browser_body)
         self.assertIn('data-browser-source-filter', browser_body)
         self.assertEqual(browser_body.count('data-browser-source-filter-option='), 6)
-        self.assertIn('browser-source-filter.js?v=browser-source-filter-v1.6.1-codex.0', browser_body)
+        self.assertIn('browser-source-filter.js?v=browser-source-filter-v1.6.2-codex.0', browser_body)
         self.assertIn('class="trade-strategy-select form-select trade-strategy-trigger browser-source-filter-trigger"', browser_body)
 
         self.assertIn('class="trade-strategy-dropdown-option browser-source-filter-option', browser_body)
@@ -1360,14 +1368,14 @@ class WebAppTests(unittest.TestCase):
         self.assertIn('browser-session-status.js?v=browser-session-status-v1.14.1-codex.0', local_body)
         self.assertIn('pagination-motion.js?v=pagination-motion-v1.1.0-codex.1', local_body)
         self.assertIn('vendor/katex/katex.min.css?v=katex-v0.18.7', local_body)
-        self.assertIn('style-v2.159.4-codex.0', local_body)
+        self.assertIn(_asset_version_key("style.css"), local_body)
         self.assertIn('vendor/katex/katex.min.js?v=katex-v0.18.7', local_body)
         self.assertIn('vendor/katex/contrib/auto-render.min.js?v=katex-v0.18.7', local_body)
         self.assertIn('agent-sessions.css?v=1.9.0', local_body)
         self.assertIn('data-agent-new-session', local_body)
         self.assertIn('class="agent-new-session-icon" aria-hidden="true"', local_body)
         self.assertIn('agent-sidebar-trailing-control', local_body)
-        self.assertIn('selection-list.css?v=selection-list-v1.0.0-codex.0', local_body)
+        self.assertIn('selection-list.css?v=selection-list-v1.0.1-codex.0', local_body)
         self.assertIn('computer-use-agent.js?v=computer-use-agent-v3.74.4-codex.0', local_body)
         onboarding_start = local_body.index('data-agent-tunnel-provider-panel="chatgpt"')
         onboarding_end = local_body.index(
@@ -5714,9 +5722,9 @@ class WebAppTests(unittest.TestCase):
         self.assertIn('id="browser_filter_form"', body)
         self.assertIn('form="browser_filter_form"', body)
         self.assertGreater(body.index("data-browser-search"), body.index("</aside>"))
-        self.assertIn("browser-search.css?v=browser-search-v1.4.5-claude.0", body)
+        self.assertIn("browser-search.css?v=browser-search-v1.4.6-codex.0", body)
         self.assertIn('type="module"', body)
-        self.assertIn("browser-search.js?v=browser-search-v2.2.1-codex.1", body)
+        self.assertIn("browser-search.js?v=browser-search-v2.2.2-codex.0", body)
         self.assertIn("browser-session-messages.js?v=browser-session-messages-v1.0.1-codex.1", body)
         self.assertIn("browser-filter-select.js?v=browser-filter-select-v1.2.0-codex.1", body)
         self.assertLess(
@@ -5926,6 +5934,23 @@ class WebAppTests(unittest.TestCase):
         self.assertNotIn('data-chat-message-id=', body)
         self.assertIn('data-browser-search-global-scope="true"', body)
         self.assertIn('data-browser-search-submit-copy="Press Enter to search all cached text."', body)
+        # The included sidebar's local variables must not empty the separate table menu.
+        from app.web.local_resource_navigation import local_resource_source_context
+
+        expected_sources = [
+            source.key for source in local_resource_source_context()["local_resource_text_sources"]
+        ]
+        header_filter = body.split("data-browser-header-filter data-browser-source-filter", 1)[1]
+        header_filter = header_filter.split("</form>", 1)[0]
+        sidebar = re.search(r'<aside\b[^>]*id="browser_sidebar"[^>]*>(.*?)</aside>', body, re.S)
+        self.assertIsNotNone(sidebar)
+        header_sources = re.findall(r'data-browser-source-filter-option="([^"]+)"', header_filter)
+        sidebar_sources = re.findall(r'data-browser-source-filter-option="([^"]+)"', sidebar[1])
+        self.assertTrue(expected_sources)
+        self.assertIn("claude", expected_sources)
+        self.assertEqual(header_sources, expected_sources)
+        self.assertEqual(header_sources, sidebar_sources)
+        self.assertIn('id="browser_header_source_filter_option_claude"', header_filter)
 
     def test_browser_page_and_secure_media_route_use_isolated_cache(self) -> None:
         with TemporaryDirectory() as raw_root:
@@ -5968,10 +5993,10 @@ class WebAppTests(unittest.TestCase):
             self.assertNotIn(str(root), body)
             self.assertIn("/browser/media/grok/clip.mp4", body)
             self.assertNotIn("/browser/media/media/", body)
-            self.assertIn("style-v2.159.4-codex.0", body)
+            self.assertIn(_asset_version_key("style.css"), body)
             self.assertIn("/static/images/photo.stack.svg", body)
             self.assertIn('pagination-motion.js?v=pagination-motion-v1.1.0-codex.1', body)
-            self.assertIn('local-media-browser.js?v=local-media-browser-v1.45.1-codex.0', body)
+            self.assertIn(f'local-media-browser.js?v={_asset_version_key("local-media-browser.js")}', body)
             self.assertIn('data-media-source-link', body)
             self.assertIn('data-media-copy-source-url', body)
             self.assertIn('data-media-reveal', body)
@@ -5982,7 +6007,7 @@ class WebAppTests(unittest.TestCase):
             self.assertIn('data-browser-view="grid"', body)
             self.assertIn('class="icon browser-view-icon browser-view-icon-list"', body)
             self.assertIn('class="icon browser-view-icon browser-view-icon-grid"', body)
-            self.assertIn('class="browser-gallery" data-view="grid"', body)
+            self.assertIn('class="browser-gallery" data-layout-role="content-grid" data-view="grid"', body)
             self.assertIn('Open original post', body)
             self.assertIn('https://x.com/demo/status/123', body)
             self.assertIn('class="local-store-pagination-indicator" aria-hidden="true"></span>', body)
@@ -6475,7 +6500,7 @@ class WebAppTests(unittest.TestCase):
         index_body = index_response.get_data(as_text=True)
         self.assertEqual(index_response.status_code, 200)
         self.assertIn(
-            'class="browser-gallery browser-session-gallery"\n                        data-view="grid"',
+            'class="browser-gallery browser-session-gallery" data-layout-role="content-grid"\n                        data-view="grid"',
             index_body,
         )
         self.assertIn('data-gallery-list-label="ChatGPT sessions list"', index_body)
@@ -6640,6 +6665,9 @@ class WebAppTests(unittest.TestCase):
     def test_media_scripts_switch_between_sessions_and_persist_the_index(self) -> None:
         media_script = LOCAL_MEDIA_BROWSER_SCRIPT_PATH.read_text(encoding="utf-8")
         sidebar_script = SIDEBAR_SCRIPT_PATH.read_text(encoding="utf-8")
+        sidebar_filters = (SIDEBAR_SCRIPT_PATH.parent / "browser-sidebar-filters.js").read_text(
+            encoding="utf-8"
+        )
         pagination_template = PAGINATION_TEMPLATE_PATH.read_text(encoding="utf-8")
 
         for fragment in (
@@ -6650,10 +6678,13 @@ class WebAppTests(unittest.TestCase):
         ):
             with self.subTest(fragment=fragment):
                 self.assertIn(fragment, media_script)
-        filters_script = (LOCAL_MEDIA_BROWSER_SCRIPT_PATH.parent / "browser-sidebar-filters.js").read_text(encoding="utf-8")
-        self.assertEqual(media_script.count('targetUrl.searchParams.delete("session_index");'), 1)
-        self.assertEqual(filters_script.count('targetUrl.searchParams.delete("session_index");'), 1)
-        self.assertIn('browser-sidebar-filters.js', BROWSER_TEMPLATE_PATH.read_text(encoding="utf-8"))
+        session_toggle = media_script.split('sessionViewButton?.addEventListener("click", () => {', 1)[1]
+        session_toggle = session_toggle.split("\n    });", 1)[0]
+        self.assertIn('targetUrl.searchParams.delete("session_index");', session_toggle)
+        content_mode = sidebar_filters.split('if (mode !== "media") {', 1)[1].split("}", 1)[0]
+        self.assertIn('targetUrl.searchParams.delete("session_index");', content_mode)
+        self.assertIn('targetUrl.searchParams.delete("media_view");', content_mode)
+        self.assertIn("filename='browser-sidebar-filters.js'", BROWSER_TEMPLATE_PATH.read_text(encoding="utf-8"))
         self.assertIn('"session_view", "session_index", "media_view"]', sidebar_script)
         self.assertEqual(pagination_template.count("session_index=('1' if filters.session_index else none)"), 2)
 
@@ -7178,8 +7209,11 @@ class WebAppTests(unittest.TestCase):
                 self.assertIn(fragment, script)
 
         observer_options = script.split("observer.observe(document.body, {", 1)[1]
-        self.assertNotIn("attributes: true", observer_options)
-        self.assertNotIn("attributeFilter:", observer_options)
+        self.assertIn("attributes: true", observer_options)
+        self.assertIn('attributeFilter: ["hidden", "disabled"],', observer_options)
+        self.assertNotIn('"data-option-count"', observer_options)
+        self.assertNotIn('"data-segmented-active-index"', observer_options)
+        self.assertNotIn('"style"', observer_options)
 
     def test_text_browser_omits_redundant_chatgpt_media_cache_entrypoint(self) -> None:
         app = create_app()

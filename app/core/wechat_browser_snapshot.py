@@ -1,6 +1,6 @@
 """Persist authenticated conversation summaries after full timeline validation.
 
-Code version: v1.2.0-codex.0
+Code version: v1.2.2-codex.0
 """
 
 from __future__ import annotations
@@ -181,7 +181,15 @@ def _cache_storage(directory):
 
 
 def _code_files():
-    return sorted(Path(__file__).parent.glob("wechat*.py"))
+    writer_only = {
+        "wechat_global_refresh.py", "wechat_macos_bank_merge.py",
+        "wechat_macos_baseline_copy.py",
+    }
+    return sorted(
+        path
+        for path in Path(__file__).parent.glob("wechat*.py")
+        if path.stem.isidentifier() and path.name not in writer_only
+    )
 
 
 def _code_state(path):
@@ -489,7 +497,7 @@ def load_conversation_snapshot(repository, connection, history_identity):
     return result
 
 
-def _preview_source_identity(value, *, inode_key):
+def _resident_identity(value, *, inode_key):
     return (
         isinstance(value, dict)
         and value.keys() == {"dev", inode_key, "size", "mtime_ns", "ctime_ns"}
@@ -498,8 +506,8 @@ def _preview_source_identity(value, *, inode_key):
     )
 
 
-def _preview_pin_matches(previous, current, completion_path, detail_path):
-    from .wechat_resource_details import MAX_BYTES
+def _preview_pin_matches(previous, current, completion_path, bank_path):
+    from .wechat_resource_details import FILENAME, MAX_BYTES
 
     if (
         not isinstance(previous, dict)
@@ -519,44 +527,65 @@ def _preview_pin_matches(previous, current, completion_path, detail_path):
         path for path in old_inputs.keys() | new_inputs.keys()
         if path not in old_inputs or path not in new_inputs or old_inputs[path] != new_inputs[path]
     }
-    if changed - {completion_path, detail_path}:
+    details_path = str(Path(bank_path).with_name(FILENAME))
+    if changed - {completion_path, bank_path, details_path}:
         return False
-    # A signed navigation preview contains historical counts and hides bodies.
-    if completion_path in changed and (
-        not _preview_source_identity(new_inputs.get(completion_path), inode_key="ino")
-        or completion_path in old_inputs
-        and not _preview_source_identity(old_inputs[completion_path], inode_key="ino")
-    ):
-        return False
-    for inputs in (old_inputs, new_inputs):
-        detail = inputs.get(detail_path)
-        if detail_path in changed and detail is not None and (
-            not _preview_source_identity(detail, inode_key="inode") or detail["size"] > MAX_BYTES
-        ):
-            return False
-    return True
+    # These overlays keep the conversation scope intact. The navigation
+    # preview labels counts as historical and hides message bodies.
+    completion_safe = (
+        completion_path not in changed
+        or _resident_identity(new_inputs.get(completion_path), inode_key="ino") and (
+            completion_path not in old_inputs
+            or _resident_identity(old_inputs[completion_path], inode_key="ino")
+        )
+    )
+    bank_safe = (
+        bank_path not in changed
+        or _resident_identity(old_inputs.get(bank_path), inode_key="inode")
+        and _resident_identity(new_inputs.get(bank_path), inode_key="inode")
+    )
+    old_details = old_inputs.get(details_path)
+    new_details = new_inputs.get(details_path)
+    details_safe = (
+        details_path not in changed
+        or _resident_identity(new_details, inode_key="inode")
+        and new_details["size"] <= MAX_BYTES
+        and (
+            old_details is None
+            or _resident_identity(old_details, inode_key="inode")
+            and old_details["size"] <= MAX_BYTES
+        )
+    )
+    return completion_safe and bank_safe and details_safe
 
 
 def load_previous_conversation_snapshot(repository, connection, history_identity):
-    """Install a signed preview after a reader or verified overlay change."""
-    from .wechat_resource_details import FILENAME as DETAIL_FILENAME
+    """Install an authenticated navigation preview while an eligible input is checked."""
+    from .wechat_archive_relocation import rebase_navigation_inputs
     from .wechat_secondary_completions import FILENAME
 
     directory = repository.path.parent / "browser_cache"
     key_path = directory / "signing.key"
     snapshot_path = directory / "conversations.snapshot"
-    completion_path = str(repository.path.with_name(FILENAME).resolve())
-    detail_path = str(repository.path.with_name(DETAIL_FILENAME).resolve())
+    completion_path = str(repository.path.with_name(FILENAME).absolute())
     try:
+        bank_path = str(repository.path.parent.resolve() / "macos_recovery.sqlite3")
         pin = _pin(repository, history_identity)
         directory_identity = _directory_identity(directory)
         key, key_identity = _read_signing_key(key_path)
         encoded, snapshot_identity = _read_private(snapshot_path, MAX_SNAPSHOT_BYTES)
         payload = _decode_snapshot(encoded, key)
         previous = payload.get("pin") if isinstance(payload, dict) else None
-        if not _preview_pin_matches(previous, pin, completion_path, detail_path) or not _valid_payload(
-            payload, previous
-        ):
+        if not isinstance(previous, dict) or not _valid_payload(payload, previous):
+            return None
+        comparison = previous
+        rebased = None
+        if not _preview_pin_matches(previous, pin, completion_path, bank_path):
+            rebased = rebase_navigation_inputs(
+                repository.path, previous["inputs"], pin["inputs"], encoded, key,
+            )
+            comparison = {**previous, "inputs": rebased}
+        if not _preview_pin_matches(comparison, pin, completion_path, bank_path):
             return None
     except (OSError, ValueError, TypeError, KeyError, RecursionError):
         return None
@@ -566,8 +595,11 @@ def load_previous_conversation_snapshot(repository, connection, history_identity
             return (
                 _pin(repository, history_identity) == pin
                 and _directory_identity(directory) == directory_identity
-                and _cache_file_state(key_path) == key_identity
-                and _cache_file_state(snapshot_path) == snapshot_identity
+                and _state(key_path.lstat()) == key_identity
+                and _state(snapshot_path.lstat()) == snapshot_identity
+                and (rebased is None or rebase_navigation_inputs(
+                    repository.path, previous["inputs"], pin["inputs"], encoded, key,
+                ) == rebased)
             )
         except (OSError, ValueError, TypeError):
             return False

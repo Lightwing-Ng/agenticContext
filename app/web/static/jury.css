@@ -1,4 +1,4 @@
-/* Code version: v1.2.0-codex.0 */
+/* Code version: v1.2.1-codex.0 */
 .agent-mode-section {
     display: grid;
     justify-items: center;
@@ -77,6 +77,7 @@
     outline: 2px solid var(--accent-text);
     outline-offset: 2px;
     border-radius: var(--radius-soft);
+    corner-shape: var(--corner-shape-continuous);
 }
 .jury-provider-identity:has(.jury-provider-input:active) .jury-provider-selection-mark {
     transform: scale(0.9);

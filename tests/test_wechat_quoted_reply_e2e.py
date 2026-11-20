@@ -1,6 +1,6 @@
 """PDF and HTML replies share quote order and the message type hierarchy.
 
-Code version: v1.2.1-codex.0
+Code version: v1.3.1-codex.0
 """
 
 from __future__ import annotations
@@ -201,6 +201,7 @@ def _quote_geometry(card):
             speakerBottom: speakerBox.bottom,
             replyTop: replyBox.top,
             sizes: [qs.fontSize, qt.fontSize, s.fontSize, r.fontSize],
+            quoteSpeakerWeight: qs.fontWeight,
             families: [qs.fontFamily, qt.fontFamily, s.fontFamily, r.fontFamily],
             quoteColors: [qs.color, qt.color],
             foreground: r.color,
@@ -271,7 +272,8 @@ def test_legacy_quote_is_muted_first_and_reply_identity_stays_compact(
         assert metrics["quoteTextBottom"] <= metrics["separatorTop"] + 1, metrics
         assert metrics["separatorBottom"] <= metrics["speakerTop"] + 1, metrics
         assert metrics["speakerBottom"] <= metrics["replyTop"] + 1, metrics
-        assert metrics["sizes"] == ["16px", "15px", "17px", "15px"], metrics
+        assert metrics["sizes"] == ["17px", "15px", "17px", "15px"], metrics
+        assert metrics["quoteSpeakerWeight"] == "500", metrics
         assert len(set(metrics["families"])) == 1, metrics
         assert len(set(metrics["quoteColors"])) == 1, metrics
         assert metrics["quoteColors"][0] != metrics["foreground"], metrics

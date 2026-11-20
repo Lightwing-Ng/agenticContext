@@ -1,6 +1,6 @@
 """Build exact, source-pinned browser pages outside document requests.
 
-Code version: v1.2.0-codex.0
+Code version: v1.3.1-codex.0
 """
 
 from collections import OrderedDict, deque
@@ -63,7 +63,7 @@ def _result_size(value):
 
 
 class WechatBrowserReadService:
-    """Retain one-use verified results; status never opens a database or waits."""
+    """Keep bounded verified pages in memory; status never opens a database or waits."""
 
     def __init__(self, root, *, loader=None, pin=None, validator=None, query_history=None):
         self.root = Path(root)
@@ -90,6 +90,7 @@ class WechatBrowserReadService:
         if self._pin_override is not None:
             return self._pin_override()
         from .wechat_archive import WechatArchiveRepository
+        from .wechat_archive_relocation import FILENAME, receipt_identity
         from .wechat_browser_snapshot import _code_fingerprint
         from .wechat_conversation_events import _inputs
 
@@ -98,9 +99,13 @@ class WechatBrowserReadService:
             self._history_required = True
         elif self._history_required:
             raise ValueError("The saved archive is unavailable.")
+        base = repository.path.parent
+        relocation_path = base / FILENAME
+        signing_path = base / "browser_cache" / "signing.key"
+
         def authority_inputs():
             try:
-                return _inputs(repository) if repository.path.exists() else {}
+                inputs = _inputs(repository) if repository.path.exists() else {}
             except FileNotFoundError as error:
                 contacts = repository.path.with_name("contacts.sqlite3")
                 if error.filename is None or Path(error.filename).absolute() != contacts.absolute():
@@ -110,11 +115,16 @@ class WechatBrowserReadService:
                 from .wechat_reviewed_quote_events import reviewed_quotes_digest
 
                 # Missing optional identity context never creates inferred identities.
-                return {str(contacts): None, "reviewed_quotes": reviewed_quotes_digest(self.root)}
+                inputs = {str(contacts): None, "reviewed_quotes": reviewed_quotes_digest(self.root)}
+                relocation = receipt_identity(repository.path)
+                if relocation is not None:
+                    inputs[str(relocation_path)] = relocation
+            if str(relocation_path) in inputs or str(base.resolve() / FILENAME) in inputs:
+                inputs[str(signing_path)] = _state(signing_path)
+            return inputs
 
         inputs = authority_inputs()
         managed = []
-        base = repository.path.parent
         entries_seen = 0
 
         def inventory(directory):
@@ -258,8 +268,16 @@ class WechatBrowserReadService:
         self._remove_key(task)
         task.update(state="failed", message=message)
 
+    @staticmethod
+    def _result_expired(task):
+        return (
+            task.get("result") is not None
+            and not task.get("retained")
+            and time.monotonic() - task["finished"] > RESULT_SECONDS
+        )
+
     def acquire(self, parameters, *, wait=True, _restart=True, _consume=True):
-        """Return an exact ready result once, or a bounded nonblocking job handle."""
+        """Return the exact verified view or a bounded nonblocking job handle."""
         parameters = dict(parameters)
         pin = self._pin()
         key = (pin, json.dumps(parameters, sort_keys=True))
@@ -271,10 +289,9 @@ class WechatBrowserReadService:
             if task is not None and task["state"] == "succeeded" and task.get("result") is None:
                 self._remove_key(task)
                 task = None
-            if task is not None and task.get("result") is not None:
-                if time.monotonic() - task["finished"] > RESULT_SECONDS:
-                    self._expire_result(task, "This saved view expired. Try loading it again.")
-                    task = None
+            if task is not None and self._result_expired(task):
+                self._expire_result(task, "This saved view expired. Try loading it again.")
+                task = None
             if task is None:
                 for previous, value in list(self._tasks.items()):
                     if len(self._tasks) < MAX_TASKS:
@@ -328,9 +345,13 @@ class WechatBrowserReadService:
                     result = None
                     drift = True
                 else:
-                    # Transfer ownership; copying would destroy runtime authority sentinels.
                     ready_public = self._public(task)
-                    self._expire_result(task, "This saved view has already been opened. Try loading it again.")
+                    if parameters.get("session"):
+                        # The exact detail stays reusable under its source and proof pins.
+                        task["retained"] = True
+                        self._tasks.move_to_end(task["task_id"])
+                    else:
+                        self._expire_result(task, "This saved view has already been opened. Try loading it again.")
             public = self._public(task)
             if result is not None:
                 public = ready_public
@@ -341,7 +362,7 @@ class WechatBrowserReadService:
     def status(self, token):
         with self._condition:
             task = self._tasks.get(token)
-            if task is not None and task.get("result") is not None and time.monotonic() - task["finished"] > RESULT_SECONDS:
+            if task is not None and self._result_expired(task):
                 self._expire_result(task, "This saved view expired. Try loading it again.")
             return self._public(task) if task is not None else None
 
@@ -388,7 +409,7 @@ class WechatBrowserReadService:
                         raise RuntimeError("The saved-view reader is shutting down.")
                 # A conversation read may publish counts while a list page is built.
                 list_proofs = self._proofs() if not parameters.get("session") else None
-                # Build the strict timeline on the connection that reads the conversation.
+                # Reuse the loader's strict connection instead of building and discarding its timeline.
                 page = self._load(parameters, strict_timeline=True) if strict_timeline else loader(parameters)
                 metadata = page.messaging or {}
                 if metadata.get("resource_index_status") in {"stale", "invalid"}:

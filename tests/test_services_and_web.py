@@ -1,6 +1,6 @@
 """Service orchestration and Flask contract tests.
 
-Code version: v1.8.18-codex.0
+Code version: v1.8.19-codex.0
 """
 
 from __future__ import annotations
@@ -42,6 +42,21 @@ NEW_BLUEPRINT_ENDPOINTS = frozenset(
         "local_resources.browser_wechat_session_exchange",
         "local_resources.remove_browser_prompt",
         "local_resources.restore_browser_prompt",
+        "local_resources.browser_wechat_exchange_cancel",
+        "local_resources.browser_wechat_exchange_download",
+        "local_resources.browser_wechat_exchange_export_start",
+        "local_resources.browser_wechat_exchange_export_status",
+        "local_resources.browser_wechat_exchange_import",
+        "local_resources.browser_wechat_exchange_preview",
+        "local_resources.browser_wechat_refresh",
+        "local_resources.browser_wechat_refresh_status",
+        "local_resources.browser_wechat_read_status",
+        "local_resources.browser_wechat_session_csv",
+        "local_resources.browser_wechat_session_exchange",
+        "local_resources.reveal_wechat_resource",
+        "local_resources.wechat_contact_analysis",
+        "local_resources.wechat_contact_csv",
+        "local_resources.wechat_message_source",
         "settings.choose_native_tunnel_directory_route",
         "tunnel.api_project",
         "tunnel.api_project_register",
@@ -244,9 +259,17 @@ def test_web_pages_and_status_apis_are_available(client) -> None:
 
 
 @pytest.mark.integration
+@pytest.mark.parametrize("method", ("GET", "HEAD"))
+def test_home_page_redirects_to_agent(client, method: str) -> None:
+    response = client.open("/", method=method)
+
+    assert response.status_code == 302
+    assert response.headers["Location"] == "/agent"
+
+
+@pytest.mark.integration
 def test_legacy_cache_page_paths_redirect_to_canonical_namespace(client) -> None:
     for legacy_path, canonical_path in (
-        ("/", "/cache/x/text/chrome"),
         ("/grok", "/cache/grok/text/edge"),
         ("/chatgpt", "/cache/chatgpt/text/edge"),
         ("/gemini", "/cache/gemini/text/edge"),

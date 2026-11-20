@@ -1,22 +1,24 @@
 """Cold pages remain responsive while exact verified results are built once.
 
-Code version: v1.1.0-codex.0
+Code version: v1.2.1-codex.0
 """
 
 from threading import Event
 import time
 
 import pytest
+from bs4 import BeautifulSoup
 
 from app.core.chat_history_browser import ChatHistoryPage
 from app.core.wechat_browser_read import WechatBrowserReadService
-from tests import test_wechat_session_csv
 from tests import test_wechat_conversation_events
-from tests.wechat_browser_markup import parse_browser_markup
+from tests import test_wechat_group_roster_routes
+from tests import test_wechat_session_csv
 
 
 session_app = test_wechat_session_csv.session_app
 event_store = test_wechat_conversation_events.event_store
+roster_app = test_wechat_group_roster_routes.roster_app
 
 
 def _page(status="ready", **metadata):
@@ -89,7 +91,7 @@ def test_query_keys_separate_sessions_search_and_accounts(tmp_path):
         service.shutdown()
 
 
-@pytest.mark.parametrize("when", ("during", "after"))
+@pytest.mark.parametrize("when", ("during", "after", "after_open"))
 def test_input_drift_never_delivers_old_result(tmp_path, when):
     release = Event()
     pin = ["first"]
@@ -107,8 +109,10 @@ def test_input_drift_never_delivers_old_result(tmp_path, when):
             pin[0] = "second"
         release.set()
         finished = _done(service, job["task_id"])
-        if when == "after":
+        if when != "during":
             assert finished["state"] == "succeeded"
+            if when == "after_open":
+                assert service.acquire({"session": "selected"}, wait=False)[0] is pages[0]
             pin[0] = "second"
         else:
             assert finished["state"] == "failed"
@@ -120,6 +124,45 @@ def test_input_drift_never_delivers_old_result(tmp_path, when):
         assert result is not first_result
     finally:
         release.set()
+        service.shutdown()
+
+
+def test_opened_detail_survives_ready_deadline_but_is_revalidated_after_proof_drift(tmp_path, monkeypatch):
+    from app.core import wechat_browser_read as reads
+
+    parameters = {"session": "selected", "page": 1233}
+    authority = object()
+    first = _page(authority=authority)
+    updated = _page(authority=object())
+    proofs = []
+    loaded = []
+
+    def load(_parameters):
+        loaded.append(tuple(proofs))
+        return updated if proofs else first
+
+    service = WechatBrowserReadService(tmp_path, loader=load, pin=lambda: "fixed", validator=lambda _: None)
+    monkeypatch.setattr(service, "_proofs", lambda: tuple(proofs))
+    try:
+        _, job = service.acquire(parameters, wait=False)
+        assert _done(service, job["task_id"])["state"] == "succeeded"
+        page, _ = service.acquire(parameters, wait=False)
+        assert page.messaging["authority"] is authority
+        with monkeypatch.context() as expired:
+            expired.setattr(reads, "RESULT_SECONDS", 0)
+            assert service.status(job["task_id"])["state"] == "succeeded"
+            assert service.acquire(parameters, wait=False)[0].messaging["authority"] is authority
+        assert loaded == [()]
+
+        proofs.append("published count proof")
+        page, refreshed = service.acquire(parameters, wait=False)
+        assert page is None or page.messaging["authority"] is updated.messaging["authority"]
+        assert refreshed["task_id"] != job["task_id"]
+        assert service.status(job["task_id"])["state"] == "failed"
+        assert _done(service, refreshed["task_id"])["state"] == "succeeded"
+        assert service.acquire(parameters, wait=False)[0].messaging["authority"] is updated.messaging["authority"]
+        assert loaded == [(), ("published count proof",)]
+    finally:
         service.shutdown()
 
 
@@ -276,6 +319,48 @@ def test_selected_native_resource_failure_retains_refresh_guidance(session_app):
         app.extensions["runtime_shutdown"]()
 
 
+def test_reused_detail_isolates_roster_feedback_and_rechecks_presentation_inputs(roster_app, monkeypatch):
+    from app.web import local_resource_routes as routes
+
+    app, source_root = roster_app.app, roster_app.store
+    original = routes.query_chat_history
+    calls = []
+
+    def load(*args, **kwargs):
+        calls.append(kwargs)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(routes, "query_chat_history", load)
+    monkeypatch.setattr(app.extensions["wechat_mac_refresh"], "available", lambda *_: False)
+    service = app.extensions["wechat_browser_read"]
+    base = "/browser?view=text&source=wechat&session=" + roster_app.group
+    client = roster_app.client
+    try:
+        assert client.get(base).status_code == 200
+        first = next(iter(service._tasks))
+        assert _done(service, first)["state"] == "succeeded"
+        roster_app.state["available"] = False
+        with_feedback = client.get(base + "&roster_result=busy")
+        assert b"Another member snapshot is being saved." in with_feedback.data
+        assert b"A verified local contact database is required" in with_feedback.data
+
+        roster_app.state["available"] = True
+        local = client.get(base)
+        assert b"data-chat-message-id" in local.data
+        assert b"Another member snapshot is being saved." not in local.data
+        assert b"A verified local contact database is required" not in local.data
+        assert len(calls) == 1
+
+        (source_root / "messaging/wechat/display_names.json").write_text("{}", encoding="utf-8")
+        assert client.get(base).status_code == 200
+        refreshed = next(token for token in service._tasks if token != first)
+        assert _done(service, refreshed)["state"] == "succeeded"
+        assert b"data-chat-message-id" in client.get(base).data
+        assert len(calls) == 2
+    finally:
+        app.extensions["runtime_shutdown"]()
+
+
 def test_pending_account_shows_previous_conversations_until_current_page_is_ready(
     session_app, monkeypatch,
 ):
@@ -291,12 +376,17 @@ def test_pending_account_shows_previous_conversations_until_current_page_is_read
         assert release.wait(4)
         return current_loader(parameters)
 
+    def install_previous_summary(_repository, connection, _identity):
+        connection.execute("CREATE TEMP TABLE prior_conversations AS SELECT * FROM main.conversations")
+        connection.execute("UPDATE prior_conversations SET message_count=1234")
+        return "prior_conversations", "absent", None
+
     monkeypatch.setattr(service, "loader", blocked_loader)
     monkeypatch.setattr(service, "validator", lambda _: None)
     monkeypatch.setattr(
         wechat_browser_snapshot,
         "load_previous_conversation_snapshot",
-        lambda *_: ("main.conversations", "absent", None),
+        install_previous_summary,
     )
     account = "account:wxid_account_a"
     parameters = {
@@ -307,32 +397,30 @@ def test_pending_account_shows_previous_conversations_until_current_page_is_read
         response = client.get("/browser", query_string=parameters)
         assert response.status_code == 200
         assert entered.wait(1)
-        pending = parse_browser_markup(response.data)
-        shell = pending.find(".//*[@data-wechat-read-pending]")
-        assert shell.get("data-state") == "running"
-        assert client.get(shell.get("data-status-url")).json["state"] == "running"
-        copy = shell.find(".//*[@data-wechat-read-copy]")
-        assert not "".join(copy.itertext()).strip()
-        preview = pending.find(".//*[@data-wechat-read-preview]")
-        assert "Message counts are from the last verified snapshot" not in "".join(preview.itertext())
-        rows = preview.findall(".//tr[@data-chat-session-id]")
+        pending = BeautifulSoup(response.data, "html.parser")
+        shell = pending.select_one("[data-wechat-read-pending]")
+        assert shell["data-state"] == "running"
+        assert client.get(shell["data-status-url"]).json["state"] == "running"
+        assert "last verified conversations" in shell.select_one("[data-wechat-read-copy]").get_text()
+        preview = pending.select_one("[data-wechat-read-preview]")
+        rows = preview.select("tr[data-chat-session-id]")
         assert len(rows) == 2
-        assert {row.get("data-wechat-account") for row in rows} == {account}
-        assert all("".join(row.findall("td")[-1].itertext()).strip() == "—" for row in rows)
-        assert not pending.findall(".//*[@data-chat-message-id]")
+        assert {row["data-wechat-account"] for row in rows} == {account}
+        assert "last verified snapshot" in preview.get_text(" ", strip=True)
+        assert all(row.select_one("td:last-child").get_text(strip=True) == "1,234" for row in rows)
+        assert not pending.select("[data-chat-message-id]")
 
         release.set()
-        assert _done(service, shell.get("data-task-id"))["state"] == "succeeded"
+        assert _done(service, shell["data-task-id"])["state"] == "succeeded"
         response = client.get("/browser", query_string=parameters)
         assert response.status_code == 200
-        ready = parse_browser_markup(response.data)
-        assert ready.find(".//*[@data-wechat-read-pending]") is None
-        assert ready.find(".//*[@data-wechat-read-preview]") is None
-        current_rows = ready.findall(".//tr[@data-chat-session-id]")
-        assert [row.get("data-chat-session-id") for row in current_rows] == [
-            row.get("data-chat-session-id") for row in rows
+        ready = BeautifulSoup(response.data, "html.parser")
+        assert not ready.select("[data-wechat-read-pending], [data-wechat-read-preview]")
+        current_rows = ready.select("tr[data-chat-session-id]")
+        assert [row["data-chat-session-id"] for row in current_rows] == [
+            row["data-chat-session-id"] for row in rows
         ]
-        assert all("".join(row.findall("td")[-1].itertext()).strip() == "215" for row in current_rows)
+        assert all(row.select_one("td:last-child").get_text(strip=True) == "215" for row in current_rows)
     finally:
         release.set()
         app.extensions["runtime_shutdown"]()
@@ -411,6 +499,62 @@ def test_generated_cache_files_do_not_invalidate_source_pin_but_preferences_do(s
         app.extensions["runtime_shutdown"]()
 
 
+@pytest.mark.parametrize("has_contacts", [False, True])
+def test_relocation_signing_key_changes_the_saved_read_pin(session_app, has_contacts):
+    from contextlib import closing
+    import sqlite3
+
+    from app.core.owner_only_files import ensure_owner_only
+    from app.core.wechat_archive_relocation import FILENAME
+    from app.core.wechat_browser_snapshot import _cache_storage
+    from app.core.wechat_contacts import initialize_contact_registry
+
+    app, root = session_app
+    service = app.extensions["wechat_browser_read"]
+    base = root / "messaging/wechat"
+    try:
+        if has_contacts:
+            with closing(sqlite3.connect(base / "contacts.sqlite3")) as connection, connection:
+                initialize_contact_registry(connection)
+        directory, _key, _identity = _cache_storage(base / "browser_cache")
+        replacement_key = directory / "replacement.key"
+        replacement_key.write_bytes(b"a" * 32)
+        ensure_owner_only(replacement_key)
+        before = service._pin()
+        replacement_key.replace(directory / "signing.key")
+        assert service._pin() == before
+
+        proof = base / FILENAME
+        proof.write_bytes(b"synthetic receipt")
+        ensure_owner_only(proof)
+        with_proof = service._pin()
+        replacement_key.write_bytes(b"b" * 32)
+        ensure_owner_only(replacement_key)
+        replacement_key.replace(directory / "signing.key")
+        assert service._pin() != with_proof
+    finally:
+        app.extensions["runtime_shutdown"]()
+
+
+def test_snapshot_fingerprint_ignores_only_reviewed_writer_helpers(tmp_path, monkeypatch):
+    from app.core import wechat_browser_snapshot as snapshot
+
+    reader = tmp_path / "wechat_archive.py"
+    reader.write_text("reader version one")
+    monkeypatch.setattr(snapshot, "__file__", str(tmp_path / "wechat_browser_snapshot.py"))
+    monkeypatch.setattr(snapshot, "_CODE_DIGEST", None)
+    first = snapshot._code_fingerprint()
+    for name in ("wechat_global_refresh.py", "wechat_macos_bank_merge.py", "wechat_macos_baseline_copy.py"):
+        (tmp_path / name).write_text("maintenance version one")
+        assert snapshot._code_fingerprint() == first
+        (tmp_path / name).write_text("maintenance version two")
+        assert snapshot._code_fingerprint() == first
+    (tmp_path / "wechat_archive 2.py").write_text("Unimportable numbered copy")
+    assert snapshot._code_fingerprint() == first
+    reader.write_text("reader version two")
+    assert snapshot._code_fingerprint() != first
+
+
 def test_signed_summary_reuse_does_not_promote_authority_to_message_views(event_store, monkeypatch):
     from app.core import wechat_browser_snapshot as snapshots
     from app.core.wechat_archive import WechatArchiveRepository
@@ -481,7 +625,8 @@ def test_pending_queue_is_bounded_and_does_not_start_parallel_workers(tmp_path, 
         service.shutdown()
 
 
-def test_memory_eviction_never_advertises_an_undeliverable_ready_result(tmp_path, monkeypatch):
+@pytest.mark.parametrize("opened", (False, True))
+def test_memory_eviction_never_advertises_an_undeliverable_ready_result(tmp_path, monkeypatch, opened):
     from app.core import wechat_browser_read as reads
 
     size = reads._result_size(_page())
@@ -490,6 +635,8 @@ def test_memory_eviction_never_advertises_an_undeliverable_ready_result(tmp_path
     try:
         _, first = service.acquire({"session": "one"}, wait=False)
         assert _done(service, first["task_id"])["state"] == "succeeded"
+        if opened:
+            assert service.acquire({"session": "one"}, wait=False)[0] is not None
         _, second = service.acquire({"session": "two"}, wait=False)
         assert _done(service, second["task_id"])["state"] == "succeeded"
         assert service.status(first["task_id"])["state"] == "failed"
@@ -499,12 +646,27 @@ def test_memory_eviction_never_advertises_an_undeliverable_ready_result(tmp_path
         service.shutdown()
 
 
-def test_status_expires_a_ready_result_without_filesystem_or_database_access(tmp_path, monkeypatch):
+def test_list_result_is_still_consumed_by_the_first_open(tmp_path):
+    page = _page()
+    service = WechatBrowserReadService(tmp_path, loader=lambda _: page, pin=lambda: "fixed", validator=lambda _: None)
+    try:
+        _, first = service.acquire({}, wait=False)
+        assert _done(service, first["task_id"])["state"] == "succeeded"
+        assert service.acquire({}, wait=False)[0] is page
+        assert service.status(first["task_id"])["state"] == "failed"
+        _, second = service.acquire({}, wait=False)
+        assert second["task_id"] != first["task_id"]
+    finally:
+        service.shutdown()
+
+
+@pytest.mark.parametrize("parameters", ({}, {"session": "selected"}))
+def test_status_expires_a_ready_result_without_filesystem_or_database_access(tmp_path, monkeypatch, parameters):
     from app.core import wechat_browser_read as reads
 
     service = WechatBrowserReadService(tmp_path, loader=lambda _: _page(), pin=lambda: "fixed", validator=lambda _: None)
     try:
-        _, job = service.acquire({}, wait=False)
+        _, job = service.acquire(parameters, wait=False)
         assert _done(service, job["task_id"])["state"] == "succeeded"
         monkeypatch.setattr(reads, "RESULT_SECONDS", 0)
         service._pin_override = lambda: (_ for _ in ()).throw(AssertionError("status attempted I/O"))

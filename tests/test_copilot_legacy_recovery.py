@@ -1,6 +1,6 @@
 """Strictly additive, provenance-preserving legacy Copilot recovery regressions."""
 
-# Code version: v1.0.0-codex.0
+# Code version: v1.1.0-codex.0
 
 import copy
 import hashlib
@@ -24,7 +24,7 @@ from app.core.copilot_sync_state import (
     write_copilot_sync_state,
 )
 from app.core.job_lock import CACHE_TASK_LOCK_NAME, CacheTaskLock
-from app.core.resource_persistence import COPILOT_HISTORY_SCHEMA, read_parquet_rows, write_parquet_rows_atomic
+from app.core.resource_persistence import COPILOT_HISTORY_SCHEMA, read_resource_rows, write_resource_rows_atomic
 
 
 def _capture(identity: str = "AbC123") -> dict:
@@ -92,7 +92,7 @@ def test_apply_keeps_existing_17_and_raw_bodies_with_verifiable_provenance(tmp_p
     existing_rows = existing.rows
     original = existing.path.read_bytes()
     original_state = copilot_sync_state_path(root).read_bytes()
-    other = root / "llm/chatgpt/history.parquet"
+    other = root / "llm/chatgpt/history.sqlite3"
     other.parent.mkdir(parents=True)
     other.write_bytes(b"Protected other-provider fixture.")
     capture = _capture()
@@ -109,8 +109,8 @@ def test_apply_keeps_existing_17_and_raw_bodies_with_verifiable_provenance(tmp_p
     assert all(row["content_sha256"] == hashlib.sha256(row["content_text"].encode()).hexdigest() for row in recovered)
     backup = Path(result["backup_dir"])
     assert (backup / "capture.json").read_bytes() == source.read_bytes() == raw
-    assert (backup / "history.parquet").read_bytes() == original
-    assert (backup / "sync-state.parquet").read_bytes() == original_state
+    assert (backup / "history.sqlite3").read_bytes() == original
+    assert (backup / "sync-state.sqlite3").read_bytes() == original_state
     audit = json.loads((backup / "import.json").read_bytes())
     assert audit["capture_sha256"] == hashlib.sha256(raw).hexdigest()
     assert audit["conversation_url"] == capture["conversation_url"]
@@ -129,7 +129,7 @@ def test_repeated_capture_is_idempotent_and_does_not_merge_same_titles(tmp_path:
     root = tmp_path / "runtime"
     source = _save(tmp_path / "capture.json")
     first = import_copilot_legacy_capture(root, source, known_catalog_sessions=357, apply=True)
-    path = root / "llm/copilot/history.parquet"
+    path = root / "llm/copilot/history.sqlite3"
     before = (path.read_bytes(), path.stat().st_mtime_ns, copilot_sync_state_path(root).read_bytes())
     capture = _capture()
     capture["captured_at"] = "2026-10-21T10:00:00+00:00"
@@ -159,7 +159,7 @@ def test_conflicting_or_truncated_capture_never_replaces_existing_rows(tmp_path:
         store = CopilotHistoryStore(root)
         rows = store.rows
         rows[0]["conversation_url"] = "https://copilot.com/chat/conversation/AbC123"
-        write_parquet_rows_atomic(store.path, rows, COPILOT_HISTORY_SCHEMA)
+        write_resource_rows_atomic(store.path, rows, COPILOT_HISTORY_SCHEMA)
     _save(source, capture)
     before = _files(root)
     with pytest.raises(ValueError, match="conflicts"):
@@ -236,15 +236,15 @@ def test_atomic_history_failure_preserves_old_rows_and_keeps_partial_backup(tmp_
     store = _seed(root)
     source = _save(tmp_path / "capture.json")
     original = store.path.read_bytes()
-    with patch("app.core.copilot_legacy_recovery.write_parquet_rows_atomic", side_effect=OSError("Synthetic write failed.")):
+    with patch("app.core.copilot_legacy_recovery.write_resource_rows_atomic", side_effect=OSError("Synthetic write failed.")):
         with pytest.raises(OSError, match="Synthetic write failed"):
             import_copilot_legacy_capture(root, source, known_catalog_sessions=357, apply=True)
     assert store.path.read_bytes() == original
     assert read_copilot_sync_state(root)["status"] == "incomplete"
     backup = next((root / "recovery").iterdir())
-    assert (backup / "history.parquet").read_bytes() == original
+    assert (backup / "history.sqlite3").read_bytes() == original
     assert json.loads((backup / "import.json").read_bytes())["applied"] is False
-    assert read_parquet_rows(store.path) == store.rows
+    assert read_resource_rows(store.path) == store.rows
 
 
 def test_previous_complete_status_is_downgraded_before_history_write(tmp_path: Path) -> None:
@@ -256,7 +256,7 @@ def test_previous_complete_status_is_downgraded_before_history_write(tmp_path: P
         "completion_basis": "Previous source cursor ended.",
     })
     source = _save(tmp_path / "capture.json")
-    original_writer = write_parquet_rows_atomic
+    original_writer = write_resource_rows_atomic
 
     def checked_write(path, rows, schema):
         state = read_copilot_sync_state(root)
@@ -264,7 +264,7 @@ def test_previous_complete_status_is_downgraded_before_history_write(tmp_path: P
         assert state["expected_sessions"] == 357
         original_writer(path, rows, schema)
 
-    with patch("app.core.copilot_legacy_recovery.write_parquet_rows_atomic", side_effect=checked_write):
+    with patch("app.core.copilot_legacy_recovery.write_resource_rows_atomic", side_effect=checked_write):
         import_copilot_legacy_capture(root, source, known_catalog_sessions=357, apply=True)
     assert read_copilot_sync_state(root)["processed_sessions"] == 17
     assert not build_copilot_initial_snapshot("test", root).discovery_complete
@@ -319,7 +319,7 @@ def test_corrupt_or_duplicate_existing_history_is_never_rewritten(tmp_path: Path
     store = _seed(root, 2)
     rows = copy.deepcopy(store.rows)
     rows.append(dict(rows[0]))
-    write_parquet_rows_atomic(store.path, rows, COPILOT_HISTORY_SCHEMA)
+    write_resource_rows_atomic(store.path, rows, COPILOT_HISTORY_SCHEMA)
     source = _save(tmp_path / "capture.json")
     original = store.path.read_bytes()
     with pytest.raises(ValueError, match="malformed"):

@@ -30,6 +30,8 @@ _MAX_PROOF_BYTES = 128 * 1024
 
 def proof_pin(path, history, identity, inputs):
     """Capture the inputs and verifier before starting the expensive proof."""
+    from .wechat_archive_relocation import receipt_identity
+
     try:
         return {
             "bank": str(path.resolve()),
@@ -39,6 +41,7 @@ def proof_pin(path, history, identity, inputs):
             "code": _code_fingerprint(),
             "python": sys.version,
             "sqlite": sqlite3.sqlite_version,
+            "relocation": receipt_identity(history),
         }
     except (OSError, ValueError, TypeError):
         return None

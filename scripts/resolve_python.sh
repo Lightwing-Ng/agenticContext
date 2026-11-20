@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-# Code version: v1.5.1-codex.1
+# Code version: v1.5.3-codex.0
 
 _python_required_modules() {
 	local mode="${1:-version}"
@@ -11,10 +11,10 @@ _python_required_modules() {
 	esac
 	case "$mode" in
 		test)
-			printf '%s\n' pytest
+			printf '%s\n' pytest bs4
 			;;
 		quality)
-			printf '%s\n' ruff pytest pytest_cov
+			printf '%s\n' ruff pytest pytest_cov bs4
 			;;
 	esac
 }
@@ -60,6 +60,9 @@ resolve_python_bin() {
 		while IFS= read -r candidate; do
 			candidates+=("$candidate")
 		done < <(_python_platform_candidates)
+		local project_root
+		project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+		candidates+=("$project_root/.venv/bin/python")
 	fi
 
 	local checked_candidates=("")

@@ -21,7 +21,7 @@ def search_store(event_store):
     owner = "account:" + events.OWNER
     other_owner = "account:other-search-owner"
     sessions = {}
-    with closing(sqlite3.connect(repository.path)) as connection, connection:
+    with sqlite3.connect(repository.path) as connection:
         conversation = list(connection.execute("SELECT * FROM conversations").fetchone())
         message = list(connection.execute("SELECT * FROM messages LIMIT 1").fetchone())
         partition = list(connection.execute("SELECT * FROM partitions LIMIT 1").fetchone())

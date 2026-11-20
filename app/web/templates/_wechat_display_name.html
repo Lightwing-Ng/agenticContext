@@ -1,0 +1,9 @@
+{# Code version: v1.0.0-codex.0 #}
+{# Repair only visible WeChat names; retained source values stay literal. #}
+{% macro display_name(value) -%}
+{%- set name = namespace(text=value) -%}
+{%- for base in '0123456789#*' -%}
+{%- set name.text = name.text|replace(base ~ '\u20e3\ufe0f', base ~ '\ufe0f\u20e3') -%}
+{%- endfor -%}
+{{- name.text -}}
+{%- endmacro %}

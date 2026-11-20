@@ -1,6 +1,6 @@
 """Link complete, corroborated transcript copies to their native event origins.
 
-Code version: v1.3.3-codex.0
+Code version: v1.3.4-codex.0
 """
 
 from __future__ import annotations
@@ -19,7 +19,7 @@ from .wechat_forwarded import _epoch_placeholder_clock
 from .wechat_text import _FORWARDED_RESOURCES
 
 
-VERSION = "v1.3.3-codex.0"
+VERSION = "v1.3.4-codex.0"
 _DATA_ID = re.compile(r"[0-9a-f]{32}")
 _POSITIVE = re.compile(r"[1-9][0-9]*")
 _SERVER_KEYS = {"svrid", "srcMsgSvrId", "dataitemsource/svrid", "dataitemsource/msgid"}
@@ -673,6 +673,235 @@ def _packet_bridge(html, native, snapshots):
     return links
 
 
+def _mixed_group_key(row, sender):
+    owner, peer = _author(row["account_id"]), row["peer_id"]
+    stamp = _stamp(row["timestamp_value"], seconds=True)
+    if (
+        not owner
+        or not _author(sender)
+        or row["kind"] != "group"
+        or not isinstance(peer, str)
+        or not peer.endswith(("@chatroom", "@im.chatroom"))
+        or any(character.isspace() or character == "\0" for character in peer)
+        or row["direction"] != ("sent" if sender == owner else "received")
+        or stamp is None
+    ):
+        return None
+    return peer, sender, stamp.replace(tzinfo=None)
+
+
+def _mixed_group_bridge(html, native, snapshots):
+    """Compare every opaque position; an untyped HTML caption is never joined."""
+    row, proof = html
+    original, native_proof, details, _ = native
+    owner = row["account_id"]
+    metadata = _metadata(row, proof, snapshots)
+    locator = proof.get("locator")
+    if not isinstance(locator, dict):
+        return None
+    member = locator.get("member")
+    local_id, archive_hash = locator.get("export_msgid"), locator.get("archive_sha256")
+    stamp = _stamp(row["timestamp_value"], seconds=True)
+    event = _mixed_group_key(row, proof.get("sender_native_id"))
+    if (
+        event is None
+        or event != _mixed_group_key(original, original["sender_id"])
+        or row["account_key"] != "account:" + owner
+        or row["container_account_key"] != row["account_key"]
+        or row["identity_status"] != "Corroborated export ID"
+        or metadata.get("owner_verified") is not True
+        or metadata.get("source_account_id") != owner
+        or not isinstance(metadata.get("owner_evidence"), dict)
+        or metadata["owner_evidence"].get("native_username") != owner
+        or not isinstance(archive_hash, str)
+        or re.fullmatch(r"[0-9a-f]{64}", archive_hash) is None
+        or metadata.get("source_sha256") != archive_hash
+        or not isinstance(member, dict)
+        or not isinstance(member.get("sha256"), str)
+        or re.fullmatch(r"[0-9a-f]{64}", member["sha256"]) is None
+        or not isinstance(locator.get("member_path"), str)
+        or not locator["member_path"]
+        or proof.get("export_msgid_namespace") != "MesLocalID"
+        or locator.get("export_msgid_namespace") != "MesLocalID"
+        or str(locator.get("export_msgtype")) != "49"
+        or not isinstance(local_id, str)
+        or _POSITIVE.fullmatch(local_id) is None
+        or proof.get("text_extraction_kind")
+        not in {"forwarded_text", "rendered_app_text"}
+        or proof.get("omitted_forwarded_items")
+        or stamp is None
+        or (
+            stamp.tzinfo is not None
+            and stamp != _stamp(original["timestamp_value"], seconds=True)
+        )
+    ):
+        return None
+    native_parts, html_parts = (
+        native_proof["text_components"],
+        proof.get("forwarded_components"),
+    )
+    if not isinstance(html_parts, list) or len(html_parts) != len(native_parts):
+        return None
+    detail_by_path = {tuple(detail["path"]): detail for detail in details}
+    links, identifiers, authors = [], set(), set()
+    captions = 0
+    for position, (part, leaf) in enumerate(zip(native_parts, html_parts), 1):
+        data_id = part.get("source_data_id")
+        sender = _author(part.get("source_sender_id"))
+        if (
+            not isinstance(data_id, str)
+            or _DATA_ID.fullmatch(data_id) is None
+            or data_id in identifiers
+            or not sender
+            or part.get("forwarded_item_path", [position]) != [position]
+            or not isinstance(leaf, dict)
+            or leaf.get("export_msgid") != local_id + "_" + data_id
+            or leaf.get("sender_native_id") != sender
+            or any(
+                leaf.get(key) or part.get(key)
+                for key in (
+                    "forwarded_components",
+                    "text_components",
+                    "quoted_components",
+                    "source_ids",
+                    "source_chat_id",
+                    "original_chat_id",
+                )
+            )
+            or (
+                leaf.get("source_create_time")
+                and not _epoch_placeholder_clock(leaf["source_create_time"])
+            )
+        ):
+            return None
+        identifiers.add(data_id)
+        raw_clock = leaf.get("raw_timestamp")
+        absent_clock = raw_clock is None or (
+            isinstance(raw_clock, str)
+            and (not raw_clock.strip() or _epoch_placeholder_clock(raw_clock))
+        )
+        if part.get("kind") == "forwarded_resource":
+            flags = leaf.get("flags")
+            if (
+                type(part.get("forwarded_data_type")) is not int
+                or part["forwarded_data_type"] != 5
+                or part.get("resource_kind") != "app"
+                or part.get("text")
+                or leaf.get("type") != ""
+                or not isinstance(flags, list)
+                or "forwarded_original_type_unavailable" not in flags
+                or leaf.get("original_message_type") is not None
+                or not absent_clock
+            ):
+                return None
+            captions += 1
+            continue
+        detail = detail_by_path.get(("native", position))
+        if (
+            part.get("kind") != "forwarded_text"
+            or detail is None
+            or detail["sender_id"] != sender
+            or detail["text"] != leaf.get("text")
+            or leaf.get("text_kind") not in {"plain_text", "forwarded_rendered_text"}
+            or str(leaf.get("type", "")) not in {"", "1"}
+            or type(leaf.get("original_message_type", 1)) is not int
+            or leaf.get("original_message_type", 1) != 1
+            or _stamp(detail["timestamp_value"]) is None
+            or (
+                not absent_clock
+                and not _bridge_component_clock(raw_clock, detail["timestamp_value"])
+            )
+        ):
+            return None
+        authors.add(sender)
+        links.append(((position,), detail["id"]))
+    return (
+        links
+        if captions
+        and len(links) == len(details)
+        and len(links) >= 3
+        and len(authors) >= 2
+        else None
+    )
+
+
+def _link_mixed_group_copies(html_parents, packets, refs, snapshots, output):
+    native_by_event, html_by_event = defaultdict(list), defaultdict(list)
+    for packet in packets:
+        row, proof, _, _ = packet
+        if key := _mixed_group_key(row, row["sender_id"]):
+            native_by_event[key].append(packet)
+    for html in html_parents:
+        row, proof = html
+        if key := _mixed_group_key(row, proof.get("sender_native_id")):
+            html_by_event[key].append(html)
+    references = {
+        (ref["parent_message_id"], tuple(json.loads(ref["component_path"]))): ref["id"]
+        for ref in refs.values()
+    }
+    comparisons = 0
+    for key, html_packets in html_by_event.items():
+        native_packets = native_by_event.get(key, ())
+        if not native_packets:
+            continue
+        # A second native parent at this group/sender/second makes the delivery ambiguous.
+        if (
+            len(
+                {
+                    (str(proof.get("server_id")), row["timestamp_value"])
+                    for row, proof, _, _ in native_packets
+                }
+            )
+            != 1
+        ):
+            continue
+        comparisons += len(html_packets) * len(native_packets)
+        if comparisons > MAX_COPY_COMPARISONS:
+            return
+        proposed = defaultdict(set)
+        for native in native_packets:
+            row, proof, _, scope = native
+            server = proof.get("server_id")
+            if (
+                type(server) not in {str, int}
+                or re.fullmatch(r"-?[1-9][0-9]*", str(server)) is None
+                or proof.get("omitted_forwarded_items")
+                or not any(
+                    part.get("kind") == "forwarded_resource"
+                    for part in proof["text_components"]
+                )
+            ):
+                continue
+            matches = [
+                (html[0], links)
+                for html in html_packets
+                if (links := _mixed_group_bridge(html, native, snapshots))
+            ]
+            if not any(html_row["account_id"] == scope[2] for html_row, _ in matches):
+                continue
+            for html_row, links in matches:
+                for path, native_reference in links:
+                    reference = references.get((html_row["id"], path))
+                    if reference and native_reference in refs:
+                        target = output.execute(
+                            "SELECT statement_id FROM statement_members WHERE reference_id=?",
+                            (native_reference,),
+                        ).fetchone()
+                        if target:
+                            proposed[reference].add(target[0])
+        for reference, groups in proposed.items():
+            if len(groups) != 1:
+                continue
+            # Never break an existing proof group to install this packet link.
+            output.execute(
+                "UPDATE statement_members SET statement_id=? WHERE reference_id=? "
+                "AND NOT EXISTS (SELECT 1 FROM statement_members AS other "
+                "WHERE other.statement_id=statement_members.statement_id "
+                "AND other.reference_id<>statement_members.reference_id)",
+                (next(iter(groups)), reference),
+            )
+
+
 def _explicit_child_clock_matches(detail, original, epoch):
     """Use the child's own full clock and reject contradictory numeric source time."""
     stamp = _stamp(detail.get("timestamp_value"), seconds=True)
@@ -913,7 +1142,16 @@ def link_forwarded_origins(
                     packets.append(
                         (
                             compact,
-                            {"unix_timestamp": proof["unix_timestamp"]},
+                            {
+                                "unix_timestamp": proof["unix_timestamp"],
+                                "server_id": proof.get("server_id"),
+                                "omitted_forwarded_items": proof.get(
+                                    "omitted_forwarded_items"
+                                ),
+                                "text_components": (
+                                    proof["text_components"] if row["kind"] == "group" else ()
+                                ),
+                            },
                             details,
                             scope,
                         )
@@ -1076,6 +1314,7 @@ def link_forwarded_origins(
                 "UPDATE statement_members SET statement_id=? WHERE reference_id=?",
                 (next(iter(statements)), reference),
             )
+    _link_mixed_group_copies(html_parents, packets, refs, snapshots, output)
     output.execute(
         "DELETE FROM statement_groups WHERE id NOT IN (SELECT statement_id FROM statement_members)"
     )

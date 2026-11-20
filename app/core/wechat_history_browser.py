@@ -1,6 +1,6 @@
 """Adapt indexed human conversations to the shared Local resources page model."""
 
-# Code version: v1.34.2-codex.0
+# Code version: v1.45.5-codex.0
 
 from __future__ import annotations
 
@@ -12,7 +12,12 @@ import json
 import re
 
 from .wechat_archive import WechatArchiveRepository
-from .wechat_contacts import WechatContactRepository, classify_wechat_identifier
+from .wechat_contacts import (
+    WechatContactRepository,
+    canonical_contact_id,
+    classify_wechat_identifier,
+)
+from .wechat_contact_embedded import _recovered_forwarded_author
 from .wechat_context_evidence import WechatContextEvidence
 from .wechat_context_links import WechatContextLinks
 from .wechat_display_names import WechatDisplayNames
@@ -23,16 +28,28 @@ from .wechat_forwarded import (
     project_native_forwarded,
 )
 from .wechat_forwarded_clocks import WechatForwardedClocks
+from .wechat_forwarded_authors import WechatForwardedAuthors
 from .wechat_forwarded_previews import WechatForwardedPreviews
+from .wechat_html_forwarded_resources import WechatHtmlForwardedResources
 from .wechat_mac_resources import WechatMacResourceResolver
 from .wechat_payment_copy import localize_payment_presentation
 from .wechat_payments import payment_presentation
 from .wechat_quoted_contacts import (
+    _exact_original_quoted_author,
+    _literal_group_quoted_author,
+    _literal_quote_remark,
     _native_quote,
     _quoted_author,
+    _verified_literal_quote_contact,
     project_native_quoted_contacts,
 )
-from .wechat_quoted_resources import project_native_quoted_resources
+from .wechat_quoted_resources import (
+    MACOS_NESTED_INLINE_APP_BASIS,
+    _inline_app_resource,
+    _merge_app_resources,
+    _project_nested_resources,
+    project_native_quoted_resources,
+)
 from .wechat_quote_padding import project_native_quote_padding
 from .wechat_record_presentation import compact_record_fields
 from .wechat_reconcile import native_text_metadata
@@ -48,9 +65,49 @@ _SYSTEM_STATUS_ICONS = re.compile(
 _SYSTEM_NOTICE_ANCHOR = re.compile(
     r"<a\b[^<>]*>(?P<label>[^<>]*)</a\s*>", re.IGNORECASE
 )
-
 _MACOS_RECOVERY_PRESENTATION = object()
-_MACOS_RESOURCE_KINDS = {3: "image", 34: "audio", 43: "video", 47: "sticker"}
+_MACOS_RESOURCE_KINDS = {
+    3: "image", 34: "audio", 43: "video", 47: "sticker", 49: "app", 62: "video",
+}
+_MACOS_ROOM = re.compile(r"[1-9][0-9]*@(?:im\.)?chatroom")
+_MACOS_QUOTE_SOURCE_FIELDS = (
+    "source_id", "snapshot_id", "account_id", "peer_id", "main_sha256",
+    "wal_sha256", "database_relative_path", "table",
+)
+
+
+def _scoped_native_profile_name(contact, sender, account, partition, *, allow_remark=False):
+    """Read one account-wide label from exact native contact observations."""
+    if (
+        contact.get("identity_status") != "verified"
+        or contact.get("observations_truncated")
+    ):
+        return ""
+    kinds = ("remark", "nickname") if allow_remark else ("nickname",)
+    for kind in kinds:
+        observations = contact.get("remarks" if kind == "remark" else "names", ())
+        labels = {
+            observation["value"]
+            for observation in observations
+            if observation["kind"] == kind
+            and observation["source_id"] == partition
+            and observation["owner_account_id"] == account
+            and observation["room_id"] == ""
+            and observation["value"] not in ("", sender, "Unknown sender")
+        }
+        if labels:
+            return next(iter(labels)) if len(labels) == 1 else ""
+    return ""
+
+
+def _is_exact_direct_peer(display_names, context, contact, sender):
+    return (
+        context.get("kind") == "direct"
+        and context.get("peer_id") == sender
+        and classify_wechat_identifier(sender)["kind"] in {"wechat_account", "wechat_identity"}
+        and display_names.account_owner(context)
+        and contact.get("id") == canonical_contact_id(sender, authority="native_message_sender")
+    )
 
 
 def _macos_recovery_source_context(row):
@@ -89,21 +146,83 @@ def _macos_recovery_receipt(item):
     return receipt
 
 
-def _present_macos_recovery_quotes(items, *, originals=()):
-    """Present body-free native references only inside authenticated Mac scopes."""
-    if len(items) > 1_000 or len(originals) > 1_000:
-        return
+def _macos_quote_originals(items, originals):
     by_server = {}
     for original in [*items, *originals]:
         receipt = _macos_recovery_receipt(original)
         if receipt is not None:
             key = original.conversation_id, receipt["server_id"]
             by_server.setdefault(key, []).append(original)
-    source_fields = (
-        "source_id", "snapshot_id", "account_id", "peer_id", "main_sha256",
-        "wal_sha256", "database_relative_path", "table",
-    )
+    return by_server
+
+
+def _macos_exact_quote_original(
+    item, reference, matches, *, require_reference_time=False, inverted_text=None,
+):
+    """Reuse one original only inside its unchanged authenticated native source."""
+    if len(matches) != 1:
+        return None
+    original = matches[0]
+    current, previous = _macos_recovery_receipt(item), _macos_recovery_receipt(original)
+    epoch = reference.get("source_timestamp", "")
+    if (
+        current is None
+        or previous is None
+        or original is item
+        or not isinstance(original.stable_id, str)
+        or re.fullmatch(r"[0-9a-f]{64}", original.stable_id) is None
+        or original.conversation_id != item.conversation_id
+        or str(reference.get("source_ids", {}).get("svrid")) != previous["server_id"]
+        or any(
+            key not in previous or key not in current or previous[key] != current[key]
+            for key in _MACOS_QUOTE_SOURCE_FIELDS
+        )
+        or previous["local_id"] >= current["local_id"]
+        or previous["create_time"] > current["create_time"]
+        or original.messaging["provenance"].get("message_type")
+        != reference.get("original_message_type")
+        or require_reference_time and not epoch
+    ):
+        return None
+    original_time = previous["create_time"]
+    if inverted_text is not None:
+        # A direct reply can record the owner in fromusr and copy the clock one second early.
+        if (
+            epoch not in {str(original_time), str(original_time - 1)}
+            or (original.role, original.messaging.get("sender_id")) not in {
+                ("received", current["peer_id"]), ("sent", current["account_id"]),
+            }
+            or original.messaging["provenance"].get("text_extraction_kind") != "plain_text"
+            or original.content_text != inverted_text
+        ):
+            return None
+    elif (epoch and epoch != str(original_time)) or not _exact_original_quoted_author(
+        reference, current["peer_id"], original.messaging.get("sender_id"),
+        item.messaging.get("sender_id"),
+    ):
+        return None
+    return original
+
+
+def _present_macos_recovery_quotes(items, *, originals=()):
+    """Resolve body-free native references inside authenticated Mac scopes."""
+    if len(items) > 1_000 or len(originals) > 1_000:
+        return
+    by_server = _macos_quote_originals(items, originals)
     for item in items:
+        quote = item.messaging.get("quoted_reply")
+        if isinstance(quote, dict) and quote.get("forwarded_record_basis") == (
+            "exact_authenticated_macos_forwarded_original_v1"
+        ):
+            quote.pop("forwarded_record", None)
+            quote.pop("forwarded_record_basis", None)
+        if isinstance(quote, dict) and quote.get("resource_basis") in {
+            "authenticated_macos_nontext_quote_type_v1",
+            "authenticated_macos_inline_quoted_app_card_v1",
+            "exact_authenticated_macos_resource_original_v1",
+        }:
+            for field in ("resource", "resource_basis", "resource_original"):
+                quote.pop(field, None)
         receipt = _macos_recovery_receipt(item)
         candidate = _native_quote(item.messaging)
         if receipt is None or candidate is None:
@@ -125,6 +244,28 @@ def _present_macos_recovery_quotes(items, *, originals=()):
                 continue
         except (ValueError, TypeError, KeyError, RecursionError):
             continue
+        server = reference.get("source_ids", {}).get("svrid")
+        matches = by_server.get((item.conversation_id, server), ())
+        original = _macos_exact_quote_original(item, reference, matches)
+        if (
+            original is not None and kind == "app"
+            and reference.get("source_timestamp")
+            and not reference.get("app_card_metadata")
+        ):
+            original_proof = original.messaging["provenance"]
+            if original_proof.get("appmsg_subtype") == 19:
+                record = project_native_forwarded(
+                    original_proof, parent_id=original.stable_id,
+                    account_id=receipt["account_id"],
+                )
+                if record is not None and native_components_text(
+                    original_proof["text_components"]
+                ) == original.content_text:
+                    quote["forwarded_record"] = record
+                    quote["forwarded_record_basis"] = (
+                        "exact_authenticated_macos_forwarded_original_v1"
+                    )
+                    continue
         resource = {
             "kind": kind,
             "availability": "metadata_only",
@@ -133,48 +274,52 @@ def _present_macos_recovery_quotes(items, *, originals=()):
         }
         quote["resource_basis"] = "authenticated_macos_nontext_quote_type_v1"
         quote.pop("resource_original", None)
-        server = reference.get("source_ids", {}).get("svrid")
-        matches = by_server.get((item.conversation_id, server), ())
-        if len(matches) == 1:
-            original = matches[0]
+        inline = _inline_app_resource(reference)
+        if inline is not None:
+            resource.update(inline)
+            quote["resource_basis"] = "authenticated_macos_inline_quoted_app_card_v1"
+        if original is not None:
             previous = _macos_recovery_receipt(original)
             original_proof = original.messaging["provenance"]
             original_resource = resource_reference(
                 original_proof, receipt["account_id"], receipt["peer_id"]
             )
-            epoch = reference.get("source_timestamp", "")
+            allowed_kinds = {"app", "file"} if kind == "app" else {kind}
             if (
                 previous is not None
-                and original is not item
-                and isinstance(original.stable_id, str)
-                and re.fullmatch(r"[0-9a-f]{64}", original.stable_id)
-                and all(previous[key] == receipt[key] for key in source_fields)
-                and previous["local_id"] < receipt["local_id"]
-                and previous["create_time"] <= receipt["create_time"]
-                and original_proof.get("message_type")
-                == reference["original_message_type"]
                 and original_proof.get("text_extraction_kind")
                 == "resource_placeholder"
-                and _quoted_author(reference, receipt["peer_id"])
-                == original.messaging.get("sender_id")
-                and (not epoch or epoch == str(previous["create_time"]))
                 and original_resource is not None
                 and original_resource.get("availability") == "metadata_only"
-                and original_resource.get("kind") == kind
+                and original_resource.get("kind") in allowed_kinds
                 and original_resource.get("native_time") == previous["create_time"]
             ):
-                quote["resource_basis"] = "exact_authenticated_macos_resource_original_v1"
-                quote["resource_original"] = {
-                    "message_id": original.stable_id,
-                    "server_id": previous["server_id"],
-                    "source_snapshot_id": previous["snapshot_id"],
-                }
+                merged = _merge_app_resources(inline, original_resource)
+                if merged is None:
+                    resource = {"kind": kind, "availability": "metadata_only"}
+                    quote["resource_basis"] = "authenticated_macos_nontext_quote_type_v1"
+                else:
+                    resource = merged
+                    quote["resource_basis"] = "exact_authenticated_macos_resource_original_v1"
+                    quote["resource_original"] = {
+                        "message_id": original.stable_id,
+                        "server_id": previous["server_id"],
+                        "source_snapshot_id": previous["snapshot_id"],
+                    }
         quote["resource"] = present_resource(resource, None)
+    _project_nested_resources(
+        items, {}, {}, {}, authenticate_parent=_macos_recovery_receipt, inline_only=True,
+        inline_basis=MACOS_NESTED_INLINE_APP_BASIS,
+    )
 
 
-def _resolve_macos_recovery_quoted_contacts(items, repository, display_names):
-    """Reuse canonical native sender bindings for the authenticated direct peer."""
-    requests, quotes = [], {}
+def _resolve_macos_recovery_quoted_contacts(items, repository, display_names, *, originals=()):
+    """Reuse canonical native sender bindings inside authenticated Mac conversations."""
+    if len(items) > 1_000 or len(originals) > 1_000:
+        return
+    requests, quotes, expected_contacts = [], {}, {}
+    literal_requests, remarks = {}, {}
+    by_server = _macos_quote_originals(items, originals)
     for item in items:
         receipt = _macos_recovery_receipt(item)
         candidate = _native_quote(item.messaging)
@@ -182,42 +327,124 @@ def _resolve_macos_recovery_quoted_contacts(items, repository, display_names):
             continue
         quote, reference = candidate
         sender = _quoted_author(reference, receipt["peer_id"])
-        if sender not in {receipt["account_id"], receipt["peer_id"]}:
-            continue
         context = item.messaging
-        identifier = item.stable_id + ":macos-quote"
-        requests.append(
-            {
-                "id": identifier,
-                "conversation_id": item.conversation_id,
-                "source_id": context["partition_id"],
-                "source_snapshot_id": receipt["snapshot_id"],
-                "account_id": receipt["account_id"],
-                "peer_id": receipt["peer_id"],
-                "sender_id": sender,
-                "sender_label": reference.get("source_sender_label", ""),
-                "conversation_kind": "direct",
-                "is_system": False,
-            }
+        kind = "direct"
+        literal_sender = ""
+        if context.get("kind") == "group":
+            if _MACOS_ROOM.fullmatch(receipt["peer_id"]) is None:
+                continue
+            kind = "group"
+            literal_sender = _literal_group_quoted_author(
+                reference, receipt["peer_id"], context.get("sender_id")
+            )
+            if (
+                not sender
+                and receipt["peer_id"].endswith("@im.chatroom")
+                and reference.get("source_sender_id") == receipt["peer_id"]
+            ):
+                sender = _quoted_author(
+                    {
+                        **reference,
+                        "source_sender_id": reference.get("source_chat_id", ""),
+                        "source_chat_id": receipt["peer_id"],
+                    },
+                    receipt["peer_id"],
+                )
+        inverted_direct_text = (
+            context.get("kind") == "direct"
+            and item.role == "received"
+            and context.get("sender_id") == receipt["peer_id"]
+            and sender == receipt["account_id"]
+            and reference.get("source_chat_id") == receipt["peer_id"]
+            and reference.get("original_message_type") == 1
         )
-        quotes[identifier] = quote
+        quoted_text = quote.get("text") if inverted_direct_text else None
+        if inverted_direct_text and not isinstance(quoted_text, str):
+            continue
+        original = _macos_exact_quote_original(
+            item, reference,
+            by_server.get((item.conversation_id, reference.get("source_ids", {}).get("svrid")), ()),
+            require_reference_time=True, inverted_text=quoted_text,
+        )
+        if original is not None:
+            sender = original.messaging["sender_id"]
+        elif inverted_direct_text:
+            continue
+        elif not sender:
+            sender = literal_sender
+        if not sender or kind == "direct" and sender not in {
+            receipt["account_id"], receipt["peer_id"]
+        }:
+            continue
+        identifier = item.stable_id + ":macos-quote"
+        request = {
+            "id": identifier,
+            "conversation_id": item.conversation_id,
+            "source_id": context["partition_id"],
+            "source_snapshot_id": receipt["snapshot_id"],
+            "account_id": receipt["account_id"],
+            "peer_id": receipt["peer_id"],
+            "sender_id": sender,
+            "sender_label": reference.get("source_sender_label", ""),
+            "conversation_kind": kind,
+            "is_system": False,
+        }
+        if literal_sender and sender == literal_sender:
+            owner = receipt["account_id"]
+            partition = "ios-" + hashlib.md5(owner.encode(), usedforsecurity=False).hexdigest()
+            if context.get("account_key") != f"account:{owner}" or request["source_id"] != partition:
+                continue
+            literal_requests[identifier] = request
+        requests.append(request)
+        quotes[identifier] = quote, context, sender
+        if original is not None:
+            expected_contacts[identifier] = canonical_contact_id(
+                sender, authority="native_message_sender"
+            )
     for offset in range(0, len(requests), 400):
         for identifier, contact in repository.resolve_messages(
             requests[offset : offset + 400]
         ).items():
             if contact.get("identity_status") != "verified":
                 continue
+            quote, context, sender = quotes[identifier]
+            if identifier in expected_contacts and contact.get("id") != expected_contacts[identifier]:
+                continue
+            literal = literal_requests.get(identifier)
+            if literal is not None and not _verified_literal_quote_contact(contact, literal):
+                continue
             name = display_names.contact_name(contact)
-            viewer = name or contact.get("preferred_name") or contact.get("display_name")
+            profile_name = ""
+            if not name and _is_exact_direct_peer(display_names, context, contact, sender):
+                profile_name = _scoped_native_profile_name(
+                    contact, sender, context["account_id"], context["partition_id"],
+                    allow_remark=True,
+                )
+            remark = ""
+            if literal is not None and not name:
+                key = contact["id"], literal["source_id"], literal["account_id"], literal["peer_id"]
+                if key not in remarks:
+                    remarks[key] = _literal_quote_remark(repository, contact["id"], literal)
+                remark = remarks[key]
+            viewer = (
+                name or remark or profile_name
+                or contact.get("preferred_name") or contact.get("display_name")
+            )
             if not isinstance(viewer, str) or not viewer:
                 continue
-            quotes[identifier]["viewer_display_name"] = viewer
-            quotes[identifier]["contact"] = {
+            quote["viewer_display_name"] = viewer
+            if name:
+                name_source = "local_user_preference"
+            elif remark:
+                name_source = "same_account_contact_remark"
+            elif profile_name:
+                name_source = "verified_native_contact_profile"
+            else:
+                name_source = "canonical_contact"
+            quote["contact"] = {
                 **contact,
                 "viewer_display_name": viewer,
-                "viewer_display_name_source": "local_user_preference"
-                if name
-                else "canonical_contact",
+                "viewer_display_name_source": name_source,
             }
 
 
@@ -699,24 +926,26 @@ def _mark_sender_runs(items, *, filtered=False):
 
 
 def _resolve_native_forwarded_contacts(
-    items, repository, display_names, account_rows, source_snapshots
+    items, repository, display_names, account_rows, source_snapshots,
+    *, author_resolutions=None,
 ):
-    """Resolve literal child authors only inside a verified native source envelope."""
+    """Resolve literal or copy-proven child authors inside verified native sources."""
     partitions = {row["partition_id"]: row for row in account_rows}
     requests, children = [], {}
 
-    def visit(record):
+    def visit(record, path=()):
         if (
             not isinstance(record, dict)
             or record.get("authority") != "native_forwarded_envelope"
         ):
             return
-        for child in record["items"]:
-            yield child
-            yield from visit(child.messaging.get("forwarded_record"))
+        for number, child in enumerate(record["items"], 1):
+            position = (*path, number)
+            yield child, position
+            yield from visit(child.messaging.get("forwarded_record"), position)
             quote = child.messaging.get("quoted_reply")
             if isinstance(quote, dict):
-                yield from visit(quote.get("forwarded_record"))
+                yield from visit(quote.get("forwarded_record"), (*position, "quote"))
 
     for parent in items:
         context = parent.messaging
@@ -743,17 +972,21 @@ def _resolve_native_forwarded_contacts(
             or source.get("account_hash") != hashlib.md5(owner.encode(), usedforsecurity=False).hexdigest()
         ):
             continue
-        records = [context.get("forwarded_record")]
+        resolutions = (author_resolutions or {}).get(parent.stable_id, {})
+        records = [(context.get("forwarded_record"), ())]
         quote = context.get("quoted_reply")
         if isinstance(quote, dict):
-            records.append(quote.get("forwarded_record"))
-        for record in records:
-            for child in visit(record):
+            records.append((quote.get("forwarded_record"), ("quote",)))
+        for record, initial in records:
+            for child, position in visit(record, initial):
                 metadata = child.messaging
                 component = metadata["provenance"].get(
                     "embedded_forwarded_component", {}
                 )
-                sender = component.get("source_sender_id")
+                recovery = _recovered_forwarded_author(component, position, resolutions)
+                sender = component.get("source_sender_id") or (
+                    recovery["sender_id"] if recovery else ""
+                )
                 if (
                     not isinstance(sender, str)
                     or not sender
@@ -789,6 +1022,17 @@ def _resolve_native_forwarded_contacts(
                     peer_id=peer,
                     sender_identifier_namespace="native_user_name",
                 )
+                if recovery:
+                    metadata.update(
+                        sender_id=sender,
+                        direction="sent" if sender == owner else "received",
+                        identity_basis=recovery["identity_basis"],
+                    )
+                    metadata["provenance"] = {
+                        **metadata["provenance"],
+                        "identity_basis": recovery["identity_basis"],
+                        "native_forwarded_author_recovery": recovery["evidence"],
+                    }
     for offset in range(0, len(requests), 400):
         resolved = repository.resolve_messages(requests[offset : offset + 400])
         for identifier, contact in resolved.items():
@@ -804,6 +1048,8 @@ def _resolve_native_forwarded_contacts(
                 if name
                 else "canonical_contact",
             }
+            if metadata.get("identity_basis") == "verified_complete_native_transcript_copy":
+                metadata["contact"]["resolution_reason"] = metadata["identity_basis"]
 
 
 def query_wechat_history(
@@ -818,6 +1064,7 @@ def query_wechat_history(
     session="",
     persist_event_cache=True,
     previous_snapshot=False,
+    include_membership_history=True,
     strict_timeline=False,
 ):
     """Reuse page and session contracts while retaining human-message semantics."""
@@ -844,7 +1091,11 @@ def query_wechat_history(
             return None
     else:
         result = repository.query(
-            **list_parameters, query=query, session=session, persist_event_cache=persist_event_cache,
+            **list_parameters,
+            query=query,
+            session=session,
+            persist_event_cache=persist_event_cache,
+            include_membership_history=include_membership_history,
             strict_timeline=strict_timeline,
         )
 
@@ -891,17 +1142,64 @@ def query_wechat_history(
             },
         }
 
+    def membership_timeline(notices, observations, account_id):
+        notices_by_subject = {}
+        for event in notices:
+            kind = "newly_listed" if event["kind"] == "joined" else "no_longer_listed"
+            time = datetime.fromisoformat(event["timestamp_value"])
+            for username in event["subject_ids"]:
+                notices_by_subject.setdefault((username, kind), []).append(time)
+        timeline = list(notices)
+        for change in observations:
+            start = datetime.fromisoformat(change["interval_start"])
+            end = datetime.fromisoformat(change["interval_end"])
+            recorded = notices_by_subject.get((change["username"], change["kind"]), ())
+            if change["account_id"] == account_id and sum(start < stamp <= end for stamp in recorded) == 1:
+                continue
+            timeline.append({"timestamp_value": change["interval_end"], "snapshot_change": change})
+        return tuple(sorted(
+            timeline, key=lambda event: datetime.fromisoformat(event["timestamp_value"]), reverse=True,
+        ))
+
     def conversation(row):
         messaging = context(row)
         if group_name_history := row.get("group_name_history"):
             messaging["group_name_history"] = group_name_history
+        if "group_membership_history" in row:
+            from .wechat_group_rosters import WechatGroupRosterRepository
+
+            membership = row["group_membership_history"]
+            repository = WechatGroupRosterRepository(local_store_root)
+            roster = repository.project(
+                row.get("account_id") or "", row["peer_id"],
+                member_ids={
+                    username for event in membership["events"]
+                    for username in event["subject_ids"]
+                },
+            ) if row.get("account_id") else {
+                "status": "absent", "current": None, "previous": None,
+                "snapshot_count": 0, "changes": (), "source_note": "",
+            }
+            messaging["group_roster"] = roster
+            observations = repository.history(row["peer_id"], membership_notices=membership["events"])
+            messaging["group_membership_history"] = {
+                **membership,
+                "timeline": membership_timeline(
+                    membership["events"], observations["events"], row.get("account_id"),
+                ),
+                "snapshot_history_status": observations["status"],
+                "snapshot_change_count": observations["total"],
+                "snapshot_displayed_count": len(observations["events"]),
+            }
+        if supplement := row.get("html_supplement"):
+            messaging["html_supplement"] = supplement
         return ChatHistorySession(
             stable_id=row["id"],
             source="wechat",
             conversation_id=row["id"],
             conversation_url="",
             conversation_title=row["title"],
-            message_count=0 if previous_snapshot else row["message_count"],
+            message_count=row["message_count"],
             first_seen_at=row["first_time"],
             last_seen_at=row["last_time"],
             latest_message="" if previous_snapshot else row["latest_text"],
@@ -920,9 +1218,14 @@ def query_wechat_history(
     context_links = WechatContextLinks(local_store_root).project(result["messages"])
     forwarded_clocks = {}
     clock_projector = WechatForwardedClocks(local_store_root)
+    author_projector = WechatForwardedAuthors(local_store_root)
+    forwarded_authors = {}
     for offset in range(0, len(result["messages"]), 200):
         forwarded_clocks.update(
             clock_projector.project(result["messages"][offset : offset + 200])
+        )
+        forwarded_authors.update(
+            author_projector.project(result["messages"][offset : offset + 200])
         )
     contact_requests = []
     items = []
@@ -1165,6 +1468,24 @@ def query_wechat_history(
                         name = label
                         break
             name_source = "verified_contact_observation"
+        sender = item.messaging["sender_id"]
+        unidentified = ("", sender, "Unknown sender")
+        if (
+            (not name or name_source == "verified_contact_observation" and name in unidentified)
+            and item.messaging["sender_identifier_namespace"] == "native_user_name"
+            and item.author_label in unidentified
+        ):
+            direct_peer = item.role == "received" and _is_exact_direct_peer(
+                display_names, item.messaging, contact, sender
+            )
+            if item.messaging["kind"] == "group" or direct_peer:
+                profile_name = _scoped_native_profile_name(
+                    contact, sender, item.messaging["account_id"], item.messaging["partition_id"],
+                    allow_remark=direct_peer,
+                )
+                if profile_name:
+                    name = profile_name
+                    name_source = "verified_native_contact_profile"
         if name:
             item.messaging["viewer_display_name"] = name
             contact = {
@@ -1215,9 +1536,9 @@ def query_wechat_history(
             forwarded_clocks.get(item.stable_id, {}),
         )
     _resolve_native_forwarded_contacts(
-        items, contact_repository, display_names, account_rows, source_snapshots
+        items, contact_repository, display_names, account_rows, source_snapshots,
+        author_resolutions=forwarded_authors,
     )
-    _resolve_macos_recovery_quoted_contacts(items, contact_repository, display_names)
     project_native_quote_padding(items, display_names, account_rows, source_snapshots)
     resource_originals = []
     visible_ids = {item.stable_id for item in items}
@@ -1254,8 +1575,14 @@ def query_wechat_history(
         items, contact_repository, display_names, account_rows, source_snapshots,
         originals=resource_originals,
     )
+    _resolve_macos_recovery_quoted_contacts(
+        items, contact_repository, display_names, originals=resource_originals,
+    )
     project_native_quoted_resources(
-        items, display_names, account_rows, source_snapshots,
+        items,
+        display_names,
+        account_rows,
+        source_snapshots,
         originals=resource_originals,
     )
     _present_macos_recovery_quotes(items, originals=resource_originals)
@@ -1294,6 +1621,9 @@ def query_wechat_history(
                 "status": reference["status"],
                 "preview_text": reference["preview_text"],
             }
+    # Existing author/clock/preview paths refer to the original text-only ordinals.
+    # Insert audited resources only after those source-bound projections finish.
+    WechatHtmlForwardedResources(local_store_root).apply(items, result["messages"])
     _present_record_fields(items)
     _present_payment_records(items)
     from .wechat_exchange_presentation import apply_frozen_presentation

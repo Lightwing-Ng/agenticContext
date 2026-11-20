@@ -1,6 +1,6 @@
 """Relocate sealed, local workstation files without copying or downloading data.
 
-Code version: v1.2.0-codex.0
+Code version: v1.2.1-codex.0
 
 The default invocation only inspects metadata and open handles. DATALESS files
 remain in their original provider domain. This tool never releases local content
@@ -23,8 +23,9 @@ import sys
 import tempfile
 
 
-# Existing preservation receipts retain their compatible format discriminator.
-VERSION = "v1.0.0-codex.0"
+# Preserve both released receipt formats independently of implementation changes.
+VERSION = "v1.0.1-codex.0"
+SUPPORTED_RECEIPT_VERSIONS = {"v1.0.0-codex.0", VERSION}
 DATALESS = 0x40000000
 _WINDOWS_CLOUD_FLAGS = 0x1000 | 0x40000 | 0x400000
 _WINDOWS_REPARSE_POINT = 0x400
@@ -66,6 +67,8 @@ def stable_identity(value):
 
 
 def assert_plain_path(path):
+    if ".." in path.parts:
+        raise ValueError(f"Parent traversal is not allowed: {path}")
     # Inspect ancestors first so even metadata lookup cannot cross a junction.
     for component in reversed((path, *path.parents)):
         try:
@@ -79,6 +82,20 @@ def assert_plain_path(path):
             "file_attributes": getattr(state, "st_file_attributes", 0),
         }):
             raise ValueError(f"An unavailable or reparse directory requires separate review: {component}")
+
+
+def directory_contains(path, directory):
+    """Compare existing ancestors by inode so filesystem aliases stay fenced."""
+    expected = directory.stat()
+    key = (expected.st_dev, expected.st_ino)
+    for component in (path, *path.parents):
+        try:
+            state = component.stat()
+        except FileNotFoundError:
+            continue
+        if stat.S_ISDIR(state.st_mode) and (state.st_dev, state.st_ino) == key:
+            return True
+    return False
 
 
 def local_json(path):
@@ -126,6 +143,54 @@ def allowed(relative):
         or len(path.parts) == 2 and path.parts[0] == "contact_activity"
         and TEMPORARY.fullmatch(path.name) is not None
     )
+
+
+def locator_locations(root):
+    """Retain legacy locator entries with their original workstation receipt."""
+    path = root / LOCATOR
+    if not path.exists():
+        return {}
+    value = local_json(path)
+    if (
+        value.get("version") not in SUPPORTED_RECEIPT_VERSIONS
+        or not isinstance(value.get("locations"), dict)
+        or value.get("source_root", str(root)) != str(root)
+    ):
+        raise ValueError("Unsupported workstation locator.")
+    locations = {}
+    for relative, entry in value["locations"].items():
+        if not isinstance(relative, str) or not allowed(relative) or not isinstance(entry, dict):
+            raise ValueError("The workstation locator contains an unsupported location.")
+        workspace = entry.get("workstation_root", value.get("workstation_root"))
+        receipt = entry.get("receipt", value.get("receipt"))
+        target, checksum = entry.get("path"), entry.get("sha256")
+        if not all(isinstance(item, str) for item in (workspace, receipt, target, checksum)):
+            raise ValueError("The workstation locator needs explicit paths and checksums.")
+        workspace, receipt, target = Path(workspace), Path(receipt), Path(target)
+        if (
+            not workspace.is_absolute()
+            or target != workspace / relative
+            or receipt != workspace / RECEIPT
+            or re.fullmatch(r"[0-9a-f]{64}", checksum) is None
+        ):
+            raise ValueError("The workstation locator has inconsistent path provenance.")
+        for item in (workspace, receipt, target):
+            assert_plain_path(item)
+        locations[relative] = {
+            **entry, "workstation_root": str(workspace), "receipt": str(receipt),
+        }
+    return locations
+
+
+def merge_location(locations, relative, entry, destination, receipt_path):
+    location = {
+        "path": str(destination / relative), "sha256": entry["sha256"],
+        "workstation_root": str(destination), "receipt": str(receipt_path),
+    }
+    previous = locations.get(relative)
+    if previous is not None and any(previous.get(key) != value for key, value in location.items()):
+        raise ValueError(f"A conflicting preserved location already exists: {relative}")
+    locations[relative] = {**location, **(previous or {})}
 
 
 def _raise_walk_error(error):
@@ -274,8 +339,14 @@ def sync_directory(path):
         os.close(descriptor)
 
 
+def require_native_relocation():
+    if sys.platform not in {"darwin", "win32"} and not sys.platform.startswith("linux"):
+        raise ValueError("Native workstation relocation is supported only on macOS, Windows, and Linux.")
+
+
 def rename_exclusive(source, target):
-    """Require a same-volume exclusive rename; never overwrite or copy a target."""
+    """Require a supported same-volume exclusive rename without overwriting."""
+    require_native_relocation()
     if sys.platform == "win32":
         # Windows os.rename fails atomically when the destination already exists.
         os.rename(source, target)
@@ -289,8 +360,6 @@ def rename_exclusive(source, target):
         rename = library.renameat2
         rename.argtypes = (ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint)
         result = rename(-100, os.fsencode(source), -100, os.fsencode(target), 1)
-    else:
-        raise ValueError("This platform has no supported exclusive-rename primitive.")
     if result:
         number = ctypes.get_errno()
         raise OSError(number, os.strerror(number), str(source), str(target))
@@ -302,10 +371,18 @@ def preserve(
 ):
     if max_file_bytes is not None and max_file_bytes < 0:
         raise ValueError("The maximum file size cannot be negative.")
+    if apply:
+        require_native_relocation()
     root, destination = Path(root).absolute(), Path(destination).absolute()
     assert_plain_path(root)
     assert_plain_path(destination)
-    if destination == root or destination.is_relative_to(root) or root.is_relative_to(destination):
+    if (
+        destination == root
+        or destination.is_relative_to(root)
+        or root.is_relative_to(destination)
+        or directory_contains(destination, root)
+        or destination.exists() and directory_contains(root, destination)
+    ):
         raise ValueError("The workstation destination must be separate from runtime storage.")
     ancestor = destination
     while not ancestor.exists():
@@ -341,23 +418,40 @@ def preserve(
     report["enumeration_complete"] = not report["deferred_subtrees"]
     if not apply:
         return report
-    destination.mkdir(parents=True, mode=0o700, exist_ok=True)
     receipt_path = destination / RECEIPT
     receipt = local_json(receipt_path) if receipt_path.exists() else {
         "version": VERSION, "source_root": str(root), "destination_root": str(destination),
         "cloud_upload_verified": False, "local_release_attempted": False, "entries": {},
     }
-    if any(receipt.get(key) != report[key] for key in ("version", "source_root", "destination_root")):
+    if (
+        receipt.get("version") not in SUPPORTED_RECEIPT_VERSIONS
+        or any(receipt.get(key) != report[key] for key in ("source_root", "destination_root"))
+    ):
         raise ValueError("The existing receipt belongs to a different preservation operation.")
+    locations = locator_locations(root)
+    for relative, entry in receipt["entries"].items():
+        if not allowed(relative):
+            raise ValueError("The existing receipt contains a path outside the allowlist.")
+        if entry.get("status") == "moved_verified" or (
+            entry.get("status") == "sealed_before_rename" and not (root / relative).exists()
+        ):
+            merge_location(locations, relative, entry, destination, receipt_path)
+    for relative, item in items.items():
+        if not item["defer_reason"] and relative in locations:
+            raise ValueError(f"A conflicting runtime path already has a preserved location: {relative}")
+    destination.mkdir(parents=True, mode=0o700, exist_ok=True)
 
     def save():
+        for relative, entry in receipt["entries"].items():
+            if entry.get("status") == "moved_verified":
+                merge_location(locations, relative, entry, destination, receipt_path)
         receipt["updated_utc"] = datetime.now(UTC).isoformat()
         atomic_json(receipt_path, receipt)
         atomic_json(root / LOCATOR, {
             "version": VERSION, "workstation_root": str(destination), "receipt": str(receipt_path),
+            "source_root": str(root),
             "cloud_upload_verified": False,
-            "locations": {relative: {"path": str(destination / relative), "sha256": entry["sha256"]}
-                          for relative, entry in receipt["entries"].items() if entry.get("status") == "moved_verified"},
+            "locations": locations,
         })
 
     for relative, entry in receipt["entries"].items():

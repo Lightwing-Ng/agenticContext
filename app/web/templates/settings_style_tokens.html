@@ -1,4 +1,4 @@
-<!-- Code version: v1.16.10-codex.0 -->
+<!-- Code version: v1.17.3-codex.0 -->
 <!doctype html>
 <html lang="en-US">
 <head>
@@ -8,17 +8,17 @@
     <link rel="icon" type="image/svg+xml" href="{{ url_for('static', filename='images/favicon.svg', v=version ~ '-favicon-v1.0.1-codex.1') }}">
     <script src="{{ url_for('static', filename='language-rendering.js', v='language-rendering-v1.0.0-codex.1') }}"></script>
     <script src="{{ url_for('static', filename='theme-mode.js', v='theme-mode-v1.0.0-codex.1') }}"></script>
-    <link rel="stylesheet" href="{{ url_for('static', filename='style.css', v=version ~ '-style-v2.159.4-codex.0') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css', v=version ~ '-style-v2.162.0-codex.0') }}">
     {% include "_cache_activity_assets.html" %}
     <script defer src="{{ url_for('static', filename='numeric-display.js', v='numeric-display-v1.1.0-codex.0') }}"></script>
-    <script defer src="{{ url_for('static', filename='scrollable-data-table.js', v='scrollable-data-table-v1.0.0-codex.0') }}"></script>
+    <script defer src="{{ url_for('static', filename='scrollable-data-table.js', v='scrollable-data-table-v1.0.3-codex.0') }}"></script>
     <script src="{{ url_for('static', filename='responsive.js', v='responsive-v1.0.0-codex.1') }}"></script>
-    <script defer src="{{ url_for('static', filename='segmented-control.js', v='segmented-control-v1.0.4-codex.1') }}"></script>
-    <script defer src="{{ url_for('static', filename='resizer.js', v='resizer-v1.0.0-codex.1') }}"></script>
+    <script defer src="{{ url_for('static', filename='segmented-control.js', v='segmented-control-v1.1.0-codex.0') }}"></script>
+    <script defer src="{{ url_for('static', filename='resizer.js', v='resizer-v1.1.1-codex.0') }}"></script>
     <script defer src="{{ url_for('static', filename='pagination-motion.js', v='pagination-motion-v1.1.0-codex.1') }}"></script>
-    <script defer src="{{ url_for('static', filename='settings-style-tokens.js', v='settings-style-tokens-v1.3.0-codex.1') }}"></script>
+    <script defer src="{{ url_for('static', filename='settings-style-tokens.js', v='settings-style-tokens-v1.3.1-codex.0') }}"></script>
     <script defer src="{{ url_for('static', filename='settings-navigation.js', v='settings-navigation-v1.2.0-codex.1') }}"></script>
-    <script defer src="{{ url_for('static', filename='waiting-modal.js', v='waiting-modal-v1.2.0-codex.0') }}"></script>
+    <script defer src="{{ url_for('static', filename='waiting-modal.js', v='waiting-modal-v1.3.0-codex.0') }}"></script>
 </head>
 <body>
 {% include "_sidebar_bootstrap.html" %}
@@ -66,6 +66,7 @@
                     <p class="sr-only" role="status" aria-live="polite" aria-atomic="true" data-style-token-copy-status></p>
                     <button type="button" class="surface-resizer surface-resizer--inline style-token-resizer" data-style-token-resizer role="separator" aria-orientation="vertical" aria-label="Resize style token demos"></button>
                     <div class="style-token-list" data-layout-role="content-scrollport">
+                    <div class="style-token-content-grid" data-layout-role="content-grid">
                     {% for row in style_token_rows %}
                     <section id="{{ row.id }}" class="style-token-card" data-style-token-card="{{ row.id }}">
                         <div class="style-token-demo">
@@ -488,6 +489,7 @@
                     </section>
                     {% endfor %}
                     </div>
+                    </div>
                 </section>
             </section>
         </section>
@@ -498,6 +500,6 @@
     {% include "_cache_activity.html" %}
 </main>
 {% include "_waiting_modal.html" %}
-<script src="{{ url_for('static', filename='sidebar.js', v='sidebar-v1.31.0-codex.0') }}"></script>
+<script src="{{ url_for('static', filename='sidebar.js', v='sidebar-v1.31.1-codex.0') }}"></script>
 </body>
 </html>

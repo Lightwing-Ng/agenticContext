@@ -1,6 +1,6 @@
 """Verify durable recovery protection through the normal ChatGPT store.
 
-Code version: v1.0.0-codex.0
+Code version: v1.1.0-codex.0
 """
 
 from __future__ import annotations
@@ -25,8 +25,12 @@ def payload(**bodies):
     }}
 
 
-def create_store(tmp_path):
-    path = tmp_path / "history.parquet"
+@pytest.fixture(params=[".parquet", ".sqlite3"], ids=["parquet", "sqlite"])
+def history_path(tmp_path, request):
+    return tmp_path / f"history{request.param}"
+
+
+def create_store(path):
     store = ChatGPTHistoryStore(path)
     store.replace_conversation(URL, payload(old="Original body"), CAPTURE, "old-revision")
     store.save()
@@ -39,8 +43,8 @@ def enable(path, value=None):
     ))
 
 
-def test_guard_retains_missing_rows_and_appends_new_rows_with_stable_indexes(tmp_path):
-    path, _ = create_store(tmp_path)
+def test_guard_retains_missing_rows_and_appends_new_rows_with_stable_indexes(history_path):
+    path, _ = create_store(history_path)
     before = read_parquet_rows(path)
     enable(path)
     store = ChatGPTHistoryStore(path)
@@ -53,8 +57,8 @@ def test_guard_retains_missing_rows_and_appends_new_rows_with_stable_indexes(tmp
     assert after[1]["provider_revision"] is None
 
 
-def test_conflicts_survive_repeat_normal_sync_and_title_refresh(tmp_path):
-    path, _ = create_store(tmp_path)
+def test_conflicts_survive_repeat_normal_sync_and_title_refresh(history_path):
+    path, _ = create_store(history_path)
     before = read_parquet_rows(path)
     enable(path)
     store = ChatGPTHistoryStore(path)
@@ -71,8 +75,8 @@ def test_conflicts_survive_repeat_normal_sync_and_title_refresh(tmp_path):
     assert read_parquet_rows(path) == after
 
 
-def test_empty_online_mapping_cannot_remove_protected_rows(tmp_path):
-    path, _ = create_store(tmp_path)
+def test_empty_online_mapping_cannot_remove_protected_rows(history_path):
+    path, _ = create_store(history_path)
     before = path.read_bytes()
     enable(path)
     store = ChatGPTHistoryStore(path)
@@ -86,8 +90,8 @@ def test_empty_online_mapping_cannot_remove_protected_rows(tmp_path):
 @pytest.mark.parametrize("value", [[], {"version": True, "mode": "preserve-existing"},
                                   {"version": 2, "mode": "preserve-existing"},
                                   {"version": 1, "mode": "replace"}])
-def test_invalid_guard_blocks_store_loading_without_touching_history(tmp_path, value):
-    path, _ = create_store(tmp_path)
+def test_invalid_guard_blocks_store_loading_without_touching_history(history_path, value):
+    path, _ = create_store(history_path)
     before = path.read_bytes()
     enable(path, value)
     with pytest.raises(RuntimeError, match="guard is invalid"):
@@ -96,8 +100,8 @@ def test_invalid_guard_blocks_store_loading_without_touching_history(tmp_path, v
 
 
 @pytest.mark.parametrize("operation", ["save", "refresh_titles", "replace_conversation"])
-def test_guard_is_revalidated_for_an_already_loaded_store(tmp_path, operation):
-    path, store = create_store(tmp_path)
+def test_guard_is_revalidated_for_an_already_loaded_store(history_path, operation):
+    path, store = create_store(history_path)
     before = path.read_bytes()
     path.with_name("history-preservation.json").write_text("invalid json")
     with pytest.raises(RuntimeError, match="guard is unreadable"):

@@ -1,6 +1,6 @@
-"""Keep shared pagination controls reachable and range navigation local.
+"""Keep redundant singleton ranges out of shared pagination controls.
 
-Code version: v1.1.0-codex.0
+Code version: v1.2.0-codex.0
 """
 
 from __future__ import annotations
@@ -72,6 +72,68 @@ class _Navigation(HTMLParser):
             self.controls.append((tag, dict(attrs)))
 
 
+@pytest.mark.parametrize("source", ["wechat", "chatgpt", "zhihu"])
+@pytest.mark.parametrize("session_detail", [True, False])
+def test_only_wechat_text_pagination_uses_paint_before_navigation(
+    source, session_detail
+):
+    app = Flask(__name__, template_folder=str(ROOT / "app/web/templates"))
+    app.add_url_rule(
+        "/browser", endpoint="local_resources.browser", view_func=lambda: ""
+    )
+    page = SimpleNamespace(
+        pagination_items=build_local_store_pagination(821, 821),
+        current_page=821,
+        session_detail=session_detail,
+        session_view=True,
+        pagination_unit="page",
+    )
+    filters = SimpleNamespace(
+        source=source,
+        account="account:fixture-owner",
+        chat_kind="group",
+        project="fixture-project",
+        answerer="fixture-answerer",
+        q="preserved query",
+        sort="oldest",
+        session_view=True,
+        session="wechat:fixture-conversation",
+        session_page=7,
+    )
+    with app.test_request_context("/browser"):
+        body = render_template_string(
+            '{% from "_pagination.html" import render_browser_pagination %}'
+            '{{ render_browser_pagination(page, "Fixture pages", "text", filters) }}',
+            page=page,
+            filters=filters,
+        )
+    navigation = _Navigation()
+    navigation.feed(body)
+    anchors = [attrs for tag, attrs in navigation.controls if tag == "a"]
+    assert any(attrs.get("role") == "menuitem" for attrs in anchors)
+    assert any(attrs.get("aria-current") == "page" for attrs in anchors)
+    for attrs in anchors:
+        assert ("data-wait-navigation" in attrs) is (source == "wechat")
+        assert ("data-wait-title" in attrs) is (source == "wechat")
+        assert ("data-wait-copy" in attrs) is (source == "wechat")
+        if source == "wechat":
+            assert attrs["data-wait-title"] == (
+                "Loading messages" if session_detail else "Loading conversations"
+            )
+        params = parse_qs(urlsplit(attrs["href"]).query, keep_blank_values=True)
+        assert params["q"] == [filters.q]
+        assert params["sort"] == [filters.sort]
+        assert params["account"] == [filters.account]
+        assert params["session"] == [filters.session if session_detail else ""]
+        if session_detail:
+            assert params["session_page"] == ["7"]
+    triggers = [attrs for tag, attrs in navigation.controls if tag == "button"]
+    assert triggers
+    assert all(
+        not any(name.startswith("data-wait") for name in attrs) for attrs in triggers
+    )
+
+
 @pytest.mark.parametrize("view", ["text", "media", "prompts"])
 def test_rendered_page_ten_of_eleven_has_no_redundant_later_menu(view):
     app = Flask(__name__, template_folder=str(ROOT / "app/web/templates"))
@@ -135,17 +197,12 @@ def test_rendered_page_ten_of_eleven_has_no_redundant_later_menu(view):
     )
 
 
-@pytest.mark.parametrize(
-    ("view", "range_prefix"),
-    [("text", "Messages"), ("media", "Pages"), ("prompts", "Saved prompts")],
-)
+@pytest.mark.parametrize("view", ["text", "media", "prompts"])
 @pytest.mark.parametrize(
     ("current", "range_label", "expected"),
     [(821, "816 through 820", 820), (7, "11 through 15", 11)],
 )
-def test_range_option_links_open_the_nearest_page(
-    view, range_prefix, current, range_label, expected
-):
+def test_range_option_links_open_the_nearest_page(view, current, range_label, expected):
     app = Flask(__name__, template_folder=str(ROOT / "app/web/templates"))
     app.add_url_rule(
         "/browser", endpoint="local_resources.browser", view_func=lambda: ""
@@ -158,11 +215,11 @@ def test_range_option_links_open_the_nearest_page(
         pagination_unit="page",
     )
     filters = SimpleNamespace(
-        source="wechat" if view == "text" else "fixture",
+        source="wechat" if view == "text" else "chatgpt",
         account="account:fixture-owner",
         chat_kind="group",
-        project="",
-        answerer="",
+        project="fixture-project",
+        answerer="fixture-answerer",
         q="preserved query",
         sort="oldest",
         session_view=True,
@@ -170,7 +227,7 @@ def test_range_option_links_open_the_nearest_page(
         session_page=7,
         kind="all",
         session_index=False,
-        media_view="",
+        media_view="grid",
     )
     with app.test_request_context("/browser"):
         body = render_template_string(
@@ -182,19 +239,16 @@ def test_range_option_links_open_the_nearest_page(
         )
     navigation = _Navigation()
     navigation.feed(body)
-    matching_links = [
-        attrs
-        for tag, attrs in navigation.controls
+    (option,) = [
+        attrs for tag, attrs in navigation.controls
         if tag == "a"
-        and attrs.get("aria-label") == f"{range_prefix} {range_label}"
+        and attrs.get("role") == "menuitem"
+        and range_label in attrs.get("aria-label", "")
     ]
-    assert len(matching_links) == 1
-    query = parse_qs(urlsplit(matching_links[0]["href"]).query)
-    assert query["page"] == [str(expected)]
-    if view == "text":
-        assert query["account"] == [filters.account]
-        assert query["chat_kind"] == [filters.chat_kind]
-        assert query["session"] == [filters.session]
+    params = parse_qs(urlsplit(option["href"]).query)
+    assert params["page"] == [str(expected)]
+    assert params["q"] == [filters.q]
+    assert params["sort"] == [filters.sort]
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="Node.js is required.")

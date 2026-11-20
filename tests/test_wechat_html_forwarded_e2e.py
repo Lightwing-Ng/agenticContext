@@ -135,6 +135,8 @@ def html_forwarded_server(tmp_path_factory):
     assert all(contact["identity_status"] == "verified" for contact in contacts)
     assert all(contact["registry_persisted"] is True for contact in contacts)
     assert contacts[0]["id"] == contacts[1]["id"] != contacts[2]["id"]
+    assert contacts[0]["registry_persisted"] is True
+    assert contacts[2]["registry_persisted"] is False
     contact_id = canonical_contact_id(
         "wxid_forwarded", authority="native_message_sender"
     )
@@ -308,6 +310,7 @@ def test_html_forwarded_source_uses_existing_collapsed_transcript(
             ).to_have_attribute(
                 "href", re.compile("/browser/wechat/contacts/" + fixture.contact_id)
             )
+        expect(children.nth(2).locator(".wechat-contact-link")).to_have_count(0)
         geometry = disclosure.evaluate(
             """details => {
                 const rows = [...details.querySelectorAll('[data-wechat-embedded-row]')];

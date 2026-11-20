@@ -1,11 +1,12 @@
-"""Published shadow proofs use bounded processes without changing sealed evidence.
+"""Recovery bank proofs use bounded processes without changing sealed evidence.
 
-Code version: v1.3.0-codex.0
+Code version: v1.3.1-codex.0
 """
 
 from concurrent.futures import Future, ProcessPoolExecutor, ThreadPoolExecutor
 from concurrent.futures.process import BrokenProcessPool
 from contextlib import closing, contextmanager
+import hashlib
 from multiprocessing import get_context
 import sqlite3
 from threading import Event
@@ -17,6 +18,7 @@ from tests import test_wechat_macos_bank_v4_reader as revisions
 from tests import test_wechat_macos_recovery_bank as fixtures
 from tests import test_wechat_macos_recovery_bank_upgrades as upgrades
 from tests import test_wechat_macos_retained_clock_reader as clocks
+from tests import test_wechat_macos_reparse as reparse_fixtures
 
 
 mac_archive = fixtures.mac_archive
@@ -28,6 +30,187 @@ retained_v4 = revisions.retained_v4
 
 def _read_only(path):
     return sqlite3.connect(path.resolve().as_uri() + "?mode=ro&immutable=1", uri=True)
+
+
+def _enable_parallel(monkeypatch):
+    monkeypatch.setattr(bank, "_MIN_PARALLEL_BANK_BYTES", 0)
+    monkeypatch.setattr(bank, "resolve_cpu_process_workers", lambda **kwargs: 3)
+
+
+def _publish_reparsed(fixture):
+    old, new = reparse_fixtures._packets(fixture, "reply")
+    fixtures._publish(fixture, packets=[old], name="before-reparse")
+    fixtures._publish(fixture, packets=[new], name="after-reparse")
+
+
+def test_payload_digest_retains_canonical_rows_and_order():
+    with closing(sqlite3.connect(":memory:")) as connection:
+        connection.executescript(bank._SCHEMA_V4)
+        rows = [
+            ("z", "room", 1, None, "姓名", "received", "Emoji 🤍\nQuoted \"text\"", 1.25,
+             "2026-11-19T09:00:00+08:00", "19 Nov 2026", "UTC+08:00", "{}", "[]", "搜索"),
+            ("a", "room", 2, "sender", "Name", "sent", "Final line", -0.25,
+             "2026-11-19T09:00:00+08:00", "19 Nov 2026", "UTC+08:00", "{}", "[]", "Final"),
+        ]
+        connection.executemany("INSERT INTO messages VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)", rows)
+        connection.row_factory = sqlite3.Row
+        canonical = hashlib.sha256()
+        for table in (
+            "sources", "conversation_proofs", "event_keys", "occurrences", "gaps",
+            "messages", "conversations", "shadow_replacements", "projection_revisions",
+        ):
+            canonical.update(table.encode())
+            for row in connection.execute(f"SELECT * FROM {table} ORDER BY 1,2"):
+                canonical.update(bank._json(tuple(row)).encode())
+                canonical.update(b"\n")
+        assert bank._rows_digest(connection) == canonical.hexdigest()
+
+
+@pytest.mark.parametrize("reparsed", [False, True])
+def test_real_spawn_preserves_the_sealed_payload_and_all_proofs(
+    bank_archive, monkeypatch, reparsed
+):
+    fixture = bank_archive
+    if reparsed:
+        _publish_reparsed(fixture)
+    else:
+        fixtures._publish(fixture)
+    before = fixture.bank_path.read_bytes()
+    _enable_parallel(monkeypatch)
+    with closing(_read_only(fixture.bank_path)) as connection:
+        sequential = bank._validate_bank(connection, fixture.history)
+        parallel = bank._validate_bank(connection, fixture.history, allow_parallel=True)
+        assert parallel == sequential
+        assert bank._rows_digest(connection) == sequential["payload_sha256"]
+    assert fixture.bank_path.read_bytes() == before
+
+
+def test_worker_provenance_failure_is_not_retried_as_transport_failure(
+    bank_archive, monkeypatch
+):
+    fixture = bank_archive
+    _publish_reparsed(fixture)
+    with sqlite3.connect(fixture.bank_path) as connection:
+        connection.execute("UPDATE projection_revisions SET digest=?", ("0" * 64,))
+        connection.execute(
+            "UPDATE archive_info SET value=? WHERE key='payload_sha256'",
+            (bank._rows_digest(connection),),
+        )
+    _enable_parallel(monkeypatch)
+
+    def unexpected_sequential_digest(connection):
+        raise AssertionError("A worker proof failure must propagate without local fallback.")
+
+    monkeypatch.setattr(bank, "_rows_digest", unexpected_sequential_digest)
+    with closing(_read_only(fixture.bank_path)) as connection:
+        with pytest.raises(ValueError, match="revision chain is inconsistent"):
+            bank._validate_bank(connection, fixture.history, allow_parallel=True)
+
+
+def test_staged_writer_keeps_validation_in_its_own_connection(bank_archive, monkeypatch):
+    fixture = bank_archive
+    candidate, _receipt = fixtures._stage(fixture)
+    _enable_parallel(monkeypatch)
+
+    def unexpected_pool(**kwargs):
+        raise AssertionError("A staging connection must not create a process pool.")
+
+    monkeypatch.setattr(bank, "ProcessPoolExecutor", unexpected_pool)
+    with closing(sqlite3.connect(candidate)) as connection:
+        bank._validate_bank(connection, fixture.history, allow_parallel=True)
+
+
+def test_publication_uses_real_processes_for_a_closed_candidate(bank_archive, monkeypatch):
+    fixture = bank_archive
+    candidate, receipt = fixtures._stage(fixture)
+    candidate_bytes = candidate.read_bytes()
+    original_history = fixture.history.read_bytes()
+    _enable_parallel(monkeypatch)
+
+    def unexpected_sequential_digest(*args, **kwargs):
+        pytest.fail("A closed candidate must reach the spawned validation jobs.")
+
+    monkeypatch.setattr(bank, "_rows_digest", unexpected_sequential_digest)
+    bank.publish_mac_recovery_bank(fixture.root, candidate, receipt)
+
+    assert fixture.bank_path.read_bytes() == candidate_bytes
+    assert fixture.history.read_bytes() == original_history
+    assert not candidate.exists()
+
+
+def test_cancelled_parallel_validation_leaves_the_published_bank_intact(bank_archive, monkeypatch):
+    fixture = bank_archive
+    fixtures._publish(fixture)
+    candidate, receipt = fixtures._stage(fixture, name="cancelled")
+    old_bank = fixture.bank_path.read_bytes()
+    submitted, stopped = [], []
+    _enable_parallel(monkeypatch)
+
+    class PendingPool:
+        def __init__(self, **kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def submit(self, _operation, job, *_args):
+            submitted.append(job)
+            return Future()
+
+        def terminate_workers(self):
+            stopped.append(True)
+
+    def check_cancel():
+        if submitted:
+            raise ValueError("Cancelled while validating the candidate.")
+
+    monkeypatch.setattr(bank, "ProcessPoolExecutor", PendingPool)
+    with pytest.raises(ValueError, match="Cancelled while validating"):
+        bank.publish_mac_recovery_bank(fixture.root, candidate, receipt, check_cancel=check_cancel)
+
+    assert submitted == ["payload", "clocks"]
+    assert stopped == [True]
+    assert fixture.bank_path.read_bytes() == old_bank
+    assert bank._file_sha(candidate) == receipt["candidate_sha256"]
+
+
+def test_broken_process_transport_rechecks_all_proofs_locally(bank_archive, monkeypatch):
+    fixture = bank_archive
+    fixtures._publish(fixture)
+    _enable_parallel(monkeypatch)
+
+    class BrokenPool:
+        def __init__(self, **kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def submit(self, *args):
+            future = Future()
+            future.set_exception(BrokenProcessPool("Synthetic worker transport failure."))
+            return future
+
+    monkeypatch.setattr(bank, "ProcessPoolExecutor", BrokenPool)
+    with closing(_read_only(fixture.bank_path)) as connection:
+        expected = bank._validate_bank(connection, fixture.history)
+        assert bank._validate_bank(connection, fixture.history, allow_parallel=True) == expected
+
+
+def test_changed_worker_inputs_are_rejected_before_reading_the_bank(bank_archive):
+    fixture = bank_archive
+    fixtures._publish(fixture)
+    inputs = bank._inputs(fixture.history)
+    identity = bank._identity(fixture.bank_path)
+    fixture.history.with_name("media_events.sqlite3").touch()
+    with pytest.raises(ValueError, match="changed before worker validation"):
+        bank._validate_bank_job("payload", str(fixture.bank_path), str(fixture.history), identity, inputs)
 
 
 def test_concurrent_cold_readers_share_one_validation(bank_archive, monkeypatch):
@@ -284,7 +467,6 @@ def test_shadow_process_transport_fallback_preserves_proof_failures(app_stubs, m
                 bank._validate_shadow_sources(connection, fixture.history)
             assert not bank._SHADOW_VALIDATED
         assert not bank._SHADOW_VALIDATING
-
 
 def test_scoped_shadow_reader_reuses_pending_global_validation(app_stubs, monkeypatch):
     fixture = app_stubs

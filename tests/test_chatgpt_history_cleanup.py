@@ -1,6 +1,6 @@
 """Regression coverage for recoverable local ChatGPT trace cleanup."""
 
-# Code version: v1.2.0-claude.0
+# Code version: v1.3.0-codex.0
 
 import hashlib
 import json
@@ -64,7 +64,7 @@ def test_trace_detection_does_not_execute_or_match_embedded_examples(text):
 
 
 def test_cleanup_is_locked_backed_up_atomic_and_idempotent(tmp_path: Path):
-    path = tmp_path / "llm/chatgpt/history.parquet"
+    path = tmp_path / "llm/chatgpt/history.sqlite3"
     store = ChatGPTHistoryStore(path)
     store.replace_conversation("https://chatgpt.com/c/fixture", {"mapping": {
         "user": {"message": {"author": {"role": "user"}, "content": {"parts": ["Prompt"]}}},
@@ -97,7 +97,7 @@ def test_cleanup_is_locked_backed_up_atomic_and_idempotent(tmp_path: Path):
 
 
 def test_markdown_repair_is_locked_backed_up_structure_preserving_and_idempotent(tmp_path: Path):
-    path = tmp_path / "llm/chatgpt/history.parquet"
+    path = tmp_path / "llm/chatgpt/history.sqlite3"
     store = ChatGPTHistoryStore(path)
     store.replace_conversation("https://chatgpt.com/c/fixture", {"mapping": {
         "user": {"message": {"author": {"role": "user"}, "content": {"parts": ["Prompt"]}}},

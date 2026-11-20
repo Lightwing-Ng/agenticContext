@@ -1,6 +1,6 @@
 """Route and asset coverage for the formal Zhihu cache source.
 
-Code version: v1.8.2-codex.0
+Code version: v1.8.3-codex.0
 """
 
 from __future__ import annotations

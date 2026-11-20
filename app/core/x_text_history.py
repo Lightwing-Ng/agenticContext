@@ -1,6 +1,6 @@
 """Persist text from the authenticated X likes timeline independently of media."""
 
-# Code version: v1.0.1-codex.0
+# Code version: v1.1.0-codex.0
 
 from __future__ import annotations
 
@@ -14,8 +14,8 @@ from .resource_persistence import (
     X_HISTORY_FILENAME,
     X_HISTORY_SCHEMA,
     X_HISTORY_SCHEMA_VERSION,
-    read_parquet_rows,
-    write_parquet_rows_atomic,
+    read_resource_rows,
+    write_resource_rows_atomic,
 )
 
 
@@ -46,8 +46,8 @@ class XTextHistoryStore:
 
     def __init__(self, path: Path) -> None:
         self.path = Path(path)
-        persisted = read_parquet_rows(self.path)
-        if persisted is None and self.path.exists():
+        persisted = read_resource_rows(self.path)
+        if persisted is None and (self.path.exists() or self.path.with_suffix(".parquet").exists()):
             raise RuntimeError("Existing X text history could not be read; it was not overwritten.")
         self._rows: dict[str, dict[str, object]] = {}
         for row in persisted or []:
@@ -107,7 +107,7 @@ class XTextHistoryStore:
                 next_rows[status_id] = next_row
                 changed += 1
         if changed:
-            write_parquet_rows_atomic(
+            write_resource_rows_atomic(
                 self.path,
                 (next_rows[key] for key in sorted(next_rows, key=int)),
                 X_HISTORY_SCHEMA,

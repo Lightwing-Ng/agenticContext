@@ -1,6 +1,6 @@
 """Exercise source isolation, exact foreign rows, and reversible publication.
 
-Code version: v1.0.2-codex.0
+Code version: v1.0.3-codex.0
 """
 
 from contextlib import closing
@@ -14,6 +14,7 @@ import zipfile
 
 import pytest
 
+from app.core import wechat_derived_retirement as retirement
 from app.core import wechat_exchange as codec
 from app.core import wechat_exchange_import as exchange
 from app.core.wechat_archive import (
@@ -49,11 +50,11 @@ MESSAGE = "a" * 64
 def test_publication_rejects_writers_and_failed_ownership_inspection(
     tmp_path, monkeypatch, returncode, stdout, stderr, allowed
 ):
-    result = exchange.subprocess.CompletedProcess(
+    result = retirement.subprocess.CompletedProcess(
         args=[], returncode=returncode, stdout=stdout, stderr=stderr
     )
     monkeypatch.setattr(exchange, "os", SimpleNamespace(name="posix"))
-    monkeypatch.setattr(exchange.subprocess, "run", lambda *args, **kwargs: result)
+    monkeypatch.setattr(retirement.subprocess, "run", lambda *args, **kwargs: result)
     if allowed:
         exchange._no_input_writers(tmp_path / "history.sqlite3")
     else:

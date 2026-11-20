@@ -1,12 +1,20 @@
-/* Code version: v1.14.0-codex.0 */
+/* Code version: v1.19.1-codex.0 */
 
 (function initializeMessagingDisclosures() {
     "use strict";
 
     document.querySelectorAll("[data-wechat-resource-reveal]").forEach((button) => {
+        const feedback = button.closest(".wechat-resource")?.querySelector("[data-wechat-resource-feedback]");
+        if (!feedback) return;
+        const initialFeedback = feedback.textContent;
+        let showingFeedback = false;
         button.addEventListener("click", async () => {
-            const feedback = button.closest(".wechat-resource")?.querySelector("[data-wechat-resource-feedback]");
-            if (!feedback) return;
+            if (showingFeedback) {
+                // Dismiss the result without repeating the Finder action.
+                feedback.textContent = initialFeedback;
+                showingFeedback = false;
+                return;
+            }
             const restoreFocus = document.activeElement === button;
             button.disabled = true;
             try {
@@ -22,6 +30,7 @@
             } catch (error) {
                 feedback.textContent = error instanceof Error ? error.message : "Unable to open Finder.";
             } finally {
+                showingFeedback = true;
                 button.disabled = false;
                 if (restoreFocus && document.activeElement === document.body) {
                     button.focus({ preventScroll: true });
@@ -48,8 +57,19 @@
             card.classList.add("wechat-message--run-continued");
             row.classList.add("wechat-message-row--run-continued");
         }
-        return { row, card, summary, time, slot, continued };
+        const forwarded = card.querySelector(":scope > .wechat-forwarded");
+        return { row, card, summary, time, slot, continued, forwarded };
     }).filter(Boolean);
+    const timestampLevels = [];
+    timestampRows.forEach((entry) => {
+        let depth = 0;
+        let ancestor = entry.row.parentElement?.closest(".wechat-message-row");
+        while (ancestor) {
+            depth += 1;
+            ancestor = ancestor.parentElement?.closest(".wechat-message-row");
+        }
+        (timestampLevels[depth] ||= []).push(entry);
+    });
     const naturalWidths = new WeakMap();
     let naturalRevision = 0;
 
@@ -65,44 +85,56 @@
     }
 
     function alignMagneticBubbles() {
-        timestampRows.forEach(({ row, card, time }) => {
-            if (row.closest("details:not([open])") || !row.getClientRects().length) return;
-            const bounds = row.getBoundingClientRect();
-            const logicalWidth = parseFloat(getComputedStyle(row).width) || bounds.width;
-            if (logicalWidth <= 0 || bounds.width <= 0) return;
-            const scale = bounds.width / logicalWidth;
-            const key = `${naturalRevision}:${logicalWidth.toFixed(3)}`;
-            let natural = naturalWidths.get(card);
-            if (!natural || natural.key !== key) {
-                // Important measurement rules bypass the presented width spring,
-                // without cancelling it or reading back our own snapped width.
-                card.classList.add("wechat-message--time-measuring");
-                natural = { key, width: card.getBoundingClientRect().width / scale };
-                card.classList.remove("wechat-message--time-measuring");
-                naturalWidths.set(card, natural);
-            }
-            const style = getComputedStyle(card);
-            const inset = parseFloat(style.paddingRight) + parseFloat(style.borderRightWidth);
-            const rail = clockRailRight(row);
-            const clockLeft = rail - time.getBoundingClientRect().width;
-            const sent = card.dataset.wechatDirection === "sent";
-            const naturalRight = sent ? bounds.right : bounds.left + natural.width * scale;
-            const contained = card.classList.contains("wechat-message--time-contained");
-            const gap = Math.max(12, inset) * scale;
-            const overhang = Math.max(0, rail + inset * scale - bounds.right) / scale;
-            const motion = hasDisclosureMotion(card);
-            let contain = sent ? overhang > 0.5 : clockLeft - naturalRight <= gap * (contained ? 2 : 1);
-            // Never expose a clock-straddling frame during width overshoot or reversal.
-            if (motion && (contained || !sent && clockLeft - card.getBoundingClientRect().right <= gap)) {
-                contain = true;
-            }
-            if (contain) {
-                const width = sent ? natural.width + overhang
-                    : (rail + inset * scale - bounds.left) / scale;
-                writeTimeStyle(card, "--wechat-time-contained-width", `${width.toFixed(3)}px`);
-                writeTimeStyle(card, "--wechat-time-overhang", `${overhang.toFixed(3)}px`);
-            }
-            card.classList.toggle("wechat-message--time-contained", contain);
+        timestampLevels.forEach((level) => {
+            const entries = level.flatMap(({ row, card, time, forwarded }) => {
+                if (row.closest("details:not([open])") || !row.getClientRects().length) return [];
+                const bounds = row.getBoundingClientRect();
+                const logicalWidth = parseFloat(getComputedStyle(row).width) || bounds.width;
+                if (logicalWidth <= 0 || bounds.width <= 0) return [];
+                const scale = bounds.width / logicalWidth;
+                const key = `${naturalRevision}:${logicalWidth.toFixed(3)}`;
+                const natural = naturalWidths.get(card);
+                return [{ row, card, time, forwarded, bounds, scale, key, natural,
+                    measure: !natural || natural.key !== key }];
+            });
+            const measuring = entries.filter((entry) => entry.measure);
+            // Equal-depth cards cannot contain each other. Batch their measurement
+            // styles so a width spring does not force a layout for every message.
+            measuring.forEach(({ card }) => card.classList.add("wechat-message--time-measuring"));
+            measuring.forEach((entry) => {
+                entry.natural = { key: entry.key,
+                    width: entry.card.getBoundingClientRect().width / entry.scale };
+                naturalWidths.set(entry.card, entry.natural);
+            });
+            measuring.forEach(({ card }) => card.classList.remove("wechat-message--time-measuring"));
+            const updates = entries.map(({ row, card, time, forwarded, bounds, scale, natural }) => {
+                const style = getComputedStyle(card);
+                const inset = parseFloat(style.paddingRight) + parseFloat(style.borderRightWidth);
+                const rail = clockRailRight(row);
+                const clockLeft = rail - time.getBoundingClientRect().width;
+                const sent = card.dataset.wechatDirection === "sent";
+                const naturalRight = sent ? bounds.right : bounds.left + natural.width * scale;
+                const contained = card.classList.contains("wechat-message--time-contained");
+                const gap = Math.max(12, inset) * scale;
+                const overhang = Math.max(0, rail + inset * scale - bounds.right) / scale;
+                const motion = hasDisclosureMotion(card);
+                let contain = sent ? overhang > 0.5 : clockLeft - naturalRight <= gap * (contained ? 2 : 1);
+                // An open forward fills the row itself. Keep its compact endpoint
+                // measurable instead of locking the width during the spring.
+                if (!forwarded?.open && motion
+                    && (contained || !sent && clockLeft - card.getBoundingClientRect().right <= gap)) {
+                    contain = true;
+                }
+                return { card, contain, overhang, width: sent ? natural.width + overhang
+                    : (rail + inset * scale - bounds.left) / scale };
+            });
+            updates.forEach(({ card, contain, width, overhang }) => {
+                if (contain) {
+                    writeTimeStyle(card, "--wechat-time-contained-width", `${width.toFixed(3)}px`);
+                    writeTimeStyle(card, "--wechat-time-overhang", `${overhang.toFixed(3)}px`);
+                }
+                card.classList.toggle("wechat-message--time-contained", contain);
+            });
         });
     }
 
@@ -125,7 +157,7 @@
 
     function alignTimestamps() {
         alignMagneticBubbles();
-        const positions = timestampRows.map(({ row, card, summary, time, slot, continued }) => {
+        const positions = timestampRows.map(({ row, card, summary, time, slot, continued, forwarded }) => {
             // A closed forwarded disclosure has no usable layout until it becomes visible.
             if (row.closest("details:not([open])") || !row.getClientRects().length) return null;
             const bounds = row.getBoundingClientRect();
@@ -147,6 +179,10 @@
                 : (slot.getBoundingClientRect().top - bounds.top) / scale;
             const clockLeft = bounds.right - (inset + clockBox.width / scale) * scale;
             const clockBottom = bounds.top + (top + clockHeight + targetOutset) * scale;
+            // Keep the clock on its rail while the moving bubble edge crosses it.
+            const clockEdgeGap = Math.max(clockLeft - cardBox.right, cardBox.right - (clockLeft + clockBox.width));
+            const opacity = forwarded?.hasAttribute("data-collapse-motion")
+                ? Math.max(0, Math.min(1, clockEdgeGap / (8 * scale))) : 1;
             let overlaps = false;
             if (continued) {
                 card.querySelectorAll(":scope > .wechat-message-text, :scope > .wechat-message-quote > p, :scope > .wechat-resource, :scope > .wechat-provenance[open] > .ui-collapse-body, :scope > .wechat-forwarded > summary").forEach((content) => {
@@ -163,6 +199,7 @@
                 inset,
                 clockWidth: clockBox.width / scale,
                 clockHeight,
+                opacity,
                 // The centered source target retains its hit area without reserving a full header.
                 clearance: overlaps ? clockHeight + Math.max(4, targetOutset + 1) : 0,
             };
@@ -172,6 +209,7 @@
             const values = {
                 "--wechat-time-top": `${positions[index].top}px`,
                 "--wechat-time-inset": `${positions[index].inset}px`,
+                "--wechat-clock-opacity": String(positions[index].opacity),
                 ...(continued ? {
                     "--wechat-run-clock-width": `${positions[index].clockWidth}px`,
                     "--wechat-run-clock-height": `${positions[index].clockHeight}px`,
@@ -228,8 +266,8 @@
     alignTimestamps();
 
     window.SharedDisclosureMotion?.enhance(document, {
-        selector: ".wechat-message > details.wechat-provenance, .wechat-message > details.wechat-forwarded",
-        widthTarget: (details) => details.parentElement,
+        selector: ".wechat-message > details.wechat-provenance, details.wechat-forwarded, details.wechat-group-name-history, details.wechat-group-membership-history",
+        widthTarget: (details) => details.parentElement.matches(".wechat-message") ? details.parentElement : null,
     });
     document.querySelectorAll(".wechat-message").forEach((card) => {
         const provenance = card.querySelector(":scope > .wechat-provenance");

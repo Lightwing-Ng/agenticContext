@@ -1,6 +1,21 @@
-{# Code version: v1.35.1-codex.0 #}
-{% from "_wechat_conversation_kind.html" import conversation_kind_label, conversation_kind_badge %}
+{# Code version: v1.43.0-codex.0 #}
 {% from "_wechat_view_layout.html" import conversation_transcript, conversation_table, conversation_list_note %}
+{% from "_wechat_conversation_kind.html" import conversation_kind_label, conversation_kind_badge %}
+{% from "_wechat_display_name.html" import display_name as render_display_name %}
+{% macro display_name(value) -%}{{- render_display_name(value) -}}{%- endmacro %}
+{% macro membership_status_text(event) -%}
+    {%- if event.method == 'qr' -%}Joined by QR code
+    {%- elif event.method == 'invited' and event.actor_label -%}Invited by {{ display_name(event.actor_label) }}
+    {%- elif event.method == 'invited' -%}Joined by invitation
+    {%- elif event.method == 'left' -%}Left voluntarily
+    {%- elif event.method == 'removed' and event.actor_label -%}Removed by {{ display_name(event.actor_label) }}
+    {%- elif event.method == 'removed' -%}Removed from group
+    {%- else -%}Unknown
+    {%- endif -%}
+{%- endmacro %}
+{% macro snapshot_change_detail(change) -%}
+    {{- 'Join method unknown' if change.kind == 'newly_listed' else 'Departure reason unknown' -}}
+{%- endmacro %}
 {% macro resource_card(resource, message_id='', embedded=false) %}
 {% set resource_can_reveal = resource.can_reveal and not embedded and message_id %}
 {% set resource_feedback_id = 'wechat_resource_feedback_' ~ message_id %}
@@ -8,11 +23,11 @@
 {% set resource_publisher = resource.publisher_name|default('') %}
 {% set resource_platform = resource.platform_label|default('') %}
 {% set show_platform = resource_platform and resource.label != resource_platform %}
-{% set resource_show_status = not resource_is_link or resource.status != 'metadata_only' %}
+{% set resource_show_status = resource.status != 'metadata_only' %}
 <div class="wechat-resource" data-wechat-resource-kind="{{ resource.kind }}" data-wechat-resource-status="{{ resource.status }}"{% if resource_is_link %} data-wechat-resource-link="true"{% endif %}{% if resource_platform %} data-wechat-resource-platform="{{ resource_platform }}"{% endif %}>
     <span class="wechat-resource-icon" aria-hidden="true"></span>
     <span class="wechat-resource-copy">
-        <span class="wechat-resource-label{% if resource_platform %} wechat-message-text{% endif %}">{{ resource.label }}</span>
+        <span class="wechat-resource-label">{{ resource.label }}</span>
         {% if resource_publisher or show_platform or resource_show_status %}
         <span class="wechat-resource-status"{% if resource_can_reveal %} id="{{ resource_feedback_id }}"{% endif %} data-wechat-resource-feedback aria-live="polite">{% if resource_publisher %}<span class="wechat-resource-publisher">{{ resource_publisher }}</span>{% endif %}{% if resource_publisher and show_platform %} · {% endif %}{% if show_platform %}{{ resource_platform }}{% endif %}{% if resource_show_status %}{% if resource_publisher or show_platform %} · {% endif %}{{ resource.status_label }}{% endif %}</span>
         {% endif %}
@@ -68,7 +83,7 @@
     {{ forwarded_conversation(context.quoted_reply.forwarded_record, key ~ '_quote') }}
     {% else %}
     <blockquote class="wechat-message-quote" aria-label="Quoted message">
-        <p class="wechat-quoted-speaker">{{ context.quoted_reply.viewer_display_name or context.quoted_reply.speaker }}</p>
+        <p class="wechat-quoted-speaker">{{ display_name(context.quoted_reply.viewer_display_name or context.quoted_reply.speaker) }}</p>
         {% if context.quoted_reply.payment %}
         {{ payment_card(context.quoted_reply.payment, context.quoted_reply.text) }}
         {% elif context.quoted_reply.resource %}
@@ -86,7 +101,9 @@
                 {% set contact = context.contact|default({}) %}
                 {% set contact_url = wechat_contact_analysis_url(contact, key) if wechat_contact_analysis_url is defined and (contact or {}).get('registry_persisted', true) else '' %}
                 {% set speaker_tag = 'a' if contact_url else 'span' %}
-                <{{ speaker_tag }} class="wechat-speaker{% if contact_url %} wechat-contact-link{% endif %}" id="wechat_sender_{{ key }}"{% if contact_url %} href="{{ contact_url }}" data-wechat-contact-link title="Analyze contact"{% endif %}>{{ context.viewer_display_name or message.author_label }}</{{ speaker_tag }}>
+                <{{ speaker_tag }} class="wechat-speaker{% if contact_url %} wechat-contact-link{% endif %}" id="wechat_sender_{{ key }}"{% if contact_url %} href="{{ contact_url }}" data-wechat-contact-link title="Analyze contact"
+                    data-wait-navigation data-wait-title="Loading messages"
+                    data-wait-copy="Collecting messages across source accounts."{% endif %}>{{ display_name(context.viewer_display_name or message.author_label) }}</{{ speaker_tag }}>
                 {% if context.timestamp_label %}<time id="wechat_time_{{ key }}" datetime="{{ message.last_seen_at }}" title="{{ context.time_basis }}">{{ context.timestamp_label }}</time>{% endif %}
             </span>
         </summary>
@@ -97,10 +114,20 @@
                 {% if context.viewer_display_name %}<dt>Source display name</dt><dd>{{ message.author_label }}</dd>{% endif %}
                 <dt>Archive</dt><dd>{{ context.source_file }}</dd>
                 {% if context.source_observations %}
-                <dt>Source observations</dt><dd>{% for observation in context.source_observations %}<div>{{ observation.source_label }} · {{ observation.source_snapshot_id }}<br>{{ observation.id }}</div>{% endfor %}</dd>
+                <dt>Source observations</dt><dd>
+                    <span>{{ context.source_observations|length }} preserved observations</span>
+                    {% if context.source_observations[0].clock_disagreement|default(false) %}<p>Source clocks differ; each device observation is preserved.</p>{% endif %}
+                    {% for observation in context.source_observations %}
+                    <div>{{ observation.source_label }} · {{ observation.source_snapshot_id }}<br>{{ observation.id }}{% if observation.source_clock %}<br>Source clock: <time datetime="{{ observation.timestamp_value }}">{{ observation.source_clock|wechat_source_clock }}</time>{% endif %}</div>
+                    {% endfor %}
+                </dd>
                 {% endif %}
                 <dt>Conversation ID</dt><dd>{{ context.peer_id or 'Unavailable in source' }}</dd>
                 <dt>{{ 'Original export identifier' if context.sender_identifier_namespace == 'unverified_export_field' else 'Sender ID' }}</dt><dd>{{ context.sender_id or 'Unavailable in source' }}</dd>
+                {% set sender_recovery = context.provenance.native_resource_sender_resolution|default({}) %}
+                {% if sender_recovery.status|default('') == 'missing_dictionary' %}
+                <dt>Sender recovery</dt><dd>Pending: compression dictionary {{ sender_recovery.dictionary_id }} is unavailable.</dd>
+                {% endif %}
                 {% if context.contact %}
                 <dt>Contact ID</dt><dd>{{ context.contact.id }}</dd>
                 <dt>Contact identity</dt><dd>{{ context.contact.identity_status|replace('_', ' ') }}</dd>
@@ -112,6 +139,7 @@
                 {% endif %}
                 {% if context.text_observation %}<dt>Additional evidence</dt><dd>{{ context.text_observation.label }}</dd>{% endif %}
                 {% if context.context_evidence %}<dt>Additional evidence</dt><dd>Compatible retained native text observation.</dd>{% endif %}
+                {% if context.provenance.native_resource_details %}<dt>Additional evidence</dt><dd>Resource details verified against the same message in the Mac archive. Original source coordinates are preserved.</dd>{% endif %}
                 {% if context.context_link_proof %}<dt>Additional text source</dt><dd>Completed from a retained text record in the same original export.</dd>{% endif %}
                 {% if context.preview_reference_proof %}<dt>Additional text source</dt><dd>Matching indexed excerpt; this record's clock and speaker remain observations from the referenced source.</dd><dt>Referenced source</dt><dd>{{ context.preview_reference_proof.source_parent_id }}</dd>{% endif %}
                 {% if context.forwarded_preview_proof %}
@@ -166,11 +194,142 @@
             {% if not origin.group_name_history.title %}
             <p class="wechat-source-note">The latest notices record different names at the same time.</p>
             {% endif %}
-            <ul>
-                {% for change in origin.group_name_history.changes %}
-                <li><a href="{{ url_for('local_resources.wechat_message_source', message_id=change.message_id) }}"><span lang="zh-CN">{{ change.title }}</span> · <time datetime="{{ change.timestamp_value }}">{{ change.timestamp_label }}</time></a></li>
-                {% endfor %}
-            </ul>
+            <table class="wechat-group-name-history-table" aria-label="Group name history">
+                <thead>
+                    <tr>
+                        <th scope="col">Change date</th>
+                        <th scope="col">Group name</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for change in origin.group_name_history.changes %}
+                    {% set date_parts = change.timestamp_label.split() %}
+                    <tr>
+                        <td>
+                            <time datetime="{{ change.timestamp_value }}"{% if date_parts | length == 4 %} class="wechat-group-name-history-date"{% endif %}>
+                                {%- if date_parts | length == 4 -%}
+                                    <span>{{ date_parts[0] }}</span>{{ ' ' }}<span>{{ date_parts[1] }}</span>{{ ' ' }}<span>{{ date_parts[2] }}</span>{{ ' ' }}<span>{{ date_parts[3] }}</span>
+                                {%- else -%}
+                                    {{ change.timestamp_label }}
+                                {%- endif -%}
+                            </time>
+                        </td>
+                        <td><a href="{{ url_for('local_resources.wechat_message_source', message_id=change.message_id) }}" lang="zh-CN">{{ display_name(change.title) }}</a></td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </details>
+    {% endif %}
+    {% if origin.group_membership_history is defined %}
+    {% set history = origin.group_membership_history %}
+    {% set last_member_names = origin.get('group_roster', {}).get('last_member_names', {}) %}
+    <details class="ui-collapse wechat-group-membership-history"{% if origin.group_roster_capture_feedback|default('') %} open{% endif %}>
+        <summary>Group membership history</summary>
+        <div class="ui-collapse-body">
+            {% if origin.group_roster is defined %}
+            {% set roster = origin.group_roster %}
+            {% set can_refresh_roster = not wechat_read_job and wechat_refresh_available|default(false) and origin.group_roster_capture_available|default(false) %}
+            <section class="wechat-group-roster" id="wechat_group_roster" aria-label="Local member snapshots" data-wechat-group-roster="{{ roster.status }}">
+                {% if origin.group_roster_capture_feedback|default('') %}
+                <p class="wechat-source-note" role="status">{{ origin.group_roster_capture_feedback }}</p>
+                {% endif %}
+                {% if roster.current %}
+                <p class="wechat-source-note">{{ '{:,}'.format(roster.snapshot_count) }} saved {{ 'snapshot' if roster.snapshot_count == 1 else 'snapshots' }} · Latest <time datetime="{{ roster.current.observed_at }}">{{ roster.current.observed_label }}</time></p>
+                {% if not roster.previous %}
+                <p class="wechat-source-note">Baseline snapshot saved.{% if can_refresh_roster %} Use Refresh chat history to save another snapshot and compare members.{% endif %}</p>
+                {% endif %}
+                {% elif roster.status == 'invalid' %}
+                <p class="wechat-source-note">Saved member snapshots could not be verified.</p>
+                {% else %}
+                <p class="wechat-source-note">No member snapshots saved.{% if can_refresh_roster %} Use Refresh chat history to save the local member list.{% endif %}</p>
+                {% endif %}
+                {% if roster.source_note %}
+                <p class="wechat-source-note">{{ roster.source_note }}</p>
+                {% endif %}
+                {% if roster.status != 'invalid' and not can_refresh_roster %}
+                <p class="wechat-source-note" id="wechat_group_roster_capture_note">{{ origin.group_roster_capture_note|default('Member snapshots are unavailable for this conversation.', true) }}</p>
+                {% endif %}
+            </section>
+            {% endif %}
+            {% if history.snapshot_history_status == 'invalid' %}
+            <p class="wechat-source-note">Saved membership changes could not be verified.</p>
+            {% endif %}
+            {% if not history.timeline %}
+            <p class="wechat-source-note">No membership changes were found in saved notices or comparable snapshots.</p>
+            {% endif %}
+            {% if history.timeline %}
+            <p class="wechat-source-note">Snapshot dates show the interval between observations. System notices give the recorded time and reason when available.</p>
+            {% if history.total > history.events|length %}
+            <p class="wechat-source-note">Showing the {{ '{:,}'.format(history.events|length) }} most recent of {{ '{:,}'.format(history.total) }} notices.</p>
+            {% endif %}
+            {% if history.snapshot_change_count > history.snapshot_displayed_count %}
+            <p class="wechat-source-note">Showing the {{ '{:,}'.format(history.snapshot_displayed_count) }} most recent of {{ '{:,}'.format(history.snapshot_change_count) }} snapshot changes.</p>
+            {% endif %}
+            <table class="wechat-group-membership-history-table" aria-label="Group membership history">
+                <thead>
+                    <tr>
+                        <th scope="col">Change date</th>
+                        <th scope="col">Member</th>
+                        <th scope="col">Status</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for event in history.timeline %}
+                    {% if event.snapshot_change is defined %}
+                    {% set change = event.snapshot_change %}
+                    <tr data-wechat-membership-observation="{{ change.kind }}">
+                        <td>
+                            <div><time datetime="{{ change.interval_start }}">{{ change.interval_start_label }}</time></div>
+                            <div class="wechat-source-label">to <time datetime="{{ change.interval_end }}">{{ change.interval_end_label }}</time></div>
+                        </td>
+                        <td>
+                            <div>{{ display_name(change.display_name or change.username) }}</div>
+                            <div class="wechat-source-label">{{ change.username }}</div>
+                        </td>
+                        <td>
+                            <div>{{ 'Newly listed' if change.kind == 'newly_listed' else 'No longer listed' }}</div>
+                            <div class="wechat-source-label" title="Member snapshots · {{ change.account_id }}">{{ snapshot_change_detail(change) }}</div>
+                        </td>
+                    </tr>
+                    {% else %}
+                    <tr data-wechat-membership-event="{{ event.kind }}">
+                        <td>
+                            {% if event.timestamp_value and event.timestamp_label %}
+                            <time datetime="{{ event.timestamp_value }}">{{ event.timestamp_label }}</time>
+                            {% else %}
+                            <span class="wechat-source-note">Date unavailable</span>
+                            {% endif %}
+                        </td>
+                        <td>
+                            {% set notice_url = url_for('local_resources.wechat_message_source', message_id=event.message_id) %}
+                            {% set subjects = event.subjects %}
+                            {% if subjects|length > 1 and event.subject_label and not (subjects|selectattr('label')|first) %}
+                            <div><a href="{{ notice_url }}" title="{{ event.text }}">{{ display_name(event.subject_label) }}</a></div>
+                            {% endif %}
+                            {% for subject in subjects %}
+                            {% set nickname = last_member_names.get(subject.username) or subject.label %}
+                            {% if subjects|length == 1 %}{% set nickname = nickname or event.subject_label %}{% endif %}
+                            {% if nickname %}<div><a href="{{ notice_url }}" title="{{ event.text }}">{{ display_name(nickname) }}</a></div>{% endif %}
+                            <div class="wechat-source-label">{{ subject.username or 'Unknown' }}</div>
+                            {% else %}
+                            <div><a href="{{ notice_url }}" title="{{ event.text }}">Unknown member</a></div>
+                            <div class="wechat-source-label">Unknown</div>
+                            {% endfor %}
+                        </td>
+                        <td>
+                            <div>{{ 'Joined' if event.method == 'unknown' and event.kind == 'joined' else membership_status_text(event) }}</div>
+                            {% for duplicate_id in event.duplicate_message_ids|default(()) %}
+                            <div class="wechat-source-label"><a href="{{ url_for('local_resources.wechat_message_source', message_id=duplicate_id) }}">Other source</a></div>
+                            {% endfor %}
+                        </td>
+                    </tr>
+                    {% endif %}
+                    {% endfor %}
+                </tbody>
+            </table>
+            {% endif %}
         </div>
     </details>
     {% endif %}
@@ -182,24 +341,35 @@
         {% endfor %}
     {% endcall %}
     {% elif text_page.sessions %}
-    {% if not wechat_read_preview %}{{ conversation_list_note() }}{% endif %}
+    {% if wechat_read_preview %}
+    <p class="wechat-source-note">Message counts are from the last verified snapshot and may include duplicate records.</p>
+    {% else %}
+    {{ conversation_list_note() }}
+    {% endif %}
     {% call conversation_table() %}
         {% for session in text_page.sessions %}
         <tr data-chat-session-id="{{ session.stable_id }}" data-wechat-conversation-kind="{{ session.messaging.kind }}" data-wechat-account="{{ session.messaging.account_key }}">
-            <td>{{ (text_page.current_page - 1) * text_page.page_size + loop.index }}</td>
+            <td>{{ '{:,}'.format((text_page.current_page - 1) * text_page.page_size + loop.index) }}</td>
             <td>
-                <a class="browser-session-table-title" lang="zh-CN" href="{{ url_for('local_resources.browser', view='text', source='wechat', account=filters.account, chat_kind=filters.chat_kind, session=session.stable_id, session_page=text_page.current_page, sort=filters.sort) }}">{{ session.conversation_title }}</a>
+                <a class="browser-session-table-title" lang="zh-CN" href="{{ url_for('local_resources.browser', view='text', source='wechat', account=filters.account, chat_kind=filters.chat_kind, session=session.stable_id, session_page=text_page.current_page, sort=filters.sort) }}">{{ display_name(session.conversation_title) }}</a>
                 <span class="wechat-conversation-kind">{{ conversation_kind_badge(session.messaging) }}</span>
             </td>
-            <td><span class="wechat-account-label">{{ session.messaging.viewer_account_label or session.messaging.account_label }}</span><span class="wechat-source-label">{{ session.messaging.source_label }} · {{ session.messaging.identity_status }}</span></td>
-            <td>{{ '—' if wechat_read_preview else '{:,}'.format(session.message_count) }}</td>
+            <td>
+                <span class="wechat-account-label">{{ session.messaging.viewer_account_label or session.messaging.account_label }}</span>
+                <span class="wechat-source-label">{{ session.messaging.source_label }} · {{ session.messaging.identity_status }}</span>
+                {% if session.messaging.html_supplement is defined %}
+                {% set supplement = session.messaging.html_supplement %}
+                <a class="wechat-source-label" href="{{ url_for('local_resources.browser', view='text', source='wechat', account=filters.account, chat_kind=filters.chat_kind, session=supplement.id, session_page=text_page.current_page, sort=filters.sort) }}" aria-label="Open text supplement for {{ display_name(session.conversation_title) }}">Text supplement · {{ '{:,}'.format(supplement.message_count) }}</a>
+                {% endif %}
+            </td>
+            <td>{{ '{:,}'.format(session.message_count) }}</td>
         </tr>
         {% endfor %}
     {% endcall %}
     {% else %}
     <div class="browser-empty-state" role="status">
         <span class="browser-empty-icon browser-empty-icon-text" aria-hidden="true"></span>
-        <h3>No WeChat conversations match these filters.</h3>
+        <h3>{{ "No WeChat conversations matched these filters in the last verified snapshot." if wechat_read_preview else "No WeChat conversations match these filters." }}</h3>
         <p>Choose another source account, conversation type, or search term.</p>
     </div>
     {% endif %}

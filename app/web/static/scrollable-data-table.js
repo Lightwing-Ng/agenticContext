@@ -1,4 +1,4 @@
-/* Code version: v1.0.0-codex.0 */
+/* Code version: v1.0.3-codex.0 */
 
 (function bootstrapScrollableDataTables(globalScope) {
     "use strict";
@@ -37,18 +37,25 @@
         if (!headerRow) return;
         const bodyRow = measurementRow(body, headerRow.cells.length);
         if (!bodyRow) return;
-        const widths = Array.from(bodyRow.cells, (cell) => cell.getBoundingClientRect().width);
+        const cssWidth = Number.parseFloat(globalScope.getComputedStyle(body).width);
+        const layoutWidth = cssWidth > 0 ? cssWidth : body.offsetWidth;
+        const visualWidth = body.getBoundingClientRect().width;
+        const scale = layoutWidth > 0 && visualWidth > 0 ? visualWidth / layoutWidth : 1;
+        // Sidebar motion changes painted sizes without changing table layout.
+        const widths = Array.from(bodyRow.cells, (cell) => cell.getBoundingClientRect().width / scale);
         if (widths.length) widths[widths.length - 1] += scrollbarWidth;
         Array.from(headerRow.cells).forEach((cell, index) => {
             cell.style.width = `${Math.max(1, widths[index] || 1)}px`;
         });
-        header.style.width = `${Math.max(body.scrollWidth, body.getBoundingClientRect().width)}px`;
+        header.style.width = `${Math.max(1, layoutWidth)}px`;
     }
 
     function attach(shell) {
         if (!(shell instanceof HTMLElement)) return () => {};
         let frameId = 0;
         let resizeObserver = null;
+        let mutationObserver = null;
+        let measurementCells = new Set();
         const {header, scroll, body} = tableParts(shell);
         if (!(header instanceof HTMLTableElement)
             || !(scroll instanceof HTMLElement)
@@ -58,12 +65,29 @@
             header.style.translate = scroll.scrollLeft ? `${-scroll.scrollLeft}px 0` : "";
         }
 
+        function observeMeasurementCells() {
+            if (!resizeObserver) return;
+            const headerRow = Array.from(header.rows).find((row) => (
+                Array.from(row.cells).every((cell) => cell.colSpan === 1)
+            ));
+            const row = measurementRow(body, headerRow?.cells.length || 0);
+            const nextCells = new Set(Array.from(row?.cells || []));
+            measurementCells.forEach((cell) => {
+                if (!nextCells.has(cell)) resizeObserver.unobserve(cell);
+            });
+            nextCells.forEach((cell) => {
+                if (!measurementCells.has(cell)) resizeObserver.observe(cell);
+            });
+            measurementCells = nextCells;
+        }
+
         function sync() {
             frameId = 0;
+            observeMeasurementCells();
             const scrollbarWidth = Math.max(0, scroll.offsetWidth - scroll.clientWidth);
             setProperty(shell, SCROLLBAR_WIDTH_PROPERTY, `${scrollbarWidth}px`);
             syncColumnWidths(header, body, scrollbarWidth);
-            const height = header.getBoundingClientRect().height;
+            const height = header.offsetHeight;
             if (height > 0) setProperty(shell, HEADER_HEIGHT_PROPERTY, `${Math.ceil(height)}px`);
             syncHorizontalPosition();
         }
@@ -79,6 +103,16 @@
             resizeObserver = new ResizeObserver(schedule);
             [shell, header, scroll, body].forEach((node) => resizeObserver.observe(node));
         }
+        if (typeof MutationObserver === "function") {
+            mutationObserver = new MutationObserver(schedule);
+            // Only body-row eligibility and contents are observed; sync writes header/shell styles.
+            mutationObserver.observe(body, {
+                childList: true,
+                subtree: true,
+                attributes: true,
+                attributeFilter: ["hidden", "class", "style", "colspan", "data-table-empty-row", "data-table-summary-row"],
+            });
+        }
         schedule();
 
         return () => {
@@ -86,6 +120,8 @@
             scroll.removeEventListener("scroll", syncHorizontalPosition);
             globalScope.removeEventListener("resize", schedule);
             resizeObserver?.disconnect();
+            mutationObserver?.disconnect();
+            measurementCells.clear();
             header.style.removeProperty("translate");
             shell.style.removeProperty(HEADER_HEIGHT_PROPERTY);
             shell.style.removeProperty(SCROLLBAR_WIDTH_PROPERTY);

@@ -1,0 +1,143 @@
+"""Private media publication and deterministic legacy-reader lifetimes.
+
+Code version: v1.1.0-codex.0
+"""
+
+from pathlib import Path
+import os
+
+import pyarrow as pa
+import pyarrow.parquet as pq
+import pytest
+
+from app.core import media_sqlite
+from app.core.owner_only_files import OwnerOnlyFileError, owner_only_problem
+
+
+SCHEMA = pa.schema([pa.field("identity", pa.string(), nullable=False)])
+ROWS = [{"identity": "private media identity"}]
+
+
+def test_legacy_schema_and_rows_close_every_retained_reader(tmp_path, monkeypatch):
+    path = tmp_path / "media.sqlite3"
+    legacy = path.with_suffix(".parquet")
+    pq.write_table(pa.Table.from_pylist(ROWS, schema=SCHEMA), legacy)
+    original = legacy.read_bytes()
+    native_reader = pq.ParquetFile
+    readers = []
+
+    def retained_reader(*args, **kwargs):
+        reader = native_reader(*args, **kwargs)
+        readers.append(reader)
+        return reader
+
+    monkeypatch.setattr(media_sqlite.pq, "ParquetFile", retained_reader)
+    assert media_sqlite.read_media_legacy_schema(legacy).equals(SCHEMA)
+    store = media_sqlite.MediaSQLiteStore(path, SCHEMA, ("identity",))
+    assert store.rows() == ROWS
+    assert readers and all(reader.closed for reader in readers)
+    assert legacy.read_bytes() == original
+    assert not path.exists()
+
+
+def test_private_boundary_is_verified_before_first_sqlite_bytes(tmp_path, monkeypatch):
+    path = tmp_path / "media.sqlite3"
+    native_connect = media_sqlite._connect
+    seen = []
+
+    def verified_connect(candidate, **kwargs):
+        if not kwargs.get("readonly"):
+            assert owner_only_problem(candidate) == ""
+            seen.append((candidate, candidate.stat().st_size))
+        return native_connect(candidate, **kwargs)
+
+    monkeypatch.setattr(media_sqlite, "_connect", verified_connect)
+    store = media_sqlite.MediaSQLiteStore(path, SCHEMA, ("identity",))
+    store.upsert_rows(ROWS)
+
+    assert seen and seen[0][1] == 0
+    assert owner_only_problem(path) == ""
+    assert store.rows() == ROWS
+
+
+def test_failed_private_boundary_preserves_legacy_and_publishes_nothing(tmp_path, monkeypatch):
+    path = tmp_path / "media.sqlite3"
+    legacy = path.with_suffix(".parquet")
+    pq.write_table(pa.Table.from_pylist(ROWS, schema=SCHEMA), legacy)
+    original = legacy.read_bytes()
+
+    def refuse(candidate: Path):
+        assert candidate.stat().st_size == 0
+        raise OwnerOnlyFileError("Synthetic native boundary failure")
+
+    monkeypatch.setattr(media_sqlite, "ensure_owner_only", refuse, raising=False)
+    store = media_sqlite.MediaSQLiteStore(path, SCHEMA, ("identity",))
+    with pytest.raises(OwnerOnlyFileError, match="native boundary"):
+        store.upsert_rows([{"identity": "new private identity"}])
+
+    assert legacy.read_bytes() == original
+    assert not path.exists()
+    assert list(tmp_path.glob(".*.tmp")) == []
+
+
+def test_existing_media_boundary_is_verified_before_update(tmp_path, monkeypatch):
+    path = tmp_path / "media.sqlite3"
+    store = media_sqlite.MediaSQLiteStore(path, SCHEMA, ("identity",))
+    store.replace_rows(ROWS)
+    original = path.read_bytes()
+    if os.name == "posix":
+        path.chmod(0o644)
+        assert owner_only_problem(path)
+    native_connect = media_sqlite._connect
+    verified = []
+
+    def private_connect(candidate, **kwargs):
+        if not kwargs.get("readonly"):
+            assert owner_only_problem(candidate, allow_hard_links=True) == ""
+            assert candidate.read_bytes() == original
+            verified.append(candidate)
+        return native_connect(candidate, **kwargs)
+
+    monkeypatch.setattr(media_sqlite, "_connect", private_connect)
+    store.upsert_rows([{"identity": "new private identity"}])
+    assert verified == [path]
+    assert store.rows() == [*ROWS, {"identity": "new private identity"}]
+    assert owner_only_problem(path) == ""
+
+
+def test_existing_media_boundary_failure_preserves_all_bytes(tmp_path, monkeypatch):
+    path = tmp_path / "media.sqlite3"
+    store = media_sqlite.MediaSQLiteStore(path, SCHEMA, ("identity",))
+    store.replace_rows(ROWS)
+    original = path.read_bytes()
+
+    def refuse(candidate, **options):
+        assert candidate == path and options == {"allow_hard_links": True}
+        raise OwnerOnlyFileError("Synthetic existing media boundary failure")
+
+    monkeypatch.setattr(media_sqlite, "ensure_owner_only", refuse)
+    with pytest.raises(OwnerOnlyFileError, match="existing media boundary"):
+        store.upsert_rows([{"identity": "new private identity"}])
+    assert path.read_bytes() == original
+    assert store.rows() == ROWS
+
+
+def test_existing_media_update_keeps_the_initial_publication_alias_safe(tmp_path, monkeypatch):
+    path = tmp_path / "media.sqlite3"
+    store = media_sqlite.MediaSQLiteStore(path, SCHEMA, ("identity",))
+    native_link = media_sqlite.os.link
+    aliases = []
+
+    def update_before_unlink(temporary, destination, *args, **kwargs):
+        native_link(temporary, destination, *args, **kwargs)
+        assert temporary.samefile(path) and path.stat().st_nlink == 2
+        assert owner_only_problem(path, allow_hard_links=True) == ""
+        aliases.append(temporary)
+        other_writer = media_sqlite.MediaSQLiteStore(path, SCHEMA, ("identity",))
+        other_writer.upsert_rows([{"identity": "concurrent private identity"}])
+
+    monkeypatch.setattr(media_sqlite.os, "link", update_before_unlink)
+    store.replace_rows(ROWS)
+    assert aliases and all(not alias.exists() for alias in aliases)
+    assert store.rows() == [*ROWS, {"identity": "concurrent private identity"}]
+    assert owner_only_problem(path) == ""

@@ -261,7 +261,7 @@ class ReadTests(unittest.TestCase):
             plaintext, metadata = reader.decrypt_database(self.main, wal, KEY)
         self.assertEqual(plaintext, self.pages[0] + latest + self.pages[2])
         self.assertEqual(metadata["authenticated_committed_frame_count"], 2)
-        self.assertEqual(metadata["output_page_count"], 3)
+        self.assertEqual(metadata["authenticated_output_page_count"], 3)
         derive.assert_called_once_with(KEY, SALT)
         self.assertEqual([call.args[2] for call in verify.call_args_list], [2, 2, 1, 3])
 

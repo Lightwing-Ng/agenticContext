@@ -1,4 +1,4 @@
-/* Code version: v1.3.0-codex.1 */
+/* Code version: v1.3.1-codex.0 */
 
 (() => {
     "use strict";
@@ -153,12 +153,59 @@
         };
     };
 
+    const positionStyleTokenMenu = (container, trigger, menu) => {
+        if (menu.hidden) return;
+        const viewport = window.visualViewport;
+        const viewportTop = Number(viewport?.offsetTop) || 0;
+        const viewportBottom = viewportTop + (Number(viewport?.height) || window.innerHeight);
+        const edge = Number.parseFloat(getComputedStyle(container).getPropertyValue("--page-edge-pad")) || 10;
+        const gap = 4;
+        const triggerRect = trigger.getBoundingClientRect();
+        // Measure the existing shared height limit before applying the available viewport space.
+        menu.style.removeProperty("max-height");
+        const naturalHeight = menu.offsetHeight;
+        const below = Math.max(0, viewportBottom - edge - triggerRect.bottom - gap);
+        const above = Math.max(0, triggerRect.top - viewportTop - edge - gap);
+        const opensAbove = naturalHeight > below && above > below;
+        const available = opensAbove ? above : below;
+        menu.style.maxHeight = `min(var(--shared-select-dropdown-max-height), ${available}px)`;
+        const height = menu.offsetHeight;
+        const top = opensAbove
+            ? Math.max(viewportTop + edge, triggerRect.top - gap - height)
+            : Math.min(viewportBottom - edge - height, triggerRect.bottom + gap);
+        const owner = menu.offsetParent || container;
+        menu.style.top = `${top - owner.getBoundingClientRect().top - owner.clientTop + owner.scrollTop}px`;
+        menu.style.transformOrigin = opensAbove ? "bottom center" : "top center";
+    };
+
     const setStyleTokenMenuOpen = (container, trigger, menu, isOpen) => {
         container.classList.toggle("is-open", isOpen);
         trigger.setAttribute("aria-expanded", String(isOpen));
         menu.hidden = !isOpen;
         menu.setAttribute("aria-hidden", String(!isOpen));
+        if (isOpen) {
+            positionStyleTokenMenu(container, trigger, menu);
+        } else {
+            ["top", "max-height", "transform-origin"].forEach((name) => menu.style.removeProperty(name));
+        }
     };
+
+    let styleTokenMenuPositionFrame = 0;
+    const scheduleStyleTokenMenuPosition = () => {
+        if (styleTokenMenuPositionFrame) return;
+        styleTokenMenuPositionFrame = window.requestAnimationFrame(() => {
+            styleTokenMenuPositionFrame = 0;
+            document.querySelectorAll("[data-style-token-shared-filter].is-open, [data-style-token-table-filter].is-open").forEach((container) => {
+                const trigger = container.querySelector("[data-style-token-shared-filter-trigger], [data-style-token-table-filter-trigger]");
+                const menu = container.querySelector("[data-style-token-shared-filter-menu], [data-style-token-table-filter-menu]");
+                if (trigger && menu) positionStyleTokenMenu(container, trigger, menu);
+            });
+        });
+    };
+    window.addEventListener("scroll", scheduleStyleTokenMenuPosition, true);
+    window.addEventListener("resize", scheduleStyleTokenMenuPosition);
+    window.visualViewport?.addEventListener("scroll", scheduleStyleTokenMenuPosition);
+    window.visualViewport?.addEventListener("resize", scheduleStyleTokenMenuPosition);
 
     const syncStyleTokenFilterSelection = (container, option) => {
         const trigger = container.querySelector("[data-style-token-shared-filter-trigger], [data-style-token-table-filter-trigger]");

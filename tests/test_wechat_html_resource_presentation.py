@@ -1,6 +1,6 @@
 """Audited HTML attachments reuse resource cards without consulting local files.
 
-Code version: v1.0.0-codex.0
+Code version: v1.0.1-codex.0
 """
 
 from copy import deepcopy
@@ -52,6 +52,7 @@ def test_exact_audited_types_use_standard_metadata_cards_without_mac_resolution(
         "kind": kind,
         "kind_label": label,
         "label": label,
+        "publisher_name": "",
         "status": "metadata_only",
         "status_label": "Metadata only",
         "action_label": "",

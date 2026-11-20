@@ -1,6 +1,6 @@
-"""Contact statements reuse proven conversation events without losing sources.
+"""Contact messages reuse proven conversation events without losing sources.
 
-Code version: v1.1.4-codex.0
+Code version: v1.1.5-codex.0
 """
 
 from collections import Counter
@@ -17,6 +17,7 @@ from app.core import wechat_contact_analysis as analysis
 from app.core import wechat_conversation_events as events
 from app.core.wechat_archive import _identifier
 from app.core.wechat_contacts import canonical_contact_id
+from app.core.wechat_secondary_completions import completion_input_identities
 from app.core.wechat_text import native_components_text
 from tests import test_wechat_conversation_events as event_fixtures
 from tests.test_wechat_contacts import bind
@@ -131,6 +132,7 @@ def _legacy_group_cache(fixture):
         str(path.resolve()): analysis._identity(path)
         for path in (fixture.history, fixture.registry)
     }
+    identities.update(completion_input_identities(fixture.history))
     fingerprint = hashlib.sha256(
         analysis._json([old_version, identities]).encode()
     ).hexdigest()
@@ -437,6 +439,7 @@ def test_complete_upgrade_preserves_existing_embedded_original_membership(
             str(path.resolve()): analysis._identity(path)
             for path in (fixture.history, fixture.registry)
         }
+        identities.update(completion_input_identities(fixture.history))
         fingerprint = hashlib.sha256(
             analysis._json([old_version, identities]).encode()
         ).hexdigest()

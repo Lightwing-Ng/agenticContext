@@ -40,6 +40,7 @@ from .wechat_reconcile import (
     _server_id,
     _update_conversation,
 )
+from .wechat_retained_evidence import _retained_native_observation
 
 
 _APPEND_TABLES = (
@@ -382,18 +383,25 @@ def restore_wechat_text_batches(
         raise ValueError("Restore page cache must be between 1 and 2097152 KiB.")
     target = wechat_archive_path(local_store_root)
     policy = target.with_name("exclusions.json")
+    if policy.is_symlink():
+        raise ValueError("The source exclusion policy must be a local regular file.")
     policy_identity = _file_identity(policy)
+    if policy_identity is not None and policy_identity[2] > 8 * 1024 * 1024:
+        raise ValueError("Archive metadata exceeds the supported size.")
+    policy_sha256 = _stream_sha256(policy) if policy_identity is not None else None
     exclusions = _source_exclusions(policy)
+    if not _content_identity_matches(policy, policy_identity, policy_sha256):
+        raise ValueError(
+            "The archive or exclusions changed while hashing original bytes."
+        )
     prepared, metadata, excluded = _prepare_batches(batches, exclusions)
     initial = _database_identity(target)
     if any(value and value[2] for value in initial[1:]):
         raise ValueError("Finish active SQLite sidecars before restoring native text.")
     original_sha256 = _stream_sha256(target) if initial[0] is not None else None
-    policy_sha256 = _stream_sha256(policy) if policy_identity is not None else None
-    if (
-        _database_identity(target) != initial
-        or _file_identity(policy) != policy_identity
-    ):
+    if not _content_identity_matches(
+        target, initial, original_sha256, database=True
+    ) or not _content_identity_matches(policy, policy_identity, policy_sha256):
         raise ValueError(
             "The archive or exclusions changed while hashing original bytes."
         )
@@ -405,7 +413,7 @@ def restore_wechat_text_batches(
     stage = Path(name)
     connection = None
     report = {
-        "version": "v1.2.0",
+        "version": "v1.2.3",
         "snapshot_id": snapshot_id,
         "source_snapshot_ids": list(
             dict.fromkeys(batch["snapshot_id"] for batch in prepared)
@@ -428,6 +436,7 @@ def restore_wechat_text_batches(
         "excluded_records": 0,
         "indexed_existing_messages": 0,
         "indexed_existing_evidence": 0,
+        "secondary_export_cross_references": 0,
         "unique_original_message_count": None,
         "database_path": str(target),
         "publication_guard": "optimistic_identity_with_ctime_sha256_recheck",
@@ -615,17 +624,17 @@ def restore_wechat_text_batches(
                                 (conversation_id, sid, row["id"]),
                             )
                     for row in connection.execute(
-                        f"SELECT e.message_id,e.source_id,e.observation FROM {message_alias} CROSS JOIN message_evidence e INDEXED BY evidence_message WHERE m.conversation_id=? AND e.message_id=m.id",
+                        f"SELECT e.* FROM {message_alias} CROSS JOIN message_evidence e INDEXED BY evidence_message WHERE m.conversation_id=? AND e.message_id=m.id",
                         (conversation_id,),
                     ):
                         report["indexed_existing_evidence"] += 1
-                        if row["source_id"] != source["metadata"]["source_id"]:
-                            raise ValueError(
-                                "Retained message evidence crosses its source account."
-                            )
-                        sid = _server_id(
-                            json.loads(row["observation"]).get("server_id")
+                        observation = _retained_native_observation(
+                            connection, row, source["metadata"]["source_id"]
                         )
+                        if observation is None:
+                            report["secondary_export_cross_references"] += 1
+                            continue
+                        sid = _server_id(observation.get("server_id"))
                         if sid:
                             connection.execute(
                                 "INSERT OR IGNORE INTO reconcile_server_ids VALUES(?,?,?)",

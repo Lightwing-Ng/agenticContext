@@ -1,13 +1,12 @@
 """Import preserved OpenClaw transcripts with explicit provider provenance.
 
-Code version: v1.0.2-codex.0
+Code version: v1.1.0-codex.0
 """
 
 from __future__ import annotations
 
 import hashlib
 import json
-import re
 import sqlite3
 from collections import defaultdict
 from datetime import UTC, datetime
@@ -18,12 +17,12 @@ import pyarrow as pa
 
 from .resource_persistence import (
     CLAUDE_HISTORY_SCHEMA,
-    read_parquet_rows,
-    write_parquet_rows_atomic,
+    read_resource_rows,
+    write_resource_rows_atomic,
 )
 
 
-OPENCLAW_HISTORY_FILENAME = "history.parquet"
+OPENCLAW_HISTORY_FILENAME = "history.sqlite3"
 OPENCLAW_SOURCE_LABELS = {
     "chatgpt_openclaw": "ChatGPT OpenClaw",
     "gemini_openclaw": "Gemini OpenClaw",
@@ -115,52 +114,23 @@ def _text(content: Any) -> str:
     for block in content:
         if not isinstance(block, dict):
             continue
-        if block.get("type") in ("text", "input_text", "output_text"):
+        if block.get("type") in {"text", "input_text", "output_text"}:
             text = block.get("text")
             if isinstance(text, str) and text.strip():
                 parts.append(text.strip())
-        elif block.get("type") in ("image", "input_image", "audio", "input_audio", "file"):
+        elif block.get("type") in {"image", "input_image", "audio", "input_audio", "file"}:
             parts.append(f"[Archived {block['type']} attachment; original payload retained in the private archive.]")
     return "\n\n".join(parts).replace("\x00", "")
 
 
-def _safe_path(path: Path, boundary: Path | None = None) -> Path:
-    """Reject symbolic-link ancestors before opening archive content."""
-    path = path.expanduser().absolute()
-    if any(parent.is_symlink() for parent in (path, *path.parents)):
-        raise ValueError("OpenClaw archive paths must not contain symbolic links.")
-    resolved = path.resolve()
-    if boundary is not None and not resolved.is_relative_to(boundary):
-        raise ValueError("OpenClaw transcript path escapes the archive state directory.")
-    return resolved
-
-
-def _event_object(event: Any) -> dict:
-    """Validate record containers before identity and message parsing."""
-    if not isinstance(event, dict):
-        raise ValueError("Transcript event must be an object.")
-    kind = event.get("type")
-    if not isinstance(kind, str):
-        raise ValueError("Transcript event type must be a string.")
-    if kind == "message" and not isinstance(event.get("message"), dict):
-        raise ValueError("Transcript message must be an object.")
-    if kind in {"session_meta", "turn_context", "response_item"} and not isinstance(event.get("payload"), dict):
-        raise ValueError("Codex transcript payload must be an object.")
-    if kind == "custom" and event.get("customType") == "model-snapshot" and not isinstance(event.get("data"), dict):
-        raise ValueError("Transcript model snapshot must be an object.")
-    return event
-
-
 def _state_directory(root: Path, source_directory: Path | str | None) -> tuple[Path, Path]:
     if source_directory is None:
-        pointer_path = _safe_path(root / "openclaw_archive" / "latest.json")
-        pointer = json.loads(pointer_path.read_text())
-        archive = _safe_path(Path(pointer["archive_directory"]))
+        pointer = json.loads((root / "openclaw_archive" / "latest.json").read_text())
+        archive = Path(pointer["archive_directory"])
     else:
-        archive = _safe_path(Path(source_directory))
+        archive = Path(source_directory).expanduser().absolute()
     state = archive / "state" if not (archive / "agents").is_dir() and (archive / "state").is_dir() else archive
-    state = _safe_path(state, archive)
-    if not state.is_dir():
+    if not state.is_dir() or state.is_symlink():
         raise ValueError("OpenClaw archive state directory is unavailable.")
     return archive, state
 
@@ -172,30 +142,21 @@ def _collect(state: Path, stop, progress) -> tuple[dict, dict]:
     stats = {"files_scanned": 0, "files_total": 0, "failed": 0, "failures": [],
              "events_read": 0, "duplicate_events": 0, "stopped": False}
 
-    def safe_candidate(path):
-        try:
-            _safe_path(path, state)
-        except (OSError, ValueError) as error:
-            stats["failed"] += 1
-            stats["failures"].append({"file": str(path.relative_to(state)), "error_type": type(error).__name__})
-            return False
-        return True
-
     def add(agent, session_id, harness, event, location):
-        event = _event_object(event)
+        if not isinstance(event, dict):
+            raise ValueError("Transcript event must be an object.")
         stats["events_read"] += 1
         bucket = sessions.setdefault((agent, str(session_id), harness), {})
-        fingerprint = _digest(event)
         identity = str(event.get("id") or "")
         if not identity:
             scope = (agent, str(session_id), harness, location.get("file"),
-                     location.get("table"), location.get("generation"), fingerprint)
+                     location.get("table"), location.get("generation"), _digest(event))
             occurrence = occurrences[scope]
             occurrences[scope] += 1
-            identity = f"event:{fingerprint}:occurrence:{occurrence}"
+            identity = f"occurrence:{occurrence}"
         # Exact copies across database generations share one event. Differing
         # versions retain separate hashes and therefore cannot overwrite history.
-        key = (identity, fingerprint)
+        key = (identity, _digest(event))
         if key in bucket:
             bucket[key]["locations"].append(location)
             stats["duplicate_events"] += 1
@@ -205,35 +166,31 @@ def _collect(state: Path, stop, progress) -> tuple[dict, dict]:
 
     paths = []
     agents = state / "agents"
-    if safe_candidate(agents) and agents.is_dir():
+    if agents.is_dir():
         for agent in sorted(agents.iterdir()):
-            if not safe_candidate(agent) or not agent.is_dir():
-                continue
-            database_directory = agent / "agent"
-            if safe_candidate(database_directory) and database_directory.is_dir():
-                for db in sorted(database_directory.glob("openclaw-agent.sqlite*")):
-                    if safe_candidate(db) and db.is_file() and not db.name.endswith(("-wal", "-shm", "-journal")):
-                        with db.open("rb") as stream:
-                            if stream.read(16) == b"SQLite format 3\x00":
-                                paths.append((agent.name, db, "sqlite"))
+            for db in sorted((agent / "agent").glob("openclaw-agent.sqlite*")):
+                if db.is_file() and not db.name.endswith(("-wal", "-shm", "-journal")):
+                    with db.open("rb") as stream:
+                        if stream.read(16) == b"SQLite format 3\x00":
+                            paths.append((agent.name, db, "sqlite"))
             for directory in (agent / "sessions", agent / "session-sqlite-import-archive"):
-                if safe_candidate(directory) and directory.is_dir():
+                if directory.is_dir():
                     paths.extend((agent.name, p, "jsonl") for p in sorted(directory.rglob("*"))
-                                 if (".jsonl" in p.name or p.suffix == ".zst") and safe_candidate(p) and p.is_file()
+                                 if p.is_file() and (".jsonl" in p.name or p.suffix == ".zst")
                                  and ".codex-app-server.json" not in p.name)
             home = agent / "agent" / "codex-home"
             for directory in (home / "sessions", home / "archived_sessions"):
-                if safe_candidate(directory) and directory.is_dir():
-                    paths.extend((agent.name, p, "codex") for p in sorted(directory.rglob("rollout*.jsonl"))
-                                 if safe_candidate(p) and p.is_file())
-    stats["files_total"] = len(paths) + stats["failed"]
+                if directory.is_dir():
+                    paths.extend((agent.name, p, "codex") for p in sorted(directory.rglob("rollout*.jsonl")))
+    stats["files_total"] = len(paths)
     for agent, path, kind in paths:
         if stop():
             stats["stopped"] = True
             break
         relative = str(path.relative_to(state))
         try:
-            _safe_path(path, state)
+            if path.is_symlink():
+                raise ValueError("Symbolic-link transcripts are not supported.")
             if kind == "sqlite":
                 with sqlite3.connect(path.as_uri() + "?mode=ro", uri=True) as connection:
                     columns = {r[1] for r in connection.execute("pragma table_info(transcript_events)")}
@@ -266,15 +223,11 @@ def _collect(state: Path, stop, progress) -> tuple[dict, dict]:
                 raw = path.read_bytes()
                 if path.suffix == ".zst":
                     raw = _decompress(raw)
-                records = [(number, _event_object(json.loads(line)))
-                           for number, line in enumerate(raw.splitlines(), 1) if line.strip()]
-                session_id = next((event["id"] for _, event in records if event.get("type") == "session"
-                                   and isinstance(event.get("id"), str) and event["id"].strip()), "")
+                records = [(number, json.loads(line)) for number, line in enumerate(raw.splitlines(), 1) if line.strip()]
+                session_id = next((str(event.get("id")) for _, event in records if event.get("type") == "session"), "")
                 if kind == "codex":
-                    session_id = next((event["payload"]["id"] for _, event in records
-                                       if event.get("type") == "session_meta"
-                                       and isinstance(event["payload"].get("id"), str)
-                                       and event["payload"]["id"].strip()), "")
+                    session_id = next((str(event.get("payload", {}).get("id")) for _, event in records
+                                       if event.get("type") == "session_meta"), "")
                 if not session_id:
                     # Trajectory-only records are retained in the archive and not
                     # silently recast as user-facing messages.
@@ -319,7 +272,7 @@ def _rows(sessions: dict, archive: Path) -> list[dict]:
                     model = str(payload.get("model") or model)
                 if kind != "response_item" or payload.get("type") != "message":
                     continue
-                if payload.get("channel") in ("analysis", "reasoning") or payload.get("phase") in ("analysis", "reasoning"):
+                if payload.get("channel") in {"analysis", "reasoning"} or payload.get("phase") in {"analysis", "reasoning"}:
                     continue
                 message = payload
             else:
@@ -327,7 +280,7 @@ def _rows(sessions: dict, archive: Path) -> list[dict]:
                     continue
                 message = event.get("message") or {}
             role = message.get("role")
-            if role not in ("user", "assistant"):
+            if role not in {"user", "assistant"}:
                 continue
             content = _text(message.get("content"))
             if not content:
@@ -381,48 +334,6 @@ def _rows(sessions: dict, archive: Path) -> list[dict]:
     return rows
 
 
-def _legacy_synthetic_keys(previous: dict, incoming: dict) -> set[str]:
-    """Retire old derived identities only when corrected records cover their evidence."""
-    fields = ("platform", "conversation_id", "original_session_id", "harness", "role",
-              "content_text", "content_sha256", "provider", "model_label", "archive_directory")
-
-    def provenance(row):
-        try:
-            locations = json.loads(row.get("provenance_json") or "null")
-            if not isinstance(locations, list) or not locations:
-                return set()
-            if any(not isinstance(value, dict) or not isinstance(value.get("file"), str)
-                   or not value["file"] for value in locations):
-                return set()
-            return {json.dumps(value, sort_keys=True) for value in locations}
-        except (TypeError, ValueError):
-            return set()
-
-    evidence = {}
-    for row in incoming.values():
-        if not re.fullmatch(r"event:[0-9a-f]{64}:occurrence:[0-9]+", row.get("original_event_id") or ""):
-            continue
-        locations = provenance(row)
-        if not locations:
-            continue
-        signature = tuple(row.get(field) for field in fields)
-        covered, timestamps = evidence.setdefault(signature, (set(), set()))
-        covered.update(locations)
-        timestamps.add((row.get("first_seen_at"), row.get("last_seen_at")))
-
-    retired = set()
-    for key, row in previous.items():
-        if key in incoming or not re.fullmatch(r"occurrence:[0-9]+", row.get("original_event_id") or ""):
-            continue
-        signature = tuple(row.get(field) for field in fields)
-        covered, timestamps = evidence.get(signature, (set(), set()))
-        locations = provenance(row)
-        if (locations and locations <= covered
-                and (row.get("first_seen_at"), row.get("last_seen_at")) in timestamps):
-            retired.add(key)
-    return retired
-
-
 def import_openclaw_history(
     local_store_root: Path | str,
     source_directory: Path | str | None = None,
@@ -434,7 +345,7 @@ def import_openclaw_history(
     """Rebuild searchable providers from a standalone archive without live access."""
     if source != "all" and source not in OPENCLAW_SOURCE_LABELS:
         raise ValueError("Unsupported OpenClaw source.")
-    root = _safe_path(Path(local_store_root))
+    root = Path(local_store_root)
     archive, state = _state_directory(root, source_directory)
     sessions, result = _collect(state, should_stop or (lambda: False), on_progress)
     incoming = defaultdict(dict)
@@ -450,21 +361,18 @@ def import_openclaw_history(
     result.update({"sessions": 0, "messages": 0, "imported_sessions": 0,
                    "imported_messages": 0, "added_or_changed": 0,
                    "unchanged_messages": 0, "unchanged_sessions": 0, "applied": False,
-                   "migrated_legacy_keys": 0, "archive_directory": str(archive), "source_counts": {}})
+                   "archive_directory": str(archive), "source_counts": {}})
     for key in selected:
-        path = _safe_path(openclaw_history_path(root, key), root)
-        previous = read_parquet_rows(path)
-        if path.exists() and previous is None:
+        path = openclaw_history_path(root, key)
+        previous = read_resource_rows(path)
+        if (path.exists() or path.with_suffix(".parquet").exists()) and previous is None:
             raise RuntimeError("Existing OpenClaw history is unreadable; import refused.")
         merged = {row["message_key"]: row for row in previous or []}
-        retired = _legacy_synthetic_keys(merged, incoming[key])
-        for identity in retired:
-            del merged[identity]
         changed = sum(merged.get(identity) != row for identity, row in incoming[key].items())
         merged.update(incoming[key])
         values = sorted(merged.values(), key=lambda row: (row["conversation_id"], row["message_index"], row["message_key"]))
-        if changed or retired:
-            write_parquet_rows_atomic(path, values, OPENCLAW_HISTORY_SCHEMA)
+        if changed:
+            write_resource_rows_atomic(path, values, OPENCLAW_HISTORY_SCHEMA)
             path.chmod(0o600)
             result["applied"] = True
         count = len({row["conversation_id"] for row in values})
@@ -474,7 +382,6 @@ def import_openclaw_history(
         result["imported_sessions"] += len({row["conversation_id"] for row in incoming[key].values()})
         result["imported_messages"] += len(incoming[key])
         result["added_or_changed"] += changed
-        result["migrated_legacy_keys"] += len(retired)
         result["unchanged_messages"] += len(incoming[key]) - changed
     if on_progress:
         on_progress(dict(result))

@@ -1,6 +1,6 @@
 """Retained source bindings and label provenance keep their closed native roles.
 
-Code version: v1.1.0-codex.0
+Code version: v1.1.1-codex.0
 """
 
 from copy import deepcopy
@@ -110,7 +110,8 @@ def test_retained_source_labels_preserve_link_and_forwarding_role_separation(
     assert presentation["status"] == "metadata_only"
     if subtype == 19:
         assert presentation["status_label"] == "Metadata only"
-        assert presentation["label"] == "App message"
+        assert presentation["label"] == "Chat history"
+        assert not presentation.get("subtitle")
 
 
 @pytest.mark.parametrize(
