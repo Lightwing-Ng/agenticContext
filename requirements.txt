@@ -11,5 +11,5 @@ tzdata; sys_platform == "win32"
 pip-audit==2.10.1
 pytest==9.2.0
 pytest-cov==7.1.0
-ruff==0.17.5
+ruff==0.17.6
 beautifulsoup4>=4.14.3,<5.0.0
