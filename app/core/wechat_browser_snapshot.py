@@ -1,6 +1,6 @@
 """Persist authenticated conversation summaries after full timeline validation.
 
-Code version: v1.2.3-codex.0
+Code version: v1.2.4-codex.0
 """
 
 from __future__ import annotations
@@ -506,6 +506,15 @@ def _resident_identity(value, *, inode_key):
     )
 
 
+def _resident_detail_identity(value):
+    if isinstance(value, dict) and "sha256" in value:
+        digest = value["sha256"]
+        if not isinstance(digest, str) or re.fullmatch(r"[a-f0-9]{64}", digest) is None:
+            return False
+        value = {key: field for key, field in value.items() if key != "sha256"}
+    return _resident_identity(value, inode_key="inode")
+
+
 def _preview_pin_matches(previous, current, completion_path, bank_path):
     from .wechat_resource_details import FILENAME, MAX_BYTES
 
@@ -548,11 +557,11 @@ def _preview_pin_matches(previous, current, completion_path, bank_path):
     new_details = new_inputs.get(details_path)
     details_safe = (
         details_path not in changed
-        or _resident_identity(new_details, inode_key="inode")
+        or _resident_detail_identity(new_details)
         and new_details["size"] <= MAX_BYTES
         and (
             old_details is None
-            or _resident_identity(old_details, inode_key="inode")
+            or _resident_detail_identity(old_details)
             and old_details["size"] <= MAX_BYTES
         )
     )

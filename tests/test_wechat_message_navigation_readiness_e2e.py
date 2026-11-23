@@ -1,6 +1,6 @@
 """Conversation geometry requires deferred messaging initialization.
 
-Code version: v1.0.2-codex.0
+Code version: v1.0.3-codex.0
 """
 
 from urllib.parse import urljoin
@@ -46,16 +46,29 @@ def test_fonts_ready_precedes_deferred_message_geometry(
         page.route("**/browser-messaging.js?*", defer_messaging_script)
         page.goto(urljoin(wechat_server, conversation_url), wait_until="commit")
         page.wait_for_function("document.readyState === 'interactive'")
-        page.evaluate("document.fonts.ready")
-
-        before = page.locator("[data-chat-scrollport]").evaluate("""list => ({
-            ready: document.readyState,
-            fonts: document.fonts.status,
-            height: list.scrollHeight,
-            rows: list.querySelectorAll(':scope > .wechat-message-row').length,
-            clocks: list.querySelectorAll(':scope > .wechat-message-row > .wechat-message-time').length,
-            slots: list.querySelectorAll('.wechat-time-slot').length,
-        })""")
+        page.locator("[data-chat-scrollport]").evaluate("""async list => {
+            list.getBoundingClientRect();
+            await document.fonts.ready;
+        }""")
+        snapshot = page.wait_for_function("""() => {
+            const list = document.querySelector('[data-chat-scrollport]');
+            if (!list) return false;
+            // Reading the layout can start a second font load after the ready promise.
+            const height = list.scrollHeight;
+            if (document.fonts.status !== 'loaded') return false;
+            return {
+                ready: document.readyState,
+                fonts: document.fonts.status,
+                height,
+                rows: list.querySelectorAll(':scope > .wechat-message-row').length,
+                clocks: list.querySelectorAll(':scope > .wechat-message-row > .wechat-message-time').length,
+                slots: list.querySelectorAll('.wechat-time-slot').length,
+            };
+        }""")
+        try:
+            before = snapshot.json_value()
+        finally:
+            snapshot.dispose()
         assert held
         assert before["ready"] == "interactive"
         assert before["fonts"] == "loaded"

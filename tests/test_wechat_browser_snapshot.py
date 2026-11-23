@@ -1,6 +1,6 @@
 """Authenticated raw overviews survive reloads without reusing changed evidence.
 
-Code version: v1.2.2-codex.0
+Code version: v1.2.3-codex.0
 """
 
 from collections import OrderedDict
@@ -488,22 +488,26 @@ def _publish_details(path):
     candidate.replace(path)
 
 
-@pytest.mark.parametrize("prior_detail_pin", ("legacy", "absent", "published"))
+@pytest.mark.parametrize("prior_detail_pin", ("legacy", "legacy_metadata", "absent", "published"))
 def test_previous_snapshot_allows_private_detail_publication(snapshot_store, prior_detail_pin):
     fixture = snapshot_store
     history = fixture.repository.path
     path = history.with_name(details.FILENAME)
-    if prior_detail_pin == "published":
+    if prior_detail_pin in {"published", "legacy_metadata"}:
         _publish_details(path)
     verified = _load(fixture)
     assert verified[0] is not None
-    if prior_detail_pin == "legacy":
+    if prior_detail_pin in {"legacy", "legacy_metadata"}:
         directory = _directory(fixture)
         key, _ = snapshots._read_signing_key(directory / "signing.key")
         previous = snapshots._decode_snapshot(
             (directory / "conversations.snapshot").read_bytes(), key,
         )
-        del previous["pin"]["inputs"][str(path.resolve())]
+        inputs = previous["pin"]["inputs"]
+        if prior_detail_pin == "legacy":
+            del inputs[str(path.resolve())]
+        else:
+            inputs[str(path.resolve())].pop("sha256", None)
         assert snapshots._write_snapshot(directory, key, previous, lambda: True)
     _publish_details(path)
     assert _load_previous(fixture) == verified

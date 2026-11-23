@@ -1,8 +1,9 @@
 """Apply bounded, authenticated resource details without rewriting source catalogs.
 
-Code version: v1.3.2-codex.0
+Code version: v1.3.3-codex.0
 """
 
+from contextlib import contextmanager
 from copy import deepcopy
 from datetime import datetime
 import hashlib
@@ -26,7 +27,7 @@ from .wechat_resource_sender_evidence import (
 from .windows_file_metadata import file_change_time
 
 
-CODE_VERSION = "v1.3.2-codex.0"
+CODE_VERSION = "v1.3.3-codex.0"
 VERSION = "v1.0.0-codex.0"
 IS_WINDOWS = os.name == "nt"
 FILENAME = "resource_details.json"
@@ -338,9 +339,7 @@ def _resource_detail_file_pin(path, state, *, descriptor=None):
     }
 
 
-def registry_identity(history_path):
-    """Return a resident private-file pin without hydrating or following a link."""
-    path = Path(history_path).with_name(FILENAME)
+def _registry_metadata(path):
     try:
         state = path.lstat()
     except FileNotFoundError:
@@ -353,6 +352,38 @@ def registry_identity(history_path):
     ):
         raise ValueError("Resource details need a bounded private resident registry.")
     return _resource_detail_file_pin(path, state)
+
+
+@contextmanager
+def _open_registry(path, expected):
+    descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+    with os.fdopen(descriptor, "rb") as stream:
+        if _resource_detail_file_pin(path, os.fstat(descriptor), descriptor=descriptor) != expected:
+            raise ValueError("The resource detail registry changed before reading.")
+        yield stream
+        if _resource_detail_file_pin(path, os.fstat(descriptor), descriptor=descriptor) != expected:
+            raise ValueError("The resource detail registry changed while reading.")
+    if _registry_metadata(path) != expected:
+        raise ValueError("The resource detail registry changed while reading.")
+
+
+def registry_identity(history_path):
+    """Pin the private resident registry, including its bytes on Windows."""
+    path = Path(history_path).with_name(FILENAME)
+    identity = _registry_metadata(path)
+    if identity is not None and IS_WINDOWS:
+        # An in-place overwrite and mtime restore can leave the NTFS change
+        # timestamp tied. Hash only this bounded, already-resident registry.
+        digest = hashlib.sha256()
+        remaining = identity["size"]
+        with _open_registry(path, identity) as stream:
+            while remaining and (chunk := stream.read(min(remaining, 1024**2))):
+                digest.update(chunk)
+                remaining -= len(chunk)
+            if remaining or stream.read(1):
+                raise ValueError("The resource detail registry changed while reading.")
+        identity["sha256"] = digest.hexdigest()
+    return identity
 
 
 def detail_input_identities(history_path):
@@ -503,18 +534,13 @@ def _decode_compact(value):
     return entries
 
 
-def _read_registry(history_path, expected):
-    path = Path(history_path).with_name(FILENAME)
-    descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
-    with os.fdopen(descriptor, "rb") as stream:
-        actual = _resource_detail_file_pin(path, os.fstat(descriptor), descriptor=descriptor)
-        if actual != expected:
-            raise ValueError("The resource detail registry changed before reading.")
+def _read_registry(path, expected):
+    with _open_registry(path, expected) as stream:
         content = stream.read(MAX_BYTES + 1)
-        if _resource_detail_file_pin(path, os.fstat(descriptor), descriptor=descriptor) != expected:
-            raise ValueError("The resource detail registry changed while reading.")
-    if len(content) > MAX_BYTES or registry_identity(history_path) != expected:
+    if len(content) != expected["size"]:
         raise ValueError("The resource detail registry changed while reading.")
+    if IS_WINDOWS:
+        expected = {**expected, "sha256": hashlib.sha256(content).hexdigest()}
     try:
         value = json.loads(content, object_pairs_hook=_unique)
     except (UnicodeError, RecursionError):
@@ -537,15 +563,16 @@ def _read_registry(history_path, expected):
         if entry["message_id"] in seen:
             raise ValueError("Resource detail entries need unique exact source pins.")
         seen.add(entry["message_id"])
-    return entries
+    return entries, expected
 
 
 def load_registry(history_path):
     """Load flat or compact logical entries and their immutable publication pin."""
-    identity = registry_identity(history_path)
-    if identity is None:
+    path = Path(history_path).with_name(FILENAME)
+    metadata = _registry_metadata(path)
+    if metadata is None:
         return [], None
-    entries = _read_registry(history_path, identity)
+    entries, identity = _read_registry(path, metadata)
     if registry_identity(history_path) != identity:
         raise ValueError("Resource detail inputs changed during loading.")
     return entries, identity
