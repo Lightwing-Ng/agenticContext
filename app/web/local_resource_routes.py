@@ -5,11 +5,12 @@ refresh service without reaching for a browser or Agent. Serialization of one st
 public shape lives here too, so a template global and a JSON response cannot drift.
 """
 
-# Code version: v1.25.4-codex.0
+# Code version: v1.25.7-codex.0
 
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
+from functools import partial
 import json
 import re
 import time
@@ -37,7 +38,6 @@ from app.core.storage import (
     build_chat_history_markdown,
     format_captured_at_label,
     format_captured_at_timestamp_label,
-    format_chat_message_timestamp_label,
     local_file_manager_label,
     media_route_relative_path,
     normalize_browser_filters,
@@ -51,6 +51,7 @@ from app.core.storage import (
 )
 from app.web.public_errors import public_exception_message
 from app.web.cache_sources import get_cache_source_label
+from app.web.date_display import current_date_display
 from app.web.local_resource_navigation import (
     local_resource_source_context,
     wechat_contact_sidebar_context,
@@ -191,7 +192,9 @@ def serialize_media_item(item) -> dict[str, Any]:
         "project_name": item.project_name,
         "source_url": item.source_url,
         "resource_key": item.resource_key,
-        "captured_at_label": format_captured_at_label(item.captured_at),
+        "captured_at_label": format_captured_at_label(
+            item.captured_at, style=current_date_display().compact,
+        ),
         "content_bytes": item.content_bytes,
         "size_label": format_media_size(item.content_bytes),
         "media_url": media_url,
@@ -276,7 +279,10 @@ def register_local_resource_routes(app: Flask, context: LocalResourceRouteContex
     register_wechat_group_roster_routes(blueprint, root)
     app.template_global("browser_media_url")(browser_media_url)
     app.template_global("wechat_contact_analysis_url")(wechat_contact_analysis_url)
-    app.template_filter("wechat_source_clock")(format_wechat_source_clock)
+
+    @app.template_filter("wechat_source_clock")
+    def wechat_source_clock(value: str | None) -> str:
+        return format_wechat_source_clock(value, style=current_date_display().full)
 
     @blueprint.get("/browser/wechat/contacts/<contact_id>")
     def wechat_contact_analysis(contact_id: str):
@@ -694,6 +700,7 @@ def register_local_resource_routes(app: Flask, context: LocalResourceRouteContex
             wechat_account_refresh_id = selected_refresh_account(
                 filters["account"], text_page.messaging,
             )
+        date_display = current_date_display()
         return render_template(
             "browser.html",
             **local_resource_source_context(),
@@ -730,9 +737,10 @@ def register_local_resource_routes(app: Flask, context: LocalResourceRouteContex
             media_prompt_key=media_prompt_key,
             prompt_remark_options=context.prompt_store.remark_options(),
             prompt_pointer_key=prompt_pointer_key,
-            format_captured_at_label=format_captured_at_label,
-            format_captured_at_timestamp_label=format_captured_at_timestamp_label,
-            format_chat_message_timestamp_label=format_chat_message_timestamp_label,
+            format_captured_at_label=partial(format_captured_at_label, style=date_display.compact),
+            format_captured_at_timestamp_label=partial(
+                format_captured_at_timestamp_label, style=date_display.full, date_style=date_display.compact,
+            ),
             format_media_size=format_media_size,
             render_prompt_markdown=render_prompt_markdown,
             render_cached_message=render_cached_message,
@@ -762,6 +770,7 @@ def register_local_resource_routes(app: Flask, context: LocalResourceRouteContex
         markdown = build_chat_history_markdown(
             text_page,
             message_count=len(text_page.items),
+            date_style=current_date_display().full,
         )
         if not markdown:
             abort(404)

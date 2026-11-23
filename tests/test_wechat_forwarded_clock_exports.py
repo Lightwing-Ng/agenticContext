@@ -1,6 +1,6 @@
 """Session exports retain source parents and expose proved child source clocks.
 
-Code version: v1.0.0-codex.0
+Code version: v1.0.1-codex.0
 """
 
 from copy import deepcopy
@@ -93,6 +93,25 @@ def test_markdown_retains_source_and_discloses_native_child_clock_proof(pinned_c
     assert '- Original source clock: "1970-01-01 08:00:00"' in markdown
     assert fixture.native_parent in markdown
     assert "Recovered native packet time; Source clock; timezone unknown" in markdown
+
+
+def test_custom_markdown_style_keeps_an_unavailable_parent_clock_hidden(pinned_clock_store):
+    fixture = pinned_clock_store
+    page = query_chat_history(
+        fixture.store, source="wechat", session=_session(fixture), session_view=True
+    )
+    parent = next(item for item in page.items if item.stable_id == fixture.html_parent)
+    parent = replace(
+        parent,
+        last_seen_at="1999-12-01T18:45:00",
+        messaging={**parent.messaging, "timestamp_label": ""},
+    )
+    markdown = build_chat_history_markdown(
+        replace(page, items=(parent,)), date_style="yyyy_mmm_dd"
+    )
+    assert "1999 Dec 01" not in markdown
+    assert "2020 Aug 12 13:46:00" in markdown
+    assert '- Original source clock: "1970-01-01 08:00:00"' in markdown
 
 
 def test_unknown_child_never_inherits_parent_or_sibling_clock(pinned_clock_store):

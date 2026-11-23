@@ -1,4 +1,4 @@
-/* Code version: v1.22.0-codex.0 */
+/* Code version: v1.22.1-codex.0 */
 
 (() => {
     "use strict";
@@ -17,14 +17,7 @@
         "zhihu:downloaded_posts": "processed_tweets",
     });
     const numberFormatter = new Intl.NumberFormat("en-US");
-    const datetimeFormatter = new Intl.DateTimeFormat("en-US", {
-        day: "numeric",
-        month: "short",
-        year: "numeric",
-        hour: "2-digit",
-        minute: "2-digit",
-        second: "2-digit",
-        hourCycle: "h23",
+    const timeZoneFormatter = new Intl.DateTimeFormat("en-US", {
         timeZoneName: "short",
     });
     const timezoneCodesByOffset = Object.freeze({
@@ -243,30 +236,26 @@
     function formatDatetime(value) {
         const rawValue = String(value ?? "").trim();
         if (!rawValue) return "";
-        const dateOnlyMatch = rawValue.match(/^(\d{4})[-/](\d{2})[-/](\d{2})$/);
+        const dateOnlyMatch = rawValue.match(/^(\d{4})([-/]?)(\d{2})\2(\d{2})$/);
         if (dateOnlyMatch) {
-            return dateOnlyMatch[3] + "/" + dateOnlyMatch[2] + "/" + dateOnlyMatch[1];
-        }
-        const compactDateMatch = rawValue.match(/^(\d{4})(\d{2})(\d{2})$/);
-        if (compactDateMatch) {
-            return compactDateMatch[3] + "/" + compactDateMatch[2] + "/" + compactDateMatch[1];
+            const [, year, , month, day] = dateOnlyMatch;
+            return window.APP_DATES.date(`${year}-${month}-${day}`, {
+                compact: true,
+                fallback: "Unknown date",
+            });
         }
 
         const parsed = new Date(rawValue);
         if (Number.isNaN(parsed.getTime())) return "Unknown date";
-        const parts = Object.fromEntries(
-            datetimeFormatter.formatToParts(parsed).map((part) => [part.type, part.value]),
-        );
-        const timezoneLabel = parts.timeZoneName || "";
+        const timezoneLabel = timeZoneFormatter.formatToParts(parsed)
+            .find((part) => part.type === "timeZoneName")?.value || "";
         const offsetMinutes = String(-parsed.getTimezoneOffset());
         const timezoneCode = timezoneLabel === "GMT" && offsetMinutes === "0"
             ? "UTC"
             : /^[A-Za-z]{3}$/.test(timezoneLabel)
                 ? timezoneLabel.toUpperCase()
                 : timezoneCodesByOffset[offsetMinutes] || "UTC";
-        return parts.day + " " + parts.month + " " + parts.year
-            + " " + parts.hour + ":" + parts.minute + ":" + parts.second
-            + " (" + timezoneCode + ")";
+        return `${window.APP_DATES.dateTime(parsed)} (${timezoneCode})`;
     }
 
     function setPhaseState(phase) {

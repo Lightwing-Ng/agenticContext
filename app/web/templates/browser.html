@@ -1,16 +1,17 @@
-<!-- Code version: v1.118.5-codex.0 -->
+<!-- Code version: v1.118.11-codex.0 -->
 {% from "_wechat_display_name.html" import display_name as wechat_display_name %}
 <!doctype html>
 <html lang="en-US">
 <head>
     <meta charset="utf-8">
+    {% include "_date_display_assets.html" %}
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
     <title>{{ 'WeChat · Local resources' if filters.view == 'text' and filters.source == 'wechat' else product_name ~ ' Browser' }}</title>
     <link rel="icon" type="image/svg+xml" href="{{ url_for('static', filename='images/favicon.svg', v=version ~ '-favicon-v1.0.1-codex.1') }}">
     <script src="{{ url_for('static', filename='language-rendering.js', v='language-rendering-v1.0.0-codex.1') }}"></script>
     <script src="{{ url_for('static', filename='theme-mode.js', v='theme-mode-v1.0.0-codex.1') }}"></script>
     <script defer src="{{ url_for('static', filename='segmented-control.js', v='segmented-control-v1.1.0-codex.0') }}"></script>
-    <link rel="stylesheet" href="{{ url_for('static', filename='style.css', v=version ~ '-style-v2.162.0-codex.0') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css', v=version ~ '-style-v2.162.1-codex.0') }}">
     {% include "_cache_activity_assets.html" %}
     <script defer src="{{ url_for('static', filename='numeric-display.js', v='numeric-display-v1.1.0-codex.0') }}"></script>
     <script defer src="{{ url_for('static', filename='scrollable-data-table.js', v='scrollable-data-table-v1.0.3-codex.0') }}"></script>
@@ -20,7 +21,7 @@
     <script defer src="{{ url_for('static', filename='browser-sidebar-filters.js', v='browser-sidebar-filters-v1.1.0-codex.0') }}"></script>
     {% if filters.view == 'text' and filters.source == 'wechat' %}
     <link rel="stylesheet" href="{{ url_for('static', filename='wechat-kind-badge.css', v='wechat-kind-badge-v1.0.1-codex.0') }}">
-    <link rel="stylesheet" href="{{ url_for('static', filename='browser-messaging.css', v='browser-messaging-v1.26.4-codex.0') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='browser-messaging.css', v='browser-messaging-v1.26.6-codex.0') }}">
     <link rel="stylesheet" href="{{ url_for('static', filename='wechat-exchange.css', v='wechat-exchange-v1.4.1-codex.0') }}">
     <script defer src="{{ url_for('static', filename='wechat-exchange.js', v='wechat-exchange-v1.2.2-codex.0') }}"></script>
     <script defer src="{{ url_for('static', filename='wechat-refresh.js', v='wechat-refresh-v1.5.0-codex.0') }}"></script>
@@ -39,7 +40,7 @@
     <script type="module" src="{{ url_for('static', filename='browser-search.js', v='browser-search-v2.2.2-codex.0') }}"></script>
     <script defer src="{{ url_for('static', filename='select-controller.js', v='select-controller-v1.0.1') }}"></script>
     <script defer src="{{ url_for('static', filename='browser-source-filter.js', v='browser-source-filter-v1.6.2-codex.0') }}"></script>
-    <script defer src="{{ url_for('static', filename='browser-filter-select.js', v='browser-filter-select-v1.2.0-codex.1') }}"></script>
+    <script defer src="{{ url_for('static', filename='browser-filter-select.js', v='browser-filter-select-v1.2.1-codex.0') }}"></script>
     <script defer src="{{ url_for('static', filename='browser-session-actions.js', v='browser-session-actions-v1.2.0-codex.0') }}"></script>
 </head>
 <body>
@@ -59,16 +60,16 @@
 {# Return to the ChatGPT Sessions index from a media view; a session detail names itself so the index can mark it. #}
 {% set session_index_url = url_for('local_resources.browser', view='media', source='chatgpt', kind=filters.kind, q=filters.q, sort=filters.sort, session_view='1', session_index='1', page=(none if filters.session_page <= 1 else filters.session_page), session=(media_page.current_session_key or none)) if filters.view == "media" and filters.source == "chatgpt" else "" %}
 {% macro render_browser_message_time(value, hide_unknown=false) %}
-    {% set timestamp_label = format_chat_message_timestamp_label(value) %}
-    {% if not hide_unknown or timestamp_label != "Unknown time" %}
+    {% set date_label = value|display_date(compact=true, time_zone='Asia/Hong_Kong', fallback='') %}
+    {% if not hide_unknown or date_label %}
     <time datetime="{{ value }}" class="browser-session-message-time">
-        {% if timestamp_label == "Unknown time" %}
-        <span class="browser-session-message-time-unknown">{{ timestamp_label }}</span>
+        {% if not date_label %}
+        <span class="browser-session-message-time-unknown">Unknown time</span>
         {% else %}
-        {% set timestamp_parts = timestamp_label.split(" ", 1) %}
-        <span class="browser-session-message-time-date">{{ timestamp_parts[0] }}</span>
-        {% if timestamp_parts|length > 1 %}
-        <span class="browser-session-message-time-clock">{{ timestamp_parts[1] }}</span>
+        <span class="browser-session-message-time-date">{{ date_label }}</span>
+        {% set clock_label = value|display_time(time_zone='Asia/Hong_Kong', seconds=true, fallback='') %}
+        {% if clock_label %}
+        <span class="browser-session-message-time-clock">{{ clock_label }} (HKT)</span>
         {% endif %}
         {% endif %}
     </time>

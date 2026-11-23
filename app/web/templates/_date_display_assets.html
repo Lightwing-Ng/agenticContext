@@ -1,0 +1,5 @@
+<!-- Code version: v1.0.0-codex.0 -->
+{% if current_date_display is defined %}
+<script id="date_display_state" type="application/json">{{ current_date_display().browser_state() | tojson }}</script>
+<script src="{{ url_for('static', filename='date-display.js', v='date-display-v1.0.0-codex.0') }}"></script>
+{% endif %}

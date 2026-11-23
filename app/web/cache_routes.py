@@ -11,7 +11,7 @@ The Safari mutual-exclusion check belongs to the Agent surface, so it arrives as
 capability instead of being reimplemented here.
 """
 
-# Code version: v1.9.0-codex.0
+# Code version: v1.9.2-codex.0
 
 from __future__ import annotations
 
@@ -55,7 +55,6 @@ from app.core.providers import (
     reset_grok_state,
 )
 from app.core.storage import (
-    format_datetime_label,
     local_file_manager_label,
     open_directory_path,
 )
@@ -480,7 +479,6 @@ def register_cache_routes(app: Flask, context: CacheRouteContext) -> None:
             default_host=DEFAULT_HOST,
             default_port=DEFAULT_PORT,
             log_file_path=str(get_log_file_path()),
-            format_datetime_label=format_datetime_label,
         )
 
     def cache_source_url(source_key: str) -> str:

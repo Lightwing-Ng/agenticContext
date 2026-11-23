@@ -1,6 +1,6 @@
 """Focused regression tests for the local web console."""
 
-# Code version: v1.156.10-codex.0
+# Code version: v1.156.13-codex.0
 
 from __future__ import annotations
 
@@ -40,6 +40,7 @@ from app.web.presentation import (
     render_prompt_markdown,
 )
 from app.web.cache_sources import CACHE_SOURCE_VIEWS
+from app.web.date_display import DateDisplayStore
 from app.core.openclaw_history import OPENCLAW_SOURCE_LABELS
 
 
@@ -785,7 +786,7 @@ class WebAppTests(unittest.TestCase):
         self.assertNotIn('class="status-copy chatgpt-sidebar-note"', chatgpt_body)
         self.assertIn('id="status_progress_value"', chatgpt_body)
         self.assertIn('id="progress_processed_label"', chatgpt_body)
-        self.assertIn('cache-page.js?v=cache-page-v1.22.0-codex.0', chatgpt_body)
+        self.assertIn(f'cache-page.js?v={_asset_version_key("cache-page.js")}', chatgpt_body)
         self.assertIn('numeric-display.js?v=numeric-display-v1.1.0-codex.0', chatgpt_body)
         self.assertIn(f'segmented-control.js?v={_asset_version_key("segmented-control.js")}', chatgpt_body)
         self.assertIn('data-cache-content-mode', chatgpt_body)
@@ -1114,7 +1115,10 @@ class WebAppTests(unittest.TestCase):
         self.assertIn('data-agent-terminal-authorization-status aria-live="polite" hidden></span>', settings_body)
         self.assertIn('data-agent-terminal-authorization-button', settings_body)
         self.assertIn('class="settings-inline-button settings-inline-button-primary shadow-backup-sync-button"', settings_body)
-        self.assertIn('shadow-backup-settings.js?v=shadow-backup-settings-v1.3.0-codex.2', settings_body)
+        self.assertIn(
+            f'shadow-backup-settings.js?v={_asset_version_key("shadow-backup-settings.js")}',
+            settings_body,
+        )
         self.assertIn('settings-directory-picker.js?v=settings-directory-picker-v2.2.1-codex.0', settings_body)
         self.assertNotIn("Reset Grok state", settings_body)
         self.assertNotIn("Reset ChatGPT state", settings_body)
@@ -1376,7 +1380,7 @@ class WebAppTests(unittest.TestCase):
         self.assertIn('class="agent-new-session-icon" aria-hidden="true"', local_body)
         self.assertIn('agent-sidebar-trailing-control', local_body)
         self.assertIn('selection-list.css?v=selection-list-v1.0.1-codex.0', local_body)
-        self.assertIn('computer-use-agent.js?v=computer-use-agent-v3.74.4-codex.0', local_body)
+        self.assertIn(f'computer-use-agent.js?v={_asset_version_key("computer-use-agent.js")}', local_body)
         onboarding_start = local_body.index('data-agent-tunnel-provider-panel="chatgpt"')
         onboarding_end = local_body.index(
             'data-agent-tunnel-provider-panel="gemini"', onboarding_start
@@ -4117,7 +4121,7 @@ class WebAppTests(unittest.TestCase):
             'name="conversation_url" value=""',
             'name="project_url" value=""',
             'name="session_title" value=""',
-            'computer-use-agent-v3.74.4-codex.0',
+            _asset_version_key("computer-use-agent.js"),
             'data-agent-effort-field',
             'data-agent-effort-input',
             'data-agent-combobox-icon="/static/images/plus.circle.svg"',
@@ -5512,7 +5516,7 @@ class WebAppTests(unittest.TestCase):
         self.assertIn('data-agent-terminal-authorization-status', settings_body)
         self.assertIn('agent-settings.js?v=agent-settings-v1.0.0-codex.1', settings_body)
         self.assertIn('select-controller.js?v=select-controller-v1.0.1', settings_body)
-        self.assertIn('browser-filter-select.js?v=browser-filter-select-v1.2.0-codex.1', settings_body)
+        self.assertIn('browser-filter-select.js?v=browser-filter-select-v1.2.1-codex.0', settings_body)
         self.assertLess(settings_body.index("select-controller.js"), settings_body.index("browser-filter-select.js"))
         self.assertLess(settings_body.index("browser-filter-select.js"), settings_body.index("agent-settings.js"))
         self.assertIn('name="agent_context_limit_mib"', settings_body)
@@ -5609,7 +5613,7 @@ class WebAppTests(unittest.TestCase):
             'if (!statusUrl || statusRefreshInFlight || document.hidden) return;',
             'document.addEventListener("visibilitychange", handleVisibilityChange);',
             'scheduleStatusRefresh();',
-            'const datetimeFormatter = new Intl.DateTimeFormat("en-US",',
+            'window.APP_DATES.dateTime(parsed)',
             'if (element.dataset.statusFormat === "datetime")',
             'formatDatetime(rawValue)',
             '"zhihu:downloaded_posts": "processed_tweets"',
@@ -5726,7 +5730,7 @@ class WebAppTests(unittest.TestCase):
         self.assertIn('type="module"', body)
         self.assertIn("browser-search.js?v=browser-search-v2.2.2-codex.0", body)
         self.assertIn("browser-session-messages.js?v=browser-session-messages-v1.0.1-codex.1", body)
-        self.assertIn("browser-filter-select.js?v=browser-filter-select-v1.2.0-codex.1", body)
+        self.assertIn("browser-filter-select.js?v=browser-filter-select-v1.2.1-codex.0", body)
         self.assertLess(
             body.index("select-controller.js?v=select-controller-v1.0.1"),
             body.index("browser-filter-select.js"),
@@ -6238,6 +6242,8 @@ class WebAppTests(unittest.TestCase):
                 CHATGPT_HISTORY_SCHEMA,
             )
             app = create_app(root)
+            date_display = DateDisplayStore(root.parent / "date-display.json")
+            app.extensions["date_display"] = date_display
             session_id = query_chat_history(
                 root,
                 source="chatgpt",
@@ -6247,12 +6253,25 @@ class WebAppTests(unittest.TestCase):
                 response = client.get(
                     f"/browser?source=chatgpt&view=text&session_view=1&sort=newest&session={session_id}"
                 )
+                date_display.save(full="yyyy_mm_dd_cjk", compact="yyyy_mm_dd")
+                custom_date_response = client.get(
+                    f"/browser?source=chatgpt&view=text&session_view=1&sort=newest&session={session_id}"
+                )
+                custom_date_export = client.get(
+                    f"/browser/session/{session_id}/export?source=chatgpt&sort=newest"
+                )
 
         body = response.get_data(as_text=True)
         self.assertEqual(response.status_code, 200)
         self.assertIn('class="browser-session-message-time"', body)
         self.assertIn(">12/08/2026</span>", body)
         self.assertIn(">13:00:00 (HKT)</span>", body)
+        self.assertEqual(custom_date_response.status_code, 200)
+        self.assertIn(">2026/08/12</span>", custom_date_response.get_data(as_text=True))
+        self.assertEqual(custom_date_export.status_code, 200)
+        self.assertIn(
+            "### 1. You · 2026年08月12日 13:00:00 (HKT)", custom_date_export.get_data(as_text=True)
+        )
 
     def test_browser_pagination_ellipses_render_accessible_range_menus(self) -> None:
         with TemporaryDirectory() as raw_root:
@@ -6321,7 +6340,7 @@ class WebAppTests(unittest.TestCase):
         self.assertNotIn("browser-media-card-description", body)
         self.assertNotIn("Session name:</dt>", body)
         self.assertIn("foundation-metric-card", body)
-        self.assertIn("Created on:</dt><dd>09/08/2026 15:09:50 (HKT)</dd>", body)
+        self.assertIn("Created on:</dt><dd>9 Aug 2026 15:09:50 (HKT)</dd>", body)
         self.assertIn("Size:</dt><dd>1.72 MiB</dd>", body)
         self.assertIn('class="browser-media-prompt"', body)
         self.assertIn('data-media-prompt-toggle', body)
@@ -6528,7 +6547,7 @@ class WebAppTests(unittest.TestCase):
         self.assertLess(index_body.index('title="Newest session"'), index_body.index('title="Older session"'))
         self.assertIn('class="browser-session-card-count">3 images</span>', index_body)
         self.assertIn('class="browser-session-card-count">1 image</span>', index_body)
-        self.assertIn('title="Latest image: 02/08/2026 11:00:00 (HKT)"', index_body)
+        self.assertIn('title="Latest image: 2 Aug 2026 11:00:00 (HKT)"', index_body)
         # A cover opens its session in the one-session-per-page view and remembers the index page.
         self.assertIn(
             'href="/browser?view=media&amp;source=chatgpt&amp;kind=all&amp;q=&amp;sort=newest'

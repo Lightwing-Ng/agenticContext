@@ -1,6 +1,6 @@
 """Read cached text sessions for the local browser."""
 
-# Code version: v1.31.1-codex.0
+# Code version: v1.31.2-codex.0
 
 from __future__ import annotations
 
@@ -14,6 +14,7 @@ from urllib.parse import urlsplit, urlunsplit
 
 from .agent_source_cache import agent_source_cache_path
 from .codex_history import CODEX_HISTORY_FILENAME
+from .date_display import DEFAULT_COMPACT_STYLE, DEFAULT_FULL_STYLE, format_datetime
 from .openclaw_history import OPENCLAW_HISTORY_FILENAME, OPENCLAW_SOURCE_LABELS
 
 from .local_media_browser import (
@@ -192,9 +193,9 @@ def normalize_chat_history_sort(value: str | None) -> str:
     return normalized if normalized in CHAT_HISTORY_SORT_VALUES else "newest"
 
 
-def format_chat_message_timestamp_label(value: str | None) -> str:
+def format_chat_message_timestamp_label(value: str | None, *, style: str = DEFAULT_COMPACT_STYLE) -> str:
     """Format a cached date or timestamp according to the UI datetime contract."""
-    formatted = format_datetime_label(value)
+    formatted = format_datetime_label(value, style=style)
     return "Unknown time" if formatted == "Unknown date" else formatted
 
 
@@ -1350,7 +1351,9 @@ def query_chat_history(
     )
 
 
-def build_chat_history_markdown(page: ChatHistoryPage, *, message_count: int | None = None) -> str:
+def build_chat_history_markdown(
+    page: ChatHistoryPage, *, message_count: int | None = None, date_style: str | None = None
+) -> str:
     """Render a cached session page as a portable Markdown document."""
     if not page.session_detail or page.current_session is None:
         return ""
@@ -1400,7 +1403,19 @@ def build_chat_history_markdown(page: ChatHistoryPage, *, message_count: int | N
         )
         if message.messaging and message.messaging.get("viewer_display_name"):
             role = message.messaging["viewer_display_name"]
-        timestamp = message.messaging["timestamp_label"] if message.messaging else format_chat_message_timestamp_label(message.last_seen_at)
+        if message.messaging:
+            timestamp = message.messaging["timestamp_label"]
+            if timestamp:
+                timestamp = format_datetime(
+                    message.last_seen_at,
+                    style=date_style or DEFAULT_FULL_STYLE,
+                    seconds="precision: minute" not in message.messaging["time_basis"],
+                    fallback=timestamp,
+                )
+        else:
+            timestamp = format_chat_message_timestamp_label(
+                message.last_seen_at, style=date_style or DEFAULT_COMPACT_STYLE
+            )
         content = message.content_text.strip()
         if session.source == "zhihu" and message.content_html:
             normalized_markdown = normalize_zhihu_rich_text(
@@ -1453,6 +1468,13 @@ def build_chat_history_markdown(page: ChatHistoryPage, *, message_count: int | N
                             or "Unknown original sender"
                         )
                         clock = child["timestamp_label"] or "Unknown time"
+                        if child["timestamp_label"]:
+                            clock = format_datetime(
+                                child["timestamp_value"],
+                                style=date_style or DEFAULT_FULL_STYLE,
+                                seconds="precision: minute" not in child["time_basis"],
+                                fallback=clock,
+                            )
                         position = ".".join(map(str, child["component_path"]))
                         lines.extend((
                             f"##### {position}. {speaker} · {clock}",
