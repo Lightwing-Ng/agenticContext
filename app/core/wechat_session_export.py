@@ -1,12 +1,13 @@
 """Stream one complete source-scoped WeChat timeline from pinned local inputs.
 
-Code version: v1.6.4-codex.0
+Code version: v1.6.5-codex.0
 """
 
 from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 import sqlite3
 import stat
@@ -86,12 +87,17 @@ def _identity(path):
         for suffix in ("-wal", "-shm", "-journal")
     ):
         raise WechatSessionSourceChanged("The archive is being published.")
+    change_time = value.st_ctime_ns
+    if os.name == "nt":
+        from .wechat_macos_recovery_bank import _storage_identity
+
+        change_time = _storage_identity(path, value)["ctime_ns"]
     return (
         value.st_dev,
         value.st_ino,
         value.st_size,
         value.st_mtime_ns,
-        value.st_ctime_ns,
+        change_time,
     )
 
 

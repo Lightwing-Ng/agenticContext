@@ -1,6 +1,6 @@
 """Native subset restoration preserves old rows without a full database copy.
 
-Code version: v1.4.1-codex.0
+Code version: v1.4.2-codex.0
 """
 
 from contextlib import closing
@@ -960,7 +960,7 @@ def test_baseline_hash_rejects_changed_inputs_before_cloning(
 ):
     metadata, _ = seed(tmp_path)
     path = wechat_archive_path(tmp_path)
-    with sqlite3.connect(path) as connection:
+    with closing(sqlite3.connect(path)) as connection, connection:
         connection.execute("INSERT INTO archive_info VALUES('early-fixture','AAAA')")
     policy = path.with_name("exclusions.json")
     policy.write_text('{"schema_version":1,"sources":[],"note":"AAAA"}')
@@ -990,7 +990,7 @@ def test_baseline_hash_rejects_changed_inputs_before_cloning(
             )
         else:
             if changed_input == "main":
-                with sqlite3.connect(target) as connection:
+                with closing(sqlite3.connect(target)) as connection, connection:
                     connection.execute(
                         "UPDATE archive_info SET value='BBBB' WHERE key='early-fixture'"
                     )

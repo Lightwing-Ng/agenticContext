@@ -1,6 +1,6 @@
 """Fresh legacy-seal revalidation preserves sealed banks and revision history.
 
-Code version: v1.0.1-codex.0
+Code version: v1.0.2-codex.0
 """
 
 from contextlib import closing, ExitStack
@@ -10,7 +10,6 @@ import os
 from pathlib import Path
 import shutil
 import sqlite3
-import stat
 import sys
 from types import SimpleNamespace
 from unittest.mock import Mock
@@ -20,8 +19,9 @@ import pytest
 from app.core import wechat_macos_recovery as legacy
 from app.core import wechat_macos_recovery_bank as bank
 from app.core import wechat_macos_recovery_revalidation as revalidation
-from app.core import owner_only_files
 from app.core.owner_only_files import ensure_owner_only, ensure_owner_only_directory
+from tests.test_wechat_candidate_storage_rebind import _ctime_only as _ctime_only
+from tests.test_wechat_candidate_storage_rebind import _widen_access as _widen_access
 from tests import test_wechat_macos_recovery_bank as fixtures
 from tests import test_wechat_macos_recovery_revalidation as existing
 from tests import test_wechat_macos_reparse as repairs
@@ -38,34 +38,6 @@ def test_missing_nofollow_refuses_native_tracking(monkeypatch, tmp_path):
             tmp_path / "candidate", tmp_path / "source", tmp_path / "history", {},
             None, mode=0o600, audit=[],
         )
-
-
-def _ctime_only(path):
-    before = bank._identity(path)
-    for _attempt in range(3):
-        value = path.stat()
-        if os.name == "nt":
-            os.utime(path, ns=(value.st_atime_ns, value.st_mtime_ns))
-        else:
-            path.chmod(stat.S_IMODE(value.st_mode))
-        after = bank._identity(path)
-        if before["ctime_ns"] != after["ctime_ns"]:
-            break
-    assert before["ctime_ns"] != after["ctime_ns"]
-    assert {key: value for key, value in before.items() if key != "ctime_ns"} == {
-        key: value for key, value in after.items() if key != "ctime_ns"
-    }
-
-
-def _widen_access(path, *, directory=False):
-    if os.name == "nt":
-        security = owner_only_files._windows_security()
-        inherit = "OICI" if directory else ""
-        security.set_protected_dacl(
-            str(path), f"D:P(A;{inherit};FA;;;{security.current_user_sid()})(A;;FR;;;WD)",
-        )
-    else:
-        path.chmod(0o755 if directory else 0o666)
 
 
 @pytest.fixture
@@ -372,7 +344,7 @@ def test_sealed_source_requires_closed_private_independent_resident_file(sealed_
     elif defect == "hardlink":
         case.source.with_name("alias-source.sqlite3").hardlink_to(case.source)
     elif defect == "mode":
-        _widen_access(case.source)
+        _widen_access(case.source, mode=0o666)
     elif defect == "parent":
         _widen_access(case.source.parent, directory=True)
     elif defect == "sidecar":

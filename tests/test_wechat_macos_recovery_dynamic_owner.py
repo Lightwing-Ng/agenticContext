@@ -1,6 +1,6 @@
 """Dynamic source owners retain exact witnesses and legacy proof boundaries.
 
-Code version: v1.0.1-codex.0
+Code version: v1.0.2-codex.0
 """
 
 from contextlib import closing
@@ -52,7 +52,7 @@ def test_dynamic_owner_proof_stages_publishes_and_replays_without_source_changes
     assert not fixture.fixture.bank_path.exists()
     assert fixture.history.read_bytes() == original
     bank.publish_mac_recovery_bank(fixture.root, candidate, receipt)
-    with sqlite3.connect(fixture.fixture.bank_path) as connection:
+    with closing(sqlite3.connect(fixture.fixture.bank_path)) as connection, connection:
         retained = [
             json.loads(row[0])
             for row in connection.execute("SELECT proof FROM sources")
@@ -171,7 +171,7 @@ def test_dynamic_owner_witnesses_cannot_be_two_events_from_one_peer(source_bindi
     binding = packet["account_binding"]
     first = binding["anchors"][0]
     identifier = fixture.fixture.direct["anchors"][1]["archive_message_id"]
-    with sqlite3.connect(fixture.history) as connection:
+    with closing(sqlite3.connect(fixture.history)) as connection, connection:
         connection.row_factory = sqlite3.Row
         original = connection.execute(
             "SELECT * FROM messages WHERE id=?", (identifier,)
@@ -202,7 +202,7 @@ def test_dynamic_owner_witness_must_match_the_original_primary_row(source_bindin
     fixture = source_binding
     packet = _dynamic_packet(fixture)
     anchor = packet["account_binding"]["anchors"][0]
-    with sqlite3.connect(fixture.history) as connection:
+    with closing(sqlite3.connect(fixture.history)) as connection, connection:
         connection.execute(
             "UPDATE messages SET text='A changed primary witness' WHERE id=?",
             (anchor["archive_message_id"],),

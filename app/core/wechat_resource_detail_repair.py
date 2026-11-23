@@ -1,6 +1,6 @@
 """Review and atomically publish bounded native resource-detail batches.
 
-Code version: v1.2.1-codex.0
+Code version: v1.2.2-codex.0
 """
 
 from collections import Counter, defaultdict
@@ -22,7 +22,7 @@ from .wechat_completion_clone import sync_completion_directory
 from .wechat_conversation_events import _inputs
 from .wechat_global_guard import global_refresh_guard
 from .wechat_resource_details import (
-    FILENAME, MAX_BYTES, MAX_ENTRIES, encode_registry, load_registry,
+    FILENAME, MAX_BYTES, MAX_ENTRIES, _resource_detail_file_pin, encode_registry, load_registry,
     make_entry, project_resource_details, registry_identity, row_sha256,
 )
 from .wechat_resource_sender_evidence import iter_secondary_native_events
@@ -52,17 +52,18 @@ def _candidate_bytes(path):
         or getattr(before, "st_flags", 0) & 0x40000000
     ):
         raise ValueError("A detail candidate must be bounded, private and resident.")
+    expected = _resource_detail_file_pin(path, before)
     descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
     with os.fdopen(descriptor, "rb") as stream:
-        opened = os.fstat(stream.fileno())
-        if (opened.st_dev, opened.st_ino) != (before.st_dev, before.st_ino):
+        if _resource_detail_file_pin(path, os.fstat(descriptor), descriptor=descriptor) != expected:
             raise ValueError("The resource detail candidate changed before opening.")
         raw = stream.read(MAX_BYTES + 1)
+        if _resource_detail_file_pin(path, os.fstat(descriptor), descriptor=descriptor) != expected:
+            raise ValueError("The resource detail candidate changed while reading.")
     after = path.lstat()
     if (
         len(raw) > MAX_BYTES or owner_only_problem(path)
-        or tuple(getattr(before, key) for key in ("st_dev", "st_ino", "st_size", "st_mtime_ns", "st_ctime_ns"))
-        != tuple(getattr(after, key) for key in ("st_dev", "st_ino", "st_size", "st_mtime_ns", "st_ctime_ns"))
+        or _resource_detail_file_pin(path, after) != expected
     ):
         raise ValueError("The resource detail candidate changed while reading.")
     return raw

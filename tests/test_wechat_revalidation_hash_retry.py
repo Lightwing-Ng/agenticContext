@@ -1,6 +1,6 @@
 """Known exact bytes permit bounded closed-hash ctime retries before derived writes.
 
-Code version: v1.1.1-codex.0
+Code version: v1.1.2-codex.0
 """
 
 from contextlib import ExitStack
@@ -194,6 +194,7 @@ def test_nonctime_storage_changes_never_receive_a_retry(hash_case, monkeypatch, 
         return OwnerView(value) if path == case.path and simulated_owner else value
 
     monkeypatch.setattr(Path, "lstat", lstat)
+    replace_denied_while_open = os.name == "nt" and change == "inode"
 
     def mutate(_attempt):
         before = case.path.stat()
@@ -220,12 +221,16 @@ def test_nonctime_storage_changes_never_receive_a_retry(hash_case, monkeypatch, 
     passes = _during_real_reads(monkeypatch, case.path, mutate)
     try:
         with bank.mac_recovery_publication_guard(case.fixture.root) as guard:
-            with pytest.raises(ValueError):
+            with pytest.raises(PermissionError if replace_denied_while_open else ValueError) as failure:
                 revalidation._closed_sha(
                     case.path, case.fixture.history, bank._inputs(case.fixture.history), guard,
                     modes={0o400, 0o600}, expected_sha256=case.sha,
                 )
         assert len(passes) == 1
+        if replace_denied_while_open:
+            # The open Windows CRT handle prevents the attempted pathname replacement.
+            assert failure.value.winerror == 5
+            assert case.path.read_bytes() == case.body
     finally:
         if change == "flags":
             clone_document_flags(case.path, initial_flags)

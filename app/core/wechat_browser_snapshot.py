@@ -1,6 +1,6 @@
 """Persist authenticated conversation summaries after full timeline validation.
 
-Code version: v1.2.2-codex.0
+Code version: v1.2.3-codex.0
 """
 
 from __future__ import annotations
@@ -595,8 +595,8 @@ def load_previous_conversation_snapshot(repository, connection, history_identity
             return (
                 _pin(repository, history_identity) == pin
                 and _directory_identity(directory) == directory_identity
-                and _state(key_path.lstat()) == key_identity
-                and _state(snapshot_path.lstat()) == snapshot_identity
+                and _cache_file_state(key_path) == key_identity
+                and _cache_file_state(snapshot_path) == snapshot_identity
                 and (rebased is None or rebase_navigation_inputs(
                     repository.path, previous["inputs"], pin["inputs"], encoded, key,
                 ) == rebased)

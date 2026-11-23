@@ -1,8 +1,9 @@
 """Retired export references remain secondary during native restoration.
 
-Code version: v1.0.4-codex.0
+Code version: v1.0.5-codex.0
 """
 
+from contextlib import closing
 from datetime import datetime
 import hashlib
 import json
@@ -40,7 +41,7 @@ def retired_export(store, *, verified_export=True):
     merge(store, [metadata], [native])
     path = wechat_archive_path(store)
     native_id = _identifier(metadata["source_id"], "existing")
-    with sqlite3.connect(path) as connection:
+    with closing(sqlite3.connect(path)) as connection, connection:
         native_clock = connection.execute(
             "SELECT timestamp_value FROM messages WHERE id=?", (native_id,)
         ).fetchone()[0]
@@ -89,7 +90,7 @@ def retired_export(store, *, verified_export=True):
     )
     native_id = _identifier(metadata["source_id"], "existing")
     old_id = _identifier(exported["source_id"], "export-one")
-    with sqlite3.connect(path) as connection:
+    with closing(sqlite3.connect(path)) as connection, connection:
         connection.row_factory = sqlite3.Row
         old = dict(connection.execute("SELECT * FROM messages WHERE id=?", (old_id,)).fetchone())
         primary = connection.execute("SELECT * FROM messages WHERE id=?", (native_id,)).fetchone()
@@ -149,7 +150,7 @@ def test_proved_export_reference_preserves_source_and_does_not_seed_native_sid(
     fixture = retired_export(tmp_path, verified_export=verified_export)
     if shared:
         from app.core.wechat_shared_storage import _install
-        with sqlite3.connect(fixture.path) as connection:
+        with closing(sqlite3.connect(fixture.path)) as connection, connection:
             _install(connection)
     incoming = record(
         fixture.metadata, "incoming", peer=fixture.native["conversation_id"],
@@ -159,7 +160,7 @@ def test_proved_export_reference_preserves_source_and_does_not_seed_native_sid(
     assert result["inserted_messages"] == 1 and result["conflict_variants"] == 0
     assert result["secondary_export_cross_references"] == 1
     assert result["old_messages_unchanged"] and result["old_evidence_unchanged"]
-    with sqlite3.connect(fixture.path) as connection:
+    with closing(sqlite3.connect(fixture.path)) as connection, connection:
         connection.row_factory = sqlite3.Row
         retained = dict(connection.execute("SELECT * FROM message_evidence WHERE id=?", (fixture.evidence["id"],)).fetchone())
         assert retained == fixture.evidence
@@ -178,7 +179,7 @@ def test_proved_export_reference_preserves_source_and_does_not_seed_native_sid(
 ])
 def test_unproved_foreign_evidence_refuses_without_publication(tmp_path, failure):
     fixture = retired_export(tmp_path)
-    with sqlite3.connect(fixture.path) as connection:
+    with closing(sqlite3.connect(fixture.path)) as connection, connection:
         connection.row_factory = sqlite3.Row
         evidence = dict(connection.execute("SELECT * FROM message_evidence WHERE id=?", (fixture.evidence["id"],)).fetchone())
         observation = json.loads(evidence["observation"])
@@ -249,7 +250,7 @@ def test_generic_reconcile_preserves_proved_retired_export_reference(tmp_path):
     )
     result = merge(tmp_path, [fixture.metadata], [incoming], snapshot="after-retirement")
     assert result["inserted_messages"] == 1 and result["conflict_variants"] == 0
-    with sqlite3.connect(fixture.path) as connection:
+    with closing(sqlite3.connect(fixture.path)) as connection, connection:
         connection.row_factory = sqlite3.Row
         retained = dict(connection.execute(
             "SELECT * FROM message_evidence WHERE id=?", (fixture.evidence["id"],)

@@ -1,6 +1,6 @@
 """Publish and read authenticated, account-scoped WeChat conversation summaries.
 
-Code version: v1.2.0-codex.0
+Code version: v1.2.1-codex.0
 """
 
 from contextlib import closing
@@ -283,7 +283,7 @@ def read_account_summary(root, *, account, sort, page, chat_kind="direct", previ
         if (
             account_summary_pin(root) == current_pin
             and snapshot._directory_identity(directory) == directory_state
-            and snapshot._state(key_path.lstat()) == key_state
+            and snapshot._cache_file_state(key_path) == key_state
         ):
             return result
     except (OSError, KeyError, ValueError, TypeError, RecursionError, sqlite3.DatabaseError):

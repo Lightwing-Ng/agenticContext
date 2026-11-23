@@ -1,6 +1,6 @@
 """Viewer names project across native identities without rewriting source evidence.
 
-Code version: v1.6.6-codex.0
+Code version: v1.6.7-codex.0
 """
 
 from __future__ import annotations
@@ -496,9 +496,13 @@ def test_verified_native_contact_profile_fills_only_identifier_labels(
     else:
         assert not message.messaging.get("source_snapshot_id")
         assert message.messaging["resource"]["kind"] == "video"
-    html = _application(fixture).test_client().get(
-        "/browser", query_string={"source": "wechat", "session": session}
-    ).get_data(as_text=True)
+    app = _application(fixture)
+    try:
+        html = get_verified_browser_page(
+            app.test_client(), "/browser", query_string={"source": "wechat", "session": session}
+        ).get_data(as_text=True)
+    finally:
+        app.extensions["runtime_shutdown"]()
     speaker_names = re.findall(r'class="wechat-speaker[^"]*"[^>]*>([^<]*)<', html)
     assert expected_viewer or raw_label in speaker_names
     if expected_viewer:

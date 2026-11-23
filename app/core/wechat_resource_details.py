@@ -1,6 +1,6 @@
 """Apply bounded, authenticated resource details without rewriting source catalogs.
 
-Code version: v1.3.1-codex.0
+Code version: v1.3.2-codex.0
 """
 
 from copy import deepcopy
@@ -23,10 +23,12 @@ from .wechat_resource_sender_evidence import (
     secondary_native_events,
     validate_secondary_native_event,
 )
+from .windows_file_metadata import file_change_time
 
 
-CODE_VERSION = "v1.3.1-codex.0"
+CODE_VERSION = "v1.3.2-codex.0"
 VERSION = "v1.0.0-codex.0"
+IS_WINDOWS = os.name == "nt"
 FILENAME = "resource_details.json"
 MESSAGE_TABLE = "resource_detail_timeline_messages"
 MAX_ENTRIES = 20_000
@@ -323,6 +325,19 @@ def make_entry(row, conversation, packet, *, connection=None):
     return entry
 
 
+def _resource_detail_file_pin(path, state, *, descriptor=None):
+    change_time_ns = state.st_ctime_ns
+    if IS_WINDOWS:
+        # Use the same native mutation timestamp for a pathname and an open file.
+        ticks = file_change_time(path, descriptor=descriptor)
+        change_time_ns = (ticks - 116_444_736_000_000_000) * 100
+    return {
+        "dev": state.st_dev, "inode": state.st_ino,
+        "size": state.st_size, "mtime_ns": state.st_mtime_ns,
+        "ctime_ns": change_time_ns,
+    }
+
+
 def registry_identity(history_path):
     """Return a resident private-file pin without hydrating or following a link."""
     path = Path(history_path).with_name(FILENAME)
@@ -337,11 +352,7 @@ def registry_identity(history_path):
         or path.parent.is_symlink()
     ):
         raise ValueError("Resource details need a bounded private resident registry.")
-    return {
-        "dev": state.st_dev, "inode": state.st_ino,
-        "size": state.st_size, "mtime_ns": state.st_mtime_ns,
-        "ctime_ns": state.st_ctime_ns,
-    }
+    return _resource_detail_file_pin(path, state)
 
 
 def detail_input_identities(history_path):
@@ -496,15 +507,12 @@ def _read_registry(history_path, expected):
     path = Path(history_path).with_name(FILENAME)
     descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
     with os.fdopen(descriptor, "rb") as stream:
-        state = os.fstat(stream.fileno())
-        actual = {
-            "dev": state.st_dev, "inode": state.st_ino,
-            "size": state.st_size, "mtime_ns": state.st_mtime_ns,
-            "ctime_ns": state.st_ctime_ns,
-        }
+        actual = _resource_detail_file_pin(path, os.fstat(descriptor), descriptor=descriptor)
         if actual != expected:
             raise ValueError("The resource detail registry changed before reading.")
         content = stream.read(MAX_BYTES + 1)
+        if _resource_detail_file_pin(path, os.fstat(descriptor), descriptor=descriptor) != expected:
+            raise ValueError("The resource detail registry changed while reading.")
     if len(content) > MAX_BYTES or registry_identity(history_path) != expected:
         raise ValueError("The resource detail registry changed while reading.")
     try:

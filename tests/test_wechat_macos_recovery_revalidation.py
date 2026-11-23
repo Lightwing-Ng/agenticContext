@@ -1,13 +1,12 @@
 """Fresh semantic bank revalidation preserves rows without historical-byte claims.
 
-Code version: v1.0.3-codex.0
+Code version: v1.0.4-codex.0
 """
 
 import json
 import os
 import shutil
 import sqlite3
-import stat
 from contextlib import closing
 from copy import deepcopy
 from datetime import datetime
@@ -20,6 +19,7 @@ from app.core import wechat_media_event_index as event_index
 from app.core.wechat_archive import _file_identity
 from app.core.wechat_archive_relocation import receipt_identity
 from app.core.wechat_media_event_index import MEDIA_EVENT_SCHEMA, VERSION
+from tests.test_wechat_candidate_storage_rebind import _ctime_only
 from tests import test_wechat_macos_recovery_bank as fixtures
 from tests import test_wechat_macos_recovery_bank_upgrades as upgrades
 
@@ -30,7 +30,7 @@ app_stubs = upgrades.app_stubs
 
 def _empty_media(history):
     media = history.with_name("media_events.sqlite3")
-    with sqlite3.connect(media) as connection:
+    with closing(sqlite3.connect(media)) as connection, connection:
         connection.executescript(MEDIA_EVENT_SCHEMA)
         connection.executemany(
             "INSERT INTO archive_info VALUES(?,?)",
@@ -45,18 +45,12 @@ def _empty_media(history):
     return media
 
 
-def _change_ctime(media):
-    before = bank._identity(media)
-    media.chmod(0o400)
-    assert before["ctime_ns"] != bank._identity(media)["ctime_ns"]
-
-
 @pytest.fixture
 def stale_bank(bank_archive, monkeypatch):
     fixture = bank_archive
     fixture.media = _empty_media(fixture.history)
     fixtures._publish(fixture)
-    _change_ctime(fixture.media)
+    _ctime_only(fixture.media)
     monkeypatch.setattr(revalidation, "_clonefile", shutil.copyfile)
     return fixture
 
@@ -99,7 +93,7 @@ def test_candidate_changes_only_input_pin_and_uses_normal_publisher_cas(stale_ba
         fixture.root, candidate, preserved_path=preserved
     )
     assert fixture.bank_path.read_bytes() == preserved.read_bytes() == original
-    assert stat.S_IMODE(preserved.stat().st_mode) == 0o400
+    assert revalidation._source_mode(preserved.stat()) == 0o400
     with (
         closing(sqlite3.connect(candidate)) as current,
         current,
@@ -140,10 +134,10 @@ def test_unsupported_drift_or_bad_old_payload_fails_before_any_clone(
     if defect == "history_identity":
         fixture.history.touch()
     elif defect == "payload":
-        with sqlite3.connect(fixture.bank_path) as connection:
+        with closing(sqlite3.connect(fixture.bank_path)) as connection, connection:
             connection.execute("UPDATE messages SET text='unsealed drift'")
     else:
-        with sqlite3.connect(fixture.bank_path) as connection:
+        with closing(sqlite3.connect(fixture.bank_path)) as connection, connection:
             connection.execute(
                 "UPDATE archive_info SET value=? WHERE key='input_identities'",
                 (
@@ -171,7 +165,7 @@ def test_exact_existing_shadow_stubs_remain_valid(app_stubs):
     fixture = app_stubs
     media = _empty_media(fixture.history)
     upgrades._publish(fixture)
-    _change_ctime(media)
+    _ctime_only(media)
     report = revalidation.validate_mac_recovery_bank_revalidation(fixture.root)
     assert report["messages"] == report["validated_shadow_overlaps"] == 3
 
@@ -239,7 +233,7 @@ def deduplicated_bank(bank_archive):
     )
     packet["messages"].append(message)
     fixtures._publish(fixture, packets=[packet])
-    _change_ctime(media)
+    _ctime_only(media)
     with sqlite3.connect(fixture.bank_path) as connection:
         assert (
             connection.execute(
@@ -302,7 +296,6 @@ def test_warm_media_cache_cannot_hide_a_changed_invalid_current_receipt(stale_ba
         str(receipt_identity(fixture.history)),
     )
     assert key in event_index._VALIDATED
-    fixture.media.chmod(0o600)
     with closing(sqlite3.connect(fixture.media)) as connection, connection:
         connection.execute("UPDATE archive_info SET value='0' WHERE key='published'")
     os.utime(fixture.media, ns=(before.st_atime_ns, before.st_mtime_ns))
@@ -322,8 +315,7 @@ def test_changed_historical_bytes_can_only_be_described_as_fresh_semantic_valida
     fixture = stale_bank
     before = fixture.media.stat()
     prior_sha = bank._file_sha(fixture.media)
-    fixture.media.chmod(0o600)
-    with sqlite3.connect(fixture.media) as connection:
+    with closing(sqlite3.connect(fixture.media)) as connection, connection:
         connection.execute(
             "INSERT INTO archive_info VALUES('new_observation','current')"
         )
@@ -345,7 +337,7 @@ def test_preflight_input_drift_refuses_to_clone_or_change_originals(
 
     def drift(*args, **kwargs):
         result = compare(*args, **kwargs)
-        fixture.media.chmod(0o600)
+        _ctime_only(fixture.media)
         return result
 
     monkeypatch.setattr(revalidation, "_compare_base", drift)
@@ -371,7 +363,7 @@ def test_canonical_publisher_rejects_input_drift_after_revalidation(stale_bank):
     receipt = revalidation.stage_mac_recovery_bank_revalidation(
         fixture.root, candidate, preserved_path=preserved
     )
-    fixture.media.chmod(0o600)
+    _ctime_only(fixture.media)
     with pytest.raises(ValueError, match="Canonical inputs changed before reuse or publication"):
         bank.publish_mac_recovery_bank(fixture.root, candidate, receipt)
     assert fixture.bank_path.read_bytes() == preserved.read_bytes() == original
@@ -403,7 +395,7 @@ def test_clone_failures_keep_original_and_any_completed_preservation(
     assert not candidate.exists()
     if failed_clone == 2:
         assert preserved.read_bytes() == original
-        assert stat.S_IMODE(preserved.stat().st_mode) == 0o400
+        assert revalidation._source_mode(preserved.stat()) == 0o400
 
 
 def test_existing_review_outputs_are_preserved(stale_bank):
