@@ -1,6 +1,6 @@
 """Load reviewed HTML group frames bound to retained source snapshot metadata.
 
-Code version: v1.0.0-codex.0
+Code version: v1.0.1-codex.0
 """
 
 from __future__ import annotations
@@ -15,9 +15,11 @@ import unicodedata
 from urllib.parse import unquote
 
 from .wechat_archive import wechat_archive_path
+from .windows_file_metadata import file_change_time
 
 
 VERSION = "v1.0.0-codex.0"
+IS_WINDOWS = os.name == "nt"
 MAX_REGISTRY_BYTES = 1024**2
 MAX_SNAPSHOT_BYTES = 4 * 1024**2
 MAX_FRAMES = 128
@@ -42,15 +44,20 @@ def _sha(raw):
     return hashlib.sha256(raw).hexdigest()
 
 
-def _identity(info):
+def _identity(path, info, *, descriptor=None):
     return (
         info.st_dev,
         info.st_ino,
         info.st_mode,
         info.st_size,
         info.st_mtime_ns,
-        info.st_ctime_ns,
+        file_change_time(path, descriptor=descriptor) if IS_WINDOWS else info.st_ctime_ns,
     )
+
+
+def _parent_identity(info):
+    # Sibling activity changes directory timestamps without redirecting the registry.
+    return info.st_dev, info.st_ino, info.st_mode, getattr(info, "st_file_attributes", 0) & 0x400
 
 
 def _registry_bytes(root):
@@ -69,17 +76,19 @@ def _registry_bytes(root):
             return "unavailable", b""
         if before.st_size > MAX_REGISTRY_BYTES:
             return "oversized", b""
+        identity = _identity(path, before)
         descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
         try:
-            if _identity(os.fstat(descriptor)) != _identity(before):
+            if _identity(path, os.fstat(descriptor), descriptor=descriptor) != identity:
                 return "changed", b""
             with os.fdopen(descriptor, "rb", closefd=False) as stream:
                 raw = stream.read(MAX_REGISTRY_BYTES + 1)
             if (
-                _identity(os.fstat(descriptor)) != _identity(before)
-                or _identity(path.lstat()) != _identity(before)
+                _identity(path, os.fstat(descriptor), descriptor=descriptor) != identity
+                or _identity(path, path.lstat()) != identity
                 or any(
-                    _identity(part.lstat()) != _identity(info) for part, info in parents
+                    _parent_identity(part.lstat()) != _parent_identity(info)
+                    for part, info in parents
                 )
             ):
                 return "changed", b""

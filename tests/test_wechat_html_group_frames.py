@@ -1,6 +1,6 @@
 """Recovered group frames require exact imported archive, index and fragment pins.
 
-Code version: v1.0.1-codex.0
+Code version: v1.0.2-codex.0
 """
 
 from __future__ import annotations
@@ -333,10 +333,45 @@ def test_registry_replacement_during_read_cannot_publish_frames(
 
     def replace_registry(path, *args, **kwargs):
         descriptor = original(path, *args, **kwargs)
-        replacement = fixture.path.with_name("replacement.json")
-        replacement.write_bytes(fixture.path.read_bytes())
-        replacement.replace(fixture.path)
+        try:
+            replacement = fixture.path.with_name("replacement.json")
+            replacement.write_bytes(fixture.path.read_bytes())
+            replacement.replace(fixture.path)
+        except OSError:
+            os.close(descriptor)
+            raise
         return descriptor
 
     monkeypatch.setattr(frames.os, "open", replace_registry)
     assert _load(fixture) == {}
+
+
+def test_unrelated_ancestor_activity_keeps_group_frames_available(group_registry, monkeypatch):
+    fixture = group_registry
+    original_open = os.open
+
+    def open_after_sibling_change(path, *args, **kwargs):
+        sibling = fixture.root / "other-output.json"
+        sibling.write_text("{}", encoding="utf-8")
+        times = fixture.root.stat()
+        os.utime(fixture.root, ns=(times.st_atime_ns, times.st_mtime_ns + 1_000_000_000))
+        return original_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(frames.os, "open", open_after_sibling_change)
+    assert set(_load(fixture)) == {(13, PEER)}
+
+
+def test_windows_group_frame_pins_use_native_change_time(group_registry, monkeypatch):
+    class DescriptorStat:
+        def __init__(self, state):
+            self.state = state
+            self.st_ctime_ns = state.st_ctime_ns + 1_000_000
+
+        def __getattr__(self, name):
+            return getattr(self.state, name)
+
+    original_fstat = os.fstat
+    monkeypatch.setattr(frames, "IS_WINDOWS", True)
+    monkeypatch.setattr(frames, "file_change_time", lambda _path, **_kwargs: 17)
+    monkeypatch.setattr(frames.os, "fstat", lambda fd: DescriptorStat(original_fstat(fd)))
+    assert set(_load(group_registry)) == {(13, PEER)}
