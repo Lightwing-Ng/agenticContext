@@ -1,4 +1,4 @@
-# Code version: v1.8.1-codex.0
+# Code version: v1.8.2-codex.0
 name: Quality gate
 
 on:
@@ -79,7 +79,8 @@ jobs:
   check-windows-shards:
     name: Windows quality shard ${{ matrix.shard }}/8
     runs-on: windows-latest
-    timeout-minutes: 20
+    # Include dependency setup and coverage export in the shard's runner budget.
+    timeout-minutes: 25
     strategy:
       fail-fast: false
       matrix:
