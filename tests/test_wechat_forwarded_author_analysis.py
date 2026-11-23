@@ -5,6 +5,7 @@ Code version: v1.0.0-codex.0
 
 from __future__ import annotations
 
+from contextlib import closing
 import csv
 from io import StringIO
 import json
@@ -26,7 +27,7 @@ TARGET = fixtures.TARGET
 
 
 def _parts(fixture, identifier):
-    with sqlite3.connect(fixture.history) as connection:
+    with closing(sqlite3.connect(fixture.history)) as connection, connection:
         raw = connection.execute(
             "SELECT provenance FROM messages WHERE id=?", (identifier,)
         ).fetchone()[0]
@@ -35,7 +36,7 @@ def _parts(fixture, identifier):
 
 def _members(fixture):
     path = analysis.contact_analysis_cache_path(fixture.store, CID)
-    with sqlite3.connect(path) as connection:
+    with closing(sqlite3.connect(path)) as connection, connection:
         return dict(connection.execute(
             "SELECT reference_id,statement_id FROM statement_members"
         ))

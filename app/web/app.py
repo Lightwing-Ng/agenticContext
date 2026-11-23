@@ -10,7 +10,7 @@ registered first because it owns the access gate and the exclusive-browser rule 
 Tunnel, Jury, iPhone, and Cache blueprints borrow through :class:`AgentSurface`.
 """
 
-# Code version: v2.11.1-codex.0
+# Code version: v2.11.2-codex.0
 
 from __future__ import annotations
 
@@ -849,6 +849,12 @@ def create_app(
         response.vary.update(
             ("Sec-Fetch-Site", "Sec-Fetch-Mode", "Sec-Fetch-Dest", "Sec-Fetch-User")
         )
+        if (
+            request.endpoint == "static"
+            and response.status_code in {200, 206}
+            and (request.view_args or {}).get("filename", "").endswith((".js", ".mjs"))
+        ):
+            response.mimetype = "text/javascript"
         response.headers.setdefault("X-Content-Type-Options", "nosniff")
         response.headers.setdefault("X-Frame-Options", "DENY")
         response.headers.setdefault("Referrer-Policy", "same-origin")

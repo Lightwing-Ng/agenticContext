@@ -5,7 +5,7 @@ refresh service without reaching for a browser or Agent. Serialization of one st
 public shape lives here too, so a template global and a JSON response cannot drift.
 """
 
-# Code version: v1.25.4-codex.0
+# Code version: v1.25.5-codex.0
 
 from __future__ import annotations
 
@@ -581,7 +581,7 @@ def register_local_resource_routes(app: Flask, context: LocalResourceRouteContex
                             root, account=filters["account"], chat_kind=filters["chat_kind"],
                             sort=filters["sort"], page=filters["page"], previous_snapshot=True,
                         )
-                    if preview is not None and preview.sessions:
+                    if preview is not None:
                         text_page = preview
                         wechat_read_preview = True
                 if text_page is None:

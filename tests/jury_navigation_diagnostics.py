@@ -1,6 +1,6 @@
 """Record bounded metadata only after an original Jury navigation timeout.
 
-Code version: v1.0.2-codex.0
+Code version: v1.0.3-codex.0
 """
 
 from __future__ import annotations
@@ -29,7 +29,7 @@ def record(kind, nodeid, value):
         output.write(
             json.dumps(
                 {
-                    "version": "v1.0.2-codex.0",
+                    "version": "v1.0.3-codex.0",
                     "pid": os.getpid(),
                     "kind": kind,
                     "nodeid": nodeid,
@@ -85,7 +85,9 @@ def bounded_call(owner, coroutine, method, nodeid):
 
 
 def send(channel, method, nodeid, params=None):
-    return bounded_call(channel, channel._impl_obj.send(method, params), method, nodeid)
+    return bounded_call(
+        channel, channel._impl_obj.send(method, params, timeout=None), method, nodeid
+    )
 
 
 def native_execution_terminated(error):

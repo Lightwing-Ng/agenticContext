@@ -1,6 +1,6 @@
 """Recover audited resource children inside their proven HTML forwarding parent.
 
-Code version: v1.0.2-codex.0
+Code version: v1.0.3-codex.0
 """
 
 from __future__ import annotations
@@ -273,12 +273,13 @@ def _validate_boundaries(value, parent):
 def _read_audit(path, expected, *, allow_hydration):
     path = Path(path)
     state = path.lstat()
+    dataless = bool(getattr(state, "st_flags", 0) & 0x40000000)
     if (
         not stat.S_ISREG(state.st_mode)
         or path.parent.name != "audit_nodes"
         or not path.name.endswith(".jsonl.gz")
         or state.st_size > 32 * 1024**2
-        or (state.st_flags & 0x40000000 and not allow_hydration)
+        or (dataless and not allow_hydration)
     ):
         raise ValueError(
             "Only bounded, explicitly authorized audit metadata may be read."
@@ -309,7 +310,7 @@ def _read_audit(path, expected, *, allow_hydration):
         "path": str(path),
         "bytes": len(raw),
         "sha256": _sha(raw),
-        "previously_dataless": bool(state.st_flags & 0x40000000),
+        "previously_dataless": dataless,
     }
 
 

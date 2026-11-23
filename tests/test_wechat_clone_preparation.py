@@ -1,6 +1,6 @@
 """Only newly owned clone descriptors receive document tracking before byte proof.
 
-Code version: v1.0.0-codex.0
+Code version: v1.0.1-codex.0
 """
 
 from contextlib import ExitStack
@@ -16,6 +16,7 @@ import pytest
 
 from app.core import wechat_macos_recovery_bank as bank
 from app.core import wechat_macos_recovery_revalidation as revalidation
+from app.core.owner_only_files import ensure_owner_only, ensure_owner_only_directory
 from tests import test_wechat_archived_bank_revalidation as archived
 from tests import test_wechat_macos_recovery_bank as fixtures
 from tests import test_wechat_revalidation_hash_retry as hashes
@@ -26,35 +27,47 @@ mac_archive = fixtures.mac_archive
 bank_archive = fixtures.bank_archive
 sealed_case = sealed.sealed_case
 archived_case = archived.archived_case
+clone_document_flags = sealed.clone_document_flags
 _TRACKED = 0x40
+pytestmark = pytest.mark.skipif(
+    not hasattr(os, "O_NOFOLLOW"),
+    reason="Descriptor tracking exercises the native POSIX no-follow contract.",
+)
+
+
+def _flags(path):
+    return revalidation._hash_storage(path.stat(), path=path)["flags"]
 
 
 @pytest.fixture
-def preparation_case(bank_archive, tmp_path):
+def preparation_case(bank_archive, tmp_path, clone_document_flags):
     fixture = bank_archive
     fixtures._publish(fixture, packets=[fixture.direct])
     workstation = tmp_path / "private-tracking-workstation"
     workstation.mkdir(mode=0o700)
+    ensure_owner_only_directory(workstation)
     directory = workstation / "private-run"
     directory.mkdir(mode=0o700)
+    ensure_owner_only_directory(directory)
     source = directory / "reviewed-source.sqlite3"
     candidate = directory / "new-clone.sqlite3"
     for path in (source, candidate):
         shutil.copyfile(fixture.bank_path, path)
-        path.chmod(0o600)
-    os.chflags(candidate, 0)
+        ensure_owner_only(path)
+    clone_document_flags(candidate, 0)
     archive = directory / "protected-preservation.zst"
     receipt = directory / "protected-preservation.receipt.json"
     archive.write_bytes(b"Synthetic protected compressed artifact")
     receipt.write_bytes(b"{}")
     for path in (archive, receipt):
-        path.chmod(0o600)
+        ensure_owner_only(path)
     protected = (source, fixture.history, fixture.bank_path, archive, receipt)
     return SimpleNamespace(
         fixture=fixture, directory=directory, source=source, candidate=candidate,
         archive=archive, receipt=receipt,
         body=source.read_bytes(),
-        protected_before={path: (path.read_bytes(), path.stat().st_flags) for path in protected},
+        set_flags=clone_document_flags,
+        protected_before={path: (path.read_bytes(), _flags(path)) for path in protected},
     )
 
 
@@ -69,7 +82,7 @@ def _prepare(case, guard, *, audit=None, path=None, mode=0o600):
 def _protected_unchanged(case):
     for path, (body, flags) in case.protected_before.items():
         assert path.read_bytes() == body
-        assert path.stat().st_flags == flags
+        assert _flags(path) == flags
 
 
 def _assert_record(record, path, source):
@@ -101,7 +114,7 @@ def test_native_preparation_sets_only_tracking_and_preserves_existing_flags(
 ):
     case = preparation_case
     case.candidate.chmod(mode)
-    os.chflags(case.candidate, initial_flags)
+    case.set_flags(case.candidate, initial_flags)
     native = Mock(wraps=revalidation._native_fchflags)
     monkeypatch.setattr(revalidation, "_native_fchflags", native)
     audit = []
@@ -166,7 +179,7 @@ def test_path_swap_cannot_redirect_descriptor_flags_to_a_protected_source(prepar
         with pytest.raises(ValueError):
             _prepare(case, guard, audit=audit)
     setter.assert_called_once()
-    assert held.stat().st_flags & _TRACKED
+    assert _flags(held) & _TRACKED
     assert audit == []
     with pytest.raises(OSError):
         os.fstat(descriptors[0])
@@ -219,7 +232,7 @@ def test_nontracking_metadata_drift_rejects_preparation(preparation_case, monkey
         elif change == "link":
             case.candidate.with_name("new-hardlink.sqlite3").hardlink_to(case.candidate)
         elif change == "flags":
-            os.chflags(case.candidate, flags | stat.UF_NODUMP)
+            case.set_flags(case.candidate, flags | stat.UF_NODUMP)
         elif change == "size":
             with case.candidate.open("ab") as stream:
                 stream.write(b"X")
@@ -277,7 +290,7 @@ def test_native_failure_has_no_pathname_fallback_or_success_audit(preparation_ca
         with pytest.raises(ValueError):
             _prepare(case, guard, audit=audit)
     setter.assert_called_once()
-    assert case.candidate.stat().st_flags == 0
+    assert _flags(case.candidate) == 0
     assert audit == []
     with pytest.raises(OSError):
         os.fstat(descriptors[0])
@@ -307,7 +320,7 @@ def test_tracking_flag_changes_during_known_hash_still_fail_without_retry(prepar
         _prepare(case, guard)
         passes = hashes._during_real_reads(
             monkeypatch, case.candidate,
-            lambda _attempt: os.chflags(case.candidate, case.candidate.stat().st_flags & ~_TRACKED),
+            lambda _attempt: case.set_flags(case.candidate, _flags(case.candidate) & ~_TRACKED),
         )
         with pytest.raises(ValueError):
             revalidation._closed_sha(
@@ -338,7 +351,7 @@ def test_preparation_never_substitutes_for_the_complete_known_hash(archived_case
 
     def full_hash(path, *args, **kwargs):
         if path == case.candidate:
-            assert path.stat().st_flags & _TRACKED
+            assert _flags(path) & _TRACKED
             assert kwargs["expected_sha256"] == case.source_sha
             events.append("known_hash")
         return closed_sha(path, *args, **kwargs)
@@ -348,35 +361,35 @@ def test_preparation_never_substitutes_for_the_complete_known_hash(archived_case
     monkeypatch.setattr(revalidation, "_closed_sha", full_hash)
     update = Mock(side_effect=AssertionError("Unverified clone reached metadata write"))
     monkeypatch.setattr(revalidation, "_update_controlled_candidate", update)
-    flags = {path: path.stat().st_flags for path in (case.source, case.fixture.bank_path, case.archive, case.archive_receipt)}
+    flags = {path: _flags(path) for path in (case.source, case.fixture.bank_path, case.archive, case.archive_receipt)}
     with bank.mac_recovery_publication_guard(case.fixture.root) as guard:
         with pytest.raises(ValueError):
             archived._stage(case, guard)
     assert events == ["preparation", "known_hash"]
     update.assert_not_called()
-    assert {path: path.stat().st_flags for path in flags} == flags
+    assert {path: _flags(path) for path in flags} == flags
     archived._unchanged(case)
 
 
 def test_archived_candidate_preparation_is_a_separate_returned_audit(archived_case):
     case = archived_case
     protected = (case.source, case.fixture.history, case.fixture.bank_path, case.archive, case.archive_receipt)
-    flags = {path: path.stat().st_flags for path in protected}
+    flags = {path: _flags(path) for path in protected}
     with bank.mac_recovery_publication_guard(case.fixture.root) as guard:
         receipt = archived._stage(case, guard)
     records = receipt["revalidation"]["clone_tracking_preparations"]
     assert len(records) == 1
     _assert_record(records[0], case.candidate, case.source)
-    assert case.candidate.stat().st_flags & _TRACKED
+    assert _flags(case.candidate) & _TRACKED
     assert receipt["candidate_sha256"] == hashlib.sha256(case.candidate.read_bytes()).hexdigest()
-    assert {path: path.stat().st_flags for path in flags} == flags
+    assert {path: _flags(path) for path in flags} == flags
     archived._unchanged(case)
 
 
 def test_preserved_and_candidate_preparations_are_both_returned_without_source_changes(sealed_case):
     case = sealed_case
     protected = (case.source, case.fixture.history, case.fixture.bank_path, case.legacy_path)
-    flags = {path: path.stat().st_flags for path in protected}
+    flags = {path: _flags(path) for path in protected}
     with bank.mac_recovery_publication_guard(case.fixture.root) as guard:
         receipt = sealed._stage(case, guard)
     records = receipt["revalidation"]["clone_tracking_preparations"]
@@ -384,9 +397,9 @@ def test_preserved_and_candidate_preparations_are_both_returned_without_source_c
     assert len(records) == 2
     for record in records:
         _assert_record(record, Path(record["path"]), case.source)
-    assert case.preserved.stat().st_flags & _TRACKED
+    assert _flags(case.preserved) & _TRACKED
     assert stat.S_IMODE(case.preserved.stat().st_mode) == 0o400
     assert receipt["preserved_sha256"] == case.source_sha
     assert case.preserved.read_bytes() == case.before[case.source]
-    assert {path: path.stat().st_flags for path in flags} == flags
+    assert {path: _flags(path) for path in flags} == flags
     sealed._unchanged(case)

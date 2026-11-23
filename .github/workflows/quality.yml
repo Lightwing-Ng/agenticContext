@@ -1,4 +1,4 @@
-# Code version: v1.8.0-codex.0
+# Code version: v1.8.1-codex.0
 name: Quality gate
 
 on:
@@ -220,6 +220,9 @@ jobs:
             tests/test_iphone_controller.py tests/test_iphone_service.py \
             tests/test_wechat_native_resource_extension.py::test_enabled_sender_resolution_uses_exact_dictionary \
             tests/test_wechat_native_resource_extension.py::test_enabled_sender_resolution_handles_mixed_payloads_and_exact_replay \
+            tests/test_wechat_clone_preparation.py::test_native_preparation_sets_only_tracking_and_preserves_existing_flags \
+            tests/test_wechat_clone_preparation.py::test_preparation_uses_a_readonly_nofollow_descriptor_and_closes_it \
+            tests/test_wechat_clone_preparation.py::test_path_swap_cannot_redirect_descriptor_flags_to_a_protected_source \
             tests/test_tunnel_runtime.py::test_posix_recovery_stops_a_real_orphan_and_spares_a_lookalike \
             tests/test_tunnel_checks.py::test_runner_loss_is_unknown_after_restart_and_orphan_can_be_stopped \
             --junitxml=test-results/macos-native.xml

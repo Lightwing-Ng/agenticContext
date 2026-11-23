@@ -1,6 +1,6 @@
 """Exercise the bounded large-bank refresh allowance and cancellation.
 
-Code version: v1.2.0-codex.0
+Code version: v1.2.1-codex.0
 """
 
 import stat
@@ -12,7 +12,7 @@ import pytest
 
 from app.core import wechat_mac_refresh_worker as worker
 from app.core import wechat_macos_recovery_bank as bank
-from app.core.wechat_mac_refresh_source import RefreshError
+from app.core.wechat_mac_refresh_source import RefreshIssue, RefreshNotice
 from app.core.wechat_mac_refresh_status import (
     ACCOUNT_TIMEOUT_MESSAGE, FAILED_MESSAGE, publication_failure_message,
 )
@@ -64,9 +64,11 @@ def test_refresh_budgets_preserve_cooperative_cancellation(
         assert worker.run_compatible_worker(tmp_path, scope, Event(), account=account) == SUCCESS
         assert b"cancel" not in process.stdin.retained
     else:
-        error = worker.AccountRefreshDeadlineExceeded if account else RefreshError
-        with pytest.raises(error, match="time limit" if account else "interrupted"):
+        error = worker.AccountRefreshDeadlineExceeded if account else RefreshNotice
+        with pytest.raises(error, match="time limit") as failure:
             worker.run_compatible_worker(tmp_path, scope, Event(), account=account)
+        if not account:
+            assert failure.value.issue is RefreshIssue.WORKER_TIMEOUT
         assert b"cancel" in process.stdin.retained
 
 

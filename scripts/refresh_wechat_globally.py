@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Repair all eligible archived WeChat conversations from configured verified keys.
 
-Code version: v1.6.0-codex.0
+Code version: v1.6.1-codex.0
 
 The default is a metadata-only inventory. --apply preserves a byte-exact compressed
 rollback, streams authenticated packets into one candidate, checks preservation,
@@ -22,7 +22,6 @@ from pathlib import Path
 import re
 import shutil
 import sqlite3
-import stat
 import sys
 import tempfile
 import time
@@ -31,12 +30,18 @@ import time
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from app.core import wechat_macos_recovery_bank as bank
+from app.core.owner_only_files import (
+    ensure_owner_only,
+    ensure_owner_only_directory,
+    owner_only_directory_problem,
+    owner_only_problem,
+)
 from app.core.wechat_archive import wechat_archive_path
 from app.core.wechat_global_guard import global_refresh_guard
 from scripts.archive_wechat_rollbacks import archive_file
 
 
-VERSION = "v1.6.0-codex.0"
+VERSION = "v1.6.1-codex.0"
 WORKSTATIONS = Path.home() / (
     "Library/CloudStorage/OneDrive-Personal/WeChat Text Archive/Workstations"
 )
@@ -85,6 +90,7 @@ def write_json(path, value):
     descriptor, pending = tempfile.mkstemp(prefix=".report-", dir=path.parent)
     try:
         with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+            ensure_owner_only(Path(pending))
             json.dump(value, stream, ensure_ascii=False, sort_keys=True, indent=2)
             stream.write("\n")
             stream.flush()
@@ -188,15 +194,10 @@ def _read_retry_report(report_path):
 
 def _private_evidence_path(path):
     """Reject shared or replaceable evidence before trusting its audit coordinates."""
-    for candidate, directory in ((path, False), (path.parent, True), (path.parent.parent, True)):
-        observed = candidate.lstat()
-        if (
-            not (stat.S_ISDIR(observed.st_mode) if directory else stat.S_ISREG(observed.st_mode))
-            or observed.st_mode & 0o077
-            or not directory and observed.st_nlink != 1
-            or hasattr(os, "getuid") and observed.st_uid != os.getuid()
-        ):
-            raise GlobalRepairError("retry_evidence_must_be_private_owned_regular_paths")
+    if owner_only_problem(path) or any(
+        owner_only_directory_problem(parent) for parent in (path.parent, path.parent.parent)
+    ):
+        raise GlobalRepairError("retry_evidence_must_be_private_owned_regular_paths")
 
 
 def _retry_origin(report_path):
@@ -563,11 +564,17 @@ def _run(
     workstation = workstation.expanduser().absolute()
     if workstation.is_symlink() or not workstation.resolve().is_relative_to(WORKSTATIONS.resolve()):
         raise GlobalRepairError("workstation_outside_canonical_root")
-    workstation.mkdir(mode=0o700, parents=False, exist_ok=True)
-    if not workstation.is_dir() or workstation.stat().st_mode & 0o077:
+    try:
+        workstation.mkdir(mode=0o700)
+    except FileExistsError:
+        pass
+    else:
+        ensure_owner_only_directory(workstation)
+    if owner_only_directory_problem(workstation):
         raise GlobalRepairError("workstation_must_be_owner_only")
     run_directory = workstation / ("run-" + datetime.now(UTC).strftime("%Y%m%dT%H%M%S%fZ"))
     run_directory.mkdir(mode=0o700)
+    ensure_owner_only_directory(run_directory)
     report_path = run_directory / "result.json"
     report = {
         "version": VERSION, "started_utc": utc_now(), "published": False,
@@ -689,7 +696,7 @@ def _run(
         exclusion_counts = Counter()
         exclusion_path = run_directory / "exclusions.jsonl"
         with exclusion_path.open("x", encoding="utf-8") as excluded:
-            os.chmod(exclusion_path, 0o600)
+            ensure_owner_only(exclusion_path)
 
             def on_excluded(record):
                 safe = {key: value for key, value in record.items() if key in EXCLUSION_FIELDS}

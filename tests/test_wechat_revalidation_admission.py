@@ -1,6 +1,6 @@
 """Bank revalidation admits exact proved contexts before streaming bounded rows.
 
-Code version: v1.0.1-codex.0
+Code version: v1.0.2-codex.0
 """
 
 from contextlib import closing
@@ -25,6 +25,7 @@ bank_archive = existing.bank_archive
 stale_bank = existing.stale_bank
 sealed_case = sealed.sealed_case
 archived_case = archived.archived_case
+clone_document_flags = sealed.clone_document_flags
 
 
 def _compare(connection, *, admission=None, **options):

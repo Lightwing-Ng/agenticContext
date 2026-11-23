@@ -1,6 +1,6 @@
 """Exercise capture selection and exact native app evidence.
 
-Code version: v1.0.0-codex.0
+Code version: v1.0.1-codex.0
 """
 
 from collections import Counter
@@ -14,6 +14,7 @@ import pytest
 
 from app.core import wechat_mac_refresh_projection as projection
 from app.core import wechat_secondary_completions as completions
+from app.core.owner_only_files import ensure_owner_only_directory, owner_only_problem
 from app.core.wechat_completion_json_codec import encode_json_cell
 from scripts import capture_wechat_resource_details as capture
 
@@ -115,6 +116,7 @@ def test_cli_resumes_after_last_attempt_and_keeps_the_lookahead(tmp_path, monkey
 
     workstation = (tmp_path / "private").resolve()
     workstation.mkdir(mode=0o700)
+    ensure_owner_only_directory(workstation)
     monkeypatch.setattr(capture, "WORKSTATIONS", workstation)
     monkeypatch.setattr(capture, "_inputs", lambda repository: {})
     monkeypatch.setattr(
@@ -131,6 +133,7 @@ def test_cli_resumes_after_last_attempt_and_keeps_the_lookahead(tmp_path, monkey
     ]
     first_output = workstation / "first.json"
     assert capture.main([*arguments, "--output", str(first_output)]) == 0
+    assert owner_only_problem(first_output) == ""
     report = json.loads(capsys.readouterr().out)
     assert report["next_after_message_id"] == second
     assert json.loads(first_output.read_text())["manifest"] == [

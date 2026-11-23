@@ -1,6 +1,6 @@
 """Check real resource receipt shapes used by coordinated native increments.
 
-Code version: v1.1.0-codex.0
+Code version: v1.1.1-codex.0
 """
 
 import json
@@ -13,9 +13,13 @@ from scripts.apply_wechat_backup_increment import resource_validation, guarded_t
 from scripts.inspect_wechat_backup_increment import reject_manifest_sidecars
 from scripts.inspect_wechat_backup_increment import require_previous_publication
 from app.core import wechat_native_restore
+from tests import test_wechat_native_restore as restore_fixtures
 from tests.test_wechat_native_restore import source, record, merge
 from tests.test_wechat_archive import make_archive
 from tests.test_wechat_resource_timeline import _reference, _session, _sidecar
+
+
+fixture_clone_backend = restore_fixtures.fixture_clone_backend
 
 
 @pytest.mark.parametrize("stale", [False, True])

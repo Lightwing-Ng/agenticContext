@@ -1,6 +1,6 @@
 """Fresh semantic bank revalidation preserves rows without historical-byte claims.
 
-Code version: v1.0.2-codex.0
+Code version: v1.0.3-codex.0
 """
 
 import json
@@ -18,6 +18,7 @@ from app.core import wechat_macos_recovery_bank as bank
 from app.core import wechat_macos_recovery_revalidation as revalidation
 from app.core import wechat_media_event_index as event_index
 from app.core.wechat_archive import _file_identity
+from app.core.wechat_archive_relocation import receipt_identity
 from app.core.wechat_media_event_index import MEDIA_EVENT_SCHEMA, VERSION
 from tests import test_wechat_macos_recovery_bank as fixtures
 from tests import test_wechat_macos_recovery_bank_upgrades as upgrades
@@ -298,10 +299,11 @@ def test_warm_media_cache_cannot_hide_a_changed_invalid_current_receipt(stale_ba
         tuple(_file_identity(fixture.media).items()),
         str(fixture.history.resolve()),
         tuple(_file_identity(fixture.history).items()),
+        str(receipt_identity(fixture.history)),
     )
     assert key in event_index._VALIDATED
     fixture.media.chmod(0o600)
-    with sqlite3.connect(fixture.media) as connection:
+    with closing(sqlite3.connect(fixture.media)) as connection, connection:
         connection.execute("UPDATE archive_info SET value='0' WHERE key='published'")
     os.utime(fixture.media, ns=(before.st_atime_ns, before.st_mtime_ns))
     after = fixture.media.stat()

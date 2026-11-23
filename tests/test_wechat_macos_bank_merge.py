@@ -1,8 +1,9 @@
 """Sealed-bank salvage preserves newer publications and exact source observations.
 
-Code version: v1.0.3-codex.0
+Code version: v1.0.4-codex.0
 """
 
+from contextlib import closing
 from copy import deepcopy
 import json
 import sqlite3
@@ -11,6 +12,7 @@ import pytest
 
 from app.core import wechat_macos_bank_merge as merge
 from app.core import wechat_macos_recovery_bank as bank
+from app.core.owner_only_files import owner_only_problem
 from app.core.wechat_text import native_components_text
 from scripts import refresh_wechat_globally as runner
 from tests import test_wechat_macos_recovery_bank as fixtures
@@ -264,12 +266,15 @@ def _insert_gap_and_reseal(path, session, *, reason="native_or_projection_confli
         )
 
 
-def test_missing_gap_metadata_is_unioned_and_resealed(bank_archive):
+@pytest.mark.parametrize("replay", [True, False])
+def test_missing_gap_metadata_is_unioned_and_resealed(bank_archive, monkeypatch, replay):
     fixture = bank_archive
     fixtures._publish(fixture, packets=[fixture.group], name="gap-union-base")
     incoming, _receipt = fixtures._stage(fixture, packets=[fixture.group], name="gap-union-input")
     _insert_gap_and_reseal(incoming, fixture.group_session)
     candidate = fixture.history.with_name("gap-union-result.sqlite3")
+    if not replay:
+        monkeypatch.setattr(merge, "_replay_packets", lambda *_args: (packet for packet in ()))
 
     with bank.mac_recovery_publication_guard(fixture.root) as guard:
         before = runner.bank_summary(fixture.bank_path)
@@ -280,8 +285,9 @@ def test_missing_gap_metadata_is_unioned_and_resealed(bank_archive):
         runner.verify_preservation(fixture.bank_path, candidate, before, receipt)
 
     assert receipt["merge"]["metadata_rows_added"]["gaps"] == 1
+    assert owner_only_problem(candidate) == ""
     assert _rows(candidate, "gaps") == _rows(incoming, "gaps")
-    with sqlite3.connect(candidate) as connection:
+    with closing(sqlite3.connect(candidate)) as connection:
         bank._validate_bank(connection, fixture.history)
 
 

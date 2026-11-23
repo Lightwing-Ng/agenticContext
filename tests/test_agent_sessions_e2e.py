@@ -1,4 +1,4 @@
-"""Session switching, capacity, and selected controls. Code version: v1.37.7-codex.0."""
+"""Session switching, capacity, and selected controls. Code version: v1.37.8-codex.0."""
 
 import json
 import re
@@ -2120,7 +2120,7 @@ def _native_tunnel_guide_motion(page, guide):
         # All protocol work, including cleanup, shares the existing action ceiling.
         seconds = remaining()
         return page.context._sync(
-            asyncio.wait_for(channel.send(method, params), timeout=seconds)
+            asyncio.wait_for(channel.send(method, params, timeout=None), timeout=seconds)
         )
 
     def call(function, await_promise=False):
@@ -2193,6 +2193,9 @@ def _native_tunnel_guide_motion(page, guide):
         armed = call("""function() {
             const slot = this;
             if (slot.__testTunnelGuideMotion) throw new Error('Duplicate native motion capture');
+            const spring = document.createElement('span').style;
+            spring.transitionTimingFunction = getComputedStyle(slot.getRootNode().host)
+                .getPropertyValue('--motion-spring-080');
             const state = {animations: [], listenerAttached: true};
             state.ready = new Promise((resolve, reject) => {
                 state.listener = event => {
@@ -2210,14 +2213,15 @@ def _native_tunnel_guide_motion(page, guide):
                         for (const animation of group) {
                             const timing = animation.effect.getTiming();
                             const duration = animation.transitionProperty === 'opacity' ? 240 : 420;
-                            const easing = animation.transitionProperty === 'height'
-                                ? 'cubic-bezier(0.16, 1, 0.3, 1)'
-                                : animation.transitionProperty === 'opacity'
-                                    ? 'cubic-bezier(0.2, 0, 0, 1)' : 'ease';
+                            const easing = animation.transitionProperty === 'content-visibility'
+                                ? 'ease' : spring.transitionTimingFunction;
                             if (timing.duration !== duration || timing.delay !== 0
                                 || timing.endDelay !== 0 || timing.iterations !== 1
                                 || timing.easing !== easing || animation.playbackRate !== 1) {
-                                throw new Error('Native transition timing changed');
+                                throw new Error(
+                                    `Native ${animation.transitionProperty} transition timing changed: `
+                                        + JSON.stringify(timing)
+                                );
                             }
                         }
                         state.animations = group;
@@ -2407,12 +2411,18 @@ def test_tunnel_guides_use_native_disclosure_and_vector_cards(
             """details => {
                 const detailsStyle = getComputedStyle(details);
                 const contentStyle = getComputedStyle(details, '::details-content');
+                const spring = document.createElement('span').style;
+                spring.transitionTimingFunction = detailsStyle
+                    .getPropertyValue('--motion-spring-080');
                 return {
                     interpolateSize: detailsStyle.interpolateSize,
                     transitionProperties: contentStyle.transitionProperty.split(',').map(
                         value => value.trim()
                     ),
-                    transitionTimingFunctions: contentStyle.transitionTimingFunction,
+                    usesSharedSpring: !!spring.transitionTimingFunction
+                        && contentStyle.transitionTimingFunction.startsWith(
+                            spring.transitionTimingFunction + ','
+                        ),
                 };
             }"""
         )
@@ -2422,9 +2432,7 @@ def test_tunnel_guides_use_native_disclosure_and_vector_cards(
             "content-visibility",
             "opacity",
         ]
-        assert "cubic-bezier(0.16, 1, 0.3, 1)" in motion_contract[
-            "transitionTimingFunctions"
-        ]
+        assert motion_contract["usesSharedSpring"]
 
         closed_height = guides.nth(0).evaluate(
             "details => details.getBoundingClientRect().height"
@@ -5569,6 +5577,7 @@ def test_agent_sidebar_trailing_controls_share_the_toggle_centerline(
     context = disposable_browser.new_context(
         viewport={"width": width, "height": 1_164},
         color_scheme=color_scheme,
+        reduced_motion="reduce",
     )
     page = context.new_page()
     base = fixtures._finished_chatgpt_agent_payload()
@@ -6721,7 +6730,7 @@ def _bounded_draft_sidebar_evaluate(page, expression):
     import asyncio
 
     return page._sync(
-        asyncio.wait_for(page._impl_obj.evaluate(expression), timeout=0.75)
+        asyncio.wait_for(page._impl_obj.evaluate(expression, arg=None), timeout=0.75)
     )
 
 

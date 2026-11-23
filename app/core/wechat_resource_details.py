@@ -1,6 +1,6 @@
 """Apply bounded, authenticated resource details without rewriting source catalogs.
 
-Code version: v1.3.0-codex.0
+Code version: v1.3.1-codex.0
 """
 
 from copy import deepcopy
@@ -14,6 +14,7 @@ import sqlite3
 import stat
 
 from . import wechat_macos_recovery_bank as bank
+from .owner_only_files import owner_only_problem
 from .wechat_resource_sender_evidence import (
     _HEADER_FIELDS,
     _json,
@@ -24,7 +25,7 @@ from .wechat_resource_sender_evidence import (
 )
 
 
-CODE_VERSION = "v1.3.0-codex.0"
+CODE_VERSION = "v1.3.1-codex.0"
 VERSION = "v1.0.0-codex.0"
 FILENAME = "resource_details.json"
 MESSAGE_TABLE = "resource_detail_timeline_messages"
@@ -330,8 +331,8 @@ def registry_identity(history_path):
     except FileNotFoundError:
         return None
     if (
-        not stat.S_ISREG(state.st_mode) or path.is_symlink()
-        or state.st_size > MAX_BYTES or state.st_mode & 0o077
+        not stat.S_ISREG(state.st_mode) or state.st_size > MAX_BYTES
+        or owner_only_problem(path)
         or getattr(state, "st_flags", 0) & 0x40000000
         or path.parent.is_symlink()
     ):

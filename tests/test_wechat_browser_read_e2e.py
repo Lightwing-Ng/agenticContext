@@ -1,6 +1,6 @@
 """Pending saved views retain honest content and bounded document navigation.
 
-Code version: v1.4.1-codex.0
+Code version: v1.4.2-codex.0
 """
 
 from __future__ import annotations
@@ -197,8 +197,17 @@ def _open_pending(browser, fixture, *, width=1280, detail=False, scenario=None):
     assert page.evaluate("window.__wechatReadProbe.attempts") == 1
     # The status route can answer before the independent loader starts.
     assert fixture.controlled.phase.entered.wait(1), "The synthetic saved-view loader did not start."
+
+    def close():
+        try:
+            while scenario.held:
+                scenario.held.pop().abort()
+            page.unroute_all(behavior="wait")
+        finally:
+            context.close()
+
     return SimpleNamespace(
-        context=context, page=page, scenario=scenario,
+        close=close, page=page, scenario=scenario,
         documents=documents, errors=errors, original_url=page.url,
     )
 
@@ -267,11 +276,11 @@ def test_selected_account_refresh_keeps_search_right_after_saved_view_fails(
         }""")
         assert geometry["rightOffset"] == pytest.approx(0, abs=1)
         assert geometry["gap"] == pytest.approx(geometry["gapToken"], abs=1)
-        assert "/tray.and.arrow.down.fill.svg" in geometry["mask"]
+        assert "/square.and.arrow.down.on.square.svg" in geometry["mask"]
         assert geometry["overflow"] <= 1
         assert opened.errors == []
     finally:
-        opened.context.close()
+        opened.close()
 
 
 def test_account_refresh_from_pending_view_posts_only_account_and_keeps_the_url(
@@ -299,7 +308,7 @@ def test_account_refresh_from_pending_view_posts_only_account_and_keeps_the_url(
         expect(banner.locator("[data-wechat-refresh-copy]")).to_contain_text("Added 1,234 messages.")
         assert opened.errors == []
     finally:
-        opened.context.close()
+        opened.close()
 
 
 def test_account_refresh_timeout_stays_visible_when_retrying_the_saved_view(
@@ -341,7 +350,7 @@ def test_account_refresh_timeout_stays_visible_when_retrying_the_saved_view(
         expect(banner).to_be_hidden()
         assert opened.errors == []
     finally:
-        opened.context.close()
+        opened.close()
 
 
 @pytest.mark.parametrize("width", [1280, 836, 390])
@@ -398,7 +407,7 @@ def test_pending_view_shows_no_messages_false_zero_totals_or_exports(
         assert opened.documents == [opened.original_url]
         assert opened.errors == []
     finally:
-        opened.context.close()
+        opened.close()
 
 
 def test_pending_read_leaves_search_focus_and_polls_without_a_dialog(
@@ -419,7 +428,7 @@ def test_pending_read_leaves_search_focus_and_polls_without_a_dialog(
         assert opened.documents == [opened.original_url]
         assert opened.errors == []
     finally:
-        opened.context.close()
+        opened.close()
 
 
 def test_ready_reloads_the_exact_url_once_even_if_the_same_task_remains_pending(
@@ -440,7 +449,7 @@ def test_ready_reloads_the_exact_url_once_even_if_the_same_task_remains_pending(
         assert page.evaluate("history.state.unrelated") == {"value": "preserved"}
         assert opened.errors == []
     finally:
-        opened.context.close()
+        opened.close()
 
 
 def test_restored_pending_page_resumes_the_inline_skeleton(
@@ -477,9 +486,7 @@ def test_restored_pending_page_resumes_the_inline_skeleton(
         assert page.url == opened.original_url
         assert opened.errors == []
     finally:
-        for route in opened.scenario.held:
-            route.abort()
-        opened.context.close()
+        opened.close()
 
 
 def _assert_conversation_search_axis(page):
@@ -550,7 +557,7 @@ def test_successful_read_reloads_into_the_same_layout_with_validated_records(
         assert page.url == opened.original_url
         assert opened.errors == []
     finally:
-        opened.context.close()
+        opened.close()
 
 
 @pytest.mark.parametrize("read_server", [101], indirect=True)
@@ -574,7 +581,7 @@ def test_manual_reload_of_ready_conversation_keeps_messages_without_loading_agai
         assert not blocked.entered.is_set()
         assert opened.documents == [opened.original_url] * 4
     finally:
-        opened.context.close()
+        opened.close()
 
 
 @pytest.mark.parametrize("read_server", [101], indirect=True)
@@ -618,7 +625,7 @@ def test_pending_pagination_matches_ready_page_button_geometry(
         )
         assert opened.errors == []
     finally:
-        opened.context.close()
+        opened.close()
 
 
 @pytest.mark.parametrize("detail", [False, True])
@@ -666,7 +673,7 @@ def test_failed_read_requires_manual_retry_and_then_starts_a_fresh_task(
         assert opened.documents == [opened.original_url, opened.original_url]
         assert opened.errors == []
     finally:
-        opened.context.close()
+        opened.close()
 
 
 def test_ready_read_yields_to_committed_conversation_back_navigation(
@@ -694,9 +701,7 @@ def test_ready_read_yields_to_committed_conversation_back_navigation(
         assert page.url == destination
         assert opened.errors == []
     finally:
-        for route in opened.scenario.held:
-            route.abort()
-        opened.context.close()
+        opened.close()
 
 
 def test_ready_response_for_an_old_url_cannot_reload_the_new_url(
@@ -718,9 +723,7 @@ def test_ready_response_for_an_old_url_cannot_reload_the_new_url(
         assert opened.documents == [opened.original_url]
         assert opened.errors == []
     finally:
-        for route in opened.scenario.held:
-            route.abort()
-        opened.context.close()
+        opened.close()
 
 
 @pytest.mark.parametrize("mismatch", ["task", "generation"])
@@ -739,7 +742,7 @@ def test_mismatched_status_coordinates_cannot_trigger_a_ready_reload(
         assert opened.documents == [opened.original_url]
         assert opened.errors == []
     finally:
-        opened.context.close()
+        opened.close()
 
 
 def test_status_transport_failure_budget_stops_polling_without_a_reload(
@@ -760,4 +763,4 @@ def test_status_transport_failure_budget_stops_polling_without_a_reload(
         assert opened.documents == [opened.original_url]
         assert opened.errors == []
     finally:
-        opened.context.close()
+        opened.close()

@@ -1,6 +1,6 @@
 """A retirement bridge preserves every surviving accepted contact reference.
 
-Code version: v1.0.1-codex.0
+Code version: v1.0.2-codex.0
 """
 
 from __future__ import annotations
@@ -8,12 +8,15 @@ from __future__ import annotations
 from contextlib import closing
 import hashlib
 import json
+import shutil
 import sqlite3
+import sys
 from types import SimpleNamespace
 
 import pytest
 
 from app.core import wechat_contact_analysis as analysis
+from app.core import wechat_export_merge
 from app.core.wechat_derived_cache_refresh import refresh_retired_contact_cache, refresh_retired_native_candidates
 from app.core.wechat_derived_redundancy import file_identity, plan_derived_redundancy
 from tests import test_wechat_derived_redundancy as fixtures
@@ -21,6 +24,12 @@ from tests import test_wechat_derived_redundancy as fixtures
 
 AUTHORS, CONTACTS = fixtures.AUTHORS, fixtures.CONTACTS
 redundancy_store = fixtures.redundancy_store
+
+
+@pytest.fixture(autouse=True)
+def fixture_clone_backend(monkeypatch):
+    if sys.platform != "darwin":
+        monkeypatch.setattr(wechat_export_merge, "_clonefile", shutil.copyfile)
 
 
 def _json(value):

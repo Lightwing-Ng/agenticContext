@@ -1,10 +1,11 @@
 """Proved export retirement is staged, bounded, reversible, and idempotent.
 
-Code version: v1.1.3-codex.0
+Code version: v1.1.4-codex.0
 """
 
 from __future__ import annotations
 
+from contextlib import closing
 import gzip
 import json
 import os
@@ -23,7 +24,7 @@ from tests.test_wechat_derived_redundancy import redundancy_store as redundancy_
 @pytest.fixture
 def prepared(redundancy_store, monkeypatch):
     fixture = redundancy_store
-    with sqlite3.connect(fixture.history) as connection:
+    with closing(sqlite3.connect(fixture.history)) as connection, connection:
         manifest = {"schema_version": 1, "messages": 9, "unique_original_message_count": None,
                     "sources": [{"source_id": source, "messages": 3, "conversations": 1,
                                  "account_id": None if source == fixture.sources[2] else source}
@@ -40,7 +41,7 @@ def prepared(redundancy_store, monkeypatch):
 
 
 def _rows(path):
-    with sqlite3.connect(path) as connection:
+    with closing(sqlite3.connect(path)) as connection, connection:
         connection.row_factory = sqlite3.Row
         return {row["id"]: dict(row) for row in connection.execute("SELECT * FROM messages")}
 
@@ -65,7 +66,7 @@ def test_exact_export_replay_does_not_reinsert_retired_observations(prepared, tm
         "source_id": fixture.sources[2], "source_label": "Excel export",
         "source_file": "synthetic.xlsx", "source_sha256": "a" * 64,
     })
-    with sqlite3.connect(fixture.history) as connection:
+    with closing(sqlite3.connect(fixture.history)) as connection, connection:
         connection.execute(
             "CREATE TABLE export_imports(source_id TEXT PRIMARY KEY,snapshot_id TEXT,"
             "source_sha256 TEXT,metadata TEXT,record_count INTEGER,conversation_count INTEGER,"
@@ -101,7 +102,7 @@ def test_staged_aliases_keep_native_rows_and_complete_small_rollback(prepared, t
     if shared:
         from app.core.wechat_shared_storage import _install
 
-        with sqlite3.connect(fixture.history) as connection:
+        with closing(sqlite3.connect(fixture.history)) as connection, connection:
             _install(connection)
     original = _rows(fixture.history)
     before = fixture.history.read_bytes(), fixture.registry.read_bytes()
@@ -111,7 +112,7 @@ def test_staged_aliases_keep_native_rows_and_complete_small_rollback(prepared, t
     assert not report["published"] and report["filesystem_bytes_reclaimed"] == 0
     assert report["evidence_rows_moved"] == 3
     assert _rows(candidate) == {key: row for key, row in original.items() if key not in fixture.derived_ids}
-    with sqlite3.connect(candidate) as connection:
+    with closing(sqlite3.connect(candidate)) as connection, connection:
         aliases = connection.execute("SELECT old_id,native_id,metadata,proof FROM derived_message_aliases").fetchall()
         assert {row[0] for row in aliases} == set(fixture.derived_ids)
         for _, native_id, metadata, proof in aliases:
@@ -157,7 +158,7 @@ def test_stale_or_unproved_plan_never_stages_or_mutates(prepared, tmp_path, fail
     elif failure == "wrong-author":
         plan["matches"][0]["evidence"]["contact_id"] = "wechat:contact:" + "f" * 64
     else:
-        with sqlite3.connect(fixture.history) as connection:
+        with closing(sqlite3.connect(fixture.history)) as connection, connection:
             connection.execute("UPDATE partitions SET source_label='iPad archive' WHERE id=?", (fixture.sources[2],))
         plan["history_identity"] = retirement.file_identity(fixture.history)
     before = fixture.history.read_bytes()
@@ -178,7 +179,7 @@ def test_free_space_budget_refuses_before_creating_any_candidate(prepared, tmp_p
 
 def test_unmatched_export_and_negative_native_server_ids_are_preserved(prepared, tmp_path):
     fixture = prepared
-    with sqlite3.connect(fixture.history) as connection:
+    with closing(sqlite3.connect(fixture.history)) as connection, connection:
         connection.row_factory = sqlite3.Row
         row = dict(connection.execute("SELECT * FROM messages WHERE id=?", (fixture.derived_ids[0],)).fetchone())
         row.update(id="a" * 64, ordinal=4, text="Unique information survives", search_text="unique")
@@ -194,7 +195,7 @@ def test_unmatched_export_and_negative_native_server_ids_are_preserved(prepared,
             connection.execute("UPDATE messages SET provenance=? WHERE id=?", (json.dumps(proof), identifier))
     original = _rows(fixture.history)
     result = retirement.stage_retirement(fixture.store, plan_derived_redundancy(fixture.store), backup_directory=tmp_path / "retained", apply=True)
-    with sqlite3.connect(result["candidate_path"]) as connection:
+    with closing(sqlite3.connect(result["candidate_path"])) as connection, connection:
         assert connection.execute("SELECT message_count,latest_text FROM conversations WHERE partition_id=?", (fixture.sources[2],)).fetchone() == (1, "Unique information survives")
     assert _rows(result["candidate_path"]) == {key: value for key, value in original.items() if key not in fixture.derived_ids}
 
@@ -213,9 +214,23 @@ def test_sql_guards_reject_any_native_or_unmatched_update(prepared, tmp_path, mo
     assert not list(fixture.history.parent.glob(".wechat-derived-retire-*.sqlite3"))
 
 
-def test_multiple_bounded_batches_keep_guards_and_report_actual_space(prepared, tmp_path, monkeypatch):
+@pytest.mark.parametrize("hide_allocation", [False, True])
+def test_multiple_bounded_batches_keep_guards_and_report_actual_space(
+    prepared, tmp_path, monkeypatch, hide_allocation,
+):
     fixture = prepared
     monkeypatch.setattr(retirement, "WRITE_BATCH_SIZE", 2)
+    native_stat = Path.stat
+
+    def stat_without_allocation(path, *args, **kwargs):
+        state = native_stat(path, *args, **kwargs)
+        if not path.name.startswith(".wechat-derived-retire-"):
+            return state
+        metadata = (name for name in dir(state) if name.startswith("st_") and name != "st_blocks")
+        return SimpleNamespace(**{name: getattr(state, name) for name in metadata})
+
+    if hide_allocation:
+        monkeypatch.setattr(Path, "stat", stat_without_allocation)
     before = fixture.history.read_bytes()
     result = retirement.stage_retirement(fixture.store, plan_derived_redundancy(fixture.store), backup_directory=tmp_path / "batches", apply=True)
     report = result["report"]
@@ -224,6 +239,13 @@ def test_multiple_bounded_batches_keep_guards_and_report_actual_space(prepared, 
     assert report["required_free_bytes"] == 1024**3 + report["peak_write_batch_bytes"] + report["metadata_write_reserve_bytes"]
     assert [row["phase"] for row in report["free_space_observations"]].count("message-batch-committed") == 2
     assert report["observed_free_bytes_minimum"] <= report["observed_free_bytes_before"]
+    blocks = getattr(Path(result["candidate_path"]).stat(), "st_blocks", None)
+    if blocks is None:
+        assert report["candidate_allocated_bytes"] is None
+        assert report["candidate_allocated_bytes_delta"] is None
+    else:
+        assert report["candidate_allocated_bytes"] == blocks * 512
+        assert type(report["candidate_allocated_bytes_delta"]) is int
     assert _rows(result["candidate_path"]).keys() == set(fixture.native_ids)
     assert before == fixture.history.read_bytes()
 
@@ -235,7 +257,7 @@ def test_space_drop_after_a_committed_batch_discards_entire_owned_candidate(prep
 
     def capacity(path):
         for candidate in fixture.history.parent.glob(".wechat-derived-retire-*.sqlite3"):
-            with sqlite3.connect(candidate) as connection:
+            with closing(sqlite3.connect(candidate)) as connection, connection:
                 count = connection.execute("SELECT COUNT(*) FROM messages").fetchone()[0]
             if count == 7:
                 observed.append(count)
@@ -256,7 +278,7 @@ def test_space_drop_after_a_committed_batch_discards_entire_owned_candidate(prep
 def test_empty_optional_metadata_does_not_invent_rich_content(prepared, tmp_path, empty):
     fixture = prepared
     plan = plan_derived_redundancy(fixture.store)
-    with sqlite3.connect(fixture.history) as connection:
+    with closing(sqlite3.connect(fixture.history)) as connection, connection:
         for identifier in [*fixture.native_ids, *fixture.derived_ids]:
             encoded = connection.execute("SELECT provenance FROM messages WHERE id=?", (identifier,)).fetchone()[0]
             proof = json.loads(encoded)
@@ -288,7 +310,7 @@ def test_nonempty_rich_metadata_refuses_even_a_rehashed_plan(prepared, tmp_path,
     fixture = prepared
     plan = plan_derived_redundancy(fixture.store)
     match = plan["matches"][0]
-    with sqlite3.connect(fixture.history) as connection:
+    with closing(sqlite3.connect(fixture.history)) as connection, connection:
         connection.row_factory = sqlite3.Row
         row = dict(connection.execute("SELECT * FROM messages WHERE id=?", (match["derived_id"],)).fetchone())
         proof = json.loads(row["provenance"])

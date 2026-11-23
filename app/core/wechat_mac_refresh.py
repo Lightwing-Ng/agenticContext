@@ -1,6 +1,6 @@
 """Run explicit, bounded Mac WeChat refreshes in background workers.
 
-Code version: v1.7.0-codex.0
+Code version: v1.7.1-codex.0
 """
 
 from __future__ import annotations
@@ -22,6 +22,7 @@ import time
 from threading import Event, RLock, Thread
 
 from . import wechat_macos_recovery_bank as bank
+from .owner_only_files import ensure_owner_only_directory, owner_only_directory_problem
 from .wechat_archive import (
     WechatArchiveRepository,
     WechatTimelineProjectionError,
@@ -74,10 +75,13 @@ def _refresh_staging_parent(archive_directory):
     staging = configured.resolve(strict=True)
     archive = archive_directory.resolve(strict=True)
     info = staging.stat()
+    if os.name == "nt":
+        private = not owner_only_directory_problem(staging)
+    else:
+        private = info.st_uid == os.getuid() and not stat.S_IMODE(info.st_mode) & 0o077
     if (
         not stat.S_ISDIR(info.st_mode)
-        or info.st_uid != os.getuid()
-        or stat.S_IMODE(info.st_mode) & 0o077
+        or not private
         or getattr(info, "st_flags", 0) & 0x40000000
         or info.st_dev != archive.stat().st_dev
         or staging.is_relative_to(archive)
@@ -266,10 +270,11 @@ class WechatMacRefreshService:
         with tempfile.TemporaryDirectory(
             prefix=".mac-refresh-", dir=staging_parent
         ) as directory:
-            os.chmod(directory, 0o700)
+            ensure_owner_only_directory(Path(directory))
             # A ctime-only recheck requires two private owned parent directories.
             staged = Path(directory) / "staged"
             staged.mkdir(mode=0o700)
+            ensure_owner_only_directory(staged)
             candidate = staged / "candidate.sqlite3"
             receipt = bank.stage_mac_recovery_bank(
                 self.root,

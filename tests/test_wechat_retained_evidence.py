@@ -1,6 +1,6 @@
 """Retired export references remain secondary during native restoration.
 
-Code version: v1.0.3-codex.0
+Code version: v1.0.4-codex.0
 """
 
 from datetime import datetime
@@ -14,6 +14,7 @@ from types import SimpleNamespace
 import pytest
 
 from app.core import wechat_native_restore as restore
+from app.core import wechat_export_merge
 from app.core.wechat_archive import _identifier, wechat_archive_path
 from app.core.wechat_derived_retirement import (
     _ALIAS_SCHEMA,
@@ -30,6 +31,7 @@ from tests.test_wechat_native_restore import merge, record, run, source
 def fixture_clone_backend(monkeypatch):
     if sys.platform != "darwin":
         monkeypatch.setattr(restore, "_clonefile", shutil.copyfile)
+        monkeypatch.setattr(wechat_export_merge, "_clonefile", shutil.copyfile)
 
 
 def retired_export(store, *, verified_export=True):

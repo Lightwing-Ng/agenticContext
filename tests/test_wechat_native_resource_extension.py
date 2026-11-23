@@ -3,6 +3,7 @@
 Code version: v1.2.0-codex.0
 """
 
+from contextlib import closing
 from contextlib import contextmanager
 from datetime import UTC, datetime
 import hashlib
@@ -78,7 +79,7 @@ def archive(tmp_path, monkeypatch):
     store = tmp_path / "store"
     history = store / "messaging/wechat/history.sqlite3"
     history.parent.mkdir(parents=True)
-    with sqlite3.connect(history) as primary:
+    with closing(sqlite3.connect(history)) as primary, primary:
         primary.executescript(HISTORY_SCHEMA)
         primary.execute(
             "CREATE TABLE source_snapshots(id INTEGER PRIMARY KEY,snapshot_id TEXT,"
@@ -95,7 +96,7 @@ def _source(
     relative = f"Documents/{_hash(owner)}/DB/message_1.sqlite"
     database = archive.root / f"snapshot-{sid}" / "inputs" / relative
     database.parent.mkdir(parents=True)
-    with sqlite3.connect(database) as source:
+    with closing(sqlite3.connect(database)) as source, source:
         for peer, rows in tables.items():
             table = "Chat_" + _hash(peer)
             source.execute(
@@ -132,7 +133,7 @@ def _source(
             backup_id=backup,
             input_databases=[dict(relative_path=relative, sha256=digest)],
         )
-    with sqlite3.connect(archive.history) as primary:
+    with closing(sqlite3.connect(archive.history)) as primary, primary:
         if not primary.execute(
             "SELECT 1 FROM partitions WHERE id=?", (native,)
         ).fetchone():
@@ -217,7 +218,7 @@ def _source(
 
 def _base(archive):
     base = archive.root / "base.sqlite3"
-    with sqlite3.connect(base) as catalog, sqlite3.connect(archive.history) as primary:
+    with closing(sqlite3.connect(base)) as catalog, catalog, closing(sqlite3.connect(archive.history)) as primary, primary:
         catalog.executescript(RESOURCE_SCHEMA)
         catalog.executemany(
             "INSERT INTO archive_info VALUES(?,?)",
@@ -254,7 +255,7 @@ def test_streams_more_than_100000_primary_rows_without_reading_message(
 ):
     source = _source(archive, 1, {PEER: [_row(1, 101, 1), _row(2, 202, 47)]})
     cid = "wechat:" + _identifier(source.native, PEER)
-    with sqlite3.connect(archive.history) as primary:
+    with closing(sqlite3.connect(archive.history)) as primary, primary:
         primary.executemany(
             "INSERT INTO messages VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (_message(f"filler-{index}", cid, {}) for index in range(100_001)),
@@ -283,7 +284,7 @@ def test_streams_more_than_100000_primary_rows_without_reading_message(
     assert report["added"] == 1
     assert report["message_payload_columns_read"] == 0
     assert "MesLocalID" in columns and "Message" not in columns
-    with sqlite3.connect(candidate) as result:
+    with closing(sqlite3.connect(candidate)) as result, result:
         assert result.execute(
             "SELECT resource_rows,native_rows FROM native_resource_coverage"
         ).fetchone() == (1, 2)
@@ -296,7 +297,7 @@ def test_alternate_snapshots_keep_all_occurrences_and_repeat_idempotently(archiv
     before = {path: path.read_bytes() for path in (archive.history, base)}
     candidate, report = _stage(archive, base)
     assert report["added"] == 1
-    with sqlite3.connect(candidate) as result:
+    with closing(sqlite3.connect(candidate)) as result, result:
         assert result.execute("SELECT COUNT(*) FROM messages").fetchone()[0] == 1
         assert (
             result.execute("SELECT COUNT(*) FROM native_resource_sources").fetchone()[0]
@@ -318,7 +319,7 @@ def test_alternate_snapshots_keep_all_occurrences_and_repeat_idempotently(archiv
     again, second = _stage(archive, candidate, name="second.sqlite3")
     assert second["added"] == 0
     assert second["repeated_occurrences"] == 2
-    with sqlite3.connect(again) as result:
+    with closing(sqlite3.connect(again)) as result, result:
         assert result.execute("SELECT * FROM messages").fetchall() == original_rows
         assert (
             result.execute(
@@ -345,7 +346,7 @@ def test_negative_zero_and_missing_server_ids_require_exact_source_rows(archive)
     )
     candidate, report = _stage(archive)
     assert report["added"] == 4
-    with sqlite3.connect(candidate) as result:
+    with closing(sqlite3.connect(candidate)) as result, result:
         proofs = [
             json.loads(row[0])
             for row in result.execute("SELECT provenance FROM messages")
@@ -355,7 +356,7 @@ def test_negative_zero_and_missing_server_ids_require_exact_source_rows(archive)
         assert raw == {"-123", "0", None}
     again, second = _stage(archive, candidate, name="repeat.sqlite3")
     assert second["added"] == 0
-    with sqlite3.connect(again) as result:
+    with closing(sqlite3.connect(again)) as result, result:
         assert result.execute("SELECT COUNT(*) FROM messages").fetchone()[0] == 4
 
 
@@ -364,7 +365,7 @@ def test_same_display_name_and_server_id_do_not_merge_accounts(archive):
         _source(archive, sid, {PEER: [_row(1, 101, 1), _row(2, 202, 3)]}, owner=owner)
     candidate, report = _stage(archive)
     assert report["added"] == 2
-    with sqlite3.connect(candidate) as result:
+    with closing(sqlite3.connect(candidate)) as result, result:
         assert (
             result.execute(
                 "SELECT COUNT(DISTINCT account_key) FROM conversations"
@@ -396,7 +397,7 @@ def test_resource_only_zero_and_unresolved_peer_tables_have_coverage(archive):
     assert report["tables_checked"] == 4
     assert report["unknown_peer_tables"] == 1
     assert report["added"] == 2
-    with sqlite3.connect(candidate) as result:
+    with closing(sqlite3.connect(candidate)) as result, result:
         coverage = result.execute(
             "SELECT peer_id,status,native_rows,resource_rows FROM native_resource_coverage"
         ).fetchall()
@@ -410,7 +411,7 @@ def test_resource_only_zero_and_unresolved_peer_tables_have_coverage(archive):
 
 def test_conflicting_exact_native_locator_rejects_and_removes_candidate(archive):
     source = _source(archive, 1, {PEER: [_row(1, 101, 1), _row(2, 202, 47)]})
-    with sqlite3.connect(archive.history) as primary:
+    with closing(sqlite3.connect(archive.history)) as primary, primary:
         proof = json.loads(
             primary.execute("SELECT provenance FROM messages LIMIT 1").fetchone()[0]
         )
@@ -470,7 +471,7 @@ def test_preservation_receipt_can_cover_shard_without_primary_anchor(archive):
     )
     candidate, report = _stage(archive)
     assert report["added"] == 1
-    with sqlite3.connect(candidate) as result:
+    with closing(sqlite3.connect(candidate)) as result, result:
         assert result.execute(
             "SELECT receipt_basis FROM native_resource_sources"
         ).fetchone() == ("preservation_manifest",)
@@ -482,7 +483,7 @@ def test_unreceipted_and_changed_databases_are_not_imported(archive):
     with pytest.raises(ValueError, match="no independent"):
         _stage(archive, base)
     assert not (archive.root / "candidate.sqlite3").exists()
-    with sqlite3.connect(archive.history) as primary:
+    with closing(sqlite3.connect(archive.history)) as primary, primary:
         metadata = source.metadata | dict(
             backup_id=source.backup,
             input_databases=[dict(relative_path=source.relative, sha256="0" * 64)],
@@ -501,7 +502,7 @@ def test_contact_and_location_metadata_retain_generic_placeholders(archive, typ)
     _source(archive, 1, {PEER: [_row(1, 101, 1), _row(2, 202, typ)]})
     candidate, report = _stage(archive)
     assert report["added"] == 1
-    with sqlite3.connect(candidate) as result:
+    with closing(sqlite3.connect(candidate)) as result, result:
         text, raw = result.execute("SELECT text,provenance FROM messages").fetchone()
         assert text == "[Other message]"
         assert json.loads(raw)["message_type"] == typ
@@ -520,14 +521,14 @@ def test_legacy_member_prefix_is_verified_against_original_account_hash(archive)
             )
         ],
     )
-    with sqlite3.connect(archive.history) as primary:
+    with closing(sqlite3.connect(archive.history)) as primary, primary:
         primary.execute(
             "UPDATE source_snapshots SET metadata=?", (json.dumps(metadata),)
         )
     source.spec["peer_ids"] = [PEER]
     candidate, report = _stage(archive)
     assert report["added"] == 1
-    with sqlite3.connect(candidate) as result:
+    with closing(sqlite3.connect(candidate)) as result, result:
         proof = json.loads(
             result.execute("SELECT proof FROM native_resource_sources").fetchone()[0]
         )
@@ -578,7 +579,7 @@ def test_declared_multisha_versions_preserve_backup_folders_and_clock_difference
         source_inventory_sha256="b" * 64,
     )
     metadata.pop("snapshot_id")
-    with sqlite3.connect(archive.history) as primary:
+    with closing(sqlite3.connect(archive.history)) as primary, primary:
         primary.execute(
             "UPDATE source_snapshots SET metadata=? WHERE id=1", (json.dumps(metadata),)
         )
@@ -594,7 +595,7 @@ def test_declared_multisha_versions_preserve_backup_folders_and_clock_difference
     second.spec["source_snapshot_id"] = 1
     candidate, report = _stage(archive)
     assert report["added"] == 2
-    with sqlite3.connect(candidate) as result:
+    with closing(sqlite3.connect(candidate)) as result, result:
         assert (
             result.execute("SELECT COUNT(*) FROM native_resource_sources").fetchone()[0]
             == 2
@@ -626,7 +627,7 @@ def test_declared_multisha_versions_preserve_backup_folders_and_clock_difference
 def test_undeclared_same_snapshot_database_versions_reject(archive):
     _source(archive, 1, {PEER: [_row(1, 101, 1), _row(2, 202, 3)]})
     second = _source(archive, 2, {PEER: [_row(10, 110, 1), _row(20, 220, 3)]})
-    with sqlite3.connect(archive.history) as primary:
+    with closing(sqlite3.connect(archive.history)) as primary, primary:
         primary.execute("DELETE FROM source_snapshots WHERE id=2")
         raw = primary.execute(
             "SELECT provenance FROM messages WHERE id=?", ("anchor-2-" + PEER,)
@@ -650,14 +651,14 @@ def test_same_original_backup_in_two_snapshot_rows_keeps_one_unidentified_event(
     second = _source(archive, 2, rows)
     assert first.digest == second.digest
     metadata = second.metadata | dict(snapshot_id=first.backup)
-    with sqlite3.connect(archive.history) as primary:
+    with closing(sqlite3.connect(archive.history)) as primary, primary:
         primary.execute(
             "UPDATE source_snapshots SET snapshot_id=?,metadata=? WHERE id=2",
             (first.backup, json.dumps(metadata)),
         )
     candidate, report = _stage(archive)
     assert report["added"] == 1
-    with sqlite3.connect(candidate) as result:
+    with closing(sqlite3.connect(candidate)) as result, result:
         assert result.execute("SELECT COUNT(*) FROM messages").fetchone()[0] == 1
         assert (
             result.execute(
@@ -681,7 +682,7 @@ def test_same_original_backup_in_two_snapshot_rows_keeps_one_unidentified_event(
 
 def test_conflicting_exact_negative_ids_are_not_normalized_into_one_event(archive):
     source = _source(archive, 1, {PEER: [_row(1, 101, 1), _row(2, -123, 47)]})
-    with sqlite3.connect(archive.history) as primary:
+    with closing(sqlite3.connect(archive.history)) as primary, primary:
         proof = json.loads(
             primary.execute("SELECT provenance FROM messages LIMIT 1").fetchone()[0]
         )
@@ -704,8 +705,8 @@ def test_v2_projection_requires_independent_digest_and_supported_scheme(archive)
     source = _source(archive, 1, {PEER: [_row(1, 101, 1), _row(2, 202, 47)]})
     candidate, _ = _stage(archive)
     with (
-        sqlite3.connect(candidate) as result,
-        sqlite3.connect(archive.history) as primary,
+        closing(sqlite3.connect(candidate)) as result, result,
+        closing(sqlite3.connect(archive.history)) as primary, primary,
     ):
         result.row_factory = primary.row_factory = sqlite3.Row
         row = dict(result.execute("SELECT * FROM messages").fetchone())
@@ -756,7 +757,7 @@ def test_missing_backup_frame_is_not_accepted_without_restoration_receipts(archi
     source = _source(archive, 1, {PEER: [_row(1, 101, 1), _row(2, 202, 47)]})
     metadata = dict(source.metadata)
     metadata.pop("snapshot_id")
-    with sqlite3.connect(archive.history) as primary:
+    with closing(sqlite3.connect(archive.history)) as primary, primary:
         primary.execute(
             "UPDATE source_snapshots SET metadata=?", (json.dumps(metadata),)
         )
@@ -776,8 +777,8 @@ def test_unknown_peer_v2_resource_requires_its_exact_unclassified_hash_bucket(ar
     )
     candidate, _ = _stage(archive)
     with (
-        sqlite3.connect(candidate) as result,
-        sqlite3.connect(archive.history) as primary,
+        closing(sqlite3.connect(candidate)) as result, result,
+        closing(sqlite3.connect(archive.history)) as primary, primary,
     ):
         result.row_factory = primary.row_factory = sqlite3.Row
         row = dict(result.execute("SELECT * FROM messages").fetchone())
@@ -844,7 +845,7 @@ def test_legacy_string_identity_requires_exact_archive_and_account_receipts(
         metadata.pop("identity_sha256")
     elif invalid == "wrong-container":
         metadata["container_kind"] = "unknown"
-    with sqlite3.connect(archive.history) as primary:
+    with closing(sqlite3.connect(archive.history)) as primary, primary:
         primary.execute(
             "UPDATE source_snapshots SET metadata=?", (json.dumps(metadata),)
         )
@@ -856,7 +857,7 @@ def test_legacy_string_identity_requires_exact_archive_and_account_receipts(
     else:
         candidate, report = _stage(archive)
         assert report["added"] == 1
-        with sqlite3.connect(candidate) as result:
+        with closing(sqlite3.connect(candidate)) as result, result:
             assert result.execute(
                 "SELECT receipt_basis FROM native_resource_sources"
             ).fetchone() == ("preservation_manifest",)
@@ -865,7 +866,7 @@ def test_legacy_string_identity_requires_exact_archive_and_account_receipts(
 def test_old_catalog_unknown_server_can_match_exact_fresh_negative_metadata(archive):
     source = _source(archive, 1, {PEER: [_row(1, 101, 1), _row(2, -123, 47)]})
     base = _base(archive)
-    with sqlite3.connect(archive.history) as primary, sqlite3.connect(base) as catalog:
+    with closing(sqlite3.connect(archive.history)) as primary, primary, closing(sqlite3.connect(base)) as catalog, catalog:
         primary.row_factory = sqlite3.Row
         conversation = dict(primary.execute("SELECT * FROM conversations").fetchone())
         raw_metadata = primary.execute(
@@ -929,7 +930,7 @@ def test_old_catalog_unknown_server_can_match_exact_fresh_negative_metadata(arch
         catalog.execute("UPDATE archive_info SET value='1' WHERE key='messages'")
     candidate, report = _stage(archive, base)
     assert report["added"] == 0
-    with sqlite3.connect(candidate) as result:
+    with closing(sqlite3.connect(candidate)) as result, result:
         assert result.execute("SELECT * FROM messages").fetchall() == [row]
         occurrence = json.loads(
             result.execute(
@@ -979,7 +980,7 @@ def test_brand_observations_are_audited_outside_native_message_database_scope(
         text_extraction_kind="plain_text",
         locator=locator,
     )
-    with sqlite3.connect(archive.history) as primary:
+    with closing(sqlite3.connect(archive.history)) as primary, primary:
         metadata = source.metadata | dict(
             input_databases=[]
             if invalid == "unreceipted"
@@ -1023,7 +1024,7 @@ def test_brand_observations_are_audited_outside_native_message_database_scope(
         assert report["outside_scope_" + kind + "_observations"] == 1
         assert report["primary_observations_checked"] == 2
         assert report["added"] == 1
-        with sqlite3.connect(candidate) as result:
+        with closing(sqlite3.connect(candidate)) as result, result:
             assert result.execute(
                 "SELECT resource_rows FROM native_resource_coverage"
             ).fetchone() == (1,)
@@ -1051,7 +1052,7 @@ def test_group_native_direction_keys_preserve_uncertain_sender_presentation(arch
         },
     )
     cid = "wechat:" + _identifier(source.native, group)
-    with sqlite3.connect(archive.history) as primary:
+    with closing(sqlite3.connect(archive.history)) as primary, primary:
         raw = primary.execute(
             "SELECT provenance FROM messages WHERE conversation_id=?", (cid,)
         ).fetchone()[0]
@@ -1080,7 +1081,7 @@ def test_group_native_direction_keys_preserve_uncertain_sender_presentation(arch
     assert report["unresolved_des0_scopes"] == 1
     assert report["presentation_unknown_resources_added"] == 1
     assert archive.history.read_bytes() == before
-    with sqlite3.connect(candidate) as result:
+    with closing(sqlite3.connect(candidate)) as result, result:
         result.row_factory = sqlite3.Row
         rows = result.execute("SELECT * FROM messages").fetchall()
         assert sorted(row["direction"] for row in rows) == [
@@ -1115,7 +1116,7 @@ def test_group_native_direction_keys_preserve_uncertain_sender_presentation(arch
         expected_rows = [tuple(row) for row in rows]
     repeated, second = _stage(archive, candidate, name="group-repeat.sqlite3")
     assert second["added"] == 0
-    with sqlite3.connect(repeated) as result:
+    with closing(sqlite3.connect(repeated)) as result, result:
         assert result.execute("SELECT * FROM messages").fetchall() == expected_rows
         assert (
             result.execute(
@@ -1127,7 +1128,7 @@ def test_group_native_direction_keys_preserve_uncertain_sender_presentation(arch
 
 def test_conflicting_original_native_direction_receipts_remain_rejected(archive):
     _source(archive, 1, {PEER: [_row(1, 101, 1), _row(2, 202, 47)]})
-    with sqlite3.connect(archive.history) as primary:
+    with closing(sqlite3.connect(archive.history)) as primary, primary:
         proof = json.loads(
             primary.execute("SELECT provenance FROM messages LIMIT 1").fetchone()[0]
         )
@@ -1153,7 +1154,7 @@ def test_selected_resource_only_table_uses_outside_primary_database_receipt(arch
     assert report["primary_observations_outside_table_scope"] == 1
     assert report["seed_primary_rows"] == report["seed_event_keys"] == 0
     assert report["selected_table_scopes"][0]["chat_tables"] == [table]
-    with sqlite3.connect(candidate) as result:
+    with closing(sqlite3.connect(candidate)) as result, result:
         assert result.execute(
             "SELECT receipt_basis FROM native_resource_sources"
         ).fetchone() == ("primary_source_database_receipt",)
@@ -1164,7 +1165,7 @@ def test_selected_resource_only_table_uses_outside_primary_database_receipt(arch
     assert replay["added"] == replay["occurrences_added"] == 0
     assert replay["repeated_occurrences"] == 1
     assert replay["seed_event_keys"] == replay["seed_locator_keys"] == 1
-    with sqlite3.connect(repeated) as result:
+    with closing(sqlite3.connect(repeated)) as result, result:
         assert result.execute("SELECT COUNT(*) FROM messages").fetchone()[0] == 1
 
 
@@ -1193,7 +1194,7 @@ def test_table_batches_equal_full_coverage_and_keep_cross_snapshot_membership(ar
     assert final_report["catalog_rows_outside_table_scope"] == 1
     assert final_report["retained_occurrences_outside_table_scope"] == 2
     assert final_report["seed_event_keys"] == final_report["seed_locator_keys"] == 0
-    with sqlite3.connect(full) as expected, sqlite3.connect(final) as actual:
+    with closing(sqlite3.connect(full)) as expected, expected, closing(sqlite3.connect(final)) as actual, actual:
         for table in (
             "messages", "conversations", "native_resource_occurrences",
             "native_resource_sources", "native_resource_coverage",
@@ -1234,7 +1235,7 @@ def test_mixed_table_specs_union_only_actual_selected_tables(archive):
     assert report["tables_checked"] == 2
     assert report["outside_scope_tables"] == 1
     assert report["added"] == report["occurrences_added"] == 2
-    with sqlite3.connect(candidate) as result:
+    with closing(sqlite3.connect(candidate)) as result, result:
         assert {row[0] for row in result.execute(
             "SELECT chat_table FROM native_resource_coverage"
         )} == {"Chat_" + _hash(PEER), "Chat_" + _hash(other)}
@@ -1244,7 +1245,7 @@ def test_mixed_table_specs_union_only_actual_selected_tables(archive):
 def test_selected_tables_must_be_ordinary_with_complete_metadata(archive, invalid_kind):
     source = _source(archive, 1, {PEER: [_row(1, 101, 1)]})
     table = "Chat_" + _hash("wxid_invalid_table")
-    with sqlite3.connect(source.database) as connection:
+    with closing(sqlite3.connect(source.database)) as connection, connection:
         if invalid_kind == "virtual":
             connection.execute(
                 f'CREATE VIRTUAL TABLE "{table}" USING fts5('
@@ -1287,7 +1288,7 @@ def test_later_snapshot_batch_reuses_prior_same_peer_catalog_event(archive):
     assert report["occurrences_added"] == 1
     assert report["catalog_duplicates"] == 1
     assert report["seed_event_keys"] == 1
-    with sqlite3.connect(final) as result:
+    with closing(sqlite3.connect(final)) as result, result:
         assert result.execute("SELECT COUNT(*) FROM messages").fetchone()[0] == 1
         assert result.execute(
             "SELECT COUNT(*) FROM native_resource_occurrences"
@@ -1301,7 +1302,7 @@ def test_outside_group_observation_does_not_add_direction_scopes(archive):
         {PEER: [_row(1, 101, 1), _row(2, 202, 47)], group: [_row(1, 303, 1, side=0)]},
     )
     cid = "wechat:" + _identifier(source.native, group)
-    with sqlite3.connect(archive.history) as primary:
+    with closing(sqlite3.connect(archive.history)) as primary, primary:
         proof = json.loads(primary.execute(
             "SELECT provenance FROM messages WHERE conversation_id=?", (cid,)
         ).fetchone()[0])
@@ -1319,7 +1320,7 @@ def test_outside_group_observation_does_not_add_direction_scopes(archive):
     candidate, report = _stage(archive)
     assert report["primary_observations_outside_table_scope"] == 1
     assert report["unresolved_des0_scopes"] == 0
-    with sqlite3.connect(candidate) as result:
+    with closing(sqlite3.connect(candidate)) as result, result:
         assert result.execute(
             "SELECT COUNT(*) FROM native_resource_direction_scopes"
         ).fetchone()[0] == 0
@@ -1374,7 +1375,7 @@ def test_enabled_sender_resolution_handles_mixed_payloads_and_exact_replay(
     }
     assert report["message_payload_columns_read"] == 4
     assert report["media_payload_files_read"] == 0
-    with sqlite3.connect(candidate) as result:
+    with closing(sqlite3.connect(candidate)) as result, result:
         result.row_factory = sqlite3.Row
         rows = result.execute("SELECT * FROM messages ORDER BY ordinal").fetchall()
         assert [row["sender_id"] for row in rows] == [
@@ -1404,7 +1405,7 @@ def test_enabled_sender_resolution_handles_mixed_payloads_and_exact_replay(
     assert replay["added"] == replay["occurrences_added"] == 0
     assert replay["message_payload_columns_read"] == 0
     assert replay["native_sender_statuses"] == {}
-    with sqlite3.connect(repeated) as result:
+    with closing(sqlite3.connect(repeated)) as result, result:
         result.row_factory = sqlite3.Row
         for table, before in retained.items():
             assert result.execute(f'SELECT * FROM "{table}"').fetchall() == before
@@ -1422,7 +1423,7 @@ def test_enabled_sender_resolution_uses_exact_dictionary(archive, sender_diction
         sender_dictionaries={5: sender_dictionary.content},
     )
     assert report["native_sender_statuses"] == {"resolved": 1}
-    with sqlite3.connect(candidate) as result:
+    with closing(sqlite3.connect(candidate)) as result, result:
         author, raw = result.execute("SELECT sender_id,provenance FROM messages").fetchone()
     resolution = json.loads(raw)["native_resource_sender_resolution"]
     assert author == sender
@@ -1441,7 +1442,7 @@ def test_enabled_sender_resolution_keeps_accounts_separate(archive):
         )
     candidate, report = _stage(archive, resolve_sender_prefixes=True)
     assert report["added"] == 2
-    with sqlite3.connect(candidate) as result:
+    with closing(sqlite3.connect(candidate)) as result, result:
         assert result.execute(
             "SELECT c.account_key,m.sender_id FROM messages m JOIN conversations c "
             "ON c.id=m.conversation_id ORDER BY c.account_key"
@@ -1485,7 +1486,7 @@ def test_sender_resolution_does_not_decode_direct_or_sent_resources(archive):
     candidate, report = _stage(archive, resolve_sender_prefixes=True)
     assert report["message_payload_columns_read"] == 0
     assert report["native_sender_statuses"] == {}
-    with sqlite3.connect(candidate) as result:
+    with closing(sqlite3.connect(candidate)) as result, result:
         assert {row[0] for row in result.execute("SELECT sender_id FROM messages")} == {OWNER, PEER}
 
 
@@ -1498,7 +1499,7 @@ def test_metadata_only_group_resources_preserve_default_contract(archive):
     candidate, report = _stage(archive)
     assert report["message_payload_columns_read"] == 0
     assert report["resolve_sender_prefixes"] is False
-    with sqlite3.connect(candidate) as result:
+    with closing(sqlite3.connect(candidate)) as result, result:
         sender, raw = result.execute("SELECT sender_id,provenance FROM messages").fetchone()
     assert sender is None
     assert "native_resource_sender_resolution" not in json.loads(raw)
@@ -1515,7 +1516,7 @@ def test_enabled_sender_resolution_preserves_exact_nonpositive_or_absent_server(
     )
     candidate, report = _stage(archive, resolve_sender_prefixes=True)
     assert report["native_sender_statuses"] == {"resolved": 1}
-    with sqlite3.connect(candidate) as result:
+    with closing(sqlite3.connect(candidate)) as result, result:
         sender, raw = result.execute("SELECT sender_id,provenance FROM messages").fetchone()
     proof = json.loads(raw)
     expected = None if server is None else str(server)

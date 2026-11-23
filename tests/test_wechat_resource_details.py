@@ -14,6 +14,8 @@ from types import SimpleNamespace
 
 import pytest
 
+from app.core.owner_only_files import ensure_owner_only
+
 from app.core import wechat_resource_details as details
 from app.core.wechat_archive import WechatArchiveRepository, _time_fields
 from app.core.wechat_history_browser import query_wechat_history
@@ -91,7 +93,7 @@ def _registry(fixture, entry=None):
     entry = entry or details.make_entry(fixture.row, fixture.conversation, fixture.packet)
     path = fixture.history.with_name(details.FILENAME)
     path.write_text(json.dumps({"version": details.VERSION, "entries": [entry]}))
-    path.chmod(0o600)
+    ensure_owner_only(path)
     return path
 
 
@@ -280,6 +282,8 @@ def test_malformed_or_untrusted_registry_fails_closed(fixture, problem):
     elif problem == "version":
         payload["version"] = "unsupported"
     elif problem == "public":
+        path.unlink()
+        path.write_text(json.dumps(payload), encoding="utf-8")
         path.chmod(0o644)
     elif problem == "symlink":
         target = path.with_suffix(".preserved")
@@ -316,7 +320,7 @@ def _compact_registry(fixture, entries=None):
     entries = entries or [details.make_entry(fixture.row, fixture.conversation, fixture.packet)]
     path = fixture.history.with_name(details.FILENAME)
     path.write_bytes(details.encode_registry(entries))
-    path.chmod(0o600)
+    ensure_owner_only(path)
     return path
 
 

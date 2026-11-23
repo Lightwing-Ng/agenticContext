@@ -1,6 +1,6 @@
 """Real-renderer regressions for bounded Jury failure diagnostics.
 
-Code version: v1.0.1-codex.0
+Code version: v1.0.2-codex.0
 """
 
 import json
@@ -135,7 +135,7 @@ def test_native_renderer_execution_timeout_has_explicit_evidence(disposable_brow
                     channel._impl_obj.send("Runtime.evaluate", {
                         "expression": 'console.log("jury-native-execution-loop-start"); while (true) {}',
                         "timeout": 500,
-                    }),
+                    }, timeout=None),
                     timeout=8,
                 )
             )

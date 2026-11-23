@@ -1,6 +1,6 @@
 """Account lists consume only a verified shard of the current publication.
 
-Code version: v1.2.0-codex.0
+Code version: v1.2.1-codex.0
 """
 
 from contextlib import closing
@@ -22,6 +22,7 @@ from app.web.wechat_read_routes import (
 from tests import test_wechat_browser_snapshot as snapshot_tests
 from tests import test_wechat_session_csv as session_tests
 from tests.test_wechat_context_links import context_link_fixture
+from tests.test_wechat_context_links import synthetic_export_clone as synthetic_export_clone
 
 
 event_store = snapshot_tests.event_store
@@ -122,7 +123,7 @@ def test_all_chats_preserve_account_scope_kinds_and_verified_titles(snapshot_sto
 
 
 def test_group_summary_folds_verified_html_supplement_before_count_and_pagination(
-    tmp_path, monkeypatch,
+    tmp_path, monkeypatch, synthetic_export_clone,
 ):
     fixture = context_link_fixture(tmp_path)
     repository = WechatArchiveRepository(tmp_path)

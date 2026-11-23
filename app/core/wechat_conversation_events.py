@@ -1,6 +1,6 @@
 """Retain source occurrences while projecting proven same-session text events.
 
-Code version: v1.8.4-codex.0
+Code version: v1.9.1-codex.0
 """
 
 from __future__ import annotations
@@ -1023,8 +1023,8 @@ def conversation_events(
             )
             temporary = Path(name)
             try:
-                with os.fdopen(descriptor, "w") as stream:
-                    stream.write(encoded)
+                with os.fdopen(descriptor, "wb") as stream:
+                    stream.write(encoded.encode("utf-8"))
                 if _inputs(repository, history_identity) != inputs:
                     raise ValueError(
                         "The conversation source changed before publication."

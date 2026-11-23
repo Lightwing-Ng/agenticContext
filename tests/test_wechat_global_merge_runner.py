@@ -1,8 +1,9 @@
 """Final merge orchestration preserves newer publication and immutable evidence.
 
-Code version: v1.0.0-codex.0
+Code version: v1.0.1-codex.0
 """
 
+from contextlib import closing
 from copy import deepcopy
 import hashlib
 import json
@@ -14,6 +15,7 @@ import pytest
 from app.core import wechat_global_guard as lease
 from app.core import wechat_macos_bank_merge as merger
 from app.core import wechat_macos_recovery_bank as bank
+from app.core.owner_only_files import ensure_owner_only, ensure_owner_only_directory
 from app.core.wechat_archive import wechat_archive_path
 from scripts import merge_wechat_global_refresh as runner
 from tests import test_wechat_macos_recovery_bank as fixtures
@@ -27,14 +29,14 @@ def _owner_databases(tmp_path, registered, incoming_owners):
     store = tmp_path / "store"
     history = wechat_archive_path(store)
     history.parent.mkdir(parents=True)
-    with sqlite3.connect(history) as connection:
+    with closing(sqlite3.connect(history)) as connection, connection:
         connection.execute("CREATE TABLE partitions(account_id TEXT, account_key TEXT)")
         connection.executemany(
             "INSERT INTO partitions VALUES(?,?)",
             [(owner, "account:" + owner) for owner in registered],
         )
     incoming = tmp_path / "incoming.sqlite3"
-    with sqlite3.connect(incoming) as connection:
+    with closing(sqlite3.connect(incoming)) as connection, connection:
         connection.execute("CREATE TABLE sources(account_id TEXT)")
         connection.executemany(
             "INSERT INTO sources VALUES(?)", [(owner,) for owner in incoming_owners]
@@ -75,7 +77,7 @@ def test_empty_or_foreign_incoming_owner_set_is_rejected(tmp_path, owners):
 
 def test_owner_registration_requires_its_canonical_account_key(tmp_path):
     store, incoming = _owner_databases(tmp_path, ("owner-a", "owner-b"), ("owner-b",))
-    with sqlite3.connect(wechat_archive_path(store)) as connection:
+    with closing(sqlite3.connect(wechat_archive_path(store))) as connection, connection:
         connection.execute(
             "UPDATE partitions SET account_key='account:owner-a' WHERE account_id='owner-b'"
         )
@@ -99,14 +101,15 @@ def _isolated_run(monkeypatch, tmp_path, *, staged_inputs=None, stage_error=None
     workstations.mkdir(mode=0o700)
     workstation = workstations / "repair"
     workstation.mkdir(mode=0o700)
+    ensure_owner_only_directory(workstation)
     incoming = workstation / "immutable-incoming.sqlite3"
     source.rename(incoming)
-    incoming.chmod(0o600)
+    ensure_owner_only(incoming)
     incoming_before = _identity(incoming)
     target = bank.mac_recovery_bank_path(store)
     prior_bytes = b"The newer UI publication must survive the global merge."
     target.write_bytes(prior_bytes)
-    target.chmod(0o600)
+    ensure_owner_only(target)
     inputs = {
         "history.sqlite3": bank._identity(wechat_archive_path(store)),
         target.name: bank._identity(target),
@@ -171,7 +174,7 @@ def _isolated_run(monkeypatch, tmp_path, *, staged_inputs=None, stage_error=None
         if stage_error:
             raise stage_error
         candidate.write_bytes(prior_bytes + b" Authenticated incoming update.")
-        candidate.chmod(0o600)
+        ensure_owner_only(candidate)
         progress({"replayed_occurrences": 1, "phase": "safe_phase", "private": "hidden"})
         return {
             "added": 1, "upgraded": 0, "reparsed": 0, "occurrences_added": 1,
@@ -317,6 +320,7 @@ def _real_merge_inputs(bank_archive, monkeypatch, tmp_path):
     workstations.mkdir(mode=0o700)
     workstation = workstations / "isolated-repair"
     workstation.mkdir(mode=0o700)
+    ensure_owner_only_directory(workstation)
     incoming = incoming.rename(workstation / "immutable-global-candidate.sqlite3")
     monkeypatch.setattr(runner, "WORKSTATIONS", workstations)
     monkeypatch.setattr(
@@ -351,9 +355,9 @@ def test_real_merge_cli_preserves_newer_ui_events_and_immutable_incoming_bank(
     incoming_before = _identity(incoming)
     original_history = fixture.history.read_bytes()
     prior_bank = fixture.bank_path.read_bytes()
-    with sqlite3.connect(fixture.bank_path) as connection:
+    with closing(sqlite3.connect(fixture.bank_path)) as connection:
         prior_events = set(connection.execute("SELECT id,text FROM messages"))
-    with sqlite3.connect(incoming) as connection:
+    with closing(sqlite3.connect(incoming)) as connection:
         incoming_events = set(connection.execute("SELECT id,text FROM messages"))
     stage_errors = []
     original_stage = merger.stage_merged_mac_recovery_bank
@@ -378,7 +382,7 @@ def test_real_merge_cli_preserves_newer_ui_events_and_immutable_incoming_bank(
     assert report["staging_receipt"]["added"] == len(incoming_events)
     assert report["rollback"]["full_roundtrip_verified"] is True
     assert backups == [prior_bank]
-    with sqlite3.connect(fixture.bank_path) as connection:
+    with closing(sqlite3.connect(fixture.bank_path)) as connection:
         assert set(connection.execute("SELECT id,text FROM messages")) == (
             prior_events | incoming_events
         )
@@ -396,7 +400,7 @@ def test_real_merge_cli_rejects_stale_incoming_source_pin_without_publication(
     workstation, incoming, _backups = _real_merge_inputs(
         fixture, monkeypatch, tmp_path
     )
-    with sqlite3.connect(incoming) as connection:
+    with closing(sqlite3.connect(incoming)) as connection, connection:
         connection.execute(
             "UPDATE archive_info SET value=? WHERE key='input_identities'",
             (json.dumps({"history.sqlite3": {"size": 0}}),),
