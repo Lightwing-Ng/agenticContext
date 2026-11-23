@@ -1,4 +1,4 @@
-/* Code version: v3.74.4-codex.0 */
+/* Code version: v3.74.5-codex.0 */
 
 (() => {
     const BOOTSTRAPPED_SOURCE_PLATFORMS = new Set(["chatgpt", "gemini", "grok", "claude"]);
@@ -4602,19 +4602,11 @@
     }
 
     function formatActivityTimestamp(timestamp) {
-        const parsed = new Date(String(timestamp || ""));
-        if (!Number.isFinite(parsed.getTime())) return "";
-        try {
-            return new Intl.DateTimeFormat("en-GB", {
-                timeZone: "Asia/Hong_Kong",
-                hour: "2-digit",
-                minute: "2-digit",
-                second: "2-digit",
-                hour12: false,
-            }).format(parsed);
-        } catch (_error) {
-            return "";
-        }
+        return window.APP_DATES.time(timestamp, {
+            timeZone: "Asia/Hong_Kong",
+            seconds: true,
+            fallback: "",
+        });
     }
 
     function activityMeta(event) {

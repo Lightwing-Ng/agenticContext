@@ -1,6 +1,6 @@
 # Visual Style Reference
 
-Documentation version: `v1.38.13-codex.0`
+Documentation version: `v1.38.15-codex.0`
 
 ## Authority
 
@@ -110,6 +110,20 @@ rules deliberately; do not blindly paste whole product view styles.
 
 If the sibling project changes materially, compare its current CSS modules with this
 compatibility layer and update this document when the synchronization strategy changes.
+
+## Settings date format
+
+Settings → General uses Worthward's Full and Compact date format choices
+through the existing Shared Select. Changes are saved independently and return
+to the same Settings panel. Each control shows a sample date using the current
+selection. The defaults are `D Mmm yyyy` and `dd/mm/yyyy`.
+
+`app/core/date_display.py` owns the date patterns. The web layer provides Jinja
+formatters and publishes the selected patterns to the shared browser formatter.
+Use Compact for dense rows and Full for detail labels or readable exports. Pass
+the source timestamp and the surface's existing timezone explicitly when a
+conversion is required. Keep archive values, structured exports, and HTML
+`datetime` attributes in their canonical representations.
 
 ## WeChat conversation share action
 

@@ -1,6 +1,6 @@
 """Focused tests for the local text-history browser."""
 
-# Code version: v1.11.0-codex.0
+# Code version: v1.11.1-codex.0
 
 from datetime import datetime
 import hashlib
@@ -755,6 +755,9 @@ def test_build_chat_history_markdown_exports_the_complete_session(tmp_path: Path
     assert f"### 2. Gemini · {format_chat_message_timestamp_label('2026-08-12T05:01:00Z')}" in markdown
     assert "Source link 1: https://example.com/source" in markdown
     assert markdown.endswith("\n")
+    customized = build_chat_history_markdown(detail_page, date_style="yyyy_mm_dd_cjk")
+    assert "### 1. You · 2026年08月12日 13:00:00 (HKT)" in customized
+    assert "Source link 1: https://example.com/source" in customized
 
 
 def test_query_chat_history_exposes_adjacent_sessions_in_sorted_order(tmp_path: Path) -> None:

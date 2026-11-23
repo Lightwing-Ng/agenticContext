@@ -7,12 +7,12 @@ touches a Flask request, a service, or an application instance, so route modules
 import it directly instead of receiving it through the application factory.
 """
 
-# Code version: v1.5.2-codex.0
+# Code version: v1.5.3-codex.0
 
 from __future__ import annotations
 
 from collections.abc import Iterable
-from datetime import UTC, datetime
+from datetime import datetime
 from html import escape as escape_html
 from html.parser import HTMLParser
 import json
@@ -30,6 +30,7 @@ from app.core.agent import (
     parse_agent_action,
     render_final_agent_action,
 )
+from app.core.date_display import DEFAULT_FULL_STYLE, format_datetime, format_time
 from app.core.providers import format_chatgpt_display_markdown, normalize_zhihu_rich_text
 from app.core.storage import DISPLAY_TIMEZONE
 from app.web.public_errors import public_exception_message
@@ -137,20 +138,6 @@ _STORED_HTML_SKIPPED_TAGS = frozenset({"iframe", "object", "script", "style", "s
 _STORED_HTML_SKIPPED_CLASSES = frozenset({"screen-reader-user-query-label"})
 
 
-_SOURCE_CLOCK_MONTHS = (
-    "Jan",
-    "Feb",
-    "Mar",
-    "Apr",
-    "May",
-    "Jun",
-    "Jul",
-    "Aug",
-    "Sep",
-    "Oct",
-    "Nov",
-    "Dec",
-)
 _SOURCE_CLOCK_ISO = re.compile(
     r"(?P<year>[0-9]{4})-(?P<month>[0-9]{1,2})-(?P<day>[0-9]{1,2})[T ]"
     r"(?P<hour>[0-9]{1,2}):(?P<minute>[0-9]{2})"
@@ -159,7 +146,7 @@ _SOURCE_CLOCK_ISO = re.compile(
 )
 
 
-def format_wechat_source_clock(value: str | None) -> str:
+def format_wechat_source_clock(value: str | None, *, style: str = DEFAULT_FULL_STYLE) -> str:
     """Format a literal source clock without inferring precision or a timezone."""
     from app.core.storage import normalize_html_clock
 
@@ -195,12 +182,7 @@ def format_wechat_source_clock(value: str | None) -> str:
         if (stamp.year, stamp.month, stamp.day) == (1970, 1, 1):
             return original
         precision = "second" if fields["second"] is not None else "minute"
-    label = (
-        f"{stamp.day} {_SOURCE_CLOCK_MONTHS[stamp.month - 1]} {stamp.year:04d} "
-        f"{stamp.hour:02d}:{stamp.minute:02d}"
-    )
-    if precision == "second":
-        label += f":{stamp.second:02d}{fraction}"
+    label = format_datetime(stamp, style=style, seconds=precision == "second") + fraction
     if offset:
         label += " UTC" + ("" if offset == "Z" else offset)
     return label
@@ -208,13 +190,7 @@ def format_wechat_source_clock(value: str | None) -> str:
 
 def format_agent_activity_time(value: str | None) -> str:
     """Format one Agent activity timestamp as a 24-hour UI time."""
-    try:
-        parsed = datetime.fromisoformat(str(value or "").strip().replace("Z", "+00:00"))
-    except (TypeError, ValueError):
-        return ""
-    if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=UTC)
-    return parsed.astimezone(DISPLAY_TIMEZONE).strftime("%H:%M:%S")
+    return format_time(value, time_zone=DISPLAY_TIMEZONE, seconds=True, fallback="")
 
 
 def format_media_size(content_bytes: int) -> str:

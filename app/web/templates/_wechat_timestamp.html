@@ -1,0 +1,8 @@
+{# Code version: v1.0.0-codex.0 #}
+{% macro wechat_timestamp(value, archived_label, time_basis='') -%}
+    {%- if display_datetime is defined -%}
+        {{- display_datetime(value, seconds=false if 'precision: minute' in time_basis else none, fallback=archived_label) -}}
+    {%- else -%}
+        {{- archived_label -}}
+    {%- endif -%}
+{%- endmacro %}

@@ -1,7 +1,8 @@
-{# Code version: v1.43.0-codex.0 #}
+{# Code version: v1.44.0-codex.0 #}
 {% from "_wechat_view_layout.html" import conversation_transcript, conversation_table, conversation_list_note %}
 {% from "_wechat_conversation_kind.html" import conversation_kind_label, conversation_kind_badge %}
 {% from "_wechat_display_name.html" import display_name as render_display_name %}
+{% from "_wechat_timestamp.html" import wechat_timestamp %}
 {% macro display_name(value) -%}{{- render_display_name(value) -}}{%- endmacro %}
 {% macro membership_status_text(event) -%}
     {%- if event.method == 'qr' -%}Joined by QR code
@@ -69,7 +70,7 @@
 {% if context.is_system_notice %}
 {% set has_system_time = context.timestamp_label and message.last_seen_at %}
 <div class="wechat-system-message-row" id="wechat_message_{{ key }}"{% if not embedded %} data-chat-message-id="{{ message.stable_id }}" data-wechat-source-message-id="{{ message.stable_id }}"{% endif %} role="note" aria-label="System message"{% if has_system_time %} aria-describedby="wechat_time_{{ key }}"{% else %} title="{{ context.time_basis or 'Source timestamp unavailable' }}"{% endif %}>
-    {% if has_system_time %}<time class="wechat-message-time" id="wechat_time_{{ key }}" datetime="{{ message.last_seen_at }}" title="{{ context.time_basis }}">{{ context.timestamp_label }}</time>{% endif %}
+    {% if has_system_time %}<time class="wechat-message-time" id="wechat_time_{{ key }}" datetime="{{ message.last_seen_at }}" title="{{ context.time_basis }}">{{ wechat_timestamp(message.last_seen_at, context.timestamp_label, context.time_basis|default('', true)) }}</time>{% endif %}
     <p class="wechat-system-notice" lang="zh-CN">{{ display_text }}</p>
 </div>
 {% elif display_text or context.resource or context.forwarded_record or context.quoted_reply %}
@@ -104,7 +105,7 @@
                 <{{ speaker_tag }} class="wechat-speaker{% if contact_url %} wechat-contact-link{% endif %}" id="wechat_sender_{{ key }}"{% if contact_url %} href="{{ contact_url }}" data-wechat-contact-link title="Analyze contact"
                     data-wait-navigation data-wait-title="Loading messages"
                     data-wait-copy="Collecting messages across source accounts."{% endif %}>{{ display_name(context.viewer_display_name or message.author_label) }}</{{ speaker_tag }}>
-                {% if context.timestamp_label %}<time id="wechat_time_{{ key }}" datetime="{{ message.last_seen_at }}" title="{{ context.time_basis }}">{{ context.timestamp_label }}</time>{% endif %}
+                {% if context.timestamp_label %}<time id="wechat_time_{{ key }}" datetime="{{ message.last_seen_at }}" title="{{ context.time_basis }}">{{ wechat_timestamp(message.last_seen_at, context.timestamp_label, context.time_basis|default('', true)) }}</time>{% endif %}
             </span>
         </summary>
         <div class="ui-collapse-body">
@@ -203,14 +204,15 @@
                 </thead>
                 <tbody>
                     {% for change in origin.group_name_history.changes %}
-                    {% set date_parts = change.timestamp_label.split() %}
+                    {% set date_label = wechat_timestamp(change.timestamp_value, change.timestamp_label) %}
+                    {% set date_parts = date_label.split() %}
                     <tr>
                         <td>
-                            <time datetime="{{ change.timestamp_value }}"{% if date_parts | length == 4 %} class="wechat-group-name-history-date"{% endif %}>
+                            <time datetime="{{ change.timestamp_value }}"{% if date_parts | length == 4 %} class="wechat-group-name-history-date{% if date_parts[0]|length == 4 %} wechat-group-name-history-date--year-first{% endif %}"{% endif %}>
                                 {%- if date_parts | length == 4 -%}
                                     <span>{{ date_parts[0] }}</span>{{ ' ' }}<span>{{ date_parts[1] }}</span>{{ ' ' }}<span>{{ date_parts[2] }}</span>{{ ' ' }}<span>{{ date_parts[3] }}</span>
                                 {%- else -%}
-                                    {{ change.timestamp_label }}
+                                    {{ date_label }}
                                 {%- endif -%}
                             </time>
                         </td>
@@ -236,7 +238,7 @@
                 <p class="wechat-source-note" role="status">{{ origin.group_roster_capture_feedback }}</p>
                 {% endif %}
                 {% if roster.current %}
-                <p class="wechat-source-note">{{ '{:,}'.format(roster.snapshot_count) }} saved {{ 'snapshot' if roster.snapshot_count == 1 else 'snapshots' }} · Latest <time datetime="{{ roster.current.observed_at }}">{{ roster.current.observed_label }}</time></p>
+                <p class="wechat-source-note">{{ '{:,}'.format(roster.snapshot_count) }} saved {{ 'snapshot' if roster.snapshot_count == 1 else 'snapshots' }} · Latest <time datetime="{{ roster.current.observed_at }}">{{ wechat_timestamp(roster.current.observed_at, roster.current.observed_label) }}</time></p>
                 {% if not roster.previous %}
                 <p class="wechat-source-note">Baseline snapshot saved.{% if can_refresh_roster %} Use Refresh chat history to save another snapshot and compare members.{% endif %}</p>
                 {% endif %}
@@ -281,8 +283,8 @@
                     {% set change = event.snapshot_change %}
                     <tr data-wechat-membership-observation="{{ change.kind }}">
                         <td>
-                            <div><time datetime="{{ change.interval_start }}">{{ change.interval_start_label }}</time></div>
-                            <div class="wechat-source-label">to <time datetime="{{ change.interval_end }}">{{ change.interval_end_label }}</time></div>
+                            <div><time datetime="{{ change.interval_start }}">{{ wechat_timestamp(change.interval_start, change.interval_start_label) }}</time></div>
+                            <div class="wechat-source-label">to <time datetime="{{ change.interval_end }}">{{ wechat_timestamp(change.interval_end, change.interval_end_label) }}</time></div>
                         </td>
                         <td>
                             <div>{{ display_name(change.display_name or change.username) }}</div>
@@ -297,7 +299,7 @@
                     <tr data-wechat-membership-event="{{ event.kind }}">
                         <td>
                             {% if event.timestamp_value and event.timestamp_label %}
-                            <time datetime="{{ event.timestamp_value }}">{{ event.timestamp_label }}</time>
+                            <time datetime="{{ event.timestamp_value }}">{{ wechat_timestamp(event.timestamp_value, event.timestamp_label) }}</time>
                             {% else %}
                             <span class="wechat-source-note">Date unavailable</span>
                             {% endif %}

@@ -10,7 +10,7 @@ registered first because it owns the access gate and the exclusive-browser rule 
 Tunnel, Jury, iPhone, and Cache blueprints borrow through :class:`AgentSurface`.
 """
 
-# Code version: v2.11.1-codex.0
+# Code version: v2.12.0-codex.0
 
 from __future__ import annotations
 
@@ -105,6 +105,7 @@ from app.web.cache_routes import (
 )
 from app.web.cache_sources import get_cache_source_label
 from app.web.config_store import SavedConfigStore
+from app.web.date_display import register_date_display
 from app.web.iphone_routes import IphoneRouteContext, register_iphone_routes
 from app.web.jury_routes import JuryRouteContext, register_jury_routes
 from app.web.local_resource_routes import (
@@ -327,6 +328,7 @@ def create_app(
         SESSION_COOKIE_SAMESITE="Strict",
         AGENT_EXTERNAL_OPERATIONS_ENABLED=bool(agent_external_operations_enabled),
     )
+    register_date_display(app)
     register_beta(
         app,
         version=APP_VERSION,

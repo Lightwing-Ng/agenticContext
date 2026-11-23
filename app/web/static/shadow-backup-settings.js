@@ -1,4 +1,4 @@
-/* Code version: v1.3.0-codex.2 */
+/* Code version: v1.3.1-codex.0 */
 
 (() => {
     const section = document.querySelector("[data-shadow-backup-section]");
@@ -48,7 +48,8 @@
         renderStatusCopy(snapshot.message, snapshot.phase);
         if (lastSyncedCopy) {
             if (snapshot.last_synced_at) {
-                lastSyncedCopy.textContent = `Last successful sync: ${snapshot.last_synced_at}`;
+                const lastSynced = window.APP_DATES.dateTime(snapshot.last_synced_at, { timeZone: "UTC" });
+                lastSyncedCopy.textContent = `Last successful sync: ${lastSynced} (UTC)`;
                 lastSyncedCopy.hidden = false;
             } else {
                 lastSyncedCopy.hidden = true;
