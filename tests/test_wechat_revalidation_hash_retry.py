@@ -1,6 +1,6 @@
 """Known exact bytes permit bounded closed-hash ctime retries before derived writes.
 
-Code version: v1.1.2-codex.0
+Code version: v1.1.3-codex.0
 """
 
 from contextlib import ExitStack
@@ -74,20 +74,24 @@ def _during_real_reads(monkeypatch, path, action):
     original = os.fdopen
     passes = []
 
-    def fdopen(descriptor, *args, **kwargs):
-        stream = original(descriptor, *args, **kwargs)
-        opened = os.fstat(stream.fileno())
-        try:
-            target = path.stat()
-        except FileNotFoundError:
-            return stream
-        if (opened.st_dev, opened.st_ino) != (target.st_dev, target.st_ino):
-            return stream
-        record = {"bytes": 0}
-        passes.append(record)
-        return _ObservedRead(stream, record, action, len(passes))
+    class ObservedOS:
+        def __getattr__(self, name):
+            return getattr(os, name)
 
-    monkeypatch.setattr(revalidation.os, "fdopen", fdopen)
+        def fdopen(self, descriptor, *args, **kwargs):
+            stream = original(descriptor, *args, **kwargs)
+            opened = os.fstat(stream.fileno())
+            try:
+                target = path.stat()
+            except FileNotFoundError:
+                return stream
+            if (opened.st_dev, opened.st_ino) != (target.st_dev, target.st_ino):
+                return stream
+            record = {"bytes": 0}
+            passes.append(record)
+            return _ObservedRead(stream, record, action, len(passes))
+
+    monkeypatch.setattr(revalidation, "os", ObservedOS())
     return passes
 
 
@@ -378,6 +382,8 @@ def test_callback_source_ctime_only_change_requires_audited_exact_bytes_before_c
 def test_archived_known_hash_retry_is_audited_without_repeating_preflight(archived_case, monkeypatch, target):
     case = archived_case
     path = case.source if target == "source" else case.candidate
+    # A source receipt may need a strict coordinate rebind before the retryable hash.
+    sealed._ctime_only(case.source)
     passes = _during_real_reads(
         monkeypatch, path, lambda attempt: sealed._ctime_only(path) if attempt == 1 else None,
     )
@@ -386,8 +392,12 @@ def test_archived_known_hash_retry_is_audited_without_repeating_preflight(archiv
         receipt = archived._stage(case, guard, on_preflight=callback)
     callback.assert_called_once()
     assert len(passes) >= 2
-    records = [record for record in _records(receipt) if record["before_identity"]["ino"] == path.stat().st_ino]
-    _assert_audit(records, case.source_sha)
+    phase = "sealed_revalidation_source_hash" if target == "source" else "archived_revalidation_clone_hash"
+    records = [
+        record for record in _records(receipt)
+        if record["before_identity"]["ino"] == path.stat().st_ino and record["phase"] == phase
+    ]
+    _assert_audit(records, case.source_sha, phase=phase)
     assert receipt["candidate_sha256"] == hashlib.sha256(case.candidate.read_bytes()).hexdigest()
     archived._unchanged(case)
 

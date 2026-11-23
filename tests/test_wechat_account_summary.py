@@ -1,6 +1,6 @@
 """Account lists consume only a verified shard of the current publication.
 
-Code version: v1.2.1-codex.0
+Code version: v1.2.2-codex.0
 """
 
 from contextlib import closing
@@ -35,6 +35,16 @@ _ACCOUNT = "account:wxid_event_owner"
 def test_scope_matches_verified_list_without_opening_the_archive(snapshot_store, monkeypatch, sort):
     repository = snapshot_store.repository
     identity = _file_identity(repository.path)
+    pin = summary.snapshot._pin
+
+    def separate_snapshot_identity(repository, history_identity):
+        # Model a Windows snapshot's independent change-time token.
+        current = pin(repository, history_identity)
+        history = current["inputs"][str(repository.path.resolve())]
+        history["ctime_ns"] += 1
+        return current
+
+    monkeypatch.setattr(summary.snapshot, "_pin", separate_snapshot_identity)
     assert snapshot_tests._load(snapshot_store)[0] is not None
     proof_connection, proof = snapshot_tests.fixtures._run(snapshot_store)
     proof_connection.close()

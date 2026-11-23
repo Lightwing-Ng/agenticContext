@@ -1,6 +1,6 @@
 """Restore bounded native text subsets through an append-only APFS clone.
 
-Code version: v1.3.1-codex.0
+Code version: v1.3.2-codex.0
 """
 
 from __future__ import annotations
@@ -71,10 +71,11 @@ def _stream_sha256(path):
 
 
 def _content_identity_matches(path, expected, baseline_sha256, *, database=False):
-    """Verify ctime-only drift without accepting content or sidecar changes."""
+    """Verify policy bytes and require a byte proof for ctime-only database drift."""
     identity = _database_identity if database else _file_identity
     before = identity(path)
-    if before == expected:
+    # Same-size policy writes can retain every metadata field within one clock tick.
+    if before == expected and (database or before is None):
         return True
 
     def same_essentials(observed):

@@ -1,6 +1,6 @@
 """Native subset restoration preserves old rows without a full database copy.
 
-Code version: v1.4.2-codex.0
+Code version: v1.4.3-codex.0
 """
 
 from contextlib import closing
@@ -969,6 +969,16 @@ def test_baseline_hash_rejects_changed_inputs_before_cloning(
     sha256 = restore._stream_sha256
     changed = False
     externally_changed = None
+
+    if changed_input == "policy" and change == "content":
+        # Filesystems can report the same identity for a same-size overwrite
+        # with restored mtime when both writes land within one timestamp tick.
+        identity = restore._file_identity
+        pinned_policy = identity(policy)
+        monkeypatch.setattr(
+            restore, "_file_identity",
+            lambda original: pinned_policy if original == policy else identity(original),
+        )
 
     def drifting_sha256(original):
         nonlocal changed, externally_changed

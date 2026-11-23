@@ -1,6 +1,6 @@
 """Stage indexed, source-bound Mac recovery without rewriting the original archive.
 
-Code version: v1.15.3-codex.0
+Code version: v1.15.4-codex.0
 """
 
 from __future__ import annotations
@@ -42,7 +42,7 @@ from .wechat_text import is_native_pat_projection, native_components_text
 from .windows_file_metadata import file_change_time, has_open_file_handles
 
 
-CODE_VERSION = "v1.15.3-codex.0"
+CODE_VERSION = "v1.15.4-codex.0"
 WRITER_VERSION = "v1.5.1-codex.0"
 VERSION = WRITER_VERSION
 MAX_PACKET_BYTES = 128 * 1024**2
@@ -1494,7 +1494,7 @@ def _require_baseline_copy(capability, history, candidate, guard, *, allow_rebin
     )
     if (
         _baseline_copy_file(candidate, target) != capability.identity
-        or stat.S_IMODE(candidate.lstat().st_mode) != 0o600
+        or _candidate_owner_problem(candidate)
     ):
         raise ValueError("The verified baseline or canonical inputs changed before reuse.")
     capability.allocated_bytes = getattr(candidate.lstat(), "st_blocks", 0) * 512

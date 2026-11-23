@@ -1,6 +1,6 @@
 """Exchange bounded, source-scoped WeChat records without executing package content.
 
-Code version: v1.0.1-codex.0
+Code version: v1.0.2-codex.0
 """
 
 from __future__ import annotations
@@ -102,7 +102,13 @@ def _identity(path):
     if (not stat.S_ISREG(state.st_mode) or path.is_symlink()
             or getattr(state, "st_flags", 0) & 0x40000000):
         raise ValueError("Exchange inputs must be resident regular files.")
-    return (state.st_dev, state.st_ino, state.st_size, state.st_mtime_ns, state.st_ctime_ns)
+    change_time = state.st_ctime_ns
+    if os.name == "nt":
+        from .wechat_macos_recovery_bank import _storage_identity
+
+        # Session exports supply source pins based on native Windows ChangeTime.
+        change_time = _storage_identity(path, state)["ctime_ns"]
+    return (state.st_dev, state.st_ino, state.st_size, state.st_mtime_ns, change_time)
 
 
 def _cell_kind(value):
@@ -783,7 +789,9 @@ def _validated_timeline(collector, local_store_root, family, stack):
         statuses[session] = {"resources": exporter.resource_status, "events": exporter.events["status"]}
         selected_domain = "resource_revalidated" if any(path.name == "resource_revalidated.sqlite3"
                            for path in exporter.sources) else "resource"
-        collector.identities.update(exporter.sources)
+        for path, identity in exporter.sources.items():
+            if collector.identities.setdefault(path, identity) != identity:
+                raise ValueError("A WeChat source changed during export: " + path.name)
         for value in exporter.items():
             row = {key: value[key] for key in _MESSAGE_COLUMNS}
             origin = "history.messages"

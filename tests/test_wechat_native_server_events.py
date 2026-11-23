@@ -1,6 +1,6 @@
 """Native server IDs prove cross-device events while conflicts retain source rows.
 
-Code version: v1.0.0-codex.0
+Code version: v1.0.1-codex.0
 """
 
 from copy import deepcopy
@@ -19,6 +19,7 @@ from app.core.wechat_session_export import WechatSessionExport
 from app.web.app import create_app
 from app.web.config_store import SavedConfigStore
 from tests import test_wechat_conversation_events as fixtures
+from tests.wechat_browser_markup import get_verified_browser_page
 
 
 event_store = fixtures.event_store
@@ -353,7 +354,8 @@ def test_disclosure_renders_preserved_source_count_and_both_uncorrected_clocks(
             agent_external_operations_enabled=False,
         )
     app.config.update(TESTING=True)
-    response = app.test_client().get(
+    response = get_verified_browser_page(
+        app.test_client(),
         "/browser",
         query_string={
             "view": "text",
