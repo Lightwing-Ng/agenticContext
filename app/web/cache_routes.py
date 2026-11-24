@@ -11,7 +11,7 @@ The Safari mutual-exclusion check belongs to the Agent surface, so it arrives as
 capability instead of being reimplemented here.
 """
 
-# Code version: v1.9.2-codex.0
+# Code version: v1.10.0-codex.0
 
 from __future__ import annotations
 
@@ -71,6 +71,7 @@ from app.web.config_store import SavedConfigStore
 from app.web.form_config import parse_form_config
 from app.web.navigation import is_supported_cache_browser, normalize_cache_content_mode
 from app.web.presentation import reconcile_cached_snapshot
+from app.web.youtube_cache_routes import register_youtube_cache_routes
 
 
 CACHE_BLUEPRINT_NAME = "cache"
@@ -397,6 +398,11 @@ def cache_source_switcher_path(
 def register_cache_routes(app: Flask, context: CacheRouteContext) -> None:
     """Register the cache pages, runtime control, and status endpoints."""
     blueprint = Blueprint(CACHE_BLUEPRINT_NAME, __name__)
+    app.extensions["youtube_cache_shutdown"] = register_youtube_cache_routes(
+        blueprint, context.media_catalog.local_store_root, context.config_store,
+        context.cache_task_coordinator,
+        context.external_agent_operations_enabled, context.reject_external_agent_operation,
+    )
     app.template_global("cache_source_switcher_path")(
         lambda current_source_key, target_source_key: cache_source_switcher_path(
             context, current_source_key, target_source_key
@@ -474,6 +480,7 @@ def register_cache_routes(app: Flask, context: CacheRouteContext) -> None:
             selected_browser_id=selected_browser_id,
             selected_browser_label=selected_browser_label,
             cache_content_mode=cache_content_mode,
+            youtube_cache_loopback=is_loopback_address(request.remote_addr),
             file_manager_label=local_file_manager_label(),
             version=APP_VERSION,
             default_host=DEFAULT_HOST,

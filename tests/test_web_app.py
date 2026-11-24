@@ -1,10 +1,11 @@
 """Focused regression tests for the local web console."""
 
-# Code version: v1.156.13-codex.0
+# Code version: v1.156.14-codex.0
 
 from __future__ import annotations
 
 import pytest
+from bs4 import BeautifulSoup
 
 from dataclasses import asdict
 from datetime import datetime, timedelta, timezone
@@ -770,7 +771,10 @@ class WebAppTests(unittest.TestCase):
         self.assertIn('All generated media', chatgpt_body)
         self.assertIn('name="chatgpt_project_url"', chatgpt_body)
         self.assertIn('name="chatgpt_project_name"', chatgpt_body)
-        self.assertNotIn('type="url"', chatgpt_body)
+        chatgpt_form = BeautifulSoup(chatgpt_body, "html.parser").select_one('form[action="/cache/chatgpt/start"]')
+        self.assertIsNotNone(chatgpt_form)
+        self.assertIsNone(chatgpt_form.select_one('input[type="url"]'))
+        self.assertIsNotNone(chatgpt_form.select_one('input[name="chatgpt_project_url"][type="hidden"]'))
         self.assertNotIn('name="chatgpt_startup_timeout_seconds"', chatgpt_body)
         self.assertNotIn('name="chatgpt_scan_wait_seconds"', chatgpt_body)
         self.assertNotIn("Project or chat URL", chatgpt_body)

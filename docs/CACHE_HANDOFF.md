@@ -1,6 +1,6 @@
 # Cache handoff and operating runbook
 
-Documentation version: `v1.34.1-codex.0`
+Documentation version: `v1.35.1-codex.0`
 
 This is the authoritative handoff document for the second Dock item, `Cache`.
 Read it before changing Cache routes, source switching, Text/Media behavior, local
@@ -20,6 +20,42 @@ Legacy Parquet is read only when the SQLite target is absent and is retained by
 ordinary first-write adoption. Do not rename old bytes to `.sqlite3` or point this
 backend at an LLM history. Use the explicit migration script and verified rollback
 receipt before retiring an old file. See [media SQLite storage](MEDIA_SQLITE_STORAGE.md).
+
+## YouTube single-video cache
+
+Open a local Cache page in `Media` mode and select `YouTube` in the source
+picker. Paste a video URL and choose `Video` for an MP4 or `Audio` for an M4A.
+Playlist, radio, and timestamp parameters refer to the same full video as its
+watch URL. Reloading the same browser history entry restores the YouTube source
+and output choice.
+
+The cache stores files by YouTube video ID under
+`local_store/media/youtube/<video_id>/` and reuses completed files for the
+requested format. `Recent cache` shows the latest 20 completed items with
+download names that include the output type, title, and uploader when available.
+New downloads respect the shared media size limit. The progress bar uses
+yt-dlp's reported transfer bytes and shows a percentage when the total is
+known. Processing and file verification follow the transfer.
+
+Downloads run locally through yt-dlp and FFmpeg. The selected browser session
+is independent of the YouTube cache worker.
+
+When the default yt-dlp client cannot retrieve a public video, macOS can use a
+separate yt-dlp and Node.js provider installation. The default location is
+`~/Library/Caches/agenticContext/youtube-runtime`. Set
+`AGENTIC_CONTEXT_YOUTUBE_RUNTIME` to use a different directory with the same
+layout. The following commands prepare the tested runtime from a new directory
+with Python 3.13 or newer, Node.js 22 or newer, and FFmpeg available.
+
+```bash
+youtube_runtime="$HOME/Library/Caches/agenticContext/youtube-runtime"
+python3 -m venv "$youtube_runtime/venv"
+"$youtube_runtime/venv/bin/python" -m pip install \
+  'yt-dlp[default]==2026.11.23' 'bgutil-ytdlp-pot-provider==2.0.2'
+git clone --depth 1 --branch 2.0.2 \
+  https://github.com/Brainicism/bgutil-ytdlp-pot-provider.git "$youtube_runtime/provider"
+(cd "$youtube_runtime/provider/server" && npm ci && npx tsc)
+```
 
 ## Current LLM storage contract
 

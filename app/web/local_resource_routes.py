@@ -5,7 +5,7 @@ refresh service without reaching for a browser or Agent. Serialization of one st
 public shape lives here too, so a template global and a JSON response cannot drift.
 """
 
-# Code version: v1.25.7-codex.0
+# Code version: v1.25.8-codex.0
 
 from __future__ import annotations
 
@@ -49,6 +49,7 @@ from app.core.storage import (
     resolve_resource_for_reveal,
     reveal_media_path,
 )
+from app.core.youtube_cache import youtube_cache_directory
 from app.web.public_errors import public_exception_message
 from app.web.cache_sources import get_cache_source_label
 from app.web.date_display import current_date_display
@@ -842,6 +843,10 @@ def register_local_resource_routes(app: Flask, context: LocalResourceRouteContex
         resolved_path = resolve_browser_media_path(context.media_catalog.local_store_root, relative_path)
         if resolved_path is None:
             abort(404)
+        if not is_loopback_address(request.remote_addr) and resolved_path.is_relative_to(
+            youtube_cache_directory(context.media_catalog.local_store_root)
+        ):
+            abort(403)
         return send_file(resolved_path, conditional=True, etag=True, max_age=0)
 
     @blueprint.post("/api/browser/prompts")
