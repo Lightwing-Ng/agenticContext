@@ -1,0 +1,38 @@
+{# Code version: v1.3.0-codex.0 #}
+<section class="youtube-cache-sidebar" aria-label="YouTube cache" data-youtube-cache-panel hidden>
+    <form class="sidebar-form" action="{{ url_for('cache.start_youtube_download') }}" method="post" data-youtube-cache-form>
+        <div class="field">
+            <label class="field-title" for="youtube_cache_url">YouTube URL</label>
+            <div class="text-input-control-shell">
+                <input id="youtube_cache_url" class="text-input-control" type="url" name="url" spellcheck="false" required>
+                <button type="button" class="text-input-clear" data-youtube-cache-clear-url aria-label="Clear YouTube URL" hidden>
+                    <span class="icon icon-remove-muted" aria-hidden="true"></span>
+                </button>
+            </div>
+        </div>
+        <div class="segmented-control" role="radiogroup" aria-label="YouTube output" data-option-count="2" data-segmented-active-index="0">
+            <label class="segmented-control-option">
+                <input type="radio" name="mode" value="video" checked>
+                <span>Video</span>
+            </label>
+            <label class="segmented-control-option">
+                <input type="radio" name="mode" value="audio">
+                <span>Audio</span>
+            </label>
+        </div>
+        <div class="youtube-cache-submit">
+            <button type="submit" class="primary-button sidebar-action-button">Cache video</button>
+        </div>
+    </form>
+    <p class="youtube-cache-status" role="status" data-youtube-cache-status></p>
+    <div class="cache-training-progress youtube-cache-progress" data-youtube-cache-progress hidden>
+        <div class="status-progress" role="progressbar" aria-label="YouTube cache progress" aria-valuemin="0" aria-valuemax="100">
+            <span class="status-progress-fill"></span>
+        </div>
+    </div>
+    <section class="sidebar-form youtube-cache-recent" aria-labelledby="youtube_cache_recent_heading"
+        data-youtube-cache-recent="{{ url_for('cache.youtube_recent_media') }}" hidden>
+        <h2 id="youtube_cache_recent_heading">Recent cache</h2>
+        <ul class="youtube-cache-file-list"></ul>
+    </section>
+</section>

@@ -1,6 +1,6 @@
 """Tests for yt-dlp output classification and retry boundaries.
 
-Code version: v1.4.2-codex.0
+Code version: v1.4.3-codex.0
 """
 
 from __future__ import annotations
@@ -20,6 +20,7 @@ from app.core.config import CrawlConfig
 from app.core.downloader import (
     MEDIA_MARKER_PREFIX,
     METADATA_MARKER_PREFIX,
+    YtDlpInterrupted,
     build_cookies_from_browser_arg,
     count_downloaded_media_types,
     discard_oversized_downloads,
@@ -197,6 +198,62 @@ def test_non_retryable_yt_dlp_failure_does_not_retry(tmp_path: Path, failure_out
     assert result.returncode == 1
     assert attempts_path.read_text() == "1"
     assert not is_transient_retryable_output(result.stderr)
+
+
+def test_streamed_yt_dlp_stdout_is_consumed_before_exit_without_losing_retry_diagnostics(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    received = tmp_path / "received"
+    script = "\n".join((
+        "import pathlib, sys, time",
+        "received = pathlib.Path(sys.argv[1])",
+        "if not received.exists():",
+        "    print('progress:512', flush=True)",
+        "    while not received.exists(): time.sleep(0.01)",
+        "    print('first attempt diagnostic')",
+        "    print('timed out', file=sys.stderr)",
+        "    sys.exit(1)",
+        "print('progress:128', flush=True)",
+        "print('second attempt diagnostic')",
+    ))
+    events = []
+
+    def consume_stdout(line: str) -> bool:
+        if not line.startswith("progress:"):
+            return False
+        events.append(line)
+        received.touch()
+        return True
+
+    monkeypatch.setattr("app.core.downloader.DOWNLOAD_RETRY_DELAY_SECONDS", 0.01)
+    result = run_yt_dlp_with_retries(
+        [sys.executable, "-c", script, str(received)], "https://example.test/video",
+        timeout_seconds=5, consume_stdout=consume_stdout, on_retry=lambda: events.append("retry"),
+    )
+
+    assert result.returncode == 0
+    assert events == ["progress:512", "retry", "progress:128"]
+    assert result.stdout.split() == "first attempt diagnostic second attempt diagnostic".split()
+    assert not result.stderr
+
+
+@pytest.mark.parametrize("reason", ["stopped", "timed_out"])
+def test_streamed_yt_dlp_stdout_keeps_stop_and_deadline_boundaries(reason: str) -> None:
+    events = []
+
+    def consume_stdout(line: str) -> bool:
+        events.append(line)
+        return True
+
+    with pytest.raises(YtDlpInterrupted) as error:
+        run_yt_dlp_with_retries(
+            [sys.executable, "-c", "import time; print('progress:512', flush=True); time.sleep(30)"],
+            "https://example.test/video", timeout_seconds=1,
+            should_stop=lambda: reason == "stopped" and bool(events), consume_stdout=consume_stdout,
+        )
+
+    assert error.value.reason == reason
+    assert events == ["progress:512"]
 
 
 @pytest.mark.parametrize("failure_output", [
