@@ -3,6 +3,7 @@
 Code version: v1.1.2-codex.0
 """
 
+from contextlib import closing
 import csv
 import io
 import json
@@ -26,7 +27,7 @@ projection_archive_store = cases.projection_archive_store
 
 
 def _snapshot(path):
-    with sqlite3.connect(path) as connection:
+    with closing(sqlite3.connect(path)) as connection, connection:
         return {
             name: connection.execute("SELECT * FROM " + name + " ORDER BY 1").fetchall()
             for name in ("refs", "statement_groups", "statement_members")
@@ -135,7 +136,7 @@ def test_rule_upgrade_restores_then_reproves_the_complete_projection(
     assert upgraded["source_fingerprint"] != first["source_fingerprint"]
     assert upgraded["total_count"] == 3
     assert _snapshot(f.cache) == snapshot
-    with sqlite3.connect(f.cache) as connection:
+    with closing(sqlite3.connect(f.cache)) as connection, connection:
         evidence = connection.execute(
             "SELECT basis,COUNT(*) FROM forwarded_copy_projection_evidence GROUP BY basis"
         ).fetchall()

@@ -1,6 +1,6 @@
 """Bounded resource details preserve canonical identity and exact native evidence.
 
-Code version: v1.1.0-codex.0
+Code version: v1.1.1-codex.0
 """
 
 from contextlib import closing
@@ -13,6 +13,8 @@ import sqlite3
 from types import SimpleNamespace
 
 import pytest
+
+from app.core.owner_only_files import ensure_owner_only
 
 from app.core import wechat_resource_details as details
 from app.core.wechat_archive import WechatArchiveRepository, _time_fields
@@ -91,7 +93,7 @@ def _registry(fixture, entry=None):
     entry = entry or details.make_entry(fixture.row, fixture.conversation, fixture.packet)
     path = fixture.history.with_name(details.FILENAME)
     path.write_text(json.dumps({"version": details.VERSION, "entries": [entry]}))
-    path.chmod(0o600)
+    ensure_owner_only(path)
     return path
 
 
@@ -280,6 +282,8 @@ def test_malformed_or_untrusted_registry_fails_closed(fixture, problem):
     elif problem == "version":
         payload["version"] = "unsupported"
     elif problem == "public":
+        path.unlink()
+        path.write_text(json.dumps(payload), encoding="utf-8")
         path.chmod(0o644)
     elif problem == "symlink":
         target = path.with_suffix(".preserved")
@@ -293,14 +297,28 @@ def test_malformed_or_untrusted_registry_fails_closed(fixture, problem):
         assert _attach(connection, fixture)[2] == "invalid"
 
 
-def test_registry_identity_pins_in_place_change_with_restored_size_and_mtime(fixture):
+@pytest.mark.parametrize("timestamps_tie", (False, True))
+def test_registry_identity_pins_in_place_change_with_restored_size_and_mtime(
+    fixture, monkeypatch, timestamps_tie,
+):
+    if timestamps_tie:
+        monkeypatch.setattr(details, "IS_WINDOWS", True)
+        monkeypatch.setattr(
+            details, "file_change_time",
+            lambda _path, *, descriptor=None: 116_444_736_000_000_000,
+        )
     path = _registry(fixture)
     before = details.registry_identity(fixture.history)
     raw = path.read_bytes()
     path.write_bytes(raw.replace(b"source title", b"edited title"))
     assert path.stat().st_size == before["size"]
     os.utime(path, ns=(path.stat().st_atime_ns, before["mtime_ns"]))
-    assert details.registry_identity(fixture.history) != before
+    after = details.registry_identity(fixture.history)
+    assert after != before
+    if timestamps_tie:
+        assert {key: value for key, value in after.items() if key != "sha256"} == {
+            key: value for key, value in before.items() if key != "sha256"
+        }
 
 
 def test_absent_registry_is_pinned_without_creating_files(fixture):
@@ -316,7 +334,7 @@ def _compact_registry(fixture, entries=None):
     entries = entries or [details.make_entry(fixture.row, fixture.conversation, fixture.packet)]
     path = fixture.history.with_name(details.FILENAME)
     path.write_bytes(details.encode_registry(entries))
-    path.chmod(0o600)
+    ensure_owner_only(path)
     return path
 
 

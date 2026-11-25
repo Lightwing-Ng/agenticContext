@@ -1,6 +1,6 @@
 """Read Windows change metadata without opening a file's payload for reading.
 
-Code version: v1.0.1-codex.0
+Code version: v1.0.2-codex.0
 """
 
 from __future__ import annotations
@@ -74,11 +74,19 @@ def file_change_time(path: Path, *, descriptor: int | None = None) -> int:
 
 def has_file_writers(path: Path) -> bool:
     """Probe existing write access without reading the file's payload."""
+    return _probe_sharing(path, share_mode=0x00000001 | 0x00000004)
+
+
+def has_open_file_handles(path: Path) -> bool:
+    """Probe for conflicts with exclusive read access to a closed file."""
+    return _probe_sharing(path, share_mode=0)
+
+
+def _probe_sharing(path: Path, *, share_mode: int) -> bool:
     ctypes, kernel32, _ = _native_api()
-    # Attribute-only handles bypass sharing. Request read access and omit
-    # FILE_SHARE_WRITE so the kernel refuses any conflicting open handle.
+    # Attribute-only handles bypass sharing, so request read access.
     handle = kernel32.CreateFileW(
-        str(path), 0x80000000, 0x00000001 | 0x00000004, None, 3, 0x00200000, None,
+        str(path), 0x80000000, share_mode, None, 3, 0x00200000, None,
     )
     if handle is None or handle == ctypes.c_void_p(-1).value:
         error = ctypes.get_last_error()

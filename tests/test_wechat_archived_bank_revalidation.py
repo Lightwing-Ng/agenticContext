@@ -1,6 +1,6 @@
 """A verified compressed preservation authorizes one newly validated bank clone.
 
-Code version: v1.0.0-codex.0
+Code version: v1.0.1-codex.0
 """
 
 from contextlib import ExitStack
@@ -10,7 +10,6 @@ import json
 import os
 from pathlib import Path
 import shutil
-import stat
 from types import SimpleNamespace
 from unittest.mock import Mock
 
@@ -18,6 +17,7 @@ import pytest
 
 from app.core import wechat_macos_recovery_bank as bank
 from app.core import wechat_macos_recovery_revalidation as revalidation
+from app.core.owner_only_files import ensure_owner_only
 from scripts import archive_wechat_rollbacks as archiver
 from tests import test_wechat_sealed_bank_revalidation as sealed
 
@@ -25,17 +25,26 @@ from tests import test_wechat_sealed_bank_revalidation as sealed
 mac_archive = sealed.mac_archive
 bank_archive = sealed.bank_archive
 sealed_case = sealed.sealed_case
+clone_document_flags = sealed.clone_document_flags
 
 
 @pytest.fixture
-def archived_case(sealed_case):
+def archived_case(sealed_case, monkeypatch):
     if shutil.which("zstd") is None:
         pytest.skip("The existing zstd CLI is required for real streamed preservation tests.")
+    if os.name == "nt":
+        def inspect_writers(path):
+            bank._no_baseline_copy_handles(path)
+            return []
+
+        monkeypatch.setattr(archiver, "_assert_no_writers", inspect_writers)
     case = sealed_case
     archive = case.directory / "source-preservation.sqlite3.zst"
     record = archiver.archive_file(case.source, archive, level=1, threads=1, minimum_free_bytes=0)
+    ensure_owner_only(archive)
     archive.chmod(0o400)
     receipt = Path(record["receipt"])
+    ensure_owner_only(receipt)
     case.archive = archive
     case.archive_receipt = receipt
     case.archive_record = record
@@ -92,7 +101,7 @@ def test_real_archive_verification_authorizes_exactly_one_clone_and_normal_publi
         case.clones.assert_called_once_with(case.source, case.candidate)
         assert set(case.directory.iterdir()) == before_paths | {case.candidate}
         assert not case.preserved.exists()
-        assert stat.S_IMODE(case.candidate.stat().st_mode) == 0o600
+        assert revalidation._source_mode(case.candidate.stat()) == 0o600
         assert receipt["preservation_kind"] == "verified_zstd_full_byte_archive"
         preservation = receipt["preservation"]
         assert preservation["archive_path"] == str(case.archive)
@@ -275,14 +284,19 @@ def test_preservation_artifacts_must_remain_private_unaliased_and_closed(
     if defect == "hardlink":
         path.with_name("alias-" + path.name).hardlink_to(path)
     elif defect == "mode":
-        path.chmod(0o644)
+        sealed._widen_access(path)
     elif defect == "symlink":
         actual = path.with_name("preserved-" + path.name)
         path.rename(actual)
         path.symlink_to(actual)
     with ExitStack() as stack:
         if defect == "reader":
-            stack.enter_context(path.open("rb"))
+            if os.name == "nt":
+                # Windows refuses conflicting writers and permits shared read handles.
+                path.chmod(0o600)
+                stack.enter_context(path.open("r+b"))
+            else:
+                stack.enter_context(path.open("rb"))
         with bank.mac_recovery_publication_guard(case.fixture.root) as guard:
             with pytest.raises(ValueError):
                 _stage(case, guard)

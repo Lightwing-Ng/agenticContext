@@ -1,6 +1,6 @@
 """Publish and read authenticated, account-scoped WeChat conversation summaries.
 
-Code version: v1.2.0-codex.0
+Code version: v1.2.2-codex.0
 """
 
 from contextlib import closing
@@ -101,12 +101,14 @@ def publish_account_summaries(repository, history_identity):
     return _write(directory, MANIFEST, key, manifest, unchanged) and unchanged()
 
 
-def _count_deltas(repository, rows, pin):
+def _count_deltas(repository, rows):
     """Read only already published event counts for the selected account's rows."""
     directory = events._directory(repository)
     if directory.is_symlink() or not directory.is_dir():
         return {}
-    fingerprint = events._fingerprint(pin["inputs"])
+    # Event proofs use their own input identity format. The signed summary's
+    # Windows ChangeTime pin is validated separately before returning the page.
+    fingerprint = events._fingerprint(events._inputs(repository))
     counts, scanned = {}, 0
     for row in sorted(rows, key=lambda row: row[0]):
         session = row[0]
@@ -277,13 +279,13 @@ def read_account_summary(root, *, account, sort, page, chat_kind="direct", previ
             rows = [row for row in rows if row[0] not in source_ids]
         result = _page(
             root, account, chat_kind, sort, page, rows, manifest,
-            {} if previous else _count_deltas(repository, rows, pin), previous=previous,
+            {} if previous else _count_deltas(repository, rows), previous=previous,
             supplements=supplements,
         )
         if (
             account_summary_pin(root) == current_pin
             and snapshot._directory_identity(directory) == directory_state
-            and snapshot._state(key_path.lstat()) == key_state
+            and snapshot._cache_file_state(key_path) == key_state
         ):
             return result
     except (OSError, KeyError, ValueError, TypeError, RecursionError, sqlite3.DatabaseError):

@@ -1,6 +1,6 @@
 """Real-renderer regressions for bounded draft Sidebar failure diagnostics.
 
-Code version: v1.0.0-codex.0
+Code version: v1.0.1-codex.0
 """
 
 import json
@@ -32,10 +32,10 @@ def test_renderer_loop_preserves_original_failure_and_releases_context(
     cancelled = []
     native_evaluate = page._impl_obj.evaluate
 
-    async def observe_evaluation(expression):
+    async def observe_evaluation(expression, arg):
         attempts.append(expression)
         try:
-            return await native_evaluate(expression)
+            return await native_evaluate(expression, arg)
         except asyncio.CancelledError:
             cancelled.append(expression)
             raise

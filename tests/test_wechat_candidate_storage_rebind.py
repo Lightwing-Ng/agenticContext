@@ -1,6 +1,6 @@
 """Candidate ctime rebinding requires stable exact bytes and unchanged source pins.
 
-Code version: v1.1.0-codex.0
+Code version: v1.1.1-codex.0
 """
 
 from contextlib import closing, ExitStack
@@ -14,6 +14,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from app.core import owner_only_files
 from app.core import wechat_macos_recovery_bank as bank
 from tests import test_wechat_macos_recovery_bank as fixtures
 
@@ -29,8 +30,10 @@ def storage_case(bank_archive, tmp_path):
     fixtures._publish(fixture, packets=[fixture.direct], name="before-storage-rebind")
     workstation = tmp_path / "private-workstation"
     workstation.mkdir(mode=0o700)
+    owner_only_files.ensure_owner_only_directory(workstation)
     directory = workstation / "private-run"
     directory.mkdir(mode=0o700)
+    owner_only_files.ensure_owner_only_directory(directory)
     scratch = directory / "baseline.sqlite3"
     with (
         closing(sqlite3.connect(fixture.bank_path.resolve().as_uri() + "?mode=ro&immutable=1", uri=True)) as source,
@@ -51,15 +54,29 @@ def _nonctime(identity):
 
 def _ctime_only(path):
     before = bank._identity(path)
-    mode = stat.S_IMODE(path.stat().st_mode)
     for _attempt in range(3):
-        os.chmod(path, mode)
+        state = path.stat()
+        if os.name == "nt":
+            os.utime(path, ns=(state.st_atime_ns, state.st_mtime_ns))
+        else:
+            path.chmod(stat.S_IMODE(state.st_mode))
         after = bank._identity(path)
         if after["ctime_ns"] != before["ctime_ns"]:
             break
     assert _nonctime(after) == _nonctime(before)
     assert after["ctime_ns"] != before["ctime_ns"]
     return before, after
+
+
+def _widen_access(path, *, directory=False, mode=0o644):
+    if os.name == "nt":
+        security = owner_only_files._windows_security()
+        inherit = "OICI" if directory else ""
+        security.set_protected_dacl(
+            str(path), f"D:P(A;{inherit};FA;;;{security.current_user_sid()})(A;;FR;;;WD)",
+        )
+    else:
+        path.chmod(0o755 if directory else mode)
 
 
 def _change_bytes_keep_size_and_mtime(path):
@@ -143,7 +160,7 @@ def test_factory_rebinds_only_ctime_after_full_semantic_validation(storage_case,
     assert summary["file_sha256"] == sha
     _assert_audit(summary["storage_rebindings"], "factory_verification", sha)
     assert operation.scratch.read_bytes() == operation.scratch_bytes
-    assert stat.S_IMODE(operation.scratch.stat().st_mode) == 0o600
+    assert owner_only_files.owner_only_problem(operation.scratch) == ""
     _source_bytes_unchanged(operation)
 
 
@@ -331,9 +348,9 @@ def test_publication_ctime_rebind_still_requires_private_unaliased_unopened_file
     if defect == "sidecar":
         candidate.with_name(candidate.name + "-journal").touch()
     elif defect == "public_parent":
-        candidate.parent.chmod(0o755)
+        _widen_access(candidate.parent, directory=True)
     elif defect == "mode":
-        candidate.chmod(0o644)
+        _widen_access(candidate)
     elif defect == "hardlink":
         candidate.with_name("alias.sqlite3").hardlink_to(candidate)
     with ExitStack() as stack:

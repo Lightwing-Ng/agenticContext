@@ -1,6 +1,6 @@
 """Keep authenticated relocation bounded to the original archive artifacts.
 
-Code version: v1.1.0-codex.0
+Code version: v1.1.1-codex.0
 """
 
 from contextlib import closing
@@ -13,6 +13,7 @@ import pytest
 
 from app.core import wechat_archive_relocation as relocation
 from app.core import wechat_macos_recovery_bank as bank
+from app.core.owner_only_files import ensure_owner_only
 from app.core.wechat_archive import WechatArchiveRepository, _file_identity
 from app.core.wechat_browser_snapshot import _cache_storage, _json
 from tests import test_wechat_media_event_global_timeline as fixtures
@@ -36,7 +37,7 @@ def _proof(history, previous, *, key_override=None, version=1, aliases=None):
     })
     proof = history.with_name(relocation.FILENAME)
     proof.write_bytes(hmac.digest(key_override or key, relocation.DOMAIN + encoded, "sha256") + encoded)
-    proof.chmod(0o600)
+    ensure_owner_only(proof)
     return proof
 
 

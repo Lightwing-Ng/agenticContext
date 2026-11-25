@@ -1,6 +1,6 @@
 """Serialize synthetic bank publishers without discarding another session's data.
 
-Code version: v1.0.3-codex.0
+Code version: v1.0.4-codex.0
 """
 
 from concurrent.futures import ThreadPoolExecutor
@@ -184,7 +184,7 @@ def test_final_callback_cannot_publish_against_changed_inputs(bank_archive):
     def change_input():
         fixture.history.with_name("media_events.sqlite3").touch()
 
-    with pytest.raises(ValueError, match="staged Mac bank input changed immediately"):
+    with pytest.raises(ValueError, match="Canonical inputs changed before reuse or publication"):
         bank.publish_mac_recovery_bank(
             fixture.root, candidate, receipt, before_replace=change_input,
         )

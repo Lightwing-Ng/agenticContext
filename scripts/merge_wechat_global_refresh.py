@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Rebase a sealed global repair onto the latest published WeChat recovery bank.
 
-Code version: v1.0.0-codex.0
+Code version: v1.0.1-codex.0
 
 The incoming candidate remains immutable evidence. --apply preserves the current
 bank, holds the global UI lease and publication guard, and stages validated replay
@@ -24,6 +24,7 @@ import time
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from app.core import wechat_macos_recovery_bank as bank
+from app.core.owner_only_files import ensure_owner_only_directory, owner_only_directory_problem
 from app.core.wechat_archive import wechat_archive_path
 from app.core.wechat_global_guard import global_refresh_guard
 from scripts.archive_wechat_rollbacks import archive_file
@@ -38,7 +39,7 @@ from scripts.refresh_wechat_globally import (
 )
 
 
-VERSION = "v1.0.0-codex.0"
+VERSION = "v1.0.1-codex.0"
 
 
 def merge_accounts(local_store, incoming):
@@ -70,11 +71,12 @@ def run(local_store, workstation, incoming, *, apply=False, global_report=None):
         raise GlobalRepairError("workstation_outside_canonical_root")
     if incoming.is_symlink() or not incoming.resolve().is_relative_to(workstation.resolve()):
         raise GlobalRepairError("incoming_bank_outside_selected_workstation")
-    if not workstation.is_dir() or workstation.stat().st_mode & 0o077:
+    if owner_only_directory_problem(workstation):
         raise GlobalRepairError("workstation_must_be_owner_only")
     bank._identity(incoming)
     directory = workstation / ("merge-" + datetime.now(UTC).strftime("%Y%m%dT%H%M%S%fZ"))
     directory.mkdir(mode=0o700)
+    ensure_owner_only_directory(directory)
     report_path = directory / "result.json"
     report = {
         "version": VERSION, "started_utc": utc_now(), "status": "inventory",

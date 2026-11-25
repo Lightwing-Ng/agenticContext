@@ -1,6 +1,6 @@
 """Resolve resource authors from exact, independently proven native messages.
 
-Code version: v1.1.1-codex.0
+Code version: v1.1.2-codex.0
 
 This read-only helper enriches one catalog row for a caller's reversible stage.
 It does not publish a catalog, open media files, or infer an author from direction,
@@ -485,7 +485,7 @@ def stage_native_resource_senders(
                 raise ValueError("The sender candidate failed its integrity check.")
         if any(_resident(path) != identity for path, identity in identities.items()):
             raise ValueError("A sender input changed before candidate completion.")
-        with candidate_path.open("rb") as stream:
+        with candidate_path.open("r+b" if os.name == "nt" else "rb") as stream:
             os.fsync(stream.fileno())
         report.update(
             candidate_identity=_resident(candidate_path),

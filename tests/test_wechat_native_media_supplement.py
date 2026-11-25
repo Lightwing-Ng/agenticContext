@@ -1,6 +1,6 @@
 """Supplemental native metadata requires exact independent source receipts.
 
-Code version: v1.0.0-codex.0
+Code version: v1.0.1-codex.0
 """
 
 from datetime import UTC, datetime
@@ -312,11 +312,12 @@ def test_exact_metadata_supplement_keeps_zero_server_rows_distinct_and_sources_u
         for path in (fixture.history, fixture.base, fixture.database)
     }
     original_connect = sqlite3.connect
+    database_uri = fixture.database.resolve().as_uri()
     columns_read = []
 
     def guarded_connect(database, *args, **kwargs):
         connection = original_connect(database, *args, **kwargs)
-        if str(fixture.database) in str(database):
+        if str(database).partition("?")[0] == database_uri:
 
             def authorize(action, table, column, *_):
                 if action == sqlite3.SQLITE_READ:

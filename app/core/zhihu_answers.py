@@ -1,6 +1,6 @@
 """Authenticated Zhihu answer normalization and bounded collection.
 
-Code version: v1.3.1-codex.0
+Code version: v1.3.2-codex.0
 """
 
 from __future__ import annotations
@@ -739,17 +739,17 @@ def _answer_api_url(profile: ZhihuProfile, offset: int) -> str:
 def normalize_zhihu_rich_text(value: object) -> ZhihuRichText:
     """Isolate answer content and derive canonical HTML plus portable Markdown."""
 
-    source = str(value or "").replace("\x00", "").strip()
+    # A custom __str__ may return a subclass with overridden string operations.
+    source = str.__str__(str(value or "")).replace("\x00", "").strip()
     if not source:
         return ZhihuRichText("", "", (), ())
 
-    exact_source = type(source) is str
     detector: _ZhihuBodyRootDetector | None = None
     root_kind = None
     try:
         # Every supported body root needs an attribute with an assigned value.
-        if not exact_source or "=" in source:
-            if exact_source and len(source) <= _ZHIHU_SOURCE_REPLAY_LIMIT:
+        if "=" in source:
+            if len(source) <= _ZHIHU_SOURCE_REPLAY_LIMIT:
                 detector = _ZhihuSourceEvents()
             else:
                 detector = _ZhihuBodyRootDetector()

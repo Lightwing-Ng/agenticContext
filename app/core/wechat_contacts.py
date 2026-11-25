@@ -1,6 +1,6 @@
 """Resolve WeChat identities while retaining account-specific contact observations.
 
-Code version: v1.3.4-codex.0
+Code version: v1.3.5-codex.0
 
 A contact identifies a platform identity, not an assumed real-world person.
 Syntax classifies identifiers; only explicit native evidence authorizes linking.
@@ -1459,10 +1459,11 @@ class WechatContactRepository:
             corroborated = any(
                 item["authority"] == MESSAGE_BINDING_AUTHORITY for item in values
             )
+            forwarded = message["id"] in forwarded_proofs
             evidence_context = (
                 *context,
                 message.get("sender_id"),
-                message["id"] if corroborated else "",
+                message["id"] if corroborated or forwarded else "",
             )
             if evidence_context not in binding_evidence:
                 binding_evidence[evidence_context] = [
@@ -1508,14 +1509,14 @@ class WechatContactRepository:
                 ),
                 "evidence": binding_evidence[evidence_context],
                 "resolution_reason": FORWARDED_BINDING_AUTHORITY
-                if message["id"] in forwarded_proofs
+                if forwarded
                 else MESSAGE_BINDING_AUTHORITY
                 if corroborated
                 else "authoritative_identifier"
                 if contact["identity_status"] == "verified"
                 else "source_scoped_identifier",
             }
-            if message["id"] in forwarded_proofs:
+            if forwarded:
                 result[message["id"]]["registry_persisted"] = (
                     contact["id"] in registered_ids
                 )

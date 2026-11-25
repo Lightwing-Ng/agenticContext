@@ -1,19 +1,22 @@
 """Stream one complete source-scoped WeChat timeline from pinned local inputs.
 
-Code version: v1.6.3-codex.0
+Code version: v1.6.5-codex.0
 """
 
 from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 import sqlite3
 import stat
 
 from .wechat_archive import WECHAT_KINDS, WechatArchiveRepository, _file_identity
 from .wechat_contacts import WechatContactRepository
-from .wechat_display_names import WechatDisplayNames, display_names_path
+from .wechat_display_names import (
+    WechatDisplayNames, display_names_path, verified_contact_profile_name,
+)
 
 
 def forwarded_export_items(record):
@@ -84,12 +87,17 @@ def _identity(path):
         for suffix in ("-wal", "-shm", "-journal")
     ):
         raise WechatSessionSourceChanged("The archive is being published.")
+    change_time = value.st_ctime_ns
+    if os.name == "nt":
+        from .wechat_macos_recovery_bank import _storage_identity
+
+        change_time = _storage_identity(path, value)["ctime_ns"]
     return (
         value.st_dev,
         value.st_ino,
         value.st_size,
         value.st_mtime_ns,
-        value.st_ctime_ns,
+        change_time,
     )
 
 
@@ -410,16 +418,8 @@ class WechatSessionExport:
         for item in items:
             contact = contacts.get(item["id"], {})
             name = self.display_names.contact_name(contact)
-            if (
-                not name
-                and item["id"] in native_candidates
-                and contact.get("identity_status") == "verified"
-            ):
-                name = contact.get("preferred_name") or ""
-                if name in ("", item["sender_id"], "Unknown sender"):
-                    name = contact.get("display_name") or ""
-                if name in (item["sender_id"], "Unknown sender"):
-                    name = ""
+            if not name and item["id"] in native_candidates:
+                name = verified_contact_profile_name(contact, item["sender_id"])
             if name:
                 item["viewer_display_name"] = name
         return items

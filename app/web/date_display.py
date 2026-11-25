@@ -1,6 +1,6 @@
 """Persist and bind one date display selection for every rendering surface."""
 
-# Code version: v1.0.0-codex.0
+# Code version: v1.0.1-codex.0
 
 from __future__ import annotations
 
@@ -13,12 +13,12 @@ from threading import Lock
 
 from flask import Flask, current_app, g, has_request_context
 
-from app.core.config import default_settings_path
-from app.core.date_display import (
+from app.core.foundation import (
     COMPACT_FORMATS,
     EXAMPLE_DATE,
     FULL_FORMATS,
     DateDisplay,
+    default_settings_path,
     format_date,
     format_datetime,
     format_time,

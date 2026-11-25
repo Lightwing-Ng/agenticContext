@@ -1,6 +1,6 @@
 """Published HTML forwarding reuses the collapsed transcript and message rows.
 
-Code version: v1.3.2-codex.0
+Code version: v1.3.3-codex.0
 """
 
 from __future__ import annotations
@@ -65,8 +65,7 @@ def html_forwarded_server(tmp_path_factory):
     registry.parent.mkdir(parents=True)
     with closing(sqlite3.connect(registry)) as connection, connection:
         initialize_contact_registry(connection)
-        for username in ("wxid_forwarded", "wxid_other_forwarded"):
-            insert_contact(connection, username)
+        insert_contact(connection, "wxid_forwarded")
     fixture = _make_forwarded_html_store(store)
     history = fixture["history"]
     request = deepcopy(fixture["request"])
@@ -133,10 +132,8 @@ def html_forwarded_server(tmp_path_factory):
     assert projection["status"] == "source_proof_verified"
     contacts = [child["contact"] for child in projection["components"]]
     assert all(contact["identity_status"] == "verified" for contact in contacts)
-    assert all(contact["registry_persisted"] is True for contact in contacts)
     assert contacts[0]["id"] == contacts[1]["id"] != contacts[2]["id"]
-    assert contacts[0]["registry_persisted"] is True
-    assert contacts[2]["registry_persisted"] is False
+    assert [contact["registry_persisted"] for contact in contacts] == [True, True, False]
     contact_id = canonical_contact_id(
         "wxid_forwarded", authority="native_message_sender"
     )

@@ -1,6 +1,6 @@
 """Rebase a sealed Mac recovery candidate without replacing newer observations.
 
-Code version: v1.0.1-codex.0
+Code version: v1.0.2-codex.0
 
 This module stages a new bank only. Both input banks must validate against the
 same current non-bank sources, and the caller must retain publication exclusion
@@ -258,9 +258,8 @@ def stage_merged_mac_recovery_bank(
         with closing(packets):
             first = next(packets, None)
             if first is None:
-                with closing(sqlite3.connect(candidate, uri=True)) as output:
+                with bank._staging_output(candidate, history, None, publication_guard) as output:
                     current.backup(output)
-                os.chmod(candidate, 0o600)
                 receipt = {
                     "added": 0, "upgraded": 0, "reparsed": 0, "existing": 0,
                     "occurrences_added": 0, "variants": 0, "conflicts": 0,
@@ -313,8 +312,7 @@ def stage_merged_mac_recovery_bank(
         check()
         with closing(_readonly(candidate)) as final:
             bank._validate_bank(final, history, baseline)
-        os.chmod(candidate, 0o600)
-        with candidate.open("rb") as stream:
+        with candidate.open("r+b" if os.name == "nt" else "rb") as stream:
             os.fsync(stream.fileno())
         candidate_identity = bank._identity(candidate)
         candidate_sha256 = bank._file_sha(candidate)

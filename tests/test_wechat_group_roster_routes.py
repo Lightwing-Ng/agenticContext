@@ -1,6 +1,6 @@
 """Member snapshot actions resolve canonical scope and expose safe observations.
 
-Code version: v1.5.0-codex.0
+Code version: v1.5.1-codex.0
 """
 
 from copy import deepcopy
@@ -21,6 +21,7 @@ from app.web.config_store import SavedConfigStore
 from tests.test_wechat_group_names import ROOM, _record
 from tests.test_wechat_group_rosters import EARLY, LATE, snapshot
 from tests.test_wechat_reconcile import merge, source
+from tests.wechat_browser_markup import get_verified_browser_page
 
 
 ENDPOINT = "/browser/wechat/group-roster"
@@ -80,7 +81,7 @@ def _post(fixture, **options):
 
 
 def _detail(fixture, **query):
-    return fixture.client.get("/browser", query_string={
+    return get_verified_browser_page(fixture.client, "/browser", query_string={
         "view": "text", "source": "wechat", "account": "account:" + fixture.owner,
         "chat_kind": "group", "session": fixture.group, **query,
     })

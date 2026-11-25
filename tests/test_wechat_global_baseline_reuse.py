@@ -1,6 +1,6 @@
 """Private scratch authority stays separate from global retry selection.
 
-Code version: v1.2.0-codex.0
+Code version: v1.2.1-codex.0
 """
 
 from copy import deepcopy
@@ -12,6 +12,7 @@ from unittest.mock import Mock
 import pytest
 
 from app.core import wechat_mac_refresh_source as source
+from app.core.owner_only_files import ensure_owner_only, ensure_owner_only_directory
 from scripts import refresh_wechat_globally as runner
 from tests.test_wechat_global_refresh_runner import _isolated_run
 
@@ -19,6 +20,7 @@ from tests.test_wechat_global_refresh_runner import _isolated_run
 def _failed(operation):
     directory = operation.workstation / "run-failed"
     directory.mkdir(mode=0o700)
+    ensure_owner_only_directory(directory)
     path = directory / "result.json"
     inputs = runner.bank._inputs(runner.wechat_archive_path(operation.local_store))
     value = {
@@ -222,6 +224,7 @@ def _committed_sync_report(operation):
     path, value = _failed(operation)
     scratch_dir = operation.workstation / "run-prior-derived-copy"
     scratch_dir.mkdir(mode=0o700)
+    ensure_owner_only_directory(scratch_dir)
     scratch = scratch_dir / "candidate.sqlite3"
     scratch.write_bytes(b"Synthetic synchronized baseline")
     value.update(
@@ -244,7 +247,7 @@ def test_resume_committed_sync_uses_strict_factory_without_repeating_sync(monkey
     operation = _isolated_run(monkeypatch, tmp_path)
     path, scratch, _value = _committed_sync_report(operation)
     original_report = path.read_bytes()
-    scratch.chmod(0o600)
+    ensure_owner_only(scratch)
     capability = SimpleNamespace(summary={"scratch_path": str(scratch)})
     verify = Mock(return_value=capability)
     synchronize = Mock(side_effect=AssertionError("Committed synchronization must not repeat."))

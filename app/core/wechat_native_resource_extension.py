@@ -1,6 +1,6 @@
 """Stage source-proven resource coverage with optional bounded sender decoding.
 
-Code version: v1.2.0-codex.0
+Code version: v1.2.1-codex.0
 """
 
 from __future__ import annotations
@@ -1648,7 +1648,7 @@ def stage_native_resource_catalog_extension(
                 _resident(path) != identity for path, identity in identities.items()
             ):
                 raise ValueError("A native resource input changed during staging.")
-            with candidate.open("rb") as stream:
+            with candidate.open("r+b" if os.name == "nt" else "rb") as stream:
                 os.fsync(stream.fileno())
             report.update(
                 messages=total,

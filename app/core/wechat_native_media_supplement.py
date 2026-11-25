@@ -1,6 +1,6 @@
 """Stage independently receipted native media metadata without reading Message.
 
-Code version: v1.0.0-codex.0
+Code version: v1.0.1-codex.0
 """
 
 from collections import Counter
@@ -584,7 +584,7 @@ def stage_native_media_supplement(
             raise ValueError("The native media candidate failed its integrity check.")
     if any(_resident(path) != identity for path, identity in identities.items()):
         raise ValueError("A native media source changed before candidate completion.")
-    with candidate.open("rb") as stream:
+    with candidate.open("r+b" if os.name == "nt" else "rb") as stream:
         os.fsync(stream.fileno())
     return dict(
         version=VERSION,
