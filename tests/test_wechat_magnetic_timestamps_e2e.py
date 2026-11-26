@@ -1,6 +1,6 @@
-"""Timestamp rails choose complete containment or complete separation.
+"""Timestamp rails settle in complete containment or complete separation.
 
-Code version: v1.0.1-codex.0
+Code version: v1.1.0-codex.0
 """
 
 from __future__ import annotations
@@ -75,6 +75,7 @@ _GEOMETRY = """() => {
             text:card.querySelector(':scope > .wechat-message-text')?.textContent.slice(0,50),
             contained:card.classList.contains('wechat-message--time-contained'),
             inside,gap,right:clock.right,cardRight:box.right,outerRight:rect(root).right,
+            clockOpacity:Number(getComputedStyle(time).opacity),
             top:box.top,timeTop:clock.top,sourceTop:sourceBox?.top,
             resource: (()=>{const el=card.querySelector(':scope > .wechat-resource');
                 if(!el)return null;const r=rect(el);return {top:r.top,bottom:r.bottom,
@@ -140,7 +141,7 @@ def _settle(page):
     }""")
 
 
-def _assert_layout(page):
+def _assert_layout(page, *, moving_card_id=None):
     page.wait_for_function(
         """() => [...document.querySelectorAll('.wechat-message-row')]
             .filter(row => !row.closest('details:not([open])'))
@@ -157,7 +158,15 @@ def _assert_layout(page):
         <= 1.1
     ), geometry
     for row in samples:
-        assert row["inside"] or row["gap"] >= 11.9, row
+        moving = row["id"] == moving_card_id
+        if moving:
+            if row["gap"] < 0 and row["cardRight"] < row["right"]:
+                assert row["clockOpacity"] == 0, row
+        else:
+            assert row["inside"] or row["gap"] >= 11.9, row
+            assert row["clockOpacity"] == 1, row
+            if row["contained"]:
+                assert row["inside"], row
         assert row["cardRight"] <= row["outerRight"] + 1.1, row
         assert row["timeCount"] == 1, row
         if row["collisions"]:
@@ -165,8 +174,6 @@ def _assert_layout(page):
                 "CLOCK_COLLISION", json.dumps({"viewport": page.viewport_size, **row})
             )
         assert not row["collisions"], row
-        if row["contained"]:
-            assert row["inside"], row
     return geometry
 
 
@@ -253,6 +260,8 @@ def test_provenance_motion_and_reversal_never_cross_the_clock(
         _open(page, fixture, account="account:" + senders.OWNER)
         original = _snapshot(page)
         card = page.locator(".wechat-message").first
+        card_id = card.get_attribute("id")
+        baseline_clock_right = _assert_layout(page)["samples"][0]["right"]
         summary = card.locator(":scope > .wechat-provenance > summary")
         details = card.locator(":scope > .wechat-provenance")
         if motion == "no-preference":
@@ -261,13 +270,18 @@ def test_provenance_motion_and_reversal_never_cross_the_clock(
         expect(details).to_have_attribute("open", "")
         if motion == "no-preference":
             page.wait_for_function("window.wechatDisclosureMotions.length > 0")
-            for fraction in (0.0, 0.15, 0.55):
+            crossed_clock = False
+            for fraction in (0.0, 0.15, 0.225, 0.25, 0.275, 0.55):
                 _sample_motion(card, fraction)
-                _assert_layout(page)
+                frame = _assert_layout(page, moving_card_id=card_id)["samples"][0]
+                assert frame["right"] == pytest.approx(baseline_clock_right, abs=1)
+                crossed_clock |= frame["gap"] < 0 and frame["cardRight"] < frame["right"]
+            assert crossed_clock
             summary.press("Space")
             for fraction in (0.0, 0.3, 1.0):
                 _sample_motion(card, fraction)
-                _assert_layout(page)
+                frame = _assert_layout(page, moving_card_id=card_id)["samples"][0]
+                assert frame["right"] == pytest.approx(baseline_clock_right, abs=1)
             _finish_motions(card)
         else:
             _assert_layout(page)

@@ -1,6 +1,6 @@
 """WeChat provenance keeps physical motion, native disclosure, and aligned shadows.
 
-Code version: v1.1.1-codex.0
+Code version: v1.2.0-codex.0
 """
 
 from __future__ import annotations
@@ -31,6 +31,7 @@ def _open_conversation(page, base_url):
     if toggle.get_attribute("aria-expanded") == "true":
         toggle.click()
     expect(toggle).to_have_attribute("aria-expanded", "false")
+    page.wait_for_function("!document.querySelector('#app_shell.is-sidebar-animating')")
     card = page.locator(".wechat-message").first
     card.locator(".wechat-message-text").evaluate(
         "node => { node.textContent = 'A short archived message.'; }"
@@ -222,6 +223,59 @@ def test_wechat_provenance_carries_velocity_on_reversal_and_settles_closed(
         assert _geometry(card)["height"] == pytest.approx(closed["height"], abs=1)
         _assert_clean_motion(card)
         assert not errors
+    finally:
+        context.close()
+
+
+def test_wechat_provenance_width_springs_between_detached_and_contained_clock(
+    disposable_browser, wechat_server,
+):
+    context = disposable_browser.new_context(
+        viewport={"width": 675, "height": 1000}, reduced_motion="no-preference",
+    )
+    page = context.new_page()
+    try:
+        card, details, summary = _open_conversation(page, wechat_server)
+        card.evaluate("""async card => {
+            const clock = card.parentElement.querySelector('.wechat-message-time');
+            clock.style.width = '125px';
+            card.querySelector('.wechat-provenance-fields dd:last-child').textContent =
+                'Pinned archive source coordinate '.repeat(12);
+            await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+        }""")
+        closed = _geometry(card)["width"]
+        assert not card.evaluate("card => card.classList.contains('wechat-message--time-contained')")
+        _capture_paused_motions(card)
+        summary.press("Enter")
+        page.wait_for_function("window.wechatDisclosureMotions.length > 0")
+        opening = [_sample_motion(card, fraction)["width"] for fraction in (0, 0.15, 1)]
+        assert opening[0] == pytest.approx(closed, abs=1)
+        assert opening[0] + 10 < opening[1] < opening[2] - 10
+        _finish_motions(card)
+        opened = _geometry(card)["width"]
+        assert opened == pytest.approx(opening[2], abs=1)
+        assert card.evaluate("card => card.classList.contains('wechat-message--time-contained')")
+
+        summary.press("Space")
+        expect(summary).to_have_attribute("aria-expanded", "false")
+        closing = [_sample_motion(card, fraction)["width"] for fraction in (0, 0.15, 1)]
+        assert closing[0] == pytest.approx(opened, abs=1)
+        assert closing[0] - 10 > closing[1] > closing[2] + 10
+        assert closing[2] == pytest.approx(closed, abs=1)
+        _finish_motions(card)
+        expect(details).not_to_have_attribute("open", "")
+        assert _geometry(card)["width"] == pytest.approx(closed, abs=1)
+        _assert_clean_motion(card)
+
+        page.emulate_media(reduced_motion="reduce")
+        summary.press("Enter")
+        expect(details).to_have_attribute("open", "")
+        assert _geometry(card)["width"] == pytest.approx(opened, abs=1)
+        _assert_clean_motion(card)
+        summary.press("Space")
+        expect(details).not_to_have_attribute("open", "")
+        assert _geometry(card)["width"] == pytest.approx(closed, abs=1)
+        _assert_clean_motion(card)
     finally:
         context.close()
 

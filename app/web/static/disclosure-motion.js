@@ -1,4 +1,4 @@
-/* Code version: v1.2.0-codex.0 */
+/* Code version: v1.3.0-codex.0 */
 
 (function initializeSharedDisclosureMotion() {
     "use strict";
@@ -36,7 +36,7 @@
         }
     }
 
-    function bind(details, widthTarget) {
+    function bind(details, widthTarget, beforeMeasure) {
         if (controllers.has(details)) return;
         const summary = details.querySelector(":scope > summary");
         const body = details.querySelector(":scope > .ui-collapse-body");
@@ -68,10 +68,20 @@
 
         function geometry() {
             // Computed CSS dimensions stay correct under an ancestor's transform.
+            const width = widthElement ? parseFloat(getComputedStyle(widthElement).width) : 0;
             return {
                 height: parseFloat(getComputedStyle(details).height),
-                width: widthElement ? parseFloat(getComputedStyle(widthElement).width) : 0,
+                // CSSOM can round a fit-content width down enough to wrap its header.
+                width: Math.ceil(width * 100) / 100,
             };
+        }
+
+        function targetGeometry() {
+            if (beforeMeasure) {
+                delete details.dataset.collapseMotion;
+                beforeMeasure(details);
+            }
+            return geometry();
         }
 
         function move(open, nativeToggle = false) {
@@ -94,10 +104,10 @@
             }
             if (nativeToggle && !interrupted) {
                 details.open = !open;
-                start = geometry();
+                start = targetGeometry();
             }
             details.open = open;
-            const end = geometry();
+            const end = targetGeometry();
             // Keep native content available until the closing animation has settled.
             nativeOpen = true;
             details.open = true;
@@ -170,13 +180,13 @@
         controllers.set(details, { move, setOpen: setControlledOpen });
     }
 
-    function enhance(root, { selector, widthTarget } = {}) {
+    function enhance(root, { selector, widthTarget, beforeMeasure } = {}) {
         for (const [details, finish] of active) {
             if (!details.isConnected) finish();
         }
         if (!root || typeof root.querySelectorAll !== "function" || !selector) return;
-        if (root.matches?.(selector)) bind(root, widthTarget);
-        root.querySelectorAll(selector).forEach((details) => bind(details, widthTarget));
+        if (root.matches?.(selector)) bind(root, widthTarget, beforeMeasure);
+        root.querySelectorAll(selector).forEach((details) => bind(details, widthTarget, beforeMeasure));
     }
 
     function setOpen(details, open, { animate = false } = {}) {

@@ -1,4 +1,4 @@
-/* Code version: v1.26.7-codex.0 */
+/* Code version: v1.27.0-codex.0 */
 /* Human-message variants consume the existing Local resources primitives. */
 [data-wechat-refresh-copy] {
     white-space: pre-line;
@@ -267,6 +267,12 @@
     min-width: var(--wechat-time-contained-width);
     max-width: var(--wechat-time-contained-width);
     margin-inline-end: calc(-1 * var(--wechat-time-overhang, 0px));
+}
+
+/* The active source disclosure owns the presented width between its clock states. */
+.wechat-resources .wechat-message:has(> .wechat-provenance[data-collapse-motion]) {
+    min-width: var(--wechat-message-min-width);
+    max-width: max(100%, var(--wechat-time-contained-width, 0px));
 }
 
 /* Read the undocked logical size without disturbing an active width spring. */

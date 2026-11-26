@@ -1,6 +1,6 @@
 # Visual Style Reference
 
-Documentation version: `v1.38.17-codex.0`
+Documentation version: `v1.38.18-codex.0`
 
 ## Authority
 
@@ -575,8 +575,10 @@ Timestamp placement has two complete geometric states: distant bubbles retain th
 natural width beside the common rail; nearby bubbles snap wide enough to contain the
 entire clock and its content inset. The decision uses the undocked natural width and
 one/two padding-inset thresholds for entry/release, not a viewport breakpoint. A cached,
-temporary logical-size probe bypasses active width interpolation; contained width/min/max
-constraints prevent intermediate clock-straddling frames. Nested bubbles may borrow the
+temporary logical-size probe bypasses active width interpolation. The contained width and
+its bounds apply at rest. Source details resolves the destination clock containment before
+measuring the card, then lets the width spring carry the edge through intermediate sizes.
+The clock stays on its rail and fades while the edge crosses it. Nested bubbles may borrow the
 ancestor's right padding while remaining within the outermost row. Named headers retain
 their clock slot, and continued rows reserve vertical clearance only for real content
 or source-target collisions. CSS transitions are disabled for these geometry targets so
@@ -586,9 +588,10 @@ before paint during wrapping, disclosure motion, font loading, and resize. Keepi
 clipping it when the bubble springs open. The article references its time through
 `aria-describedby`; without JavaScript, the original native header still shows its time.
 `disclosure-motion.js` owns the reusable measured disclosure controller, using Worthward's
-620ms bouncy spring (mass 1, stiffness 180, damping 18, initial velocity 0). `browser-messaging.js`
-supplies the message card as its width target. Opening overshoots
-before settling; critically damped closing keeps the summary visible. A small disclosure-body
+620ms spring with unit mass, stiffness 180, and damping ratio 0.80. It accepts optional
+synchronous target-state measurement for adapters with coupled layout. `browser-messaging.js`
+uses it for Source details and supplies the message card as its width target. The spring
+keeps the summary visible through closing. A small disclosure-body
 translation/stretch accompanies the layout spring without scaling the entire message text.
 Rapid reversal starts from the currently rendered dimensions. Reduced Motion skips animation
 and immediately settles active motion when the preference changes; resize, font loading, and

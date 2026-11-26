@@ -1,4 +1,4 @@
-/* Code version: v1.19.1-codex.0 */
+/* Code version: v1.20.0-codex.0 */
 
 (function initializeMessagingDisclosures() {
     "use strict";
@@ -41,7 +41,8 @@
     const systemRows = Array.from(document.querySelectorAll(".wechat-system-message-row"));
     const timestampRows = Array.from(document.querySelectorAll(".wechat-message-row"), (row) => {
         const card = row.querySelector(":scope > .wechat-message");
-        const summary = card?.querySelector(":scope > .wechat-provenance > summary");
+        const provenance = card?.querySelector(":scope > .wechat-provenance");
+        const summary = provenance?.querySelector(":scope > summary");
         const time = summary?.querySelector(":scope > .wechat-message-header > time");
         if (!time) return null;
         // Keep the original baseline and intrinsic bubble width after detaching the clock.
@@ -58,7 +59,7 @@
             row.classList.add("wechat-message-row--run-continued");
         }
         const forwarded = card.querySelector(":scope > .wechat-forwarded");
-        return { row, card, summary, time, slot, continued, forwarded };
+        return { row, card, provenance, summary, time, slot, continued, forwarded };
     }).filter(Boolean);
     const timestampLevels = [];
     timestampRows.forEach((entry) => {
@@ -84,10 +85,11 @@
         }
     }
 
-    function alignMagneticBubbles() {
-        timestampLevels.forEach((level) => {
-            const entries = level.flatMap(({ row, card, time, forwarded }) => {
-                if (row.closest("details:not([open])") || !row.getClientRects().length) return [];
+    function alignMagneticBubbles(levels = timestampLevels) {
+        levels.forEach((level) => {
+            const entries = level.flatMap(({ row, card, provenance, time, forwarded }) => {
+                if (provenance.hasAttribute("data-collapse-motion")
+                    || row.closest("details:not([open])") || !row.getClientRects().length) return [];
                 const bounds = row.getBoundingClientRect();
                 const logicalWidth = parseFloat(getComputedStyle(row).width) || bounds.width;
                 if (logicalWidth <= 0 || bounds.width <= 0) return [];
@@ -157,7 +159,7 @@
 
     function alignTimestamps() {
         alignMagneticBubbles();
-        const positions = timestampRows.map(({ row, card, summary, time, slot, continued, forwarded }) => {
+        const positions = timestampRows.map(({ row, card, provenance, summary, time, slot, continued, forwarded }) => {
             // A closed forwarded disclosure has no usable layout until it becomes visible.
             if (row.closest("details:not([open])") || !row.getClientRects().length) return null;
             const bounds = row.getBoundingClientRect();
@@ -181,7 +183,8 @@
             const clockBottom = bounds.top + (top + clockHeight + targetOutset) * scale;
             // Keep the clock on its rail while the moving bubble edge crosses it.
             const clockEdgeGap = Math.max(clockLeft - cardBox.right, cardBox.right - (clockLeft + clockBox.width));
-            const opacity = forwarded?.hasAttribute("data-collapse-motion")
+            const opacity = provenance.hasAttribute("data-collapse-motion")
+                || forwarded?.hasAttribute("data-collapse-motion")
                 ? Math.max(0, Math.min(1, clockEdgeGap / (8 * scale))) : 1;
             let overlaps = false;
             if (continued) {
@@ -265,9 +268,22 @@
     document.fonts?.addEventListener("loadingdone", refreshNaturalWidths);
     alignTimestamps();
 
+    const messageWidthTarget = (details) => details.parentElement.matches(".wechat-message")
+        ? details.parentElement : null;
     window.SharedDisclosureMotion?.enhance(document, {
-        selector: ".wechat-message > details.wechat-provenance, details.wechat-forwarded, details.wechat-group-name-history, details.wechat-group-membership-history",
-        widthTarget: (details) => details.parentElement.matches(".wechat-message") ? details.parentElement : null,
+        selector: ".wechat-message > details.wechat-provenance",
+        widthTarget: messageWidthTarget,
+        beforeMeasure: (details) => {
+            const entry = timestampRows.find(({ provenance }) => provenance === details);
+            if (!entry) return;
+            // Read the target state's compact or contained width before the animation owns it.
+            naturalWidths.delete(entry.card);
+            alignMagneticBubbles([[entry]]);
+        },
+    });
+    window.SharedDisclosureMotion?.enhance(document, {
+        selector: "details.wechat-forwarded, details.wechat-group-name-history, details.wechat-group-membership-history",
+        widthTarget: messageWidthTarget,
     });
     document.querySelectorAll(".wechat-message").forEach((card) => {
         const provenance = card.querySelector(":scope > .wechat-provenance");
