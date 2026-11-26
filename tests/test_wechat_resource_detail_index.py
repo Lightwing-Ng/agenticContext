@@ -1,8 +1,9 @@
 """Exercise indexed resource detail publication and source replay.
 
-Code version: v1.0.1-codex.0
+Code version: v1.0.2-codex.0
 """
 
+from contextlib import closing
 import sqlite3
 
 import pytest
@@ -59,7 +60,7 @@ def test_index_rejects_changed_candidate_and_changed_replayed_row(repair_fixture
     candidate = tmp_path / "reviewed.sqlite3"
     report = repair.stage_resource_detail_repair(fixture.root, candidate, [fixture.packet], indexed=True)
     rollback = tmp_path / "rollback.sqlite3"
-    with sqlite3.connect(candidate) as connection:
+    with closing(sqlite3.connect(candidate)) as connection, connection:
         connection.execute("UPDATE entries SET projected_sha256=?", ("0" * 64,))
     with pytest.raises(ValueError, match="changed"):
         repair.publish_resource_detail_repair(fixture.root, report, rollback_path=rollback)

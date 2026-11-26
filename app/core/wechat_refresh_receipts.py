@@ -1,6 +1,6 @@
 """Keep bounded, presentation-only web refresh receipts across process restarts.
 
-Code version: v1.0.0-codex.0
+Code version: v1.0.1-codex.0
 """
 
 from __future__ import annotations
@@ -31,6 +31,8 @@ _STATES = {"running", "succeeded", "failed", "interrupted"}
 _MAX_RECEIPTS = 32
 _MAX_BYTES = 4_096
 _RETAIN_SECONDS = 7 * 24 * 60 * 60
+# The cross-platform lock reserves byte zero on Windows.
+_LEASE_MARKER_OFFSET = 1
 _SAFE_OPEN = (
     getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
     | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_BINARY", 0)
@@ -131,7 +133,7 @@ class WechatRefreshReceipts:
             handle.close()
             raise
         try:
-            handle.seek(0)
+            handle.seek(_LEASE_MARKER_OFFSET)
             handle.write(self._key(token).encode("ascii"))
             handle.truncate()
             handle.flush()
@@ -168,8 +170,11 @@ class WechatRefreshReceipts:
                 try:
                     lock_file(handle, blocking=False)
                 except BlockingIOError:
-                    handle.seek(0)
-                    return handle.read(65) == key.encode("ascii")
+                    encoded = key.encode("ascii")
+                    handle.seek(_LEASE_MARKER_OFFSET)
+                    marker = handle.read(len(encoded) + 1)
+                    # Older leases started the digest inside the locked byte.
+                    return marker == encoded or marker == encoded[_LEASE_MARKER_OFFSET:]
         except FileNotFoundError:
             pass
         return False

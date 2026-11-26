@@ -1,8 +1,9 @@
 """Indexed Mac recovery keeps authenticated scopes, literal roles and original bytes.
 
-Code version: v1.0.5-codex.0
+Code version: v1.0.6-codex.0
 """
 
+from contextlib import closing
 from copy import deepcopy
 import hashlib
 import json
@@ -565,7 +566,7 @@ def test_native_event_remains_in_its_original_conversation_across_archive_source
     duplicate_partition = "html-synthetic-overlapping-group"
     duplicate_session = "wechat:" + _identifier(duplicate_partition, ROOM)
     duplicate_anchors = []
-    with sqlite3.connect(fixture.history) as connection:
+    with closing(sqlite3.connect(fixture.history)) as connection, connection:
         connection.execute(
             "INSERT INTO partitions VALUES(?,?,?,?,?,?,?,?)",
             (
@@ -592,7 +593,7 @@ def test_native_event_remains_in_its_original_conversation_across_archive_source
     original_history = fixture.history.read_bytes()
     _publish(fixture, packets=[incumbent])
     overlapping = incumbent["messages"][0]
-    with sqlite3.connect(fixture.bank_path) as connection:
+    with closing(sqlite3.connect(fixture.bank_path)) as connection:
         original_message = connection.execute("SELECT * FROM messages").fetchone()
 
     alternate = deepcopy(incumbent)
@@ -611,7 +612,7 @@ def test_native_event_remains_in_its_original_conversation_across_archive_source
 
     receipt = _publish(fixture, packets=[alternate], name="overlapping-archive-source")
     assert receipt["added"] == receipt["occurrences_added"] == receipt["conflicts"] == 1
-    with sqlite3.connect(fixture.bank_path) as connection:
+    with closing(sqlite3.connect(fixture.bank_path)) as connection:
         assert connection.execute(
             "SELECT * FROM messages WHERE id=?", (original_message[0],),
         ).fetchone() == original_message

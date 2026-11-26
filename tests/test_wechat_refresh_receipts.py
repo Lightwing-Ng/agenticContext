@@ -1,9 +1,10 @@
 """Exercise durable web refresh status without reading native WeChat data.
 
-Code version: v1.0.1-codex.0
+Code version: v1.0.2-codex.0
 """
 
 from hashlib import sha256
+from io import BytesIO
 from threading import Event
 from types import SimpleNamespace
 
@@ -11,6 +12,7 @@ from flask import Blueprint, Flask
 import pytest
 
 from app.core import wechat_mac_refresh as refresh
+from app.core import wechat_refresh_receipts as receipts
 from app.core.owner_only_files import owner_only_directory_problem, owner_only_problem
 from app.web.wechat_refresh_routes import WECHAT_REFRESH_EXTENSION, register_wechat_refresh_routes
 
@@ -31,6 +33,38 @@ def _client(service):
     register_wechat_refresh_routes(blueprint)
     app.register_blueprint(blueprint)
     return app.test_client()
+
+
+@pytest.mark.parametrize("layout", ("current", "legacy", "empty"))
+def test_live_receipt_reads_only_beyond_windows_lock_byte(tmp_path, monkeypatch, layout):
+    class MandatoryLockReader(BytesIO):
+        def read(self, size=-1):
+            if self.tell() == 0:
+                raise OSError("Synthetic Windows byte-range lock violation")
+            return super().read(size)
+
+    def locked(*_args, **_kwargs):
+        raise BlockingIOError("Synthetic existing lease")
+
+    token = "x" * 32
+    store = receipts.WechatRefreshReceipts(tmp_path / "receipts")
+    key = sha256(token.encode()).hexdigest().encode()
+    with store.claim(token) as lease:
+        lease.seek(0)
+        marker = lease.read()
+        assert marker == b"\x00" + key
+        if layout == "legacy":
+            marker = key
+        elif layout == "empty":
+            marker = b""
+        store.write(token, {
+            "state": "running", "phase": "preparing", "added": 0, "total": 0,
+            "message": "Refreshing chat history.",
+        }, publication_possible=False)
+        monkeypatch.setattr(store, "_open_active", lambda: MandatoryLockReader(marker))
+        monkeypatch.setattr(receipts, "lock_file", locked)
+        status = store.read(token)
+        assert status["state"] == ("interrupted" if layout == "empty" else "running")
 
 
 @pytest.mark.parametrize(
