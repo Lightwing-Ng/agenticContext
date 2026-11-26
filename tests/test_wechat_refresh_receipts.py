@@ -1,6 +1,6 @@
 """Exercise durable web refresh status without reading native WeChat data.
 
-Code version: v1.0.2-codex.0
+Code version: v1.0.3-codex.0
 """
 
 from hashlib import sha256
@@ -35,7 +35,7 @@ def _client(service):
     return app.test_client()
 
 
-@pytest.mark.parametrize("layout", ("current", "legacy", "empty"))
+@pytest.mark.parametrize("layout", ("current", "legacy", "empty", "other_job"))
 def test_live_receipt_reads_only_beyond_windows_lock_byte(tmp_path, monkeypatch, layout):
     class MandatoryLockReader(BytesIO):
         def read(self, size=-1):
@@ -52,11 +52,13 @@ def test_live_receipt_reads_only_beyond_windows_lock_byte(tmp_path, monkeypatch,
     with store.claim(token) as lease:
         lease.seek(0)
         marker = lease.read()
-        assert marker == b"\x00" + key
+        assert marker[1:] == key
         if layout == "legacy":
             marker = key
         elif layout == "empty":
             marker = b""
+        elif layout == "other_job":
+            marker = b"\x00" + sha256(b"different synthetic job").hexdigest().encode()
         store.write(token, {
             "state": "running", "phase": "preparing", "added": 0, "total": 0,
             "message": "Refreshing chat history.",
@@ -64,7 +66,7 @@ def test_live_receipt_reads_only_beyond_windows_lock_byte(tmp_path, monkeypatch,
         monkeypatch.setattr(store, "_open_active", lambda: MandatoryLockReader(marker))
         monkeypatch.setattr(receipts, "lock_file", locked)
         status = store.read(token)
-        assert status["state"] == ("interrupted" if layout == "empty" else "running")
+        assert status["state"] == ("running" if layout in {"current", "legacy"} else "interrupted")
 
 
 @pytest.mark.parametrize(
