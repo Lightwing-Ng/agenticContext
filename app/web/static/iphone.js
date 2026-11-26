@@ -1,4 +1,4 @@
-/* Code version: v1.1.3-codex.0 */
+/* Code version: v1.1.4-codex.0 */
 /*
  * iPhone Agent mode page: setup steps, live preview polling, and phone controls.
  *
@@ -939,7 +939,6 @@
 
     function fitFrame() {
         const size = dimensions || viewport || DEFAULT_SCREEN;
-        device.style.setProperty("--iphone-screen-ratio", String(size.width / size.height));
         device.dataset.orientation = size.width > size.height ? "landscape" : "portrait";
     }
 
@@ -1246,7 +1245,6 @@
 
     function contentRect() {
         const box = image.getBoundingClientRect();
-        // The frame header's size shapes the screen box; the decoded size is only a fallback.
         const naturalWidth = dimensions ? dimensions.width : image.naturalWidth;
         const naturalHeight = dimensions ? dimensions.height : image.naturalHeight;
         if (!naturalWidth || !naturalHeight || !box.width || !box.height) return box;
