@@ -1,6 +1,6 @@
 """Regression tests for document navigation across the local request boundary.
 
-Code version: v1.1.0-codex.0
+Code version: v1.2.0-codex.0
 """
 
 from __future__ import annotations
@@ -37,16 +37,29 @@ def navigation_client(tmp_path: Path) -> Iterator[FlaskClient]:
     application.extensions["runtime_shutdown"]()
 
 
-@pytest.mark.parametrize("platform", ("chatgpt", "claude", "gemini", "grok"))
 def test_user_activated_document_navigation_reaches_the_start_page(
+    navigation_client: FlaskClient,
+) -> None:
+    """An explicit navigation to the root opens the X Cache text page."""
+    response = navigation_client.get("/", headers=NAVIGATION_HEADERS, follow_redirects=True)
+
+    assert response.status_code == 200
+    assert response.history[0].status_code == 302
+    assert response.history[0].headers["Location"] == "/cache/x/text/chrome"
+    assert response.request.path == "/cache/x/text/chrome"
+    assert 'data-cache-source="x"' in response.get_data(as_text=True)
+
+
+@pytest.mark.parametrize("platform", ("chatgpt", "claude", "gemini", "grok"))
+def test_user_activated_agent_navigation_reaches_the_saved_platform(
     navigation_client: FlaskClient,
     platform: str,
 ) -> None:
-    """An explicit navigation opens Agent with the saved platform selection."""
+    """An explicit navigation to Agent uses the saved platform selection."""
     settings_store = navigation_client.application.extensions["computer_use_settings"]
     settings_store.update(replace(settings_store.settings, platform=platform))
     response = navigation_client.get(
-        "/",
+        "/agent",
         headers=NAVIGATION_HEADERS,
         follow_redirects=True,
     )
@@ -54,7 +67,7 @@ def test_user_activated_document_navigation_reaches_the_start_page(
     assert response.status_code == 200
     assert response.history
     assert response.history[0].status_code == 302
-    assert response.history[0].headers["Location"] == "/agent"
+    assert response.history[0].headers["Location"] == f"/agent/tunnel/{platform}"
     assert response.request.path == f"/agent/tunnel/{platform}"
     assert 'id="agent_sidebar"' in response.get_data(as_text=True)
 
