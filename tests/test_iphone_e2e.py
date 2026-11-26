@@ -4,7 +4,7 @@ Every ``/api/iphone/*`` request is fulfilled in the browser, so these checks nev
 the iPhone runtime, start a process, or contact a device. The test server keeps external
 Agent operations disabled; the mocked status endpoint is what enables the page.
 
-Code version: v1.1.2-codex.0
+Code version: v1.1.3-codex.0
 """
 
 from __future__ import annotations
@@ -12,6 +12,7 @@ from __future__ import annotations
 import base64
 from collections.abc import Iterator
 from copy import deepcopy
+from datetime import UTC, datetime, timedelta
 from io import BytesIO
 import re
 from urllib.parse import parse_qs, urlsplit
@@ -179,7 +180,10 @@ def iphone_browser() -> Iterator[Browser]:
             browser.close()
 
 
-def open_page(browser: Browser, url: str, api: IPhoneApi, *, width: int = 1280, height: int = 900):
+def open_page(
+    browser: Browser, url: str, api: IPhoneApi, *,
+    width: int = 1280, height: int = 900, pause_timers: bool = False,
+):
     context = browser.new_context(
         viewport={"width": width, "height": height},
         reduced_motion="reduce",
@@ -189,6 +193,9 @@ def open_page(browser: Browser, url: str, api: IPhoneApi, *, width: int = 1280, 
     page.on("pageerror", lambda error: errors.append(str(error)))
     api.install(page)
     page.route("**/api/jury/sessions**", lambda route: route.fulfill(json={"sessions": []}))
+    if pause_timers:
+        page.clock.install()
+        page.clock.pause_at(datetime.now(UTC) + timedelta(seconds=10))
     page.goto(url)
     return page, context, errors
 
@@ -531,7 +538,10 @@ def test_tunnel_toggle_error_reads_back_actual_access_without_replaying(
             route.fulfill(status=400, json={"error": {"code": "invalid_request", "message": "Access was rejected."}})
 
     api.tunnel_handler = fail_toggle
-    page, context, errors = open_page(iphone_browser, f"{sidebar_server_url}/iphone", api)
+    # Keep periodic status polling from disabling the control during the key press.
+    page, context, errors = open_page(
+        iphone_browser, f"{sidebar_server_url}/iphone", api, pause_timers=True,
+    )
     try:
         toggle = page.get_by_role("checkbox", name="Allow iPhone access through ChatGPT Tunnel")
         expect(toggle).to_be_enabled()
