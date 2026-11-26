@@ -1,6 +1,6 @@
 """Card enrichment across archive aliases retains exact native event authority.
 
-Code version: v1.1.2-codex.0
+Code version: v1.2.0-codex.0
 """
 
 from contextlib import closing
@@ -25,6 +25,8 @@ _KINDS = ("app", "quoted", "nested_quoted")
 def _alias_packets(fixture, kind="app"):
     if kind == "app":
         old, incoming = cards._app_card_packets(fixture)
+    elif kind in {"quote", "forward"}:
+        old, incoming = cards._packets(fixture, kind)
     else:
         old, incoming = cards._quoted_card_packets(fixture, nested=kind == "nested_quoted")
     with closing(sqlite3.connect(fixture.history)) as connection, connection:
@@ -125,6 +127,32 @@ def test_alias_card_enrichment_preserves_receipt_and_journals_idempotent_replays
         assert _rows(fixture.bank_path, "messages")[0] == current
         assert _rows(fixture.bank_path, "occurrences") == occurrences
         assert len(_rows(fixture.bank_path, "projection_revisions")) == 1
+
+
+@pytest.mark.parametrize("kind", ("quote", "forward"))
+@pytest.mark.parametrize("canonical_repaired", (False, True))
+def test_alias_cannot_apply_or_replay_a_body_repair(bank_archive, kind, canonical_repaired):
+    fixture = bank_archive
+    old, incoming = _alias_packets(fixture, kind)
+    fixtures._publish(fixture, packets=[old], name="canonical-incomplete-body")
+    if canonical_repaired:
+        _, complete = cards._packets(fixture, kind)
+        repaired = fixtures._publish(fixture, packets=[complete], name="canonical-complete-body")
+        assert repaired["reparsed"] == 1
+    messages = _rows(fixture.bank_path, "messages")
+    occurrences = _rows(fixture.bank_path, "occurrences")
+
+    candidate, receipt = fixtures._stage(fixture, packets=[incoming], name="alias-body-completion")
+
+    assert receipt["reparsed"] == receipt["added"] == receipt["upgraded"] == 0
+    assert receipt["conflicts"] == 1
+    assert _rows(candidate, "messages") == messages
+    assert _rows(candidate, "occurrences") == occurrences
+    with closing(sqlite3.connect(candidate)) as connection:
+        assert connection.execute("SELECT reason FROM gaps").fetchall() == [
+            ("native_event_owned_by_another_conversation",),
+        ]
+        assert repair._has_table(connection) is canonical_repaired
 
 
 @pytest.mark.parametrize("field", repair._RAW_FIELDS + ("sender_id", "sender_label", "direction"))

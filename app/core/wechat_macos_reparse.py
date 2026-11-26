@@ -1,6 +1,6 @@
 """Journal closed, monotone parser repairs of the same authenticated native row.
 
-Code version: v1.3.0-codex.0
+Code version: v1.3.1-codex.0
 """
 
 from __future__ import annotations
@@ -322,10 +322,12 @@ def _same_event(old, new, *, allow_pat=False):
     )
 
 
-def _row_for_candidate(old, projected):
+def _row_for_candidate(old, projected, *, metadata_only=False):
     bank = _bank()
     value = dict(zip(old.keys(), projected, strict=True))
     reason = _reason(old, value)
+    if metadata_only and reason not in METADATA_ORIGIN_FIELDS:
+        return None
     metadata_origin = None
     if reason in METADATA_ORIGIN_FIELDS:
         # Validate each original row before retaining canonical display columns.
@@ -364,7 +366,7 @@ def _row_for_candidate(old, projected):
     return value
 
 
-def apply(connection, canonical_id, projected, source_key):
+def apply(connection, canonical_id, projected, source_key, *, metadata_only=False):
     """Return repaired, historical replay, or ineligible without changing old observations."""
     bank = _bank()
     old = connection.execute(
@@ -373,7 +375,9 @@ def apply(connection, canonical_id, projected, source_key):
     if old is None:
         return None
     old = dict(old)
-    current = _row_for_candidate(old, projected)
+    current = _row_for_candidate(old, projected, metadata_only=metadata_only)
+    if current is None:
+        return None
     signature = bank._event_signature(current)
     if signature == bank._event_signature(old) and _same_event(old, current):
         return "current"
@@ -622,7 +626,7 @@ def matches_legacy_card_occurrence(projected, prior, packet, occurrence):
     return bank._event_signature(historical) == occurrence["signature"]
 
 
-def historical_occurrence(connection, occurrence, *, schema="main"):
+def historical_occurrence(connection, occurrence, *, schema="main", metadata_only=False):
     """Accept an unchanged occurrence only through a sealed prior projection of its row."""
     bank = _bank()
     if not _has_table(connection, schema):
@@ -653,6 +657,8 @@ def historical_occurrence(connection, occurrence, *, schema="main"):
         (occurrence["canonical_id"], occurrence["signature"]),
     )
     for prior_row, reason in rows:
+        if metadata_only and reason not in METADATA_ORIGIN_FIELDS:
+            continue
         prior = json.loads(prior_row)
         raw, _digest = _identity(prior)
         if (
@@ -670,7 +676,7 @@ def historical_occurrence(connection, occurrence, *, schema="main"):
     return False
 
 
-def current_projection_replay(connection, occurrence, packet, message, signature):
+def current_projection_replay(connection, occurrence, packet, message, signature, *, metadata_only=False):
     """Recognize another source's unchanged bytes without rewriting the canonical row."""
     key = connection.execute(
         "SELECT signature FROM event_keys WHERE message_id=?",
@@ -679,7 +685,7 @@ def current_projection_replay(connection, occurrence, packet, message, signature
     if (
         key is None
         or key[0] != signature
-        or not historical_occurrence(connection, occurrence)
+        or not historical_occurrence(connection, occurrence, metadata_only=metadata_only)
     ):
         return False
     source = connection.execute(

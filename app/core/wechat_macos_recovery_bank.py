@@ -1,6 +1,6 @@
 """Stage indexed, source-bound Mac recovery without rewriting the original archive.
 
-Code version: v1.15.6-codex.0
+Code version: v1.15.7-codex.0
 """
 
 from __future__ import annotations
@@ -42,7 +42,7 @@ from .wechat_text import is_native_pat_projection, native_components_text
 from .windows_file_metadata import file_change_time, has_open_file_handles
 
 
-CODE_VERSION = "v1.15.6-codex.0"
+CODE_VERSION = "v1.15.7-codex.0"
 WRITER_VERSION = "v1.5.1-codex.0"
 VERSION = WRITER_VERSION
 MAX_PACKET_BYTES = 128 * 1024**2
@@ -1860,15 +1860,12 @@ def stage_mac_recovery_bank(
                         raise ValueError(
                             "One preserved Mac source row changed after its prior recovery."
                         )
-                    if existing_occurrence["conversation_id"] != session:
-                        _record_other_conversation_gap(
-                            output, session, source_key, locator_key, message,
-                        )
-                        report["conflicts"] += 1
-                        continue
+                    original_session = existing_occurrence["conversation_id"]
+                    other_scope = original_session != session
                     if existing_occurrence["signature"] != signature:
                         if reparse.current_projection_replay(
-                            output, existing_occurrence, packet, message, signature
+                            output, existing_occurrence, packet, message, signature,
+                            metadata_only=other_scope,
                         ):
                             report["existing"] += 1
                             continue
@@ -1877,28 +1874,42 @@ def stage_mac_recovery_bank(
                             existing_occurrence["canonical_id"],
                             projected,
                             source_key,
+                            metadata_only=other_scope,
                         )
-                        if repaired is None or not reparse.historical_occurrence(
-                            output, existing_occurrence
-                        ):
+                        failed_repair = repaired is None and not other_scope
+                        lost_prior_proof = (
+                            repaired is not None and not reparse.historical_occurrence(
+                                output, existing_occurrence, metadata_only=other_scope,
+                            )
+                        )
+                        if failed_repair or lost_prior_proof:
                             raise ValueError(
                                 "One preserved Mac source row changed outside its semantic revision history."
                             )
-                        if repaired == "reparsed":
-                            report["reparsed"] += 1
-                        current_signature = output.execute(
-                            "SELECT signature FROM event_keys WHERE message_id=?",
-                            (existing_occurrence["canonical_id"],),
-                        ).fetchone()[0]
-                        output.execute(
-                            "UPDATE comparison_events SET signature=? "
-                            "WHERE conversation_id=? AND server_id=? AND message_id=?",
-                            (
-                                current_signature, session, message["server_id"],
-                                existing_occurrence["canonical_id"],
-                            ),
+                        if repaired is not None:
+                            if repaired == "reparsed":
+                                report["reparsed"] += 1
+                            current_signature = output.execute(
+                                "SELECT signature FROM event_keys WHERE message_id=?",
+                                (existing_occurrence["canonical_id"],),
+                            ).fetchone()[0]
+                            output.execute(
+                                "UPDATE comparison_events SET signature=? "
+                                "WHERE conversation_id=? AND server_id=? AND message_id=?",
+                                (
+                                    current_signature, original_session, message["server_id"],
+                                    existing_occurrence["canonical_id"],
+                                ),
+                            )
+                            report["existing"] += 1
+                            continue
+                    if other_scope:
+                        _record_other_conversation_gap(
+                            output, session, source_key, locator_key, message,
                         )
-                    report["existing"] += 1
+                        report["conflicts"] += 1
+                    else:
+                        report["existing"] += 1
                     continue
                 matches = list(
                     output.execute(
