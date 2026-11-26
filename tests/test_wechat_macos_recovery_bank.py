@@ -1,6 +1,6 @@
 """Indexed Mac recovery keeps authenticated scopes, literal roles and original bytes.
 
-Code version: v1.0.4-codex.0
+Code version: v1.0.5-codex.0
 """
 
 from copy import deepcopy
@@ -552,6 +552,84 @@ def test_cross_source_server_conflicts_remain_classified_gaps_without_changing_a
         row["text"] for row in group["messages"]
     ]
     assert message["text"] not in [row["text"] for row in group["messages"]]
+    assert fixture.history.read_bytes() == original_history
+
+
+@pytest.mark.parametrize("same_locator", [False, True], ids=["new-snapshot", "same-locator"])
+def test_native_event_remains_in_its_original_conversation_across_archive_sources(
+    bank_archive, same_locator,
+):
+    fixture = bank_archive
+    incumbent = deepcopy(fixture.group)
+    incumbent["messages"] = incumbent["messages"][:1]
+    duplicate_partition = "html-synthetic-overlapping-group"
+    duplicate_session = "wechat:" + _identifier(duplicate_partition, ROOM)
+    duplicate_anchors = []
+    with sqlite3.connect(fixture.history) as connection:
+        connection.execute(
+            "INSERT INTO partitions VALUES(?,?,?,?,?,?,?,?)",
+            (
+                duplicate_partition, "account:" + OWNER, OWNER, "Synthetic account",
+                "Corroborated export ID", "HTML export", "synthetic-overlap.html", "",
+            ),
+        )
+        connection.execute(
+            "INSERT INTO conversations SELECT ?,?,account_key,peer_id,title,kind,"
+            "message_count,first_sort,last_sort,first_time,last_time,latest_text "
+            "FROM conversations WHERE id=?",
+            (duplicate_session, duplicate_partition, fixture.group_session),
+        )
+        for anchor in incumbent["anchors"]:
+            archive_id = _identifier(duplicate_session, anchor["archive_message_id"])
+            connection.execute(
+                "INSERT INTO messages SELECT ?,?,ordinal,sender_id,sender_label,direction,"
+                "text,time_sort,timestamp_value,timestamp_label,time_basis,provenance,"
+                "quality_flags,search_text FROM messages WHERE id=?",
+                (archive_id, duplicate_session, anchor["archive_message_id"]),
+            )
+            duplicate_anchors.append({**anchor, "archive_message_id": archive_id})
+
+    original_history = fixture.history.read_bytes()
+    _publish(fixture, packets=[incumbent])
+    overlapping = incumbent["messages"][0]
+    with sqlite3.connect(fixture.bank_path) as connection:
+        original_message = connection.execute("SELECT * FROM messages").fetchone()
+
+    alternate = deepcopy(incumbent)
+    alternate.update(
+        session_id=duplicate_session,
+        receipt_id="synthetic-overlapping-group-archive",
+        anchors=duplicate_anchors,
+    )
+    if not same_locator:
+        alternate["source"].update(
+            snapshot_id="synthetic-overlapping-group-new-snapshot",
+            main_sha256=_hash("synthetic-overlapping-group-new-main"),
+        )
+    unrelated = _message(90, 1, raw="A new native message in the selected conversation")
+    alternate["messages"].append(unrelated)
+
+    receipt = _publish(fixture, packets=[alternate], name="overlapping-archive-source")
+    assert receipt["added"] == receipt["occurrences_added"] == receipt["conflicts"] == 1
+    with sqlite3.connect(fixture.bank_path) as connection:
+        assert connection.execute(
+            "SELECT * FROM messages WHERE id=?", (original_message[0],),
+        ).fetchone() == original_message
+        assert connection.execute(
+            "SELECT conversation_id,server_id,reason FROM gaps",
+        ).fetchall() == [
+            (
+                duplicate_session, overlapping["server_id"],
+                "native_event_owned_by_another_conversation",
+            ),
+        ]
+        assert set(connection.execute(
+            "SELECT o.conversation_id,m.conversation_id,o.server_id "
+            "FROM occurrences o JOIN messages m ON m.id=o.canonical_id",
+        )) == {
+            (fixture.group_session, fixture.group_session, overlapping["server_id"]),
+            (duplicate_session, duplicate_session, unrelated["server_id"]),
+        }
     assert fixture.history.read_bytes() == original_history
 
 

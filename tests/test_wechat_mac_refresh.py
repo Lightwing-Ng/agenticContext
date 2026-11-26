@@ -1,6 +1,6 @@
 """Explicit refresh preserves canonical scope, idempotency, totals and cancellation.
 
-Code version: v1.4.3-codex.0
+Code version: v1.4.4-codex.0
 """
 
 from datetime import datetime
@@ -1159,12 +1159,39 @@ def test_global_binding_revalidates_only_known_coordinate_witnesses(
             "CREATE TABLE sources(id TEXT,account_id TEXT,proof TEXT);"
             "CREATE TABLE conversation_proofs(conversation_id TEXT,source_id TEXT,proof TEXT,PRIMARY KEY(conversation_id,source_id));"
         )
+        # Neither dimension of the shard identity may consume the proof lookup budget.
+        for name, source_overrides, binding_overrides in (
+            (
+                "different-shard",
+                {"database_relative_path": "db_storage/message/message_99.db"},
+                {"source": {**binding["source"], "database_relative_path": "db_storage/message/message_99.db"}},
+            ),
+            (
+                "different-directory",
+                {"account_directory": OWNER + "_ef01"},
+                {"account_directory": OWNER + "_ef01"},
+            ),
+        ):
+            wrong_scope = json.dumps({
+                **packet,
+                "source": {**source, **source_overrides},
+                "account_binding": {**binding, **binding_overrides},
+            })
+            rows = [(f"{name}-{number:02d}", wrong_scope) for number in range(32)]
+            stored.executemany(
+                "INSERT INTO sources VALUES(?,?,?)",
+                [(proof_id, OWNER, proof) for proof_id, proof in rows],
+            )
+            stored.executemany(
+                "INSERT INTO conversation_proofs VALUES(?,?,?)",
+                [(session, proof_id, proof) for proof_id, proof in rows],
+            )
         stored.execute(
             "INSERT INTO sources VALUES('proof',?,?)", (OWNER, json.dumps(packet))
         )
         stored.execute(
             "INSERT INTO conversation_proofs VALUES(?,'proof',?)",
-            (session, json.dumps(packet)),
+            (other_session, json.dumps(packet)),
         )
     if owner_row != 2:
         native.connection.execute(

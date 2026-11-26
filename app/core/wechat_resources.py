@@ -1,6 +1,6 @@
 """Present persistent WeChat resource references without exposing host paths.
 
-Code version: v1.6.0-codex.0
+Code version: v1.7.0-codex.0
 """
 
 from __future__ import annotations
@@ -33,6 +33,7 @@ _STATUS_LABELS = {
 _DIGEST = re.compile(r"[0-9a-f]{64}")
 _CHANNELS_NAME = "WeChat Channels"
 _CHANNELS_FALLBACK_TITLE = "当前微信版本不支持展示该内容，请升级至最新版本。"
+_LEGACY_UNRESOLVED_TYPE = 64
 
 
 def _card_label(value):
@@ -165,16 +166,51 @@ def resource_reference(provenance, account_id, peer_id):
         or reference.get("peer_id") != peer_id
     ):
         return None
-    return dict(reference)
+    reference = dict(reference)
+    if (
+        reference["kind"] == "unknown"
+        and provenance.get("text_extraction_kind") == "resource_placeholder"
+        and provenance.get("message_type") == _LEGACY_UNRESOLVED_TYPE
+        and provenance.get("server_id") is None
+        and not any(reference.get(key) for key in (
+            "filename", "file_extension", "checksum_md5", "byte_size",
+        ))
+    ):
+        # The catalog indexed a native row, but did not establish an attachment.
+        reference["availability"] = "unresolved_legacy_event"
+    return reference
+
+
+def _is_app_link(reference):
+    return (
+        reference["kind"] == "app"
+        and reference.get("app_subtype") in ("5", str(CHANNELS_APP_SUBTYPE))
+        and (
+            reference.get("availability") == "metadata_only"
+            or not reference.get("availability")
+            and reference.get("app_metadata_version") == "1"
+        )
+    )
 
 
 def present_resource(reference, resolver):
     """Keep unavailable references visible and distinguish folders from files."""
+    if reference.get("availability") == "unresolved_legacy_event":
+        return {
+            "kind": reference["kind"],
+            "kind_label": "Unidentified WeChat event",
+            "label": "Unidentified WeChat event",
+            "status": "unresolved",
+            "status_label": "Type 64 · Content unavailable",
+            "action_label": "",
+            "can_reveal": False,
+        }
     channels = (
         reference["kind"] == "app"
         and reference.get("app_subtype") == str(CHANNELS_APP_SUBTYPE)
     )
-    if reference.get("availability") == "metadata_only":
+    link = _is_app_link(reference)
+    if reference.get("availability") == "metadata_only" or link:
         label = RESOURCE_LABELS[reference["kind"]]
         publisher = ""
         if reference["kind"] == "file":
@@ -195,7 +231,7 @@ def present_resource(reference, resolver):
             "action_label": "",
             "can_reveal": False,
         }
-        if reference["kind"] == "app" and reference.get("app_subtype") == "5":
+        if link:
             resource["is_link"] = True
         if channels:
             resource.update(is_link=True, platform_label=_CHANNELS_NAME)
@@ -222,6 +258,13 @@ def present_resource(reference, resolver):
         app_label, resource["publisher_name"] = _app_card_text(reference)
         if not isinstance(filename, str) or not filename:
             resource["label"] = app_label
+        if (
+            status in {"folder", "missing"}
+            and resource["label"] == RESOURCE_LABELS["app"]
+            and not resource["publisher_name"]
+            and not reference.get("app_subtype")
+        ):
+            resource["status_label"] = "Card content unavailable"
     elif reference["kind"] == "file":
         resource["label"] = (
             _card_label(filename)
@@ -243,7 +286,10 @@ def resolve_resource_for_reveal(local_store_root, message_id):
     )
     if reference is None:
         raise LookupError("The resource account or conversation could not be verified.")
-    if reference.get("availability") == "metadata_only":
+    if (
+        reference.get("availability") in ("metadata_only", "unresolved_legacy_event")
+        or _is_app_link(reference)
+    ):
         raise LookupError("This source preserves attachment metadata only.")
     destination = WechatMacResourceResolver(local_store_root).resolve(reference)
     if destination["path"] is None or destination["status"] not in {

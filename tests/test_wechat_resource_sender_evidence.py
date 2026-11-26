@@ -1,6 +1,6 @@
 """Secondary native evidence fills only exactly matched missing resource authors.
 
-Code version: v1.0.0-codex.0
+Code version: v1.1.0-codex.0
 """
 
 from copy import deepcopy
@@ -89,6 +89,75 @@ def witness(source_binding):
         "kind": "group",
     }
     return row, conversation, packet
+
+
+@pytest.fixture
+def direct_app(witness):
+    row, conversation, packet = witness
+    peer, owner = native.MEMBER, native.OWNER
+    packet.update(
+        peer_id=peer,
+        conversation_kind="direct",
+        session_id=conversation["id"],
+        peer_proof=native._proof(10, peer, is_session=1),
+    )
+    table_hash = hashlib.md5(peer.encode(), usedforsecurity=False).hexdigest()
+    packet["source"]["table"] = "Msg_" + table_hash
+    message = native._message(4, 49, resource="sticker")
+    message.update(local_type=(5 << 32) | 49, text="[App message]")
+    message["resource"].update(
+        kind="app", label="[App message]", app_subtype="5",
+        app_metadata_version="1", safe_title="Shared link",
+    )
+    packet["messages"] = [message]
+    proof = json.loads(row["provenance"])
+    proof.update(
+        message_type=49,
+        server_id=message["server_id"],
+        text_extraction_kind="resource_placeholder",
+        unix_timestamp=message["create_time"],
+        source_relative_path="Documents/"
+        + hashlib.md5(owner.encode(), usedforsecurity=False).hexdigest()
+        + "/DB/message_2.sqlite",
+    )
+    proof["locator"]["table"] = "Chat_" + table_hash
+    proof["resource_reference"].update(
+        kind="app", account_id=owner, peer_id=peer, unix_timestamp=message["create_time"],
+    )
+    row.update(text="[App message]", sender_id=peer, provenance=json.dumps(proof))
+    conversation.update(account_key="account:" + owner, peer_id=peer, kind="direct")
+    return row, conversation, evidence.secondary_native_events(packet)[0]
+
+
+def test_direct_app_match_keeps_the_exact_known_author_and_clock(direct_app):
+    row, conversation, event = direct_app
+    matched = evidence.match_same_account_direct_app_event(row, conversation, event)
+    assert matched["clock_skew_seconds"] == 0
+    assert matched["primary"]["message_id"] == row["id"]
+    assert matched["secondary_source"]["sender_id"] == row["sender_id"]
+    assert matched["secondary_source"]["account_id"] == matched["primary"]["account_id"]
+
+
+@pytest.mark.parametrize("field,replacement", [
+    ("account_id", PRIMARY),
+    ("session_id", "wechat:" + "b" * 64),
+    ("peer_id", "wxid_unrelated_peer"),
+    ("sender_id", "wxid_unrelated_sender"),
+    ("direction", "sent"),
+    ("create_time", 1700000300),
+    ("resource", {"kind": "app"}),
+])
+def test_direct_app_match_rejects_unrelated_or_unproven_evidence(direct_app, field, replacement):
+    row, conversation, event = direct_app
+    event[field] = replacement
+    assert evidence.match_same_account_direct_app_event(row, conversation, event) is None
+
+
+def test_direct_app_match_does_not_assign_an_author(direct_app):
+    row, conversation, event = direct_app
+    row["sender_id"] = None
+    with pytest.raises(ValueError, match="known author"):
+        evidence.match_same_account_direct_app_event(row, conversation, event)
 
 
 def test_exact_secondary_sender_keeps_original_owner_clock_and_message_bytes(witness):

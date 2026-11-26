@@ -1,6 +1,6 @@
 """Resource detail batches preserve originals, prior proofs, and publication boundaries.
 
-Code version: v1.2.2-codex.0
+Code version: v1.3.1-codex.0
 """
 
 from contextlib import closing
@@ -18,6 +18,8 @@ from app.core import wechat_resource_detail_repair as repair
 from app.core import wechat_resource_details as details
 from app.core.wechat_archive import WechatArchiveRepository, _file_identity, _identifier, _time_fields
 from app.core.wechat_contacts import initialize_contact_registry
+from app.core.wechat_history_browser import query_wechat_history
+from tests.test_wechat_contacts import bind, insert_contact, observe
 from tests import test_wechat_resource_details as evidence
 from tests import test_wechat_secondary_completions as completion_evidence
 
@@ -71,6 +73,28 @@ def _publish(fixture, report, rollback):
     return repair.publish_resource_detail_repair(
         fixture.root, report, rollback_path=rollback,
     )
+
+
+def test_two_matching_text_witnesses_keep_the_archive_owners_exact_source(repair_fixture):
+    original = repair_fixture.row
+    owner = repair_fixture.packet["account_id"]
+    native = evidence.native._message(81, 1, raw="Verified common text")
+    other = (
+        {"account_id": "wxid_other_viewer"}, deepcopy(native),
+        {**original, "provenance": "other viewer proof"},
+    )
+    own = ({"account_id": owner}, deepcopy(native), original)
+    selected = repair._same_text_author_witness([other, own], "account:" + owner)
+    assert selected is own
+    for field, conflict in (
+        ("content_sha256", "0" * 64),
+        ("sender_id", "wxid_unrelated_member"),
+        ("text", "A competing body"),
+    ):
+        competing = (other[0], {**other[1], field: conflict}, other[2])
+        assert repair._same_text_author_witness([competing, own], "account:" + owner) is None
+    competing_output = (other[0], other[1], {**other[2], "sender_id": "wxid_different_member"})
+    assert repair._same_text_author_witness([competing_output, own], "account:" + owner) is None
 
 
 def _second(fixture):
@@ -384,10 +408,16 @@ def test_cross_viewer_capture_requires_an_active_exact_completion_and_preserves_
     assert details.row_sha256(original) == details.row_sha256(row)
 
 
-def test_manifest_can_fill_only_an_exact_ordinary_group_text_sender(repair_fixture, tmp_path):
+@pytest.mark.parametrize(("indexed", "native_text", "text_match"), [
+    ("保留,文字,格式", "保留，文字，格式", "corroborated_fts_comma_width"),
+    ("保留,文字?", "保留，文字？", "corroborated_fts_punctuation_width"),
+])
+def test_manifest_can_fill_only_an_exact_ordinary_group_text_sender(
+    repair_fixture, tmp_path, indexed, native_text, text_match,
+):
     f = repair_fixture
     packet = deepcopy(f.packet)
-    packet["messages"] = [evidence.native._message(81, 1, raw="保留，文字，格式")]
+    packet["messages"] = [evidence.native._message(81, 1, raw=native_text)]
     witness = packet["messages"][0]
     owner = "wxid_second_viewer"
     partition = "ios-" + hashlib.md5(owner.encode(), usedforsecurity=False).hexdigest()
@@ -401,7 +431,7 @@ def test_manifest_can_fill_only_an_exact_ordinary_group_text_sender(repair_fixtu
     row = dict(f.row)
     row.update(
         id=hashlib.sha256(b"ordinary text awaiting sender").hexdigest(),
-        conversation_id=target, ordinal=147, text="保留,文字,格式", search_text="保留,文字,格式",
+        conversation_id=target, ordinal=147, text=indexed, search_text=indexed,
         sender_id=None, sender_label="Unknown sender", direction="received",
         time_sort=order, timestamp_value=value, timestamp_label=label, time_basis=basis,
         quality_flags='["sender_unavailable_in_search_index"]',
@@ -414,7 +444,10 @@ def test_manifest_can_fill_only_an_exact_ordinary_group_text_sender(repair_fixtu
     )
     proof["locator"].update(
         text_origin="corroborated_recovery_index",
-        corroboration=[{"database": "fts/fts_message.db", "row_id": 4}],
+        corroboration=[{
+            "database": "fts/fts_message.db", "table": "fts5_message_table_1_content",
+            "row_id": 4,
+        }],
     )
     row["provenance"] = json.dumps(proof)
     with sqlite3.connect(f.history) as connection:
@@ -452,8 +485,26 @@ def test_manifest_can_fill_only_an_exact_ordinary_group_text_sender(repair_fixtu
     assert edited["sender_id"] == witness["sender_id"]
     assert all(edited[key] == row[key] for key in ("id", "text", "time_sort", "timestamp_value", "ordinal"))
     enriched = json.loads(edited["provenance"])
-    assert enriched.pop("native_text_sender_details")["text_match"] == "corroborated_fts_comma_width"
+    assert enriched.pop("native_text_sender_details")["text_match"] == text_match
     assert enriched == proof
+    with sqlite3.connect(f.history.with_name("contacts.sqlite3")) as connection:
+        identifier = insert_contact(connection, witness["sender_id"])
+        bind(
+            connection, identifier, source=partition, sender=witness["sender_id"],
+            room=packet["peer_id"],
+        )
+        observe(
+            connection, identifier, "nickname", "Native nickname",
+            source=partition, snapshot="", owner=owner,
+        )
+        observe(
+            connection, identifier, "room_display_name", "Verified group label",
+            source=partition, snapshot="", owner=owner, room=packet["peer_id"],
+        )
+    result = query_wechat_history(f.root, session=target, persist_event_cache=False)
+    repaired, = (item for item in result.items if item.stable_id == row["id"])
+    assert repaired.author_label == witness["sender_id"]
+    assert repaired.messaging["viewer_display_name"] == "Verified group label"
 
 
 def test_changed_captured_upstream_is_skipped_without_losing_prior_repairs(

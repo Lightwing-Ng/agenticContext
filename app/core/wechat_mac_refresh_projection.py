@@ -1,6 +1,6 @@
 """Project only an authenticated requested peer into the existing Mac bank contract.
 
-Code version: v1.7.1-codex.0
+Code version: v1.8.0-codex.0
 """
 
 from __future__ import annotations
@@ -54,6 +54,7 @@ _SOURCE_BINDING_FIELDS = (
 MAX_ARCHIVE_ANCHOR_ROWS = 1_000_000
 MAX_NATIVE_TABLES = 10_000
 MAX_LEARNED_WITNESSES = 32
+_MAX_STORED_WITNESS_PROOF_BYTES = 1024**2
 _PROJECTION_BATCH_ROWS = 512
 _PROJECTION_BATCH_BYTES = 16 * 1024**2
 _PROJECTION_IN_FLIGHT = 4
@@ -717,20 +718,37 @@ def _stored_witnesses(local_store_root, scope, source, directory, check_cancel):
             return int(operations > 100)
 
         stored.set_progress_handler(bounded_query, 1_000)
+        # Proofs for other shards must not consume the stored-witness limit.
+        matching_proof = (
+            "CASE WHEN length(CAST(proof AS BLOB)) <= ? THEN "
+            "CASE WHEN json_valid(proof) THEN "
+            "json_extract(proof,'$.account_id')=? AND "
+            "json_extract(proof,'$.account_binding.account_directory')=? AND "
+            "json_extract(proof,'$.source.database_relative_path')=? END END"
+        )
+        source_parameters = (
+            _MAX_STORED_WITNESS_PROOF_BYTES, scope.account_id, directory,
+            source["database_relative_path"],
+        )
         queries = (
             (
-                "SELECT proof FROM conversation_proofs WHERE conversation_id=? LIMIT 16",
-                (scope.session_id,),
+                "SELECT proof FROM conversation_proofs WHERE conversation_id=? AND "
+                + matching_proof + " ORDER BY source_id LIMIT 16",
+                (scope.session_id, *source_parameters),
             ),
             (
-                "SELECT proof FROM sources WHERE account_id=? LIMIT 32",
-                (scope.account_id,),
+                "SELECT proof FROM sources WHERE account_id=? AND "
+                + matching_proof + " ORDER BY id LIMIT 32",
+                (scope.account_id, *source_parameters),
             ),
         )
         for query, parameters in queries:
             for (encoded,) in stored.execute(query, parameters):
                 check_cancel()
-                if not isinstance(encoded, str) or len(encoded.encode()) > 1024**2:
+                if (
+                    not isinstance(encoded, str)
+                    or len(encoded.encode()) > _MAX_STORED_WITNESS_PROOF_BYTES
+                ):
                     raise RefreshError(
                         "A stored account proof exceeds its bounded metadata budget."
                     )
@@ -1058,6 +1076,7 @@ def iter_prepare_packets(
     check_cancel=None,
     on_excluded=None,
     on_counts=None,
+    _native_count=None,
 ):
     """Split one pinned scope into bounded packets without weakening any proof.
 
@@ -1072,10 +1091,13 @@ def iter_prepare_packets(
     table = _table(scope.peer_id)
     if table not in context.tables:
         return
-    total = database.connection.execute(
-        'SELECT COUNT(*) FROM "' + table + '"'
-    ).fetchone()[0]
-    if total > MAX_ARCHIVE_ANCHOR_ROWS:
+    # Global refresh already counted the table on this read-only snapshot.
+    total = _native_count
+    if total is None:
+        total = database.connection.execute(
+            'SELECT COUNT(*) FROM "' + table + '"'
+        ).fetchone()[0]
+    if type(total) is not int or not 0 <= total <= MAX_ARCHIVE_ANCHOR_ROWS:
         raise RefreshError("The native scope exceeds its bounded global row budget.")
     history = wechat_archive_path(local_store_root)
     history_pin = bank._identity(history)

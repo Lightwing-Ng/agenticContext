@@ -1,7 +1,36 @@
-/* Code version: v1.26.6-codex.0 */
+/* Code version: v1.26.7-codex.0 */
 /* Human-message variants consume the existing Local resources primitives. */
 [data-wechat-refresh-copy] {
     white-space: pre-line;
+}
+
+.cache-wait-progress:not([hidden]) {
+    grid-column: 2;
+    display: grid;
+    gap: 6px;
+    margin-top: 6px;
+}
+
+.cache-wait-progress > .status-progress {
+    width: 100%;
+    min-width: 0;
+    height: 6px;
+    border: 0;
+    background: var(--theme-glass-border);
+}
+
+.cache-wait-progress .status-progress-fill {
+    background: var(--theme-accent-positive);
+    box-shadow: none;
+    transition: none;
+}
+
+.cache-wait-progress > p {
+    margin: 0;
+    color: var(--muted);
+    font-size: var(--font-ui-sm);
+    font-variant-numeric: tabular-nums;
+    line-height: 1.5;
 }
 
 .wechat-conversation-share {
@@ -441,6 +470,7 @@
 [data-wechat-resource-kind="video"] .wechat-resource-icon { --wechat-resource-symbol: url("/static/images/film.fill.svg"); }
 [data-wechat-resource-kind="audio"] .wechat-resource-icon { --wechat-resource-symbol: url("/static/images/message.badge.waveform.svg"); }
 [data-wechat-resource-link="true"] .wechat-resource-icon { --wechat-resource-symbol: url("/static/images/link.svg"); }
+[data-wechat-resource-status="unresolved"] .wechat-resource-icon { --wechat-resource-symbol: url("/static/images/info.circle.fill.svg"); }
 .wechat-payment { grid-template-columns: 32px minmax(0, 1fr); }
 .wechat-payment-text { min-width: 0; }
 .wechat-payment-icon { --wechat-resource-symbol: url("/static/images/arrow.trianglehead.2.clockwise.svg"); }

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Inventory retained native app witnesses or capture a bounded repair batch.
 
-Code version: v1.0.1-codex.0
+Code version: v1.1.1-codex.0
 """
 
 import argparse
@@ -37,6 +37,7 @@ from scripts.repair_wechat_resource_details import MAX_PACKET_FILE_BYTES, WORKST
 
 _ID = re.compile(r"[0-9a-f]{64}")
 _SESSION = re.compile(r"wechat:[0-9a-f]{64}")
+_ACCOUNT = re.compile(r"[A-Za-z0-9_.-]{1,256}")
 _LABELS = tuple(key for key in bank._APP_LABEL_FIELDS if not key.endswith("_source"))
 
 
@@ -100,12 +101,19 @@ def _candidate(record, retained, counts):
     )
 
 
-def _inventory(derived, retained, *, session, after, identifiers, limit, counts):
+def _inventory(
+    derived, retained, *, session, after, identifiers, limit, counts, target_sessions=None,
+):
     condition = ["e.operation='replace'", "e.strategy='native_sender'", "e.id>?"]
     parameters = [after]
     if session is not None:
         condition.append("e.conversation_id=?")
         parameters.append(session)
+    if target_sessions is not None:
+        # Keep multi-conversation scans ordered by message ID, without sorting
+        # the joined message bodies and provenance cells in a temporary table.
+        condition.append("+e.conversation_id IN (SELECT value FROM json_each(?))")
+        parameters.append(json.dumps(target_sessions))
     if identifiers:
         condition.append("e.id IN (SELECT value FROM json_each(?))")
         parameters.append(json.dumps(identifiers))
@@ -209,7 +217,7 @@ def _active_targets(repository, derived, selected, counts):
     return by_shard
 
 
-def _native_message(context, scope, witness, reference, counts):
+def _project_exact_native_message(context, scope, witness, counts):
     table = projection._table(scope.peer_id)
     try:
         rows = projection._native_rows(
@@ -246,6 +254,13 @@ def _native_message(context, scope, witness, reference, counts):
         "sender_id", "sender_proof", "direction",
     )):
         counts["native_sender_conflict"] += 1
+        return None
+    return message
+
+
+def _native_message(context, scope, witness, reference, counts):
+    message = _project_exact_native_message(context, scope, witness, counts)
+    if message is None:
         return None
     resource = message.get("resource", {})
     if (
@@ -447,13 +462,20 @@ def _write(path, directory, value):
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--local-store", type=Path, required=True)
+    parser.add_argument(
+        "--target-account", action="append",
+        help="Restrict to this archive account's conversations. Repeat to select several accounts.",
+    )
     parser.add_argument("--target-session", help="Restrict to this exact target archive conversation.")
     parser.add_argument("--after-message-id", default="", help="Resume after the last attempted target ID.")
     parser.add_argument("--message-id", action="append", help="Select an exact target ID. Repeat to select several.")
     parser.add_argument("--limit", type=int, help="Maximum eligible rows to attempt in this capture.")
     parser.add_argument("--output", type=Path, help="New private workstation JSON for captured packets.")
     args = parser.parse_args(argv)
+    accounts = sorted(set(args.target_account or ()))
     identifiers = sorted(set(args.message_id or ()))
+    if any(_ACCOUNT.fullmatch(account) is None for account in accounts):
+        parser.error("Select raw target account identifiers.")
     if (
         (args.target_session and _SESSION.fullmatch(args.target_session) is None)
         or (args.after_message_id and _ID.fullmatch(args.after_message_id) is None)
@@ -494,15 +516,25 @@ def main(argv=None):
                 derived, repository.path, completions._pins(repository.path),
             ):
                 raise ValueError("The retained completion catalog needs current archive inputs.")
+            target_sessions = None
+            if accounts:
+                target_sessions = [row[0] for row in history.execute(
+                    "SELECT id FROM conversations WHERE kind='group' AND account_key IN "
+                    "(SELECT value FROM json_each(?))",
+                    (json.dumps(["account:" + account for account in accounts]),),
+                )]
             selected, sources = _inventory(
                 derived, retained_ids, session=args.target_session, after=args.after_message_id,
                 identifiers=identifiers, limit=args.limit, counts=counts,
+                target_sessions=target_sessions,
             )
             report = {
                 "mode": "read_only_capture" if args.output is not None else "retained_metadata",
                 "counts": dict(counts),
                 "sources": sources,
             }
+            if accounts:
+                report["target_accounts"] = accounts
             if args.output is not None:
                 counts["selected"] = len(selected)
                 groups = _active_targets(repository, derived, selected, counts)

@@ -1,4 +1,4 @@
-/* Code version: v1.2.0-codex.0 */
+/* Code version: v1.2.1-codex.0 */
 /*
  * iPhone Agent mode page. A product adapter over the shared Agent shell, Process List,
  * Circular icon button, Secondary button, and status card; it consumes theme tokens only.
@@ -451,6 +451,7 @@
     overflow: hidden;
     border-radius: calc(100% * 182 / var(--iphone-opening-width)) /
         calc(100% * 182 / var(--iphone-opening-height));
+    corner-shape: var(--corner-shape-continuous);
     background: var(--theme-background);
     touch-action: none;
     user-select: none;

@@ -1,6 +1,6 @@
 """WeChat refresh actions retain shared geometry, scope, and honest progress.
 
-Code version: v1.4.1-codex.0
+Code version: v1.5.0-codex.0
 """
 
 from __future__ import annotations
@@ -483,7 +483,7 @@ def test_refresh_result_places_each_metric_on_a_separate_responsive_line(
 
 
 @pytest.mark.parametrize("width", [1280, 390])
-def test_refresh_reports_actual_phases_and_counts_without_reopening_dismissed_feedback(
+def test_refresh_progress_stays_available_in_cache_tasks_after_dismissal(
     disposable_browser, wechat_server, refresh_keys, width
 ):
     context, page = _open_chat(disposable_browser, wechat_server, width=width)
@@ -503,39 +503,71 @@ def test_refresh_reports_actual_phases_and_counts_without_reopening_dismissed_fe
             ),
         )
         page.route("**" + status_url, lambda route: route.fulfill(json=dict(snapshot)))
-        refresh.click()
+        page.route("**/api/cache/activity", lambda route: route.fulfill(json={"tasks": []}))
         modal = page.locator("#cache_wait_modal")
         copy = page.locator("#cache_wait_modal_copy")
-        expect(copy).to_have_text(
-            "Reading source 2 of 7. 1,234 messages checked. 56 possible updates identified."
-        )
+        close = modal.get_by_role("button", name="Close waiting notification")
+        trigger = page.locator("[data-cache-activity-trigger]")
+        panel = page.locator("[data-cache-activity-panel]")
+        refresh.click()
         expect(modal).to_be_visible()
+        expect(close).to_be_focused()
+        expect(close).to_have_css("opacity", "1")
+        reading = "Reading source 2 of 7. 1,234 messages checked. 56 possible updates identified."
+        expect(copy).to_have_text(reading)
         assert "%" not in modal.inner_text()
         assert "synthetic-source" not in modal.inner_text()
         assert "Added" not in modal.inner_text()
-        assert page.get_by_role("progressbar").count() == 0
+        expect(modal.get_by_role("progressbar")).to_have_count(0)
         geometry = modal.locator(".workspace-modal-dialog").bounding_box()
         assert geometry["width"] == pytest.approx(min(420, width - 32), abs=1)
+
+        close.click()
+        expect(modal).to_be_hidden()
+        expect(trigger).to_have_accessible_name("Show cache tasks")
+        trigger.click()
+        row = panel.locator("[data-cache-activity-task]")
+        task = row.get_by_role("button", name="Refreshing chat history", exact=True)
+        meter = row.get_by_role("progressbar", name="Refreshing chat history source processing progress")
+        expect(row).to_have_count(1)
+        expect(task).to_be_visible()
+        expect(meter).to_be_visible()
+        expect(row).to_contain_text("1 / 7 sources processed")
+        expect(row).to_contain_text(reading)
+
         snapshot.update(
             phase="checking", parts_completed=7, part_current=0,
             checked=12_345, candidates=64, skipped_parts=1, unavailable_parts=2,
         )
-        expect(copy).to_have_text(
-            "Validating possible changes. 7 of 7 sources processed. "
+        details = (
             "12,345 messages checked. 64 possible updates identified. "
             "1 source could not be verified. 2 additional sources need verified keys."
         )
-        page.keyboard.press("Escape")
-        expect(modal).to_be_hidden()
-        with page.expect_response("**" + status_url):
-            snapshot.update(phase="saving")
-        # A subsequent request proves the preceding poll was consumed by the UI.
-        with page.expect_request("**" + status_url):
-            pass
+        expect(row).to_contain_text("Validating possible changes.")
+        expect(row).to_contain_text(details)
+        snapshot.update(phase="saving")
+        expect(row).to_contain_text("Saving verified changes.")
         expect(modal).to_be_hidden()
         expect(refresh).to_be_disabled()
+
+        if width == 390:
+            task.focus()
+            task.press("Enter")
+        else:
+            task.click()
+        expect(panel).to_be_hidden()
+        expect(modal).to_be_visible()
+        expect(close).to_be_focused()
+        expect(copy).to_have_text(f"Saving verified changes. 7 of 7 sources processed. {details}")
+        page.keyboard.press("Escape")
+        expect(modal).to_be_hidden()
+        expect(trigger).to_be_focused()
+        expect(refresh).to_be_disabled()
+
         snapshot.update(state="failed", message="The synthetic task ended safely.")
         expect(refresh).to_be_enabled()
+        expect(row).to_have_count(0)
+        expect(trigger).to_be_hidden()
         expect(page.locator("[data-wechat-refresh-copy]")).to_have_text(
             "The synthetic task ended safely."
         )

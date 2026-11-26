@@ -1,6 +1,6 @@
 """Stage indexed, source-bound Mac recovery without rewriting the original archive.
 
-Code version: v1.15.5-codex.0
+Code version: v1.15.6-codex.0
 """
 
 from __future__ import annotations
@@ -42,7 +42,7 @@ from .wechat_text import is_native_pat_projection, native_components_text
 from .windows_file_metadata import file_change_time, has_open_file_handles
 
 
-CODE_VERSION = "v1.15.5-codex.0"
+CODE_VERSION = "v1.15.6-codex.0"
 WRITER_VERSION = "v1.5.1-codex.0"
 VERSION = WRITER_VERSION
 MAX_PACKET_BYTES = 128 * 1024**2
@@ -1672,6 +1672,22 @@ def _clone_verified_bank(history, target, candidate, inputs, cancel):
             os.close(directory_fd)
 
 
+def _record_other_conversation_gap(output, session, source_key, locator_key, message):
+    """Retain a competing scope's evidence without changing the event's owner."""
+    output.execute(
+        "INSERT OR IGNORE INTO gaps VALUES(?,?,?,?,?,?,?)",
+        (
+            _identifier("mac-bank-source-scope-gap-v1", locator_key, session),
+            session,
+            source_key,
+            message["local_id"],
+            message["server_id"],
+            "native_event_owned_by_another_conversation",
+            message["content_sha256"],
+        ),
+    )
+
+
 def stage_mac_recovery_bank(
     local_store_root, packets, candidate_path, *, account_ids, progress=None,
     baseline_copy=None, publication_guard=None, conversation_id=None,
@@ -1844,6 +1860,12 @@ def stage_mac_recovery_bank(
                         raise ValueError(
                             "One preserved Mac source row changed after its prior recovery."
                         )
+                    if existing_occurrence["conversation_id"] != session:
+                        _record_other_conversation_gap(
+                            output, session, source_key, locator_key, message,
+                        )
+                        report["conflicts"] += 1
+                        continue
                     if existing_occurrence["signature"] != signature:
                         if reparse.current_projection_replay(
                             output, existing_occurrence, packet, message, signature
@@ -1942,6 +1964,17 @@ def stage_mac_recovery_bank(
                     ).fetchone()
                     if stub is not None:
                         upgrade = _upgrade_stub(stub, packet, message)
+                if (not matches or upgrade is not None) and output.execute(
+                    "SELECT 1 FROM event_keys e JOIN messages m ON m.id=e.message_id "
+                    "WHERE e.account_id=? AND e.peer_id=? AND e.server_id=? "
+                    "AND m.conversation_id<>?",
+                    (packet["account_id"], packet["peer_id"], message["server_id"], session),
+                ).fetchone() is not None:
+                    _record_other_conversation_gap(
+                        output, session, source_key, locator_key, message,
+                    )
+                    report["conflicts"] += 1
+                    continue
                 if upgrade is not None:
                     projected[0] = upgrade["original_id"]
                     projected[2] = upgrade["original_ordinal"]

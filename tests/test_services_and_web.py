@@ -1,6 +1,6 @@
 """Service orchestration and Flask contract tests.
 
-Code version: v1.8.21-codex.0
+Code version: v1.8.22-codex.0
 """
 
 from __future__ import annotations
@@ -252,11 +252,11 @@ def test_web_pages_and_status_apis_are_available(client) -> None:
 
 @pytest.mark.integration
 @pytest.mark.parametrize("method", ("GET", "HEAD"))
-def test_home_page_redirects_to_agent(client, method: str) -> None:
+def test_home_page_redirects_to_x_text_cache(client, method: str) -> None:
     response = client.open("/", method=method)
 
     assert response.status_code == 302
-    assert response.headers["Location"] == "/agent"
+    assert response.headers["Location"] == "/cache/x/text/chrome"
 
 
 @pytest.mark.integration

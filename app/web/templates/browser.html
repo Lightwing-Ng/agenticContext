@@ -1,4 +1,4 @@
-<!-- Code version: v1.118.12-codex.0 -->
+<!-- Code version: v1.118.13-codex.0 -->
 {% from "_wechat_display_name.html" import display_name as wechat_display_name %}
 <!doctype html>
 <html lang="en-US">
@@ -17,14 +17,14 @@
     <script defer src="{{ url_for('static', filename='scrollable-data-table.js', v='scrollable-data-table-v1.0.3-codex.0') }}"></script>
     <link rel="stylesheet" href="{{ url_for('static', filename='browser-search.css', v='browser-search-v1.4.6-codex.0') }}">
     {# Clear local navigation state before the contact-return pagehide checkpoint runs. #}
-    <script defer src="{{ url_for('static', filename='waiting-modal.js', v='waiting-modal-v1.3.0-codex.0') }}"></script>
+    <script defer src="{{ url_for('static', filename='waiting-modal.js', v='waiting-modal-v1.5.0-codex.0') }}"></script>
     <script defer src="{{ url_for('static', filename='browser-sidebar-filters.js', v='browser-sidebar-filters-v1.1.0-codex.0') }}"></script>
     {% if filters.view == 'text' and filters.source == 'wechat' %}
     <link rel="stylesheet" href="{{ url_for('static', filename='wechat-kind-badge.css', v='wechat-kind-badge-v1.0.1-codex.0') }}">
-    <link rel="stylesheet" href="{{ url_for('static', filename='browser-messaging.css', v='browser-messaging-v1.26.6-codex.0') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='browser-messaging.css', v='browser-messaging-v1.26.7-codex.0') }}">
     <link rel="stylesheet" href="{{ url_for('static', filename='wechat-exchange.css', v='wechat-exchange-v1.4.1-codex.0') }}">
     <script defer src="{{ url_for('static', filename='wechat-exchange.js', v='wechat-exchange-v1.2.2-codex.0') }}"></script>
-    <script defer src="{{ url_for('static', filename='wechat-refresh.js', v='wechat-refresh-v1.6.1-codex.0') }}"></script>
+    <script defer src="{{ url_for('static', filename='wechat-refresh.js', v='wechat-refresh-v1.8.0-codex.0') }}"></script>
     <script defer src="{{ url_for('static', filename='wechat-browser-read.js', v='wechat-browser-read-v1.3.0-codex.0') }}"></script>
     <script defer src="{{ url_for('static', filename='wechat-contact-navigation.js', v='wechat-contact-navigation-v1.1.2-codex.0') }}"></script>
     <script defer src="{{ url_for('static', filename='disclosure-motion.js', v='disclosure-motion-v1.2.0-codex.0') }}"></script>
@@ -1398,7 +1398,9 @@
 </dialog>
 
 {% if is_wechat_text %}{% include "_wechat_exchange_import.html" %}{% endif %}
-{% include "_waiting_modal.html" %}
+{% with wait_modal_progress = is_wechat_text and wechat_account_refresh_id %}
+    {% include "_waiting_modal.html" %}
+{% endwith %}
 <script type="application/json" id="browser_media_data">{{ media_payload|tojson }}</script>
 <script src="{{ url_for('static', filename='sidebar.js', v='sidebar-v1.31.1-codex.0') }}"></script>
 </body>

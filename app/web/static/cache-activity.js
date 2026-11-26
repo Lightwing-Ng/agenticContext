@@ -1,4 +1,4 @@
-/* Code version: v1.2.0-claude.0 */
+/* Code version: v1.3.0-codex.0 */
 
 (() => {
     "use strict";
@@ -19,6 +19,9 @@
     const titleRailSelector = '[data-layout-role="title-rail"]';
     const formatter = new Intl.NumberFormat("en-US");
     const rows = new Map();
+    const localTasks = new Map();
+    let serverTasks = [];
+    let statusUnavailable = false;
     let open = false;
     let pollTimer = 0;
     let layoutFrame = 0;
@@ -109,8 +112,17 @@
         row.className = "cache-activity-task";
         row.dataset.cacheActivityTask = "";
         row.dataset.taskId = task.id;
-        const title = document.createElement("span");
+        const openDetails = localTasks.get(task.id)?.openDetails;
+        const title = document.createElement(openDetails ? "button" : "span");
         title.className = "cache-activity-task-title";
+        if (openDetails) {
+            title.type = "button";
+            title.setAttribute("aria-haspopup", "dialog");
+            title.addEventListener("click", () => {
+                setOpen(false);
+                openDetails();
+            });
+        }
         const meta = document.createElement("p");
         meta.className = "cache-activity-meta";
         const progress = document.createElement("p");
@@ -131,7 +143,10 @@
         return { row, title, meta, meter, progress, track, fill };
     }
 
-    function render(tasks) {
+    function render() {
+        const focused = document.activeElement;
+        const hadFocus = root.contains(focused);
+        const tasks = [...Array.from(localTasks.values(), ({ task }) => task), ...serverTasks];
         const ids = new Set();
         let runningCount = 0;
         for (const task of tasks) {
@@ -154,7 +169,7 @@
             item.progress.hidden = queued;
             const processed = nonnegativeCount(task.processed);
             const total = nonnegativeCount(task.total);
-            const units = { sessions: "sessions", conversations: "sessions", images: "images", answers: "answers", resources: "resources", items: "items" };
+            const units = { sessions: "sessions", conversations: "sessions", images: "images", answers: "answers", resources: "resources", items: "items", sources: "sources" };
             const unit = units[task.unit] || "items";
             const measured = total > 0;
             const percent = measured ? Math.min(100, processed / total * 100) : 0;
@@ -162,7 +177,8 @@
                 ? `${formatter.format(processed)} / ${formatter.format(total)} ${unit} processed (${Math.round(percent)}%)`
                 : processed > 0 ? `${formatter.format(processed)} ${unit} processed` : "Waiting for a work-item total.";
             setText(item.progress, progressText);
-            item.track.setAttribute("aria-label", `${label} cache progress`);
+            const progressLabel = unit === "sources" ? "source processing progress" : "cache progress";
+            item.track.setAttribute("aria-label", `${label} ${progressLabel}`);
             item.track.classList.toggle("is-indeterminate", !measured);
             item.track.setAttribute("aria-valuetext", !measured && processed > 0
                 ? `${progressText}; total not yet known.` : progressText);
@@ -188,19 +204,40 @@
             position += 1;
         }
         setText(count, formatter.format(rows.size));
-        root.dataset.stale = "false";
+        root.dataset.stale = String(statusUnavailable && !localTasks.size);
         root.dataset.running = String(runningCount > 0);
-        unavailable.hidden = true;
+        unavailable.hidden = !statusUnavailable;
         if (!rows.size) {
-            const hadFocus = root.contains(document.activeElement);
             setOpen(false);
             root.hidden = true;
             if (hadFocus) theme.focus({ preventScroll: true });
         } else {
             root.hidden = false;
+            if (hadFocus && !focused.isConnected) trigger.focus({ preventScroll: true });
             measure();
         }
     }
+
+    function track(task, openDetails) {
+        const entry = { task: { ...task }, openDetails };
+        localTasks.set(task.id, entry);
+        render();
+        return {
+            trigger,
+            update(values) {
+                if (localTasks.get(task.id) !== entry) return;
+                Object.assign(entry.task, values);
+                render();
+            },
+            finish() {
+                if (localTasks.get(task.id) !== entry) return;
+                localTasks.delete(task.id);
+                render();
+            },
+        };
+    }
+
+    window.CacheActivity = Object.freeze({ track });
 
     async function refresh() {
         if (request || document.hidden || stopped) return;
@@ -212,14 +249,12 @@
             if (!response.ok) throw new Error("Activity is unavailable");
             const data = await response.json();
             if (!Array.isArray(data.tasks)) throw new Error("Activity is unavailable");
-            render(data.tasks);
+            serverTasks = data.tasks;
+            statusUnavailable = false;
         } catch (_error) {
-            if (!root.hidden) {
-                root.dataset.stale = "true";
-                unavailable.hidden = false;
-                scheduleMeasure();
-            }
+            statusUnavailable = true;
         } finally {
+            render();
             window.clearTimeout(timeout);
             request = null;
             if (!document.hidden && !stopped) pollTimer = window.setTimeout(refresh, 3_000);

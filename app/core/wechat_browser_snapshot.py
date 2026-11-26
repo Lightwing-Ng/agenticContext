@@ -1,6 +1,6 @@
 """Persist authenticated conversation summaries after full timeline validation.
 
-Code version: v1.2.4-codex.0
+Code version: v1.2.5-codex.0
 """
 
 from __future__ import annotations
@@ -357,7 +357,7 @@ def _build(repository, history_identity, pin):
         connection.row_factory = sqlite3.Row
         try:
             table, messages, status = repository._timeline_tables(
-                connection, history_identity, strict=True
+                connection, history_identity, strict=True, include_resource_details=False,
             )
         except WechatTimelineProjectionError:
             return None
@@ -516,6 +516,7 @@ def _resident_detail_identity(value):
 
 
 def _preview_pin_matches(previous, current, completion_path, bank_path):
+    from .wechat_resource_detail_index import FILENAME as INDEX_FILENAME, MAX_BYTES as MAX_INDEX_BYTES
     from .wechat_resource_details import FILENAME, MAX_BYTES
 
     if (
@@ -537,7 +538,8 @@ def _preview_pin_matches(previous, current, completion_path, bank_path):
         if path not in old_inputs or path not in new_inputs or old_inputs[path] != new_inputs[path]
     }
     details_path = str(Path(bank_path).with_name(FILENAME))
-    if changed - {completion_path, bank_path, details_path}:
+    detail_index_path = str(Path(bank_path).with_name(INDEX_FILENAME))
+    if changed - {completion_path, bank_path, details_path, detail_index_path}:
         return False
     # These overlays keep the conversation scope intact. The navigation
     # preview labels counts as historical and hides message bodies.
@@ -565,7 +567,18 @@ def _preview_pin_matches(previous, current, completion_path, bank_path):
             and old_details["size"] <= MAX_BYTES
         )
     )
-    return completion_safe and bank_safe and details_safe
+    old_index = old_inputs.get(detail_index_path)
+    new_index = new_inputs.get(detail_index_path)
+    detail_index_safe = (
+        detail_index_path not in changed
+        or _resident_identity(new_index, inode_key="inode")
+        and new_index["size"] <= MAX_INDEX_BYTES
+        and (
+            old_index is None
+            or _resident_identity(old_index, inode_key="inode") and old_index["size"] <= MAX_INDEX_BYTES
+        )
+    )
+    return completion_safe and bank_safe and details_safe and detail_index_safe
 
 
 def load_previous_conversation_snapshot(repository, connection, history_identity):

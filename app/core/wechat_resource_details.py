@@ -1,6 +1,6 @@
 """Apply bounded, authenticated resource details without rewriting source catalogs.
 
-Code version: v1.3.4-codex.0
+Code version: v1.8.1-codex.0
 """
 
 from contextlib import contextmanager
@@ -16,6 +16,8 @@ import stat
 
 from . import wechat_macos_recovery_bank as bank
 from .owner_only_files import owner_only_problem
+from .wechat_completion_json_codec import load_json_cell
+from .wechat_reconcile import native_text_metadata
 from .wechat_resource_sender_evidence import (
     _HEADER_FIELDS,
     _json,
@@ -24,10 +26,11 @@ from .wechat_resource_sender_evidence import (
     secondary_native_events,
     validate_secondary_native_event,
 )
+from .wechat_text import native_components_text
 from .windows_file_metadata import file_change_time
 
 
-CODE_VERSION = "v1.3.4-codex.0"
+CODE_VERSION = "v1.8.1-codex.0"
 VERSION = "v1.0.0-codex.0"
 IS_WINDOWS = os.name == "nt"
 FILENAME = "resource_details.json"
@@ -43,6 +46,7 @@ COLUMNS = (
 _SCOPE = ("id", "partition_id", "account_key", "peer_id", "kind")
 _LABELS = ("app_subtype", "app_metadata_version", *bank._APP_LABEL_FIELDS)
 _TABLE = re.compile(r"(?:(?:main|temp)\.)?[A-Za-z_][A-Za-z0-9_]*")
+_FTS_MESSAGE_TABLE = re.compile(r"fts5_message_table_[0-9]+_content")
 _HEX = re.compile(r"[0-9a-f]{64}")
 _MESSAGE_SCHEMA = """
 CREATE TEMP TABLE IF NOT EXISTS resource_detail_replacements(
@@ -77,11 +81,14 @@ def _conversation_scope(conversation):
         result.keys() != set(_SCOPE)
         or not isinstance(result["id"], str)
         or re.fullmatch(r"wechat:[0-9a-f]{64}", result["id"]) is None
-        or result["kind"] != "group"
+        or result["kind"] not in {"group", "direct"}
+        or not isinstance(result["peer_id"], str)
+        or not result["peer_id"]
+        or (result["kind"] == "group") != result["peer_id"].endswith(("@chatroom", "@im.chatroom"))
         or not isinstance(result["account_key"], str)
         or not result["account_key"].startswith("account:")
     ):
-        raise ValueError("Resource details require an original native group scope.")
+        raise ValueError("Resource details require an original native conversation scope.")
     owner = result["account_key"].removeprefix("account:")
     if result["partition_id"] != "ios-" + hashlib.md5(owner.encode(), usedforsecurity=False).hexdigest():
         raise ValueError("Resource details lost the native source account partition.")
@@ -141,6 +148,33 @@ def _cross_viewer_completion(connection, row, header, matched):
         raise ValueError("Cross-viewer resource details need an active native sender completion.")
 
 
+def _save_text_sender(row, proof, header, message, **observations):
+    flags = json.loads(row["quality_flags"])
+    if not isinstance(flags, list) or any(not isinstance(flag, str) for flag in flags):
+        raise ValueError("Text sender details require retained string quality flags.")
+    proof["native_text_sender_details"] = {
+        "version": VERSION,
+        "original_row_sha256": row_sha256(row),
+        "source_account_id": header["account_id"],
+        "source_session_id": header["session_id"],
+        "source": deepcopy(header["source"]),
+        "local_id": message["local_id"],
+        "content_sha256": message["content_sha256"],
+        "sender_proof": deepcopy(message["sender_proof"]),
+        **observations,
+    }
+    result = dict(row)
+    sender = message["sender_id"]
+    result["sender_id"] = sender
+    if not row["sender_label"] or row["sender_label"] == "Unknown sender":
+        result["sender_label"] = sender
+    result["quality_flags"] = _json([*flags, "authenticated_text_sender_verified"])
+    result["provenance"] = _json(proof)
+    if sender.casefold() not in row["search_text"]:
+        result["search_text"] += "\n" + sender.casefold()
+    return result
+
+
 def _project_text_sender(row, scope, header, message, connection):
     proof = json.loads(row["provenance"])
     locator = proof.get("locator")
@@ -149,6 +183,7 @@ def _project_text_sender(row, scope, header, message, connection):
     owner = scope["account_key"].removeprefix("account:")
     if (
         connection is None
+        or scope["kind"] != "group"
         or row["conversation_id"] != scope["id"]
         or header["peer_id"] != peer
         or message["local_type"] != 1
@@ -186,45 +221,91 @@ def _project_text_sender(row, scope, header, message, connection):
     mode = "literal_text"
     if row["text"] != message["text"]:
         corroboration = locator.get("corroboration")
-        if (
-            locator.get("text_origin") != "corroborated_recovery_index"
-            or not isinstance(corroboration, list)
-            or not any(
-                isinstance(source, dict) and source.get("database") == "fts/fts_message.db"
-                for source in corroboration
-            )
-            or row["text"].replace("，", ",") != message["text"].replace("，", ",")
-        ):
+        fts_sources = [
+            source for source in corroboration
+            if isinstance(source, dict) and source.get("database") == "fts/fts_message.db"
+        ] if isinstance(corroboration, list) else []
+        if locator.get("text_origin") != "corroborated_recovery_index" or not fts_sources:
             raise ValueError("The archived text differs from its exact native sender witness.")
-        mode = "corroborated_fts_comma_width"
-    flags = json.loads(row["quality_flags"])
-    if not isinstance(flags, list) or any(not isinstance(flag, str) for flag in flags):
-        raise ValueError("Text sender details require retained string quality flags.")
-    proof["native_text_sender_details"] = {
-        "version": VERSION,
-        "basis": "authenticated_native_group_text_sender",
-        "text_match": mode,
-        "original_row_sha256": row_sha256(row),
-        "source_account_id": header["account_id"],
-        "source_session_id": header["session_id"],
-        "source": deepcopy(header["source"]),
-        "local_id": message["local_id"],
-        "content_sha256": message["content_sha256"],
-        "sender_proof": deepcopy(message["sender_proof"]),
-    }
-    result = dict(row)
-    result["sender_id"] = sender
-    if not row["sender_label"] or row["sender_label"] == "Unknown sender":
-        result["sender_label"] = sender
-    result["quality_flags"] = _json([*flags, "authenticated_text_sender_verified"])
-    result["provenance"] = _json(proof)
-    if sender.casefold() not in row["search_text"]:
-        result["search_text"] += "\n" + sender.casefold()
-    return result
+        indexed = row["text"].replace("，", ",")
+        native = message["text"].replace("，", ",")
+        if indexed == native:
+            mode = "corroborated_fts_comma_width"
+        elif indexed.replace("？", "?") == native.replace("？", "?") and any(
+            isinstance(source.get("table"), str)
+            and _FTS_MESSAGE_TABLE.fullmatch(source["table"]) is not None
+            and type(source.get("row_id")) is int
+            and source["row_id"] > 0
+            for source in fts_sources
+        ):
+            # Match the sender witness while retaining the original indexed punctuation.
+            mode = "corroborated_fts_punctuation_width"
+        else:
+            raise ValueError("The archived text differs from its exact native sender witness.")
+    return _save_text_sender(
+        row, proof, header, message, basis="authenticated_native_group_text_sender",
+        text_match=mode,
+    )
+
+
+def _project_completed_quote_sender(row, scope, header, message, connection):
+    """Add the author to an active quote when an exact-clock native witness agrees."""
+    proof = json.loads(row["provenance"])
+    completion = proof.get("secondary_resource_completion")
+    sender = message["sender_id"]
+    owner = scope["account_key"].removeprefix("account:")
+    if (
+        connection is None or scope["kind"] != "group" or row["sender_id"]
+        or header["account_id"] != owner
+        or row["conversation_id"] != header["session_id"] or header["session_id"] != scope["id"]
+        or header["peer_id"] != scope["peer_id"]
+        or message["local_type"] != ((57 << 32) | 49)
+        or proof.get("message_type") != 49
+        or proof.get("server_id") != message["server_id"]
+        or type(proof.get("unix_timestamp")) is not int
+        or proof["unix_timestamp"] != message["create_time"]
+        or row["text"] != message["text"]
+        or not sender or sender.endswith(("@chatroom", "@im.chatroom"))
+        or row["direction"] not in {"unknown", "sent" if sender == owner else "received"}
+        or not isinstance(completion, dict) or completion.get("strategy") != "native_quote"
+        or type(completion.get("clock_skew_seconds")) is not int
+        or abs(completion["clock_skew_seconds"]) != 1
+    ):
+        raise ValueError("Quote sender details need an exact-clock witness for the active quote.")
+    stamp = datetime.fromisoformat(row["timestamp_value"])
+    if stamp.tzinfo is None or stamp.timestamp() != message["create_time"]:
+        raise ValueError("The native quote sender differs from the archived event clock.")
+    try:
+        entry = connection.execute(
+            "SELECT e.projected_sha256,w.message,w.sha256 "
+            "FROM temp.secondary_completion_active a "
+            "JOIN secondary_completions.entries e ON e.id=a.id "
+            "JOIN secondary_completions.witnesses w ON w.id=e.witness_key AND w.source_key=e.source_key "
+            "WHERE e.id=? AND e.conversation_id=? AND e.operation='replace' AND e.strategy='native_quote'",
+            (row["id"], scope["id"]),
+        ).fetchone()
+    except sqlite3.OperationalError:
+        entry = None
+    if entry is None or row_sha256(row) != entry[0]:
+        raise ValueError("Quote sender details need the verified active completion.")
+    retained = load_json_cell(entry[1])
+    if (
+        not isinstance(retained, dict) or _sha(retained) != entry[2]
+        or any(retained.get(key) != message.get(key) for key in (
+            "local_type", "server_id", "sender_id", "content_sha256", "text", "native_text",
+        ))
+        or retained.get("create_time") != message["create_time"] + completion["clock_skew_seconds"]
+    ):
+        raise ValueError("The exact-clock quote witness conflicts with retained native evidence.")
+    return _save_text_sender(
+        row, proof, header, message, basis="authenticated_native_completed_quote_sender",
+        text_match="identical_retained_quote", retained_source_create_time=retained["create_time"],
+        native_source_create_time=message["create_time"],
+    )
 
 
 def project_resource_details(row, conversation, event, *, connection=None):
-    """Project an exactly witnessed text or resource sender and inert app-card labels.
+    """Replay exact native senders, app-card labels, and forwarded transcripts.
 
     Callers must authenticate the native source and revalidate its account binding
     independently. The registry reader performs the archive-side binding replay.
@@ -236,11 +317,20 @@ def project_resource_details(row, conversation, event, *, connection=None):
         raise ValueError("Resource details need an authenticated native source account.")
     if message["local_type"] == 1:
         return _project_text_sender(row, scope, header, message, connection)
-    matched = match_secondary_native_event(row, scope, [event])
+    if json.loads(row["provenance"]).get("text_extraction_kind") == "quoted_reply":
+        return _project_completed_quote_sender(row, scope, header, message, connection)
+    if scope["kind"] == "direct":
+        from .wechat_resource_sender_evidence import match_same_account_direct_app_event
+
+        matched = match_same_account_direct_app_event(row, scope, event)
+    else:
+        matched = match_secondary_native_event(row, scope, [event])
     if matched is None:
         raise ValueError("Resource details need an exact native event clock and identity.")
     same_viewer = header["account_id"] == owner
-    if same_viewer:
+    if scope["kind"] == "direct":
+        result = dict(row)
+    elif same_viewer:
         result = recover_native_resource_sender_from_secondary(row, scope, [event])["message"]
     else:
         _cross_viewer_completion(connection, row, header, matched)
@@ -248,8 +338,36 @@ def project_resource_details(row, conversation, event, *, connection=None):
     proof = json.loads(result["provenance"])
     reference = proof["resource_reference"]
     resource = event.get("resource")
+    native = event.get("native_text")
     added = {}
-    if (
+    forwarding = (
+        isinstance(native, dict)
+        and native.get("text_extraction_kind") == "forwarded_text"
+        and native.get("appmsg_subtype") == 19
+    )
+    if forwarding:
+        if (
+            matched["primary"]["message_type"] != 49
+            or row["text"] != "[App message]"
+            or proof.get("text_extraction_kind") != "resource_placeholder"
+            or reference.get("kind") != "app"
+            or reference.get("app_subtype") not in (None, "", "19")
+            or reference.get("safe_title") not in (None, "", native.get("forwarded_record_title"))
+        ):
+            raise ValueError("The forwarded transcript conflicts with the retained app card.")
+        metadata = native_text_metadata(native, {})
+        body = native_components_text(metadata.get("text_components", []))
+        if not body.strip() or body != message["text"]:
+            raise ValueError("The forwarded transcript lost its explicit native body.")
+        remainder = result["search_text"]
+        original_prefix = row["text"].casefold()
+        if remainder.startswith(original_prefix):
+            remainder = remainder[len(original_prefix):].lstrip("\n")
+        result["text"] = body
+        result["search_text"] = body.casefold() + ("\n" + remainder if remainder else "")
+        proof.pop("resource_reference")
+        proof.update(metadata, text_extraction_kind="forwarded_text")
+    elif (
         matched["primary"]["message_type"] == 49
         and reference.get("kind") == "app"
         and isinstance(resource, dict)
@@ -286,6 +404,11 @@ def project_resource_details(row, conversation, event, *, connection=None):
     flags = json.loads(result["quality_flags"])
     if not isinstance(flags, list) or any(not isinstance(flag, str) for flag in flags):
         raise ValueError("Resource details require retained string quality flags.")
+    if forwarding:
+        flags = [
+            *(flag for flag in flags if flag != "resource_placeholder"),
+            *native["flags"],
+        ]
     result["quality_flags"] = _json(list(dict.fromkeys([
         *flags, "authenticated_resource_details_verified",
     ])))
@@ -326,7 +449,7 @@ def make_entry(row, conversation, packet, *, connection=None):
     return entry
 
 
-def _resource_detail_file_pin(path, state, *, descriptor=None):
+def _metadata_pin(path, state, *, descriptor=None):
     change_time_ns = state.st_ctime_ns
     if IS_WINDOWS:
         # Use the same native mutation timestamp for a pathname and an open file.
@@ -351,7 +474,7 @@ def _registry_metadata(path):
         or path.parent.is_symlink()
     ):
         raise ValueError("Resource details need a bounded private resident registry.")
-    return _resource_detail_file_pin(path, state)
+    return _metadata_pin(path, state)
 
 
 @contextmanager
@@ -360,10 +483,10 @@ def _open_registry(path, expected):
         path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_BINARY", 0),
     )
     with os.fdopen(descriptor, "rb") as stream:
-        if _resource_detail_file_pin(path, os.fstat(descriptor), descriptor=descriptor) != expected:
+        if _metadata_pin(path, os.fstat(descriptor), descriptor=descriptor) != expected:
             raise ValueError("The resource detail registry changed before reading.")
         yield stream
-        if _resource_detail_file_pin(path, os.fstat(descriptor), descriptor=descriptor) != expected:
+        if _metadata_pin(path, os.fstat(descriptor), descriptor=descriptor) != expected:
             raise ValueError("The resource detail registry changed while reading.")
     if _registry_metadata(path) != expected:
         raise ValueError("The resource detail registry changed while reading.")
@@ -390,8 +513,14 @@ def registry_identity(history_path):
 
 def detail_input_identities(history_path):
     """Pin absence as well as publication for readers, exports and derived caches."""
+    from .wechat_resource_detail_index import FILENAME as INDEX_FILENAME, index_identity
+
     path = Path(history_path).with_name(FILENAME)
-    return {str(path.resolve()): registry_identity(history_path)}
+    indexed = path.with_name(INDEX_FILENAME)
+    identities = {str(path.resolve()): registry_identity(history_path)}
+    if index_pin := index_identity(indexed):
+        identities[str(indexed.absolute())] = index_pin
+    return identities
 
 
 def _unique(pairs):
@@ -588,6 +717,19 @@ def _row(connection, sql, values):
     return dict(zip((column[0] for column in cursor.description), rows[0], strict=True))
 
 
+def _indexed_detail_superseded(current, entry):
+    """Leave changed upstream details in place for the same native event."""
+    native = entry["packet"]["messages"][0]
+    proof = json.loads(current["provenance"])
+    return (
+        current["conversation_id"] == entry["conversation"]["id"]
+        and proof.get("server_id") == native.get("server_id")
+        and type(native.get("local_type")) is int
+        and proof.get("message_type") == native["local_type"] & 0xFFFFFFFF
+        and proof.get("unix_timestamp") == native.get("create_time")
+    )
+
+
 def attach_resource_details(
     connection, history_path, conversation_table, message_table, *, conversation_id=None,
 ):
@@ -597,36 +739,55 @@ def attach_resource_details(
         or message_table in {MESSAGE_TABLE, "temp." + MESSAGE_TABLE}
     ):
         raise ValueError("Resource details need validated upstream timeline tables.")
+    from .wechat_resource_detail_index import FILENAME as INDEX_FILENAME, index_identity, indexed_entries
+
     try:
         entries, identity = load_registry(history_path)
-        if identity is None:
+        indexed = Path(history_path).with_name(INDEX_FILENAME)
+        index_pin = index_identity(indexed)
+        if identity is None and index_pin is None:
             return conversation_table, message_table, "absent"
         replacements = []
-        for entry in entries:
-            if conversation_id is not None and entry["conversation"]["id"] != conversation_id:
-                continue
+        verified_sources, seen, scopes = set(), set(), {}
+
+        def replay(entry, projected_sha=None, source_key=None):
+            if entry["message_id"] in seen:
+                raise ValueError("A resource detail ID appears in both registries.")
+            seen.add(entry["message_id"])
             current = _row(
                 connection, f"SELECT * FROM {message_table} WHERE id=?",
                 (entry["message_id"],),
             )
             if row_sha256(current) != entry["original_row_sha256"]:
+                if source_key is not None and _indexed_detail_superseded(current, entry):
+                    return
                 raise ValueError("The resource detail upstream row changed.")
-            conversation = _row(
-                connection, f"SELECT * FROM {conversation_table} WHERE id=?",
-                (entry["conversation"]["id"],),
-            )
-            if _conversation_scope(conversation) != entry["conversation"]:
+            scope_id = entry["conversation"]["id"]
+            if scope_id not in scopes:
+                scopes[scope_id] = _conversation_scope(_row(
+                    connection, f"SELECT * FROM {conversation_table} WHERE id=?", (scope_id,),
+                ))
+            if scopes[scope_id] != entry["conversation"]:
                 raise ValueError("The resource detail conversation source changed.")
             packet = entry["packet"]
             if not isinstance(packet, dict) or len(packet.get("messages", ())) != 1:
                 raise ValueError("A resource detail entry lost its exact native event.")
             events = secondary_native_events(packet)
-            bank._validate_account_binding(connection, packet)
-            projected = project_resource_details(current, conversation, events[0], connection=connection)
-            if projected == current:
-                raise ValueError("The stored native proof adds no resource details.")
+            if source_key is None or source_key not in verified_sources:
+                bank._validate_account_binding(connection, packet)
+                if source_key is not None:
+                    verified_sources.add(source_key)
+            projected = project_resource_details(current, scopes[scope_id], events[0], connection=connection)
+            if projected == current or projected_sha is not None and row_sha256(projected) != projected_sha:
+                raise ValueError("The stored native proof no longer yields its reviewed details.")
             replacements.append(projected)
-        if registry_identity(history_path) != identity:
+
+        for entry in entries:
+            if conversation_id is None or entry["conversation"]["id"] == conversation_id:
+                replay(entry)
+        for entry, projected_sha, source_key in indexed_entries(indexed, index_pin, conversation_id=conversation_id):
+            replay(entry, projected_sha, source_key)
+        if registry_identity(history_path) != identity or index_identity(indexed) != index_pin:
             raise ValueError("Resource detail inputs changed during validation.")
         if not replacements:
             return conversation_table, message_table, "absent"

@@ -1,4 +1,4 @@
-/* Code version: v1.3.0-codex.0 */
+/* Code version: v1.5.0-codex.0 */
 
 (function initializeWaitingModal() {
     "use strict";
@@ -9,6 +9,11 @@
     const title = document.getElementById("cache_wait_modal_title");
     const copy = document.getElementById("cache_wait_modal_copy");
     const closeButton = modal.querySelector("[data-wait-modal-close]");
+    const meter = modal.querySelector("[data-wait-modal-progress]");
+    const track = meter?.querySelector('[role="progressbar"]');
+    const fill = track?.querySelector(".status-progress-fill");
+    const progressCopy = meter?.querySelector("[data-wait-modal-progress-copy]");
+    const number = new Intl.NumberFormat("en-US");
     const activeWaits = new Map();
     let focusReturnTarget = null;
     let navigationWait = null;
@@ -32,8 +37,29 @@
         };
     }
 
+    function renderProgress(progress) {
+        if (!meter || !track || !fill || !progressCopy) return;
+        const { processed, total, label, unit } = progress ?? {};
+        if (typeof label !== "string" || typeof unit !== "string"
+            || !Number.isSafeInteger(processed) || !Number.isSafeInteger(total)
+            || processed < 0 || total <= 0 || processed > total) {
+            meter.hidden = true;
+            return;
+        }
+        const percent = processed / total * 100;
+        const wholePercent = Math.floor(percent);
+        const detail = `${number.format(processed)} / ${number.format(total)} ${unit} processed (${wholePercent}%)`;
+        track.setAttribute("aria-label", label);
+        track.setAttribute("aria-valuenow", String(wholePercent));
+        track.setAttribute("aria-valuetext", detail);
+        fill.style.width = `${percent}%`;
+        if (progressCopy.textContent !== detail) progressCopy.textContent = detail;
+        meter.hidden = false;
+    }
+
     function renderLatestWait() {
         const latestWait = Array.from(activeWaits.values()).at(-1);
+        renderProgress(latestWait?.progress);
         if (!latestWait) {
             modal.hidden = true;
             return;
@@ -50,14 +76,22 @@
         const waitOptions = {
             title: normalizedText(options.title, "Working locally"),
             copy: normalizedText(options.copy, "Please wait while the app completes your request on this computer."),
+            progress: options.progress,
         };
+        const returnFocus = options.returnFocus;
         let timeoutId = 0;
         let finished = false;
 
         const reveal = () => {
             if (finished) return;
+            window.clearTimeout(timeoutId);
+            activeWaits.delete(waitToken);
             activeWaits.set(waitToken, waitOptions);
             renderLatestWait();
+            if (returnFocus instanceof HTMLElement) {
+                focusReturnTarget = returnFocus;
+                closeButton?.focus({ preventScroll: true });
+            }
         };
 
         if (delay > 0) {
@@ -67,6 +101,7 @@
         }
 
         return {
+            reopen: reveal,
             update(options = {}) {
                 if (finished) return;
                 if (Object.hasOwn(options, "title")) {
@@ -75,6 +110,7 @@
                 if (Object.hasOwn(options, "copy")) {
                     waitOptions.copy = normalizedText(options.copy, waitOptions.copy);
                 }
+                if (Object.hasOwn(options, "progress")) waitOptions.progress = options.progress;
                 // Closing a notification dismisses its feedback while work continues.
                 // A later progress update must not reopen that dismissed notification.
                 if (activeWaits.has(waitToken)) renderLatestWait();
@@ -83,8 +119,10 @@
                 if (finished) return;
                 finished = true;
                 if (timeoutId) window.clearTimeout(timeoutId);
+                const restoreFocus = returnFocus === focusReturnTarget && document.activeElement === closeButton;
                 activeWaits.delete(waitToken);
                 renderLatestWait();
+                if (restoreFocus && modal.hidden) restoreCloseFocus();
             },
         };
     }
@@ -100,6 +138,10 @@
 
     function closeModal() {
         hide();
+        restoreCloseFocus();
+    }
+
+    function restoreCloseFocus() {
         if (focusReturnTarget instanceof HTMLElement && focusReturnTarget.isConnected) {
             focusReturnTarget.focus({ preventScroll: true });
         }

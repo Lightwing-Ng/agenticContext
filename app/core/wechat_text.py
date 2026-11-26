@@ -1,6 +1,6 @@
 """Extract known WeChat textual envelopes without opening attachments or rendering HTML.
 
-Code version: v1.10.1-codex.0
+Code version: v1.11.0-codex.0
 """
 
 from __future__ import annotations
@@ -1088,6 +1088,44 @@ def project_system_notice_text(raw: str, *, peer_id: str = "") -> str | None:
         return None
     fields = _system_xml_fields(payload, _Budget())
     return fields["text"] if fields is not None else None
+
+
+def project_news_digest_text(raw: str) -> str | None:
+    """Display the text fields of a legacy newsapp digest recognized by its caller."""
+    if len(raw) > MAX_XML_BYTES or not raw.lstrip("\ufeff \t\r\n").startswith("<mmreader"):
+        return None
+    root = _parse_xml(raw, _Budget())
+    if root is None or root.tag != "mmreader":
+        return None
+    category = _child(root, "category")
+    if category is None:
+        return None
+    publisher = _leaf(category, "name").strip()
+    entries = [
+        (
+            entry.tag,
+            _leaf(entry, "title").strip(),
+            _leaf(entry, "digest").strip(),
+            _leaf(entry, "url").strip(),
+        )
+        for entry in category
+        if entry.tag in {"item", "newitem"}
+    ]
+    if not publisher or not entries:
+        return None
+
+    # The legacy item slot can repeat the lead article from the newitem list.
+    listed_articles = {
+        (title, digest, url) for tag, title, digest, url in entries if tag == "newitem"
+    }
+    sections = [publisher]
+    for tag, title, digest, url in entries:
+        if not title:
+            return None
+        if tag == "item" and (title, digest, url) in listed_articles:
+            continue
+        sections.append(title + "\n" + digest if digest and digest != title else title)
+    return "\n\n".join(sections)
 
 
 def _system_text(message_type: int, raw: str, budget: _Budget) -> dict[str, Any] | None:

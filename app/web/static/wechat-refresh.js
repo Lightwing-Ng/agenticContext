@@ -1,4 +1,4 @@
-/* Code version: v1.6.1-codex.0 */
+/* Code version: v1.8.0-codex.0 */
 
 (function initializeWechatRefresh() {
     "use strict";
@@ -211,7 +211,7 @@
         return value && typeof value === "object" && !Array.isArray(value) ? value : {};
     }
 
-    function progressCopy(snapshot, account) {
+    function progressCopy(snapshot, account, showSourceCounts = true) {
         const total = count(snapshot.parts_total);
         const current = count(snapshot.part_current);
         const completed = count(snapshot.parts_completed);
@@ -228,7 +228,7 @@
         };
         const phase = Object.hasOwn(phases, snapshot.phase) ? snapshot.phase : "preparing";
         const lines = [phases[phase]];
-        if (total && !["preparing", "reading", "comparing"].includes(phase)) {
+        if (showSourceCounts && total && !["preparing", "reading", "comparing"].includes(phase)) {
             lines.push(`${formatCount(Math.min(completed, total))} of ${formatCount(total)} sources processed.`);
         }
         if (phase !== "preparing") {
@@ -237,6 +237,27 @@
         }
         lines.push(...coverageDetails(snapshot));
         return lines.join(" ");
+    }
+
+    function accountProgress(snapshot) {
+        const sources = count(snapshot.parts_total);
+        const current = count(snapshot.part_current);
+        const records = count(snapshot.part_rows_total);
+        if (snapshot.phase === "comparing" && records > 0 && current > 0 && current <= sources) {
+            return {
+                label: `Source ${formatCount(current)} of ${formatCount(sources)} record processing progress`,
+                unit: "records",
+                total: records,
+                processed: Math.min(count(snapshot.part_rows_processed), records),
+            };
+        }
+        if (sources === 0) return null;
+        return {
+            label: "WeChat refresh source processing progress",
+            unit: "sources",
+            total: sources,
+            processed: Math.min(count(snapshot.parts_completed), sources),
+        };
     }
 
     function coverageDetails(snapshot) {
@@ -326,11 +347,32 @@
         button.setAttribute("aria-label", `Refreshing ${scope}…`);
         button.title = `Refreshing ${scope}…`;
         if (banner instanceof HTMLElement) banner.hidden = true;
+        const title = `Refreshing ${scope}`;
+        const initialCopy = progressCopy({ phase: "preparing" }, account);
+        const activity = window.CacheActivity?.track({
+            id: "wechat:refresh",
+            label: title,
+            unit: "sources",
+            message: initialCopy,
+        }, () => notice?.reopen());
         const notice = window.CacheWaitModal?.show({
-            title: `Refreshing ${scope}`,
-            copy: progressCopy({ phase: "preparing" }, account),
+            title,
+            copy: initialCopy,
+            returnFocus: activity?.trigger,
         });
-        const showProgress = (snapshot) => notice?.update?.({ copy: progressCopy(snapshot, account) });
+        const showProgress = (snapshot) => {
+            const progress = account ? accountProgress(snapshot) : null;
+            notice?.update({
+                copy: progressCopy(snapshot, account, !progress || progress.unit !== "sources"),
+                progress,
+            });
+            const total = count(snapshot.parts_total);
+            activity?.update({
+                message: progressCopy(snapshot, account, false),
+                total,
+                processed: Math.min(count(snapshot.parts_completed), total),
+            });
+        };
 
         let outcome;
         let reloading = false;
@@ -374,6 +416,7 @@
         } finally {
             if (!reloading) {
                 notice?.finish();
+                activity?.finish();
                 refreshing = false;
                 button.disabled = idleDisabled;
                 if (readRetry) readRetry.disabled = false;

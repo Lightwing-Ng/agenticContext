@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Stage or publish reviewed native resource details without rewriting archives.
 
-Code version: v1.1.0-codex.0
+Code version: v1.2.0-codex.0
 """
 
 import argparse
@@ -16,7 +16,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from app.core.owner_only_files import ensure_owner_only, owner_only_problem
 from app.core.wechat_resource_detail_repair import (
-    publish_resource_detail_repair, stage_resource_detail_repair,
+    MAX_INDEX_PACKETS, publish_resource_detail_repair, stage_resource_detail_repair,
 )
 
 
@@ -24,6 +24,7 @@ WORKSTATIONS = Path.home() / (
     "Library/CloudStorage/OneDrive-Personal/WeChat Text Archive/Workstations"
 )
 MAX_PACKET_FILE_BYTES = 128 * 1024**2
+MAX_INDEX_PACKET_BYTES = 512 * 1024**2
 
 
 def _output(path):
@@ -89,6 +90,7 @@ def main(argv=None):
     stage.add_argument("--candidate", type=Path, required=True)
     stage.add_argument("--report", type=Path, required=True)
     stage.add_argument("--message-id", action="append")
+    stage.add_argument("--indexed", action="store_true", help="Stage a bounded SQLite details index.")
     publish = commands.add_parser("publish", help="Publish an unchanged reviewed candidate.")
     publish.add_argument("--local-store", type=Path, required=True)
     publish.add_argument("--report", type=Path, required=True)
@@ -100,7 +102,9 @@ def main(argv=None):
         if candidate == destination:
             parser.error("The candidate and report need separate paths.")
 
-        if len(args.packet) > 128 or sum(path.stat().st_size for path in args.packet) > MAX_PACKET_FILE_BYTES:
+        packet_limit = MAX_INDEX_PACKETS if args.indexed else 128
+        byte_limit = MAX_INDEX_PACKET_BYTES if args.indexed else MAX_PACKET_FILE_BYTES
+        if len(args.packet) > packet_limit or sum(path.stat().st_size for path in args.packet) > byte_limit:
             parser.error("The combined packet input exceeds its bounded review budget.")
         values = [_read(path) for path in args.packet]
         if any(not isinstance(value, dict) for value in values):
@@ -135,6 +139,7 @@ def main(argv=None):
         report = stage_resource_detail_repair(
             args.local_store, candidate, packets, message_ids=args.message_id,
             expected_rows=expected_rows, target_sessions=target_sessions or None,
+            indexed=args.indexed,
         )
         _write(destination, report)
     else:

@@ -1,6 +1,6 @@
 """Keep local conversation refresh jobs scoped and credentials out of HTTP.
 
-Code version: v1.2.3-codex.0
+Code version: v1.2.4-codex.0
 """
 
 from types import SimpleNamespace
@@ -122,6 +122,8 @@ def test_status_exposes_actual_bounded_progress_without_internal_values(refresh_
         "parts_total": 7,
         "parts_completed": 2,
         "part_current": 3,
+        "part_rows_total": 4_000,
+        "part_rows_processed": 2_000,
         "checked": 2500,
         "candidates": 12,
         "skipped_parts": 1,
@@ -161,6 +163,8 @@ def test_status_exposes_actual_bounded_progress_without_internal_values(refresh_
         {"candidates": -1},
         {"checked": 2**53},
         {"parts_total": 2, "part_current": 3},
+        {"part_rows_total": 10, "part_rows_processed": 11},
+        {"part_rows_total": "10", "part_rows_processed": 5},
         {"member_snapshot": "/private/contact-source"},
     ],
 )

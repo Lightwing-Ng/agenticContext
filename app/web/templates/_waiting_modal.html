@@ -1,4 +1,4 @@
-<!-- Code version: v1.2.0-codex.0 -->
+<!-- Code version: v1.3.0-codex.0 -->
 <div
     id="cache_wait_modal"
     class="workspace-modal-overlay cache-wait-modal"
@@ -27,5 +27,13 @@
         </span>
         <p id="cache_wait_modal_title" class="workspace-modal-title">{{ wait_modal_title|default('Working locally') }}</p>
         <p id="cache_wait_modal_copy" class="workspace-modal-copy">{{ wait_modal_copy|default('Please wait while the app completes your request on this computer.') }}</p>
+        {% if wait_modal_progress|default(false) %}
+        <div class="cache-wait-progress" data-wait-modal-progress hidden>
+            <div class="status-progress" role="progressbar" aria-valuemin="0" aria-valuemax="100">
+                <span class="status-progress-fill" aria-hidden="true"></span>
+            </div>
+            <p data-wait-modal-progress-copy aria-hidden="true"></p>
+        </div>
+        {% endif %}
     </div>
 </div>

@@ -1,6 +1,6 @@
 """Global preparation preserves source isolation, sender proof, and idempotency.
 
-Code version: v1.3.1-codex.0
+Code version: v1.4.1-codex.0
 """
 
 from contextlib import closing
@@ -177,6 +177,16 @@ def test_account_refresh_reads_one_owner_once_and_publishes_all_eligible_chats(
     service = refresh_service.WechatMacRefreshService(root, key_registry=registry, platform="darwin")
     monkeypatch.setattr(refresh_service, "sys", SimpleNamespace(version_info=(3, 14)))
     opened = []
+    source_rows = []
+    update = service._update
+
+    def record_update(token, **values):
+        update(token, **values)
+        if "part_rows_total" in values:
+            snapshot = service.status(token)
+            source_rows.append((snapshot["part_rows_processed"], snapshot["part_rows_total"]))
+
+    monkeypatch.setattr(service, "_update", record_update)
 
     def read(reference, **_kwargs):
         opened.append(reference.account_id)
@@ -203,6 +213,8 @@ def test_account_refresh_reads_one_owner_once_and_publishes_all_eligible_chats(
         state = refresh_fixtures._wait(service, service.start_account(OWNER)["task_id"])
         assert state["state"] == "succeeded", state
         assert (state["added"], state["total"], state["checked"], state["partial"]) == (4, 0, 8, True)
+        assert list(dict.fromkeys(source_rows)) == [(0, 0), (0, 8), (4, 8), (8, 8)]
+        assert (state["part_rows_processed"], state["part_rows_total"]) == (0, 0)
         assert attached_scopes.count(session) == attached_scopes.count(second.session_id) == 2
         assert opened == [OWNER]
         assert set(registry.calls) == {(OWNER, False), (OWNER, True)}
@@ -388,6 +400,7 @@ def test_each_shard_is_read_once_and_metadata_is_shared_across_scopes(
     assert {packet["session_id"] for packet in packets} == {session, second.session_id}
     assert len(opened) == len(set(opened)) == 2
     assert sum("FROM Name2Id" in statement for statement in statements) == 1
+    assert sum(statement.startswith('SELECT COUNT(*) FROM "Msg_') for statement in statements) == 2
     for packet in packets:
         bank._validate_packet(packet, (OWNER,))
     final = progress[-1]
@@ -414,6 +427,7 @@ def test_preparation_replays_without_new_candidates_after_publication(
     candidate = tmp_path / "global-candidate.sqlite3"
     receipt = bank.stage_mac_recovery_bank(root, packets, candidate, account_ids=[OWNER])
     bank.publish_mac_recovery_bank(root, candidate, receipt)
+    monkeypatch.setattr(bank, "MAX_PACKET_MESSAGES", 2)
     progress = []
 
     repeated = list(
@@ -423,6 +437,11 @@ def test_preparation_replays_without_new_candidates_after_publication(
     )
 
     assert repeated == []
+    source_rows = [
+        frame["part_rows_processed"] for frame in progress if frame["part_rows_total"] == 4
+    ]
+    assert list(dict.fromkeys(source_rows)) == [0, 2, 4]
+    assert all(frame["completed_sources"] == 0 for frame in progress if frame["part_rows_total"])
     assert progress[-1]["checked"] == 4
     assert progress[-1]["candidates"] == 0
     assert receipt["added"] == 2
@@ -450,6 +469,8 @@ def test_unbound_scope_is_skipped_without_affecting_an_independent_scope(
 
     assert [packet["session_id"] for packet in packets] == [session]
     assert progress[-1]["checked"] == 12
+    assert max(frame["part_rows_processed"] for frame in progress) == 8
+    assert all(frame["part_rows_processed"] <= frame["part_rows_total"] for frame in progress)
     assert progress[-1]["retried_scope_sources"] == 1
     assert progress[-1]["skipped_scopes"] == 1
     assert progress[-1]["reason_codes"] == {"scope_account_binding_unavailable": 1}
@@ -483,6 +504,7 @@ def test_exclusion_receipts_preserve_coordinates_without_body_or_exception_text(
     assert "Private synthetic content" not in json.dumps(excluded + progress)
     assert progress[-1]["excluded"] == 1
     assert progress[-1]["reason_codes"] == {"row_missing_authenticated_sender": 1}
+    assert max(frame["part_rows_processed"] for frame in progress) == 4
 
 
 def test_cancellation_closes_the_current_snapshot_and_is_not_a_skipped_source(
@@ -533,6 +555,7 @@ def test_oversized_physical_scopes_are_reported_without_partial_projection(
     assert excluded[0]["reason"] == "scope_native_row_budget_exceeded"
     assert progress[-1]["oversized_scopes"] == 1
     assert progress[-1]["checked"] == progress[-1]["candidates"] == 0
+    assert all(frame["part_rows_processed"] == frame["part_rows_total"] == 0 for frame in progress)
 
 
 def test_source_context_rejects_mutation_after_metadata_preparation(refresh_archive):

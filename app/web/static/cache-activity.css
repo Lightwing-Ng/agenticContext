@@ -1,4 +1,4 @@
-/* Code version: v1.2.1-codex.0 */
+/* Code version: v1.2.2-codex.0 */
 
 .page[data-cache-page] {
     width: 100%;
@@ -147,6 +147,22 @@
     font-size: var(--font-ui-md);
     font-weight: var(--font-weight-medium);
     color: var(--text);
+}
+
+button.cache-activity-task-title {
+    justify-self: start;
+    padding: 0;
+    border: 0;
+    background: transparent;
+    color: var(--accent-text);
+    text-align: start;
+    text-decoration: underline;
+    cursor: pointer;
+}
+
+button.cache-activity-task-title:focus-visible {
+    outline: 2px solid var(--accent-text);
+    outline-offset: 2px;
 }
 
 /* The entry appears on every page, so its meter carries the Cache progress material

@@ -1,6 +1,6 @@
 """Resource cards retain explicit source labels independently of local payloads.
 
-Code version: v1.3.0-codex.0
+Code version: v1.4.0-codex.0
 """
 
 from contextlib import closing
@@ -136,6 +136,24 @@ def test_indexed_app_card_labels_do_not_change_local_resolution_or_actions(statu
     resolver.resolve.assert_called_once_with(reference)
 
 
+@pytest.mark.parametrize("status", ["folder", "missing"])
+def test_unparsed_app_card_reports_unavailable_content(status):
+    reference = {"kind": "app", "filename": "", "label": "[App message]"}
+    resolver = Mock()
+    resolver.resolve.return_value = {
+        "status": status,
+        "path": Path("/private/synthetic-folder") if status == "folder" else None,
+        "label": "Open local WeChat folder" if status == "folder" else "",
+    }
+
+    resource = present_resource(reference, resolver)
+
+    assert resource["label"] == "App message"
+    assert resource["status_label"] == "Card content unavailable"
+    assert resource["status"] == status
+    assert resource["can_reveal"] is (status == "folder")
+
+
 def test_indexed_app_forwarding_keeps_its_chat_history_role():
     resolver = Mock()
     resolver.resolve.return_value = {"status": "missing", "path": None, "label": ""}
@@ -167,7 +185,7 @@ def retained_card_connection():
         yield connection
 
 
-def _retained_app_card(connection, fields, *, active=True):
+def _retained_app_card(connection, fields, *, active=True, legacy=False):
     row = {
         "id": "retained-app-message",
         "conversation_id": "retained-conversation",
@@ -181,7 +199,7 @@ def _retained_app_card(connection, fields, *, active=True):
                     "account_id": "wxid_retained_account",
                     "peer_id": "1234@chatroom",
                     "kind": "app",
-                    "availability": "metadata_only",
+                    **({} if legacy else {"availability": "metadata_only"}),
                 },
             }
         ),
@@ -241,11 +259,12 @@ def _retained_app_card(connection, fields, *, active=True):
     ],
     ids=["channels", "link"],
 )
+@pytest.mark.parametrize("legacy", [False, True], ids=["metadata-only", "legacy"])
 def test_active_retained_app_details_feed_the_normal_resource_card(
-    retained_card_connection, fields, label, publisher, platform
+    retained_card_connection, fields, label, publisher, platform, legacy
 ):
     connection = retained_card_connection
-    row = _retained_app_card(connection, fields)
+    row = _retained_app_card(connection, fields, legacy=legacy)
     before = deepcopy(row)
     changes = connection.total_changes
 
@@ -255,13 +274,15 @@ def test_active_retained_app_details_feed_the_normal_resource_card(
     assert connection.total_changes == changes
     proof = json.loads(row["provenance"])
     reference = resource_reference(proof, "wxid_retained_account", "1234@chatroom")
-    resource = present_resource({**reference, **row["retained_app_card_fields"]}, None)
+    resolver = Mock()
+    resource = present_resource({**reference, **row["retained_app_card_fields"]}, resolver)
     assert resource["label"] == label
     assert resource["publisher_name"] == publisher
     assert resource.get("platform_label", "") == platform
     assert resource["is_link"]
     assert resource["status"] == "metadata_only"
     assert resource["can_reveal"] is False
+    resolver.resolve.assert_not_called()
 
 
 @pytest.mark.parametrize(

@@ -1,6 +1,6 @@
 """Resource presentation and Finder routes retain account and host boundaries.
 
-Code version: v1.5.1-codex.0
+Code version: v1.6.0-codex.0
 """
 
 from __future__ import annotations
@@ -52,6 +52,41 @@ _METADATA_CARDS = (
 )
 def test_unverified_resource_scope_is_not_linked_to_a_mac_file(value):
     assert resource_reference(value, OWNER, PEER) is None
+
+
+@pytest.mark.parametrize(
+    ("proof_fields", "reference_fields", "unresolved"),
+    [
+        ({}, {}, True),
+        ({"message_type": 66}, {}, False),
+        ({"server_id": "12345"}, {}, False),
+        ({}, {"checksum_md5": "a" * 32}, False),
+    ],
+)
+def test_serverless_type_64_without_attachment_evidence_is_an_unresolved_event(
+    proof_fields, reference_fields, unresolved,
+):
+    proof = {
+        "text_extraction_kind": "resource_placeholder",
+        "message_type": 64,
+        "server_id": None,
+        "resource_reference": {**REFERENCE, "kind": "unknown", **reference_fields},
+        **proof_fields,
+    }
+    resolver = Mock()
+    resolver.resolve.return_value = {"status": "missing", "path": None, "label": ""}
+
+    item = present_resource(resource_reference(proof, OWNER, PEER), resolver)
+
+    if unresolved:
+        assert item["label"] == "Unidentified WeChat event"
+        assert item["status_label"] == "Type 64 · Content unavailable"
+        assert item["can_reveal"] is False
+        resolver.resolve.assert_not_called()
+    else:
+        assert item["label"] == "Message attachment"
+        resolver.resolve.assert_called_once()
+    assert "availability" not in proof["resource_reference"]
 
 
 @pytest.mark.parametrize(

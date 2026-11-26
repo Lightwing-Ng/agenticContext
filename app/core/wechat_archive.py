@@ -1,6 +1,6 @@
 """Source-separated, text-only WeChat archive import and indexed local queries."""
 
-# Code version: v1.14.2-codex.0
+# Code version: v1.14.3-codex.0
 
 from __future__ import annotations
 
@@ -1059,7 +1059,7 @@ class WechatArchiveRepository:
         if include_resource_details:
             conversations, messages, detail_status = attach_resource_details(
                 connection, self.path, conversations, messages,
-                conversation_id=conversation_id,
+                conversation_id=conversation_id or status_conversation_id,
             )
             if detail_status not in {"ready", "absent"}:
                 if strict:
@@ -1668,6 +1668,7 @@ class WechatArchiveRepository:
                     else None,
                     status_conversation_id=session or None,
                     strict=strict_timeline,
+                    include_resource_details=strict_timeline or bool(session or str(query or "").strip()),
                 )
                 if strict_timeline and resource_status not in {"ready", "absent"}:
                     raise WechatResourceTimelineProjectionError(resource_status)

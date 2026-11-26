@@ -1,6 +1,6 @@
 """Bounded resource details preserve canonical identity and exact native evidence.
 
-Code version: v1.1.2-codex.0
+Code version: v1.4.1-codex.0
 """
 
 from contextlib import closing
@@ -17,6 +17,7 @@ import pytest
 from app.core import owner_only_files
 from app.core import wechat_resource_details as details
 from app.core.wechat_archive import WechatArchiveRepository, _time_fields
+from app.core.wechat_forwarded import project_native_forwarded
 from app.core.wechat_history_browser import query_wechat_history
 from app.core.wechat_resource_sender_evidence import secondary_native_events
 from app.core.wechat_session_export import WechatSessionExport, WechatSessionSourceChanged
@@ -112,6 +113,137 @@ def _attach(connection, fixture, *, session=None):
         connection, fixture.history, "main.conversations", "temp.upstream_details",
         conversation_id=session,
     )
+
+
+def test_forwarded_placeholder_restores_native_transcript_and_original_coordinates(fixture):
+    raw = (
+        "<msg><appmsg><type>19</type><title>Group Chat History</title><recorditem>"
+        "<recordinfo><datalist><dataitem datatype='1'><sourcename>Original speaker</sourcename>"
+        "<datadesc>Archived text</datadesc></dataitem></datalist></recordinfo>"
+        "</recorditem></appmsg></msg>"
+    )
+    fixture.packet["messages"] = [native._message(4, 49, raw=raw)]
+    provenance = json.loads(fixture.row["provenance"])
+    provenance["text_extraction_kind"] = "resource_placeholder"
+    fixture.row["provenance"] = json.dumps(provenance)
+    stored = deepcopy(fixture.row)
+    result = details.project_resource_details(fixture.row, fixture.conversation, _event(fixture))
+    proof = json.loads(result["provenance"])
+    record = project_native_forwarded(proof, parent_id=stored["id"], account_id=native.OWNER)
+
+    assert fixture.row == stored
+    assert all(result[key] == stored[key] for key in (
+        "id", "conversation_id", "ordinal", "direction", "time_sort",
+        "timestamp_value", "timestamp_label", "time_basis",
+    ))
+    assert "resource_reference" not in proof
+    assert result["text"] == "Archived text"
+    assert result["search_text"].startswith("archived text")
+    assert record["title"] == "Group Chat History"
+    item, = record["items"]
+    assert item.author_label == "Original speaker"
+    assert item.content_text == "Archived text"
+
+    conflict = json.loads(stored["provenance"])
+    conflict["resource_reference"]["app_subtype"] = "5"
+    stored["provenance"] = json.dumps(conflict)
+    with pytest.raises(ValueError, match="conflicts with the retained app card"):
+        details.project_resource_details(stored, fixture.conversation, _event(fixture))
+
+
+def test_direct_app_labels_use_same_account_event_and_preserve_the_original_author(
+    fixture, source_binding,
+):
+    packet = deepcopy(source_binding.packet)
+    peer = packet["peer_id"]
+    witness = deepcopy(fixture.packet["messages"][0])
+    witness.update(
+        sender_id=native.OWNER,
+        sender_label=native.OWNER,
+        direction="sent",
+        real_sender_id=2,
+        sender_proof=native._proof(2, native.OWNER),
+    )
+    packet["messages"] = [witness]
+    with closing(sqlite3.connect(fixture.history)) as connection:
+        connection.row_factory = sqlite3.Row
+        conversation = dict(connection.execute(
+            "SELECT * FROM conversations WHERE id=?", (packet["session_id"],),
+        ).fetchone())
+    row = {
+        **fixture.row, "conversation_id": packet["session_id"],
+        "sender_id": native.OWNER, "sender_label": "Original sender", "direction": "sent",
+    }
+    proof = json.loads(row["provenance"])
+    proof["text_extraction_kind"] = "resource_placeholder"
+    proof["resource_reference"]["peer_id"] = peer
+    proof["locator"]["table"] = "Chat_" + hashlib.md5(peer.encode(), usedforsecurity=False).hexdigest()
+    row["provenance"] = json.dumps(proof)
+
+    event, = secondary_native_events(packet)
+    projected = details.project_resource_details(row, conversation, event)
+
+    assert projected["sender_id"] == row["sender_id"]
+    assert projected["sender_label"] == row["sender_label"]
+    assert projected["direction"] == "sent"
+    assert json.loads(projected["provenance"])["resource_reference"]["safe_title"] == "A source title <b> 😀"
+    with pytest.raises(ValueError):
+        details.project_resource_details({**row, "direction": "received"}, conversation, event)
+
+
+def test_active_quote_sender_uses_identical_native_body_at_the_archived_clock(fixture):
+    raw = (
+        "<msg><appmsg><type>57</type><title>Exact reply</title>"
+        "<refermsg><type>1</type><fromusr>wxid_original</fromusr>"
+        "<svrid>123</svrid><content>Original text</content></refermsg></appmsg></msg>"
+    )
+    witness = native._message(4, 49, raw=raw)
+    fixture.packet["messages"] = [witness]
+    row = {**fixture.row, "text": witness["text"], "search_text": witness["text"].casefold()}
+    proof = json.loads(row["provenance"])
+    proof.pop("resource_reference")
+    proof.update(
+        text_extraction_kind="quoted_reply",
+        secondary_resource_completion={"strategy": "native_quote", "clock_skew_seconds": -1},
+    )
+    row["provenance"] = json.dumps(proof)
+    retained = {**witness, "create_time": witness["create_time"] - 1}
+
+    with closing(sqlite3.connect(":memory:")) as connection:
+        connection.executescript(
+            "CREATE TEMP TABLE secondary_completion_active(id TEXT PRIMARY KEY);"
+            "ATTACH DATABASE ':memory:' AS secondary_completions;"
+            "CREATE TABLE secondary_completions.entries("
+            "id,conversation_id,operation,strategy,projected_sha256,witness_key,source_key);"
+            "CREATE TABLE secondary_completions.witnesses(id,source_key,message,sha256);"
+        )
+        connection.execute("INSERT INTO secondary_completion_active VALUES(?)", (row["id"],))
+        connection.execute(
+            "INSERT INTO secondary_completions.entries VALUES(?,?,'replace','native_quote',?,'w','s')",
+            (row["id"], row["conversation_id"], details.row_sha256(row)),
+        )
+        connection.execute(
+            "INSERT INTO secondary_completions.witnesses VALUES('w','s',?,?)",
+            (json.dumps(retained), details._sha(retained)),
+        )
+        projected = details.project_resource_details(row, fixture.conversation, _event(fixture), connection=connection)
+        assert projected["sender_id"] == native.MEMBER
+        assert all(projected[key] == row[key] for key in (
+            "id", "ordinal", "conversation_id", "text", "direction",
+            "timestamp_value", "timestamp_label", "time_sort", "time_basis",
+        ))
+        projected_proof = json.loads(projected["provenance"])
+        observation = projected_proof.pop("native_text_sender_details")
+        assert projected_proof == proof
+        assert observation["native_source_create_time"] - observation["retained_source_create_time"] == 1
+
+        retained["content_sha256"] = "a" * 64
+        connection.execute(
+            "UPDATE secondary_completions.witnesses SET message=?, sha256=?",
+            (json.dumps(retained), details._sha(retained)),
+        )
+        with pytest.raises(ValueError, match="conflicts with retained native evidence"):
+            details.project_resource_details(row, fixture.conversation, _event(fixture), connection=connection)
 
 
 def test_app_labels_and_sender_keep_all_original_event_coordinates(fixture):

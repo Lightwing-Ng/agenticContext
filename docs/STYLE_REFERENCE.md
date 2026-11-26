@@ -1,6 +1,6 @@
 # Visual Style Reference
 
-Documentation version: `v1.38.15-codex.0`
+Documentation version: `v1.38.16-codex.0`
 
 ## Authority
 
@@ -145,11 +145,22 @@ Refresh progress updates the existing waiting handle with an allowlisted phase,
 the current source ordinal, actual messages checked and possible updates identified.
 Unavailable or unverified sources remain explicit. Candidate counts are not saved
 counts; the result distinguishes new messages, restored placeholders and repaired
-message details only after publication. The spinner stays indeterminate, without
-a fabricated percentage or completion time. The shared 420px card, material,
-geometry and typography remain unchanged. Updating an older handle respects the
+message details only after publication. Account refresh adds a determinate meter
+for the current source's measured record processing. When a record total is
+unavailable and the selected source count is known, the meter measures completed
+sources. Its labels and the phase separate source processing from publication
+and verification. The indeterminate spinner, shared 420px card, material, and
+typography retain their existing roles. Updating an older handle respects the
 latest waiting task, and closing a notification keeps later progress updates from
 reopening it while the local task continues.
+
+Starting a conversation or account refresh focuses the waiting card's close control.
+Closing it or pressing Escape returns focus to the Cache tasks trigger. The current
+Local resources page lists the refresh with the latest phase, checked-message count,
+and source progress. The meter is indeterminate until a source total is available,
+then measures sources processed. The phase identifies saving and verification after
+source processing reaches its total. Selecting the task title reopens the current
+details. The row leaves the list when this page's refresh watch ends.
 
 Floating pagination keeps the canonical content-sized pill at narrow widths.
 The existing 560px and 320px rules adjust only page-slot sizes and gaps; they
@@ -1009,8 +1020,8 @@ on wider displays and make these two anchor requirements incompatible.
 
 Clicking expands the same glass surface toward the upper left, using the existing
 popover material, soft radius, control-width maximum, and emphasized motion curve.
-The read-only nonmodal dialog is titled `Cache tasks` and lists running tasks first,
-then queued ones, each named by source and content mode. A running row shows its phase
+The nonmodal dialog is titled `Cache tasks` and lists running tasks first,
+then queued ones. Provider tasks are named by source and content mode. A running row shows its phase
 description, work-item counts, and a meter. A queued row shows what it waits for and
 has no meter. Escape restores the trigger's focus; clicking outside closes it. Reduced
 Motion makes expansion immediate and keeps a static live marker; the marker is also
@@ -1025,8 +1036,10 @@ The lightweight `/api/cache/activity` endpoint reads in-memory task snapshots fo
 registered source and content mode. It never hydrates caches or probes a browser. A row's
 mode comes from the runtime it belongs to, and a queued row's reason is worded by the
 task coordinator from registered labels only, never from task output.
-Refresh failure retains the last known list with an explicit stale-status message
-and pauses the breathing animation. Successful empty responses hide the entry point.
+Refresh failure retains the last known provider list with an explicit stale-status
+message. A current WeChat refresh can still update its row independently. The
+breathing animation pauses if no current task is known to be running. An empty task
+list hides the entry point.
 This adapter remains a Candidate review in the shared UI ledger; Worthward and neoMe
 applicability is Pending.
 

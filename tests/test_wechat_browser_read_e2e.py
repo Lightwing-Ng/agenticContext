@@ -1,6 +1,6 @@
 """Pending saved views retain honest content and bounded document navigation.
 
-Code version: v1.6.1-codex.0
+Code version: v1.7.1-codex.0
 """
 
 from __future__ import annotations
@@ -314,6 +314,81 @@ def test_account_refresh_from_pending_view_posts_only_account_and_keeps_the_url(
         banner = page.locator("[data-wechat-refresh-banner]")
         expect(banner.locator("[data-wechat-refresh-title]")).to_have_text("WeChat account partly refreshed")
         expect(banner.locator("[data-wechat-refresh-copy]")).to_contain_text("Added 1,234 messages.")
+        assert opened.errors == []
+    finally:
+        opened.close()
+
+
+@pytest.mark.parametrize("width", [390, 1280])
+def test_account_refresh_shows_measured_progress_within_a_source(
+    disposable_browser, read_server, monkeypatch, width,
+):
+    monkeypatch.setattr(WechatMacRefreshService, "account_available", lambda *_args: True)
+    opened = _open_pending(disposable_browser, read_server, width=width)
+    page = opened.page
+    snapshot = {
+        "state": "running",
+        "phase": "comparing",
+        "parts_total": 7,
+        "part_current": 1,
+        "parts_completed": 0,
+        "checked": 1_217_045,
+        "part_rows_processed": 1_217_045,
+        "part_rows_total": 2_000_000,
+    }
+    try:
+        refresh = page.locator("[data-wechat-account-refresh]")
+        endpoint = read_server.url + refresh.get_attribute("data-wechat-refresh-url")
+        page.route(endpoint, lambda route: route.fulfill(
+            status=202, json={"state": "running", "status_url": _REFRESH_STATUS_URL},
+        ))
+        page.route("**" + _REFRESH_STATUS_URL, lambda route: route.fulfill(json=dict(snapshot)))
+        page.route("**/api/cache/activity", lambda route: route.fulfill(json={"tasks": []}))
+        modal = page.get_by_role("dialog", name="Refreshing WeChat account")
+        refresh.click()
+        expect(modal).to_be_visible()
+        expect(modal.get_by_role("progressbar")).to_have_count(0)
+        page.wait_for_function("history.state?.agenticContextWechatPendingRefreshV1")
+
+        page.clock.run_for(1_000)
+        meter = modal.get_by_role("progressbar", name="Source 1 of 7 record processing progress")
+        expect(meter).to_have_attribute("aria-valuenow", "60")
+        expect(meter).to_have_attribute("aria-valuetext", "1,217,045 / 2,000,000 records processed (60%)")
+        expect(modal.locator("[data-wait-modal-progress-copy]")).to_have_text(
+            "1,217,045 / 2,000,000 records processed (60%)"
+        )
+        measured_fill = meter.locator(".status-progress-fill").bounding_box()
+        assert measured_fill["width"] == pytest.approx(meter.bounding_box()["width"] * 1_217_045 / 2_000_000, abs=1)
+        dialog_width = modal.locator(".workspace-modal-dialog").bounding_box()["width"]
+        assert dialog_width == pytest.approx(min(420, width - 32), abs=1)
+
+        modal.get_by_role("button", name="Close waiting notification").click()
+        snapshot.update(checked=1_500_000, part_rows_processed=1_500_000)
+        page.clock.run_for(1_000)
+        expect(modal).to_be_hidden()
+        trigger = page.get_by_role("button", name="Show cache tasks")
+        expect(trigger).to_be_focused()
+        trigger.click()
+        page.locator("[data-cache-activity-panel]").get_by_role("button", name="Refreshing WeChat account").click()
+        expect(meter).to_have_attribute("aria-valuenow", "75")
+
+        page.evaluate("window.otherWait = CacheWaitModal.show({ title: 'Another local task' })")
+        another = page.get_by_role("dialog", name="Another local task")
+        expect(another).to_be_visible()
+        expect(another.get_by_role("progressbar")).to_have_count(0)
+        page.evaluate("window.otherWait.finish()")
+        expect(meter).to_have_attribute("aria-valuenow", "75")
+
+        snapshot.update(phase="verifying", parts_completed=7, part_rows_processed=0, part_rows_total=0)
+        page.clock.run_for(1_000)
+        sources = modal.get_by_role("progressbar", name="WeChat refresh source processing progress")
+        expect(sources).to_have_attribute("aria-valuenow", "100")
+        expect(modal.locator("#cache_wait_modal_copy")).to_contain_text("Checking the updated account.")
+        expect(refresh).to_be_disabled()
+        snapshot.update(state="failed", message="The synthetic refresh ended safely.")
+        page.clock.run_for(1_000)
+        expect(modal).to_be_hidden()
+        expect(refresh).to_be_enabled()
         assert opened.errors == []
     finally:
         opened.close()

@@ -1,6 +1,6 @@
 """Adapt indexed human conversations to the shared Local resources page model."""
 
-# Code version: v1.45.7-codex.0
+# Code version: v1.46.3-codex.0
 
 from __future__ import annotations
 
@@ -53,7 +53,11 @@ from .wechat_quoted_resources import (
 from .wechat_quote_padding import project_native_quote_padding
 from .wechat_record_presentation import compact_record_fields
 from .wechat_reconcile import native_text_metadata
-from .wechat_text import native_components_text, project_system_notice_text
+from .wechat_text import (
+    native_components_text,
+    project_news_digest_text,
+    project_system_notice_text,
+)
 from .wechat_text_observations import WechatTextObservations
 from .wechat_resources import present_resource, resource_reference
 
@@ -1323,6 +1327,16 @@ def query_wechat_history(
         )
         if supplemental_text is not None:
             metadata.update(supplemental_text)
+        elif (
+            metadata["kind"] == "direct"
+            and metadata["direction"] == "received"
+            and metadata["peer_id"] == metadata["sender_id"] == "newsapp"
+            and type(provenance.get("message_type")) is int
+            and provenance["message_type"] == 1
+            and provenance.get("text_extraction_kind") == "plain_text"
+        ):
+            if (news_text := project_news_digest_text(row["text"])) is not None:
+                metadata["display_text"] = news_text
         source_snapshot = (
             provenance.get("source_snapshot") if isinstance(provenance, dict) else None
         )
@@ -1502,21 +1516,34 @@ def query_wechat_history(
             and item.author_label in unidentified
             and not item.messaging["is_system_notice"]
         ):
-            profile_name = (
-                verified_contact_profile_name(contact, sender)
-                if item.messaging.get("resource") else ""
-            )
-            direct_peer = item.role == "received" and _is_exact_direct_peer(
-                display_names, item.messaging, contact, sender
-            )
-            if not profile_name and (item.messaging["kind"] == "group" or direct_peer):
-                profile_name = _scoped_native_profile_name(
-                    contact_repository, display_names, contact, sender, item.messaging, scoped_profiles,
-                    allow_remark=direct_peer,
+            if (
+                item.messaging["kind"] == "group"
+                and contact.get("identity_status") == "verified"
+                and any(flag in item.messaging["quality_flags"] for flag in (
+                    "authenticated_text_sender_verified",
+                    "authenticated_resource_details_verified",
+                ))
+            ):
+                preferred = contact.get("preferred_name", "")
+                if preferred not in unidentified:
+                    name = preferred
+                    name_source = "verified_contact_observation"
+            if not name or name in unidentified:
+                profile_name = (
+                    verified_contact_profile_name(contact, sender)
+                    if item.messaging.get("resource") else ""
                 )
-            if profile_name:
-                name = profile_name
-                name_source = "verified_native_contact_profile"
+                direct_peer = item.role == "received" and _is_exact_direct_peer(
+                    display_names, item.messaging, contact, sender
+                )
+                if not profile_name and (item.messaging["kind"] == "group" or direct_peer):
+                    profile_name = _scoped_native_profile_name(
+                        contact_repository, display_names, contact, sender, item.messaging, scoped_profiles,
+                        allow_remark=direct_peer,
+                    )
+                if profile_name:
+                    name = profile_name
+                    name_source = "verified_native_contact_profile"
         if name:
             item.messaging["viewer_display_name"] = name
             contact = {

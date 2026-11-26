@@ -1,6 +1,6 @@
-"""Fill missing resource authors from exact authenticated secondary group events.
+"""Match authenticated native resource observations within their account scope.
 
-Code version: v1.0.1-codex.0
+Code version: v1.1.0-codex.0
 
 Callers must authenticate the captured database and validate its account anchors
 against the primary archive before passing packets here. These helpers perform
@@ -20,7 +20,7 @@ from . import wechat_macos_recovery_bank as bank
 from .wechat_native_resource_revalidation import _relative
 
 
-CODE_VERSION = "v1.0.1-codex.0"
+CODE_VERSION = "v1.1.0-codex.0"
 PROOF_VERSION = "v1.0.0-codex.0"
 VERSION = PROOF_VERSION
 _RESOURCE_TYPES = {
@@ -80,7 +80,7 @@ def iter_secondary_native_events(packet):
     return ({**header, **message} for message in packet["messages"])
 
 
-def _primary_context(row, conversation):
+def _primary_context(row, conversation, *, direct_app=False):
     if not isinstance(row, Mapping) or not isinstance(conversation, Mapping):
         raise ValueError("A secondary author needs its original row and conversation.")
     try:
@@ -93,13 +93,15 @@ def _primary_context(row, conversation):
         raise ValueError("A secondary author needs original object provenance.")
     reference, locator = proof.get("resource_reference"), proof.get("locator")
     account_key, peer = conversation.get("account_key"), conversation.get("peer_id")
+    kind = "direct" if direct_app else "group"
     if (
         not isinstance(account_key, str)
         or not account_key.startswith("account:")
         or not account_key[8:]
-        or conversation.get("kind") != "group"
+        or conversation.get("kind") != kind
         or not isinstance(peer, str)
-        or not peer.endswith(("@chatroom", "@im.chatroom"))
+        or not peer
+        or kind != ("group" if peer.endswith(("@chatroom", "@im.chatroom")) else "direct")
         or row.get("conversation_id") != conversation.get("id")
         or not isinstance(row.get("id"), str)
         or re.fullmatch(r"[0-9a-f]{64}", row["id"]) is None
@@ -126,6 +128,14 @@ def _primary_context(row, conversation):
             "A secondary author cannot change original account, peer, row or event metadata."
         )
     owner = account_key[8:]
+    if direct_app and (
+        reference["kind"] != "app"
+        or proof.get("text_extraction_kind") != "resource_placeholder"
+        or row.get("text") != "[App message]"
+        or row["direction"] not in {"sent", "received"}
+        or row.get("sender_id") != (owner if row["direction"] == "sent" else peer)
+    ):
+        raise ValueError("Direct app details require a known author on the original card.")
     relative = _relative(proof.get("source_relative_path"), owner)
     legacy._digest(proof.get("source_sha256"))
     server = legacy._server(proof.get("server_id"))
@@ -172,6 +182,39 @@ def match_secondary_native_event(row, conversation, events, *, max_clock_skew=0)
             "Secondary event matching permits only exact or one-second source clocks."
         )
     primary, _ = _primary_context(row, conversation)
+    return _match_native_event(primary, events, max_clock_skew=max_clock_skew)
+
+
+def match_same_account_direct_app_event(row, conversation, event):
+    """Match only exact labels or a forwarded record for an existing direct card."""
+    primary, _ = _primary_context(row, conversation, direct_app=True)
+    if not isinstance(event, dict):
+        raise ValueError("A direct app witness must be an authenticated native event.")
+    if (
+        event.get("account_id") != primary["account_id"]
+        or event.get("session_id") != conversation["id"]
+        or event.get("conversation_kind") != "direct"
+        or "account_binding" not in event
+        or event.get("sender_id") != row["sender_id"]
+        or event.get("direction") != row["direction"]
+    ):
+        return None
+    resource, native = event.get("resource"), event.get("native_text")
+    if not (
+        isinstance(resource, dict)
+        and resource.get("kind") == "app"
+        and resource.get("app_metadata_version") == "1"
+        or isinstance(native, dict)
+        and native.get("text_extraction_kind") == "forwarded_text"
+        and native.get("appmsg_subtype") == 19
+        and type(event.get("local_type")) is int
+        and event["local_type"] >> 32 == 19
+    ):
+        return None
+    return _match_native_event(primary, [event], max_clock_skew=0)
+
+
+def _match_native_event(primary, events, *, max_clock_skew):
     if not isinstance(events, Iterable) or isinstance(events, (str, bytes, Mapping)):
         raise ValueError(
             "Pass the complete candidate event sequence, not a guessed witness."

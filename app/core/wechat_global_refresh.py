@@ -1,6 +1,6 @@
 """Prepare bounded global Mac refresh packets without publishing or reading new keys.
 
-Code version: v1.3.0-codex.0
+Code version: v1.4.0-codex.0
 
 Inventory reads canonical scope metadata and the existing verified-key registry. The
 iterator decrypts one configured shard at a time and retains the existing per-scope
@@ -227,6 +227,9 @@ def iter_global_refresh_packets(
     ``processed_scope_sources`` and ``skipped_scopes`` count source/scope pairs.
     ``reason_codes`` uses row_, scope_, source_, and account_ prefixes to retain
     the counting unit. Counts describe preparation, never committed changes.
+    Current-source row counts cover eligible tables on the pinned shard. Rows
+    rejected during inspection count as processed, and retries do not repeat
+    that credit. Sources without a row plan report zero for both counters.
 
     ``on_excluded`` is a private-report callback for stable source coordinates and
     safe reason codes. It receives no plaintext body, credential, or exception text.
@@ -288,6 +291,8 @@ def iter_global_refresh_packets(
         "deferred_scope_sources": 0,
         "retried_scope_sources": 0,
         "recovered_scope_sources": 0,
+        "part_rows_total": 0,
+        "part_rows_processed": 0,
     }
 
     def running(*, check_inputs=False):
@@ -363,14 +368,33 @@ def iter_global_refresh_packets(
             try:
                 if database.partial:
                     reasons["source_incomplete_wal_coverage"] += 1
-                def process_scope(scope, *, retry=False):
-                    running(check_inputs=True)
+
+                scope_plan = []
+                for scope in inventory.scopes:
+                    if scope.account_id != owner:
+                        continue
                     table = _table(scope.peer_id)
+                    if table not in context.tables or (
+                        scope_sources is not None
+                        and (owner, reference.relative_path, scope.session_id) not in scope_sources
+                    ):
+                        continue
+                    running()
                     try:
                         native_count = database.connection.execute(
                             'SELECT COUNT(*) FROM "' + table + '"'
                         ).fetchone()[0]
                     except sqlite3.Error:
+                        native_count = None
+                    scope_plan.append((scope, native_count))
+                    if native_count is not None and native_count <= MAX_ARCHIVE_ANCHOR_ROWS:
+                        status["part_rows_total"] += native_count
+                progress("comparing")
+                credited_rows = {}
+
+                def process_scope(scope, native_count, *, retry=False):
+                    running(check_inputs=True)
+                    if native_count is None:
                         reason = "scope_native_table_unavailable"
                         reasons[reason] += 1
                         status["skipped_scopes"] += 1
@@ -386,6 +410,7 @@ def iter_global_refresh_packets(
                         progress("comparing")
                         return False
                     row_reasons = Counter()
+                    attempt_rows = 0
 
                     def row_excluded(value):
                         row_reasons[value["reason"]] += 1
@@ -393,10 +418,19 @@ def iter_global_refresh_packets(
                             on_excluded(dict(value))
 
                     def credit_rows(value):
-                        status["checked"] += value.get("total", 0)
+                        nonlocal attempt_rows
+                        window_rows = value["total"]
+                        attempt_rows += window_rows
+                        status["checked"] += window_rows
                         status["excluded"] += value.get("excluded", 0)
                         reasons.update(row_reasons)
                         row_reasons.clear()
+                        previous = credited_rows.get(scope.session_id, 0)
+                        credited = min(attempt_rows, native_count)
+                        if credited > previous:
+                            status["part_rows_processed"] += credited - previous
+                            credited_rows[scope.session_id] = credited
+                        progress("comparing")
 
                     emitted = False
                     try:
@@ -408,6 +442,7 @@ def iter_global_refresh_packets(
                             check_cancel=running,
                             on_excluded=row_excluded,
                             on_counts=credit_rows,
+                            _native_count=native_count,
                         )
                         for packet in packets:
                             running(check_inputs=True)
@@ -445,22 +480,16 @@ def iter_global_refresh_packets(
                     return False
 
                 pending = []
-                for scope in inventory.scopes:
-                    if (
-                        scope.account_id != owner
-                        or _table(scope.peer_id) not in context.tables
-                        or scope_sources is not None
-                        and (owner, reference.relative_path, scope.session_id) not in scope_sources
-                    ):
-                        continue
-                    if (yield from process_scope(scope)):
-                        pending.append(scope)
-                for scope in pending:
+                for scope, native_count in scope_plan:
+                    if (yield from process_scope(scope, native_count)):
+                        pending.append((scope, native_count))
+                for scope, native_count in pending:
                     status["retried_scope_sources"] += 1
-                    yield from process_scope(scope, retry=True)
+                    yield from process_scope(scope, native_count, retry=True)
                 status["completed_sources"] += 1
             finally:
                 database.close()
+            status["part_rows_total"] = status["part_rows_processed"] = 0
             progress("comparing")
     running(check_inputs=True)
     progress("complete")

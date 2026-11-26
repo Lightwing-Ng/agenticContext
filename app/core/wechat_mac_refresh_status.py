@@ -1,6 +1,6 @@
 """Validate bounded, presentation-only WeChat refresh progress.
 
-Code version: v1.2.0-codex.0
+Code version: v1.3.0-codex.0
 """
 
 from __future__ import annotations
@@ -13,6 +13,8 @@ COUNTERS = (
     "parts_total",
     "parts_completed",
     "part_current",
+    "part_rows_total",
+    "part_rows_processed",
     "checked",
     "candidates",
     "skipped_parts",
@@ -95,4 +97,7 @@ def safe_progress(value, *, require_phase=False):
         for field in ("parts_completed", "part_current", "skipped_parts")
     ):
         raise ValueError("Refresh progress exceeds its known source count.")
+    rows = result.get("part_rows_total")
+    if rows is not None and result.get("part_rows_processed", 0) > rows:
+        raise ValueError("Refresh progress exceeds its known source row count.")
     return result

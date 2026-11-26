@@ -1,6 +1,6 @@
 """Run explicit, bounded Mac WeChat refreshes in background workers.
 
-Code version: v1.9.1-codex.0
+Code version: v1.10.1-codex.0
 """
 
 from __future__ import annotations
@@ -226,6 +226,8 @@ class WechatMacRefreshService:
                 "reparsed": 0,
                 "conflicts": 0,
             }
+            if isinstance(scope, _AccountScope):
+                public.update(part_rows_total=0, part_rows_processed=0)
             thread = Thread(
                 target=self._run,
                 args=(token, scope),
@@ -607,6 +609,8 @@ class WechatMacRefreshService:
                 parts_total=total,
                 part_current=min(total, completed + skipped + 1),
                 parts_completed=completed,
+                part_rows_total=values["part_rows_total"],
+                part_rows_processed=values["part_rows_processed"],
                 checked=values["checked"],
                 candidates=values["candidates"],
                 skipped_parts=skipped,
