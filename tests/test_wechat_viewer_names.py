@@ -1788,6 +1788,7 @@ def test_browser_viewer_names_keep_native_filters_and_compact_source_details(
         ("exact", True, OTHER, "Current room nickname"),
         ("other_room", True, OTHER, None),
         ("other_owner", True, OTHER, None),
+        ("wrong_contact", True, OTHER, None),
         ("exact", False, OTHER, None),
         ("exact", True, "Original message nickname", None),
     ],
@@ -1808,12 +1809,23 @@ def test_group_identifier_uses_only_the_verified_room_roster(
         ).fetchone()[0]
         connection.execute("UPDATE messages SET sender_label=? WHERE id=?", (raw_label, message_id))
     with sqlite3.connect(fixture.registry) as connection:
+        connection.execute(
+            "UPDATE contact_identifiers SET namespace='wechat' WHERE contact_id=?",
+            (fixture.other_id,),
+        )
+        if scope == "wrong_contact":
+            connection.execute(
+                "UPDATE sender_bindings SET contact_id=? WHERE source_id=? AND sender_id=?",
+                (fixture.contact_id, source, OTHER),
+            )
         for label in ("Earlier account nickname", "Later account nickname"):
             observe(connection, fixture.other_id, "nickname", label, source=source, owner=OWNER_A)
         if not verified:
             connection.execute(
                 "DELETE FROM sender_bindings WHERE source_id=? AND sender_id=?", (source, OTHER),
             )
+    if scope == "wrong_contact":
+        _write_preference(fixture.store, fixture.contact_id, None)
     roster = WechatGroupRosterRepository(fixture.store)
     owner = OWNER_B if scope == "other_owner" else OWNER_A
     room = OTHER_ROOM if scope == "other_room" else ROOM

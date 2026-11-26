@@ -1,6 +1,6 @@
 """Adapt indexed human conversations to the shared Local resources page model."""
 
-# Code version: v1.46.4-codex.0
+# Code version: v1.46.5-codex.0
 
 from __future__ import annotations
 
@@ -1557,12 +1557,8 @@ def query_wechat_history(
                         item.messaging["account_id"], item.messaging["peer_id"], sender,
                     ), "")) not in unidentified
                     and contact.get("identity_status") == "verified"
-                    and any(
-                        identifier["namespace"] == "native_username"
-                        and not identifier["realm"]
-                        and identifier["value"] == sender
-                        for identifier in contact.get("identifiers", ())
-                    )
+                    and classify_wechat_identifier(sender)["kind"] in {"wechat_account", "wechat_identity"}
+                    and contact["id"] == canonical_contact_id(sender, authority="native_message_sender")
                 ):
                     name = roster_name
                     name_source = "verified_group_roster"
