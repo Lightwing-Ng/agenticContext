@@ -1,6 +1,6 @@
 """Adapt indexed human conversations to the shared Local resources page model."""
 
-# Code version: v1.46.3-codex.0
+# Code version: v1.46.4-codex.0
 
 from __future__ import annotations
 
@@ -1240,6 +1240,14 @@ def query_wechat_history(
         )
 
     current = conversation(result["current"]) if result["current"] else None
+    roster = (
+        current.messaging.get("group_roster", {}).get("current")
+        if current and display_names.account_owner(current.messaging) else None
+    )
+    roster_names = {
+        (roster["account_id"], roster["peer_id"], member["username"]): member["display_name"].strip()
+        for member in roster["members"]
+    } if roster else {}
     source_snapshots = result.get("source_snapshots", {})
     context_evidence = WechatContextEvidence(local_store_root).project(
         result["messages"]
@@ -1544,6 +1552,20 @@ def query_wechat_history(
                 if profile_name:
                     name = profile_name
                     name_source = "verified_native_contact_profile"
+                elif (
+                    (roster_name := roster_names.get((
+                        item.messaging["account_id"], item.messaging["peer_id"], sender,
+                    ), "")) not in unidentified
+                    and contact.get("identity_status") == "verified"
+                    and any(
+                        identifier["namespace"] == "native_username"
+                        and not identifier["realm"]
+                        and identifier["value"] == sender
+                        for identifier in contact.get("identifiers", ())
+                    )
+                ):
+                    name = roster_name
+                    name_source = "verified_group_roster"
         if name:
             item.messaging["viewer_display_name"] = name
             contact = {

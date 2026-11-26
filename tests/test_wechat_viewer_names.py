@@ -36,11 +36,14 @@ from app.core.wechat_contacts import (
     initialize_contact_registry,
 )
 from app.core.wechat_display_names import display_names_path
+from app.core.wechat_group_rosters import WechatGroupRosterRepository
 from app.core.wechat_text import native_components_text
 from app.web.app import create_app
 from app.web.config_store import SavedConfigStore
 from tests import test_sidebar_e2e
 from tests.test_wechat_archive import make_archive
+from tests.test_wechat_contacts import observe
+from tests.test_wechat_group_rosters import EARLY, LATE, OTHER_ROOM, ROOM, snapshot
 from tests.wechat_browser_markup import get_verified_browser_page, parse_browser_markup
 
 
@@ -1777,3 +1780,53 @@ def test_browser_viewer_names_keep_native_filters_and_compact_source_details(
         )
     finally:
         context.close()
+
+
+@pytest.mark.parametrize(
+    ("scope", "verified", "raw_label", "expected"),
+    [
+        ("exact", True, OTHER, "Current room nickname"),
+        ("other_room", True, OTHER, None),
+        ("other_owner", True, OTHER, None),
+        ("exact", False, OTHER, None),
+        ("exact", True, "Original message nickname", None),
+    ],
+)
+def test_group_identifier_uses_only_the_verified_room_roster(
+    viewer_archive, scope, verified, raw_label, expected,
+):
+    fixture = viewer_archive
+    source = _source(OWNER_A)
+    with sqlite3.connect(fixture.history) as connection:
+        session = connection.execute(
+            "SELECT id FROM conversations WHERE partition_id=? AND kind='group'", (source,),
+        ).fetchone()[0]
+        connection.execute("UPDATE conversations SET peer_id=? WHERE id=?", (ROOM, session))
+        message_id = connection.execute(
+            "SELECT id FROM messages WHERE conversation_id=? AND sender_id=? ORDER BY ordinal LIMIT 1",
+            (session, OTHER),
+        ).fetchone()[0]
+        connection.execute("UPDATE messages SET sender_label=? WHERE id=?", (raw_label, message_id))
+    with sqlite3.connect(fixture.registry) as connection:
+        for label in ("Earlier account nickname", "Later account nickname"):
+            observe(connection, fixture.other_id, "nickname", label, source=source, owner=OWNER_A)
+        if not verified:
+            connection.execute(
+                "DELETE FROM sender_bindings WHERE source_id=? AND sender_id=?", (source, OTHER),
+            )
+    roster = WechatGroupRosterRepository(fixture.store)
+    owner = OWNER_B if scope == "other_owner" else OWNER_A
+    room = OTHER_ROOM if scope == "other_room" else ROOM
+    for time, label in ((EARLY, "Earlier room nickname"), (LATE, "Current room nickname")):
+        roster.save(snapshot((OTHER, label), account=owner, peer=room, observed_at=time))
+
+    before = tuple(path.read_bytes() for path in (fixture.history, fixture.registry, roster.path))
+    page = query_chat_history(
+        fixture.store, source="wechat", account=f"account:{OWNER_A}", session=session,
+    )
+    message = next(item for item in page.items if item.stable_id == message_id)
+    assert message.author_label == message.messaging["contact"]["source_display_name"] == raw_label
+    assert message.messaging.get("viewer_display_name") == expected
+    if expected is not None:
+        assert message.messaging["contact"]["viewer_display_name_source"] == "verified_group_roster"
+    assert tuple(path.read_bytes() for path in (fixture.history, fixture.registry, roster.path)) == before
