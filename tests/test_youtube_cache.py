@@ -1,6 +1,6 @@
 """Cover YouTube input validation, cache publication, and local HTTP access.
 
-Code version: v1.4.1-codex.0
+Code version: v1.4.2-codex.0
 """
 
 from __future__ import annotations
@@ -322,12 +322,19 @@ def test_youtube_job_coalesces_duplicate_requests_and_serves_the_completed_file(
         status_url = started.get_json()["status_url"]
         assert youtube_client.get(status_url).get_json()["status"] == "running"
 
-        duplicate = youtube_client.post(
-            DOWNLOAD_ENDPOINT,
-            json={"url": f"https://youtu.be/{VIDEO_ID}?si=share", "mode": "audio"},
-        )
-        assert duplicate.status_code == 202
+        destination_probe = Mock(side_effect=PermissionError("Synthetic transient destination sharing violation"))
+        with monkeypatch.context() as in_progress:
+            in_progress.setattr(
+                "app.web.youtube_cache_routes.youtube_cache_path",
+                destination_probe,
+            )
+            duplicate = youtube_client.post(
+                DOWNLOAD_ENDPOINT,
+                json={"url": f"https://youtu.be/{VIDEO_ID}?si=share", "mode": "audio"},
+            )
+        assert duplicate.status_code == 202, duplicate.get_json()
         assert duplicate.get_json()["status_url"] == status_url
+        destination_probe.assert_not_called()
         other_mode = youtube_client.post(DOWNLOAD_ENDPOINT, json={"url": VIDEO_URL, "mode": "video"})
         assert other_mode.status_code == 409
     finally:

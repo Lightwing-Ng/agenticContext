@@ -1,6 +1,6 @@
 """Run loopback-only YouTube cache jobs and serve their completed files."""
 
-# Code version: v1.4.1-codex.0
+# Code version: v1.4.2-codex.0
 
 from __future__ import annotations
 
@@ -103,23 +103,21 @@ def register_youtube_cache_routes(
             video_id = parse_youtube_video_id(payload.get("url"))
         except ValueError as exc:
             return jsonify({"error": str(exc)}), 400
-        try:
-            destination = youtube_cache_path(root, video_id, mode)
-            existing = read_cached_youtube_media(destination)
-        except (OSError, ValueError, YouTubeCacheError):
-            return jsonify({"error": "The YouTube cache destination is unavailable."}), 409
-
         logger = current_app.logger
         max_size = config_store.config.max_media_file_size_bytes
         with lock:
             if stop_event.is_set():
                 return jsonify({"error": "The YouTube cache is shutting down."}), 503
+            if active is not None and active[1:] == (video_id, mode):
+                return start_response(active[0])
+            try:
+                destination = youtube_cache_path(root, video_id, mode)
+                existing = read_cached_youtube_media(destination)
+            except (OSError, ValueError, YouTubeCacheError):
+                return jsonify({"error": "The YouTube cache destination is unavailable."}), 409
             if existing is not None and not existing.needs_metadata_lookup:
                 return cached_response(video_id, mode, existing)
             if active:
-                active_id, active_video, active_mode = active
-                if (video_id, mode) == (active_video, active_mode):
-                    return start_response(active_id)
                 if existing is not None:
                     return cached_response(video_id, mode, existing)
                 return jsonify({"error": "A YouTube download is already running."}), 409
