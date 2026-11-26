@@ -1,4 +1,4 @@
-"""Isolated Cache activity disclosure coverage. Code version: v1.2.2-codex.0."""
+"""Isolated Cache activity disclosure coverage. Code version: v1.2.3-codex.0."""
 
 from __future__ import annotations
 
@@ -687,8 +687,8 @@ def test_cache_activity_metadata_progress_and_queued_media_handoff(
         context.close()
 
 
-def _global_entry_geometry(page: Page) -> dict:
-    return page.evaluate("""() => {
+def _global_entry_geometry(page: Page, *, wait_for_anchor: bool = False) -> dict:
+    measure = """waitForAnchor => {
         const rendered = selector => Array.from(document.querySelectorAll(selector)).find(element => {
             const box = element.getBoundingClientRect();
             return box.width > 0 && box.height > 0;
@@ -699,7 +699,7 @@ def _global_entry_geometry(page: Page) -> dict:
             return {left: box.left, top: box.top, right: box.right, bottom: box.bottom,
                     width: box.width, height: box.height};
         };
-        return {
+        const geometry = {
             trigger: rect(document.querySelector('[data-cache-activity-trigger]')),
             panel: rect(document.querySelector('[data-cache-activity-panel]')),
             theme: rect(document.querySelector('[data-layout-role="global-theme-anchor"]')),
@@ -710,7 +710,16 @@ def _global_entry_geometry(page: Page) -> dict:
             viewport: {width: innerWidth, height: innerHeight},
             overflow: document.documentElement.scrollWidth - innerWidth,
         };
-    }""")
+        if (!waitForAnchor) return geometry;
+        const { trigger, theme, workspace, pinned } = geometry;
+        if (!trigger?.width || !theme?.width || !workspace) return false;
+        const gap = Math.max(0, workspace.right - theme.right);
+        const limit = Math.min(workspace.bottom, pinned?.top ?? workspace.bottom);
+        return Math.abs(trigger.bottom - (limit - gap)) <= 1 && geometry;
+    }"""
+    if wait_for_anchor:
+        return page.wait_for_function(measure, arg=True, timeout=1_000).json_value()
+    return page.evaluate(measure, False)
 
 
 def _assert_global_entry_geometry(geometry: dict, *, composer: bool) -> None:
@@ -786,7 +795,8 @@ def test_cache_activity_entry_is_available_on_every_application_page(
 
         activity["tasks"] = [_task("grok", processed=30, total=120), _queued_task()]
         expect(trigger).to_be_visible(timeout=7_000)
-        closed = _global_entry_geometry(page)
+        # A fixed-position layer can report its previous anchor until the next frame.
+        closed = _global_entry_geometry(page, wait_for_anchor=True)
         _assert_global_entry_geometry(closed, composer=composer)
 
         trigger.click()
