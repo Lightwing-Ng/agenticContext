@@ -1,6 +1,6 @@
 """Windows ChangeTime and cross-API identity preserve exact media hashing.
 
-Code version: v1.0.2-codex.0
+Code version: v1.0.3-codex.0
 """
 
 from __future__ import annotations
@@ -68,21 +68,25 @@ def test_existing_descriptor_is_borrowed_without_closing_its_owner(native_api, t
     assert native_api.created == native_api.closed == []
 
 
-def test_windows_writer_probe_checks_data_sharing_and_closes_its_handle(native_api, tmp_path):
-    assert metadata.has_file_writers(tmp_path / "history.sqlite3") is False
+@pytest.mark.parametrize("probe, share_mode", [
+    (metadata.has_file_writers, 5),
+    (metadata.has_open_file_handles, 0),
+])
+def test_windows_file_probes_check_data_sharing_and_close_their_handles(native_api, tmp_path, probe, share_mode):
+    assert probe(tmp_path / "history.sqlite3") is False
     _path, access, sharing, _security, creation, flags, _template = native_api.created[0]
     assert access == 0x80000000
-    assert sharing == 5
+    assert sharing == share_mode
     assert creation == 3
     assert flags & 0x00200000
     assert native_api.closed == [42]
 
     native_api.handle = ctypes.c_void_p(-1).value
     native_api.error = 32
-    assert metadata.has_file_writers(tmp_path / "history.sqlite3") is True
+    assert probe(tmp_path / "history.sqlite3") is True
     native_api.error = 5
     with pytest.raises(OSError):
-        metadata.has_file_writers(tmp_path / "history.sqlite3")
+        probe(tmp_path / "history.sqlite3")
     assert native_api.closed == [42]
 
 

@@ -4,7 +4,7 @@ Every ``/api/iphone/*`` request is fulfilled in the browser, so these checks nev
 the iPhone runtime, start a process, or contact a device. The test server keeps external
 Agent operations disabled; the mocked status endpoint is what enables the page.
 
-Code version: v1.1.1-codex.0
+Code version: v1.1.2-codex.0
 """
 
 from __future__ import annotations
@@ -235,6 +235,11 @@ def test_setup_steps_gate_build_and_start_on_full_xcode(iphone_browser, sidebar_
         expect(steps.locator(".process-list-heading")).to_have_text(SETUP_HEADINGS)
         # The mocked status replaces the server-rendered "turned off" notice.
         expect(page.locator("[data-iphone-notice]")).to_be_hidden()
+        shell = page.locator(".iphone-device-shell")
+        expect(shell).to_have_attribute("src", "/static/images/iphone-shell.png")
+        expect(shell).to_have_js_property("naturalWidth", 1350)
+        expect(shell).to_have_js_property("naturalHeight", 2760)
+        expect(shell).to_have_css("pointer-events", "none")
 
         # Status reports WebDriverAgent as not running, so the page runs the Mac check once.
         full_xcode = page.locator("[data-iphone-doctor-checks] .iphone-check").filter(has_text="Full Xcode")
@@ -361,6 +366,10 @@ def test_rotation_blocks_taps_until_the_point_viewport_is_refreshed(
         expect(page.locator("[data-iphone-device]")).to_have_attribute("data-orientation", "landscape")
         expect(screen).to_have_attribute("data-interactive", "false")
         box = screen.bounding_box()
+        shell = page.locator(".iphone-device-shell").bounding_box()
+        assert shell["width"] / shell["height"] == pytest.approx(2760 / 1350, abs=0.002)
+        assert box["width"] / shell["width"] == pytest.approx(2626 / 2760, abs=0.002)
+        assert box["height"] / shell["height"] == pytest.approx(1210 / 1350, abs=0.002)
         page.mouse.click(box["x"] + box["width"] * 0.5, box["y"] + box["height"] * 0.2)
         actions = api.requests("POST", "/api/iphone/action")
         assert actions == [{"op": "observe", "args": {"mode": "tree", "max_nodes": 1}}]

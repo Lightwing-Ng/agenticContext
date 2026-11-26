@@ -1,6 +1,6 @@
 """Inventory and match all retained HTML packets against native iPad evidence.
 
-Code version: v1.0.3-codex.0
+Code version: v1.0.4-codex.0
 """
 
 from collections import Counter
@@ -15,11 +15,12 @@ import tempfile
 import time
 
 from .wechat_archive import wechat_archive_path
-from .wechat_contact_embedded import _identity, _readonly
+from .wechat_contact_embedded import _readonly
 from .wechat_forwarded import forwarded_component_clock
+from .wechat_forwarded_clocks import _identity
 
 
-VERSION = "v1.0.3-codex.0"
+VERSION = "v1.0.4-codex.0"
 _HEX = re.compile(r"[0-9a-f]{32}")
 _ORDINAL = re.compile(r"0|[1-9][0-9]*")
 

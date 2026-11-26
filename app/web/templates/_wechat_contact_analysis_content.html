@@ -1,5 +1,6 @@
-{# Code version: v1.13.2-codex.0 #}
+{# Code version: v1.14.0-codex.0 #}
 {% from "_wechat_conversation_kind.html" import conversation_kind_badge %}
+{% from "_wechat_timestamp.html" import wechat_timestamp %}
 {% set ready = analysis.status|default('ready') == 'ready' %}
 {% macro statement_columns() %}
 <colgroup><col class="wechat-contact-col-number"><col class="wechat-contact-col-time"><col class="wechat-contact-col-statement"><col class="wechat-contact-col-conversation"><col class="wechat-contact-col-account"></colgroup>
@@ -38,9 +39,10 @@
             <tbody>
                 {% for item in analysis['items'] %}
                 {% set linked_html_forward = item.reference_kind|default('') == 'native_forwarded' and (item.observations|default([])|selectattr('reference_kind', 'equalto', 'html_forwarded')|list|length) > 0 %}
+                {% set statement_timestamp = item.display_timestamp_value|default(item.timestamp_value) %}
                 <tr data-contact-statement-id="{{ item.statement_id|default(item.id) }}" data-contact-message-id="{{ item.id }}" data-contact-account-key="{{ item.account_key }}" data-wechat-account="{{ item.account_key }}" data-wechat-source="{{ item.source_id }}">
                     <td>{{ '{:,}'.format(item.sequence_number|default((analysis.current_page - 1) * analysis.page_size + loop.index)) }}</td>
-                    <td>{% if item.time_conflict|default(false) %}<span class="wechat-contact-cell-note" data-wechat-contact-time-conflict>Conflicting source times</span>{% elif item.time_uncertain|default(false) and item.has_observed_time|default(false) %}<span class="wechat-contact-cell-note" data-wechat-contact-time-uncertain>Unresolved source times</span>{% elif item.display_timestamp_value|default(item.timestamp_value) %}<time datetime="{{ item.display_timestamp_value|default(item.timestamp_value) }}" title="{{ item.time_basis|default('') }}">{{ item.timestamp_label or item.display_timestamp_label|default('Unknown time') }}</time>{% if linked_html_forward and item.time_basis|default('') == 'Source clock; timezone unknown' %}<span class="wechat-contact-cell-note" data-wechat-contact-timezone-unknown>Timezone unknown</span>{% endif %}{% else %}<span class="wechat-contact-cell-note" data-wechat-contact-unknown-time>Unknown time</span>{% endif %}</td>
+                    <td>{% if item.time_conflict|default(false) %}<span class="wechat-contact-cell-note" data-wechat-contact-time-conflict>Conflicting source times</span>{% elif item.time_uncertain|default(false) and item.has_observed_time|default(false) %}<span class="wechat-contact-cell-note" data-wechat-contact-time-uncertain>Unresolved source times</span>{% elif statement_timestamp %}<time datetime="{{ statement_timestamp }}" title="{{ item.time_basis|default('') }}">{{ wechat_timestamp(statement_timestamp, item.timestamp_label or item.display_timestamp_label|default('Unknown time'), item.time_basis|default('', true)) }}</time>{% if linked_html_forward and item.time_basis|default('') == 'Source clock; timezone unknown' %}<span class="wechat-contact-cell-note" data-wechat-contact-timezone-unknown>Timezone unknown</span>{% endif %}{% else %}<span class="wechat-contact-cell-note" data-wechat-contact-unknown-time>Unknown time</span>{% endif %}</td>
                     {% set show_source_count = item.time_conflict|default(false) or item.time_uncertain|default(false) or linked_html_forward %}
                     {% set has_sources = item.observation_count|default(1) > 1 or show_source_count %}
                     <td>
@@ -51,12 +53,13 @@
                             <summary aria-label="Show original sources" title="Show original sources{% if item.observation_count|default(1) > 1 %} · {{ '{:,}'.format(item.observation_count) }} sources{% endif %}"></summary>
                             <div class="ui-collapse-body">
                                 {% for observation in item.observations %}
+                                {% set observation_time_label = wechat_timestamp(observation.display_timestamp_value, observation.display_timestamp_label|default('Unknown time'), observation.time_basis|default('', true)) %}
                                 <div data-wechat-contact-observation="{{ observation.id }}" data-contact-account-key="{{ observation.account_key }}">
                                     <a class="browser-session-table-title wechat-contact-account-label wechat-contact-source-link" href="{{ observation.source_url }}" data-wechat-contact-source title="{{ observation.conversation_title }}">{{ observation.viewer_account_label or observation.account_id or 'Unconfirmed source account' }}</a>
                                     <span class="wechat-contact-cell-note" title="{{ observation.source_file }}">{{ observation.source_label }}</span>
-                                    <span class="wechat-contact-cell-note" data-wechat-contact-observation-time>{% if observation.display_timestamp_value %}<time datetime="{{ observation.display_timestamp_value }}">{{ observation.display_timestamp_label }}</time>{% else %}Unknown time{% endif %}{% if observation.time_basis %} · {{ observation.time_basis }}{% endif %}</span>
+                                    <span class="wechat-contact-cell-note" data-wechat-contact-observation-time>{% if observation.display_timestamp_value %}<time datetime="{{ observation.display_timestamp_value }}">{{ observation_time_label }}</time>{% else %}Unknown time{% endif %}{% if observation.time_basis %} · {{ observation.time_basis }}{% endif %}</span>
                                     {% set source_clock_label = observation.source_clock|default('')|wechat_source_clock %}
-                                    {% if source_clock_label and observation.source_clock != observation.timestamp_value and source_clock_label != observation.display_timestamp_label|default('') %}<span class="wechat-contact-cell-note" data-wechat-contact-source-clock>Source clock: {{ source_clock_label }}</span>{% endif %}
+                                    {% if source_clock_label and observation.source_clock != observation.timestamp_value and source_clock_label != observation_time_label %}<span class="wechat-contact-cell-note" data-wechat-contact-source-clock>Source clock: {{ source_clock_label }}</span>{% endif %}
                                     {% if (observation.clock_inconsistent or observation.clock_uncertain) and observation.native_unix_timestamp is not none and observation.native_unix_timestamp != '' %}<span class="wechat-contact-cell-note">Native clock: {{ observation.native_unix_timestamp }}</span>{% endif %}
                                 </div>
                                 {% endfor %}

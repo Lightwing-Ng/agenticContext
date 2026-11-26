@@ -1,4 +1,4 @@
-<!-- Code version: v1.2.0-codex.1 -->
+<!-- Code version: v1.3.0-codex.0 -->
 <nav class="settings-category-nav" aria-label="Settings categories">
     <a
         href="{{ url_for('settings.settings') }}#settings-browser"
@@ -54,6 +54,17 @@
             <span class="icon settings-category-nav-icon"></span>
         </span>
         <span class="settings-category-nav-label">Cloud backup</span>
+    </a>
+    <a
+        href="{{ url_for('settings.settings') }}#settings-general"
+        class="settings-category-nav-item settings-category-nav-item-general{% if current_category == 'general' %} is-active{% endif %}"
+        data-settings-category="general"
+        {% if current_category == 'general' %}aria-current="page"{% endif %}
+    >
+        <span class="settings-category-nav-icon-shell" aria-hidden="true">
+            <span class="icon settings-category-nav-icon"></span>
+        </span>
+        <span class="settings-category-nav-label">General</span>
     </a>
     <a
         href="{{ url_for('settings.settings_style_tokens') }}"

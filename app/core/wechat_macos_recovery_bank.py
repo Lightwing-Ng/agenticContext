@@ -1,6 +1,6 @@
 """Stage indexed, source-bound Mac recovery without rewriting the original archive.
 
-Code version: v1.15.3-codex.0
+Code version: v1.15.5-codex.0
 """
 
 from __future__ import annotations
@@ -29,7 +29,7 @@ from . import wechat_macos_bank_v4_reader as schema4_reader
 from . import wechat_macos_recovery as legacy
 from . import wechat_macos_reparse as reparse
 from .compute_resources import resolve_cpu_process_workers
-from .owner_only_files import ensure_owner_only, owner_only_problem
+from .owner_only_files import ensure_owner_only, owner_only_directory_problem, owner_only_problem
 from .platform_lock import lock_file, unlock_file
 from .wechat_archive import _identifier, _time_fields, wechat_archive_path
 from .wechat_completion_clone import sync_completion_file
@@ -39,9 +39,10 @@ from .wechat_resource_index import (
     CHANNELS_APP_SUBTYPE, CHANNELS_LABEL_PATHS, _KINDS, _LABELS, _app_label,
 )
 from .wechat_text import is_native_pat_projection, native_components_text
+from .windows_file_metadata import file_change_time, has_open_file_handles
 
 
-CODE_VERSION = "v1.15.3-codex.0"
+CODE_VERSION = "v1.15.5-codex.0"
 WRITER_VERSION = "v1.5.1-codex.0"
 VERSION = WRITER_VERSION
 MAX_PACKET_BYTES = 128 * 1024**2
@@ -197,10 +198,19 @@ def _identity(path, *, optional=False):
         raise ValueError(
             "Mac recovery bank inputs must be stable resident regular files."
         )
-    return {
-        key: getattr(value, "st_" + key)
+    return _storage_identity(Path(path), value)
+
+
+def _storage_identity(path, state, *, descriptor=None):
+    identity = {
+        key: getattr(state, "st_" + key)
         for key in ("dev", "ino", "size", "mtime_ns", "ctime_ns")
     }
+    if os.name == "nt":
+        change_time = file_change_time(path, descriptor=descriptor)
+        # FILE_BASIC_INFO counts 100 ns intervals since 1 Jan 1601.
+        identity["ctime_ns"] = (change_time - 116444736000000000) * 100
+    return identity
 
 
 def _inputs(history):
@@ -1196,6 +1206,10 @@ def _validate_stub_clocks(connection, history):
 
 def _private_candidate_workspace(path):
     for parent in (path.parent, path.parent.parent):
+        if os.name == "nt":
+            if owner_only_directory_problem(parent):
+                return False
+            continue
         value = parent.lstat()
         if (
             not stat.S_ISDIR(value.st_mode)
@@ -1214,9 +1228,10 @@ def _baseline_copy_file(path, target):
         observed.st_nlink != 1
         or any(os.path.lexists(str(path) + suffix) for suffix in ("-wal", "-shm", "-journal"))
         or observed.st_dev != target.stat().st_dev
-        or not hasattr(os, "getuid")
-        or observed.st_uid != os.getuid()
-        or stat.S_IMODE(observed.st_mode) not in {0o600, 0o644}
+        or (os.name != "nt" and (
+            observed.st_uid != os.getuid()
+            or stat.S_IMODE(observed.st_mode) not in {0o600, 0o644}
+        ))
     ):
         raise ValueError("A reused baseline must be an independently owned local file.")
     if not _private_candidate_workspace(path):
@@ -1225,12 +1240,14 @@ def _baseline_copy_file(path, target):
 
 
 def _no_baseline_copy_handles(path):
-    """Exclude open handles for POSIX reuse and conflicting writers on Windows."""
+    """Reject every open handle; an unavailable inspection grants no reuse credit."""
     if os.name == "nt":
-        from .windows_file_metadata import has_file_writers
-
-        if has_file_writers(path):
-            raise ValueError("The bank candidate has an open writer.")
+        try:
+            opened = has_open_file_handles(path)
+        except OSError:
+            raise ValueError("Baseline open-file inspection did not complete.") from None
+        if opened:
+            raise ValueError("The baseline has an open handle or cannot be inspected safely.")
         return
     executable = shutil.which("lsof")
     if executable is None:
@@ -1258,7 +1275,7 @@ def _stable_candidate_sha(path, target, *, owner_only=False, check_cancel=None):
     if check_cancel is not None:
         check_cancel()
     before = _baseline_copy_file(path, target)
-    if owner_only and stat.S_IMODE(path.lstat().st_mode) != 0o600:
+    if owner_only and _candidate_owner_problem(path):
         raise ValueError("The reviewed Mac bank candidate must remain owner-only.")
     _no_baseline_copy_handles(path)
     descriptor = os.open(
@@ -1266,13 +1283,13 @@ def _stable_candidate_sha(path, target, *, owner_only=False, check_cancel=None):
     )
     digest = hashlib.sha256()
     with os.fdopen(descriptor, "rb") as stream:
-        if any(getattr(os.fstat(stream.fileno()), "st_" + key) != value for key, value in before.items()):
+        if _storage_identity(path, os.fstat(stream.fileno()), descriptor=stream.fileno()) != before:
             raise ValueError("The candidate changed before its complete byte proof.")
         while block := stream.read(4 * 1024**2):
             if check_cancel is not None:
                 check_cancel()
             digest.update(block)
-        if any(getattr(os.fstat(stream.fileno()), "st_" + key) != value for key, value in before.items()):
+        if _storage_identity(path, os.fstat(stream.fileno()), descriptor=stream.fileno()) != before:
             raise ValueError("The candidate changed during its complete byte proof.")
     if _baseline_copy_file(path, target) != before:
         raise ValueError("The candidate changed during its complete byte proof.")
@@ -1282,12 +1299,16 @@ def _stable_candidate_sha(path, target, *, owner_only=False, check_cancel=None):
     return digest.hexdigest(), before
 
 
+def _candidate_owner_problem(path):
+    return owner_only_problem(path) or (
+        os.name != "nt" and stat.S_IMODE(path.lstat().st_mode) != 0o600
+    )
+
+
 def _publication_candidate_file(path):
     identity = _identity(path)
-    value = path.lstat()
     if (
-        owner_only_problem(path)
-        or (os.name != "nt" and stat.S_IMODE(value.st_mode) != 0o600)
+        _candidate_owner_problem(path)
         or any(os.path.lexists(str(path) + suffix) for suffix in ("-wal", "-shm", "-journal"))
     ):
         raise ValueError("The reviewed Mac bank candidate must remain independently owner-only.")
@@ -1413,12 +1434,14 @@ def verify_baseline_copy(local_store_root, candidate_path, *, publication_guard)
         )
         try:
             opened = os.fstat(descriptor)
-            matched = all(getattr(opened, "st_" + key) == value for key, value in before.items())
+            matched = _storage_identity(candidate, opened, descriptor=descriptor) == before
             if matched:
-                if stat.S_IMODE(opened.st_mode) != 0o600:
+                if os.name == "nt":
+                    ensure_owner_only(candidate)
+                elif stat.S_IMODE(opened.st_mode) != 0o600:
                     os.fchmod(descriptor, 0o600)
                 sealed = os.fstat(descriptor)
-                sealed_identity = {key: getattr(sealed, "st_" + key) for key in before}
+                sealed_identity = _storage_identity(candidate, sealed, descriptor=descriptor)
         finally:
             os.close(descriptor)
         if matched:
@@ -1434,7 +1457,7 @@ def verify_baseline_copy(local_store_root, candidate_path, *, publication_guard)
         guard=publication_guard, inputs=inputs, phase="factory_after_permissions", audit=rebindings,
         owner_only=True,
     )
-    if stat.S_IMODE(candidate.lstat().st_mode) != 0o600:
+    if _candidate_owner_problem(candidate):
         raise ValueError("The reviewed Mac bank candidate must remain owner-only.")
     _no_baseline_copy_handles(candidate)
     identity = _candidate_storage_rebind(
@@ -1471,7 +1494,7 @@ def _require_baseline_copy(capability, history, candidate, guard, *, allow_rebin
     )
     if (
         _baseline_copy_file(candidate, target) != capability.identity
-        or stat.S_IMODE(candidate.lstat().st_mode) != 0o600
+        or _candidate_owner_problem(candidate)
     ):
         raise ValueError("The verified baseline or canonical inputs changed before reuse.")
     capability.allocated_bytes = getattr(candidate.lstat(), "st_blocks", 0) * 512

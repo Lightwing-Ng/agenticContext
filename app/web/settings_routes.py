@@ -6,7 +6,7 @@ in ``app.web.form_config``; this module owns validation of what a submitted form
 for Agent settings, shadow backup, and local directories.
 """
 
-# Code version: v1.6.1-codex.0
+# Code version: v1.7.1-codex.0
 
 from __future__ import annotations
 
@@ -19,6 +19,7 @@ from typing import Any
 from flask import (
     Blueprint,
     Flask,
+    abort,
     jsonify,
     redirect,
     render_template,
@@ -34,8 +35,10 @@ from app.core.agent import (
 )
 from app.core.foundation import (
     APP_VERSION,
+    COMPACT_FORMATS,
     DEFAULT_HOST,
     DEFAULT_PORT,
+    FULL_FORMATS,
     NativeDirectoryPickerError,
     choose_native_directory,
     get_log_file_path,
@@ -119,6 +122,19 @@ def register_settings_routes(app: Flask, context: SettingsRouteContext) -> None:
             version=APP_VERSION,
             style_token_rows=build_style_token_component_rows(),
         )
+
+    @blueprint.post("/settings/date-format")
+    def save_date_format():
+        full = request.form.get("full_date_format")
+        compact = request.form.get("short_date_format")
+        if (
+            (full is None and compact is None)
+            or (full is not None and full not in FULL_FORMATS)
+            or (compact is not None and compact not in COMPACT_FORMATS)
+        ):
+            abort(400, "Choose a supported date format.")
+        app.extensions["date_display"].save(full=full, compact=compact)
+        return redirect(url_for(f"{SETTINGS_BLUEPRINT_NAME}.settings", _anchor="settings-general"), code=303)
 
     @blueprint.post("/settings")
     def save_settings():

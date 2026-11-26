@@ -1,6 +1,6 @@
 """Project pinned native child clocks without rewriting HTML source observations.
 
-Code version: v1.2.0-codex.0
+Code version: v1.2.1-codex.0
 """
 
 from __future__ import annotations
@@ -11,13 +11,14 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 import hashlib
 import json
+import os
 from pathlib import Path
 import re
 import sqlite3
 from threading import Lock
 
 from .wechat_archive import _identifier, wechat_archive_path
-from .wechat_contact_embedded import _identity, _readonly
+from .wechat_contact_embedded import _identity as _embedded_identity, _readonly
 from .wechat_contacts import WechatContactRepository, _forwarded_source_members
 from .wechat_forwarded import _epoch_placeholder_clock, project_html_forwarded
 from .wechat_forwarded_origins import _author, _native_packet, _native_time, _stamp
@@ -100,6 +101,15 @@ def _json(value):
 
 def _sha(value):
     return hashlib.sha256(value.encode()).hexdigest()
+
+
+def _identity(path):
+    if os.name != "nt":
+        return _embedded_identity(path)
+    from .wechat_macos_recovery_bank import _identity as archive_identity
+
+    identity = archive_identity(path)
+    return tuple(identity[key] for key in _HISTORY_PIN_FIELDS)
 
 
 def _path_identity(path, root):

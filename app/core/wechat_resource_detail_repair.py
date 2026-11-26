@@ -1,6 +1,6 @@
 """Review and atomically publish bounded native resource-detail batches.
 
-Code version: v1.2.1-codex.0
+Code version: v1.2.3-codex.0
 """
 
 from collections import Counter, defaultdict
@@ -18,10 +18,11 @@ import tempfile
 from . import wechat_macos_recovery_bank as bank
 from .owner_only_files import ensure_owner_only, owner_only_problem
 from .wechat_archive import WechatArchiveRepository, _file_identity
+from .wechat_completion_clone import sync_completion_directory
 from .wechat_conversation_events import _inputs
 from .wechat_global_guard import global_refresh_guard
 from .wechat_resource_details import (
-    FILENAME, MAX_BYTES, MAX_ENTRIES, _metadata_pin, encode_registry, load_registry,
+    FILENAME, MAX_BYTES, MAX_ENTRIES, _resource_detail_file_pin, encode_registry, load_registry,
     make_entry, project_resource_details, registry_identity, row_sha256,
 )
 from .wechat_resource_sender_evidence import iter_secondary_native_events
@@ -46,39 +47,44 @@ def _readonly(path):
 def _candidate_bytes(path):
     before = path.lstat()
     if (
-        not stat.S_ISREG(before.st_mode) or path.is_symlink()
-        or before.st_size > MAX_BYTES or owner_only_problem(path)
+        not stat.S_ISREG(before.st_mode) or before.st_size > MAX_BYTES
+        or owner_only_problem(path)
         or getattr(before, "st_flags", 0) & 0x40000000
     ):
         raise ValueError("A detail candidate must be bounded, private and resident.")
-    expected = _metadata_pin(path, before)
+    expected = _resource_detail_file_pin(path, before)
     descriptor = os.open(
         path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_BINARY", 0),
     )
     with os.fdopen(descriptor, "rb") as stream:
-        if _metadata_pin(path, os.fstat(descriptor), descriptor=descriptor) != expected:
+        if _resource_detail_file_pin(path, os.fstat(descriptor), descriptor=descriptor) != expected:
             raise ValueError("The resource detail candidate changed before opening.")
         raw = stream.read(MAX_BYTES + 1)
-        if _metadata_pin(path, os.fstat(descriptor), descriptor=descriptor) != expected:
+        if _resource_detail_file_pin(path, os.fstat(descriptor), descriptor=descriptor) != expected:
             raise ValueError("The resource detail candidate changed while reading.")
+    after = path.lstat()
     if (
-        len(raw) > MAX_BYTES
-        or _metadata_pin(path, path.lstat()) != expected
-        or owner_only_problem(path)
+        len(raw) > MAX_BYTES or owner_only_problem(path)
+        or _resource_detail_file_pin(path, after) != expected
     ):
         raise ValueError("The resource detail candidate changed while reading.")
     return raw
 
 
-def _write_private(path, raw):
-    descriptor = os.open(
-        path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0), 0o600,
-    )
-    with os.fdopen(descriptor, "wb") as stream:
-        ensure_owner_only(path)
-        stream.write(raw)
-        stream.flush()
-        os.fsync(stream.fileno())
+def _write_private_bytes(path, raw, *, descriptor=None):
+    if descriptor is None:
+        descriptor = os.open(
+            path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0), 0o600,
+        )
+    try:
+        with os.fdopen(descriptor, "wb") as stream:
+            ensure_owner_only(path)
+            stream.write(raw)
+            stream.flush()
+            os.fsync(stream.fileno())
+    except BaseException:
+        path.unlink(missing_ok=True)
+        raise
 
 
 def _quarantined(connection):
@@ -355,7 +361,7 @@ def stage_resource_detail_repair(
     if _inputs(repository) != pins or registry_identity(repository.path) != prior_identity:
         raise ValueError("A resource repair input changed during staging.")
     encoded = encode_registry([new_entries[key] for key in sorted(new_entries)])
-    _write_private(candidate, encoded)
+    _write_private_bytes(candidate, encoded)
     return {
         "version": VERSION, "published": False, "candidate": str(candidate),
         "candidate_sha256": _sha(encoded), "candidate_bytes": len(encoded),
@@ -393,16 +399,12 @@ def publish_resource_detail_repair(local_store_root, report, *, rollback_path):
             return {**report, "published": False, "unchanged": True}
         prior = target.read_bytes() if target.exists() else None
         if prior is not None:
-            _write_private(rollback, prior)
+            _write_private_bytes(rollback, prior)
         descriptor, name = tempfile.mkstemp(prefix=".resource-details-", suffix=".json", dir=target.parent)
         temporary = Path(name)
         installed = False
         try:
-            with os.fdopen(descriptor, "wb") as stream:
-                ensure_owner_only(temporary)
-                stream.write(raw)
-                stream.flush()
-                os.fsync(stream.fileno())
+            _write_private_bytes(temporary, raw, descriptor=descriptor)
             if _inputs(repository) != report["input_identities"]:
                 raise ValueError("A source changed before resource detail publication.")
             os.replace(temporary, target)
@@ -415,18 +417,13 @@ def publish_resource_detail_repair(local_store_root, report, *, rollback_path):
                 k: v for k, v in report["input_identities"].items() if k != key
             }:
                 raise ValueError("An original source changed during detail publication.")
-            if os.name != "nt":
-                parent = os.open(target.parent, os.O_RDONLY)
-                try:
-                    os.fsync(parent)
-                finally:
-                    os.close(parent)
+            sync_completion_directory(target.parent)
         except BaseException:
             if installed and target.is_file() and target.read_bytes() == raw:
                 if prior is None:
                     target.unlink()
                 else:
-                    _write_private(temporary, prior)
+                    _write_private_bytes(temporary, prior)
                     os.replace(temporary, target)
             raise
         finally:

@@ -1,6 +1,6 @@
 """Card enrichment across archive aliases retains exact native event authority.
 
-Code version: v1.1.1-codex.0
+Code version: v1.1.2-codex.0
 """
 
 from contextlib import closing
@@ -27,7 +27,7 @@ def _alias_packets(fixture, kind="app"):
         old, incoming = cards._app_card_packets(fixture)
     else:
         old, incoming = cards._quoted_card_packets(fixture, nested=kind == "nested_quoted")
-    with sqlite3.connect(fixture.history) as connection:
+    with closing(sqlite3.connect(fixture.history)) as connection, connection:
         connection.row_factory = sqlite3.Row
         original = dict(connection.execute(
             "SELECT * FROM conversations WHERE id=?", (old["session_id"],)
@@ -81,7 +81,7 @@ def test_alias_card_enrichment_preserves_receipt_and_journals_idempotent_replays
     occurrences = _rows(fixture.bank_path, "occurrences")
     sources = _rows(fixture.bank_path, "sources")
     original_bank = fixture.bank_path.read_bytes()
-    with sqlite3.connect(fixture.bank_path) as connection:
+    with closing(sqlite3.connect(fixture.bank_path)) as connection, connection:
         connection.row_factory = sqlite3.Row
         canonical = dict(connection.execute("SELECT * FROM messages").fetchone())
     fresh = dict(zip(canonical, bank._row(incoming, incoming["messages"][0]), strict=True))
@@ -133,7 +133,7 @@ def test_alias_enrichment_cannot_hide_native_or_sender_drift(bank_archive, field
     fixture = bank_archive
     old, incoming = _alias_packets(fixture, kind)
     fixtures._publish(fixture, packets=[old], name="pinned-card-baseline")
-    with sqlite3.connect(fixture.bank_path) as source, closing(sqlite3.connect(":memory:")) as memory:
+    with closing(sqlite3.connect(fixture.bank_path)) as source, closing(sqlite3.connect(":memory:")) as memory:
         source.backup(memory)
         memory.row_factory = sqlite3.Row
         canonical = dict(memory.execute("SELECT * FROM messages").fetchone())
@@ -163,7 +163,7 @@ def test_alias_enrichment_validates_incoming_coordinates_before_retaining_column
     fixture = bank_archive
     old, incoming = _alias_packets(fixture, kind)
     fixtures._publish(fixture, packets=[old], name="coherent-card-baseline")
-    with sqlite3.connect(fixture.bank_path) as connection:
+    with closing(sqlite3.connect(fixture.bank_path)) as connection, connection:
         connection.row_factory = sqlite3.Row
         canonical = dict(connection.execute("SELECT * FROM messages").fetchone())
     fresh = dict(zip(canonical, bank._row(incoming, incoming["messages"][0]), strict=True))

@@ -10,7 +10,7 @@ registered first because it owns the access gate and the exclusive-browser rule 
 Tunnel, Jury, iPhone, and Cache blueprints borrow through :class:`AgentSurface`.
 """
 
-# Code version: v2.11.2-codex.0
+# Code version: v2.12.3-codex.0
 
 from __future__ import annotations
 
@@ -105,6 +105,7 @@ from app.web.cache_routes import (
 )
 from app.web.cache_sources import get_cache_source_label
 from app.web.config_store import SavedConfigStore
+from app.web.date_display import register_date_display
 from app.web.iphone_routes import IphoneRouteContext, register_iphone_routes
 from app.web.jury_routes import JuryRouteContext, register_jury_routes
 from app.web.local_resource_routes import (
@@ -327,6 +328,7 @@ def create_app(
         SESSION_COOKIE_SAMESITE="Strict",
         AGENT_EXTERNAL_OPERATIONS_ENABLED=bool(agent_external_operations_enabled),
     )
+    register_date_display(app)
     register_beta(
         app,
         version=APP_VERSION,
@@ -554,6 +556,13 @@ def create_app(
             if runtime_shutdown_started:
                 return
             runtime_shutdown_started = True
+        youtube_cache_shutdown = app.extensions.get("youtube_cache_shutdown")
+        if callable(youtube_cache_shutdown):
+            try:
+                if not youtube_cache_shutdown():
+                    app.logger.error("The YouTube cache worker did not finish shutdown in time.")
+            except Exception:
+                app.logger.exception("Could not stop the YouTube cache worker during shutdown.")
         wechat_refresh = app.extensions.get("wechat_mac_refresh")
         wechat_read = app.extensions.get("wechat_browser_read")
         wechat_direct_read = app.extensions.get("wechat_direct_summary_read")
@@ -846,16 +855,16 @@ def create_app(
     @app.after_request
     def apply_local_security_headers(response: Response) -> Response:
         """Prevent framing, MIME sniffing, and storage of Agent credentials or state."""
-        if (
-            request.endpoint == "static"
-            and request.path.endswith((".js", ".mjs"))
-            and response.status_code in {200, 206}
-        ):
-            # Host MIME registries can mislabel modules and disable their imports.
-            response.mimetype = "text/javascript"
         response.vary.update(
             ("Sec-Fetch-Site", "Sec-Fetch-Mode", "Sec-Fetch-Dest", "Sec-Fetch-User")
         )
+        if (
+            request.endpoint == "static"
+            and response.status_code in {200, 206}
+            and (request.view_args or {}).get("filename", "").endswith((".js", ".mjs"))
+        ):
+            # Host MIME registries can mislabel modules and disable their imports.
+            response.mimetype = "text/javascript"
         response.headers.setdefault("X-Content-Type-Options", "nosniff")
         response.headers.setdefault("X-Frame-Options", "DENY")
         response.headers.setdefault("Referrer-Policy", "same-origin")

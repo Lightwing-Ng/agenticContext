@@ -1,15 +1,19 @@
 """Retry only eligible failures linked through a verified, immutable global merge.
 
-Code version: v1.1.0-codex.0
+Code version: v1.1.1-codex.0
 """
 
+from contextlib import closing
 from copy import deepcopy
 import json
+import os
 import sqlite3
+import subprocess
 from types import SimpleNamespace
 
 import pytest
 
+from app.core.owner_only_files import ensure_owner_only, ensure_owner_only_directory
 from scripts import refresh_wechat_globally as runner
 from tests import test_wechat_global_refresh_runner as fixtures
 
@@ -20,13 +24,16 @@ def _chain(monkeypatch, tmp_path):
     workstations.mkdir(mode=0o700)
     workstation = workstations / "repair"
     workstation.mkdir(mode=0o700)
+    ensure_owner_only_directory(workstation)
     origin_dir = workstation / "run-original"
     merge_dir = workstation / "merge-verified"
     origin_dir.mkdir(mode=0o700)
     merge_dir.mkdir(mode=0o700)
+    ensure_owner_only_directory(origin_dir)
+    ensure_owner_only_directory(merge_dir)
     incoming = origin_dir / "candidate.sqlite3"
     payload = "a" * 64
-    with sqlite3.connect(incoming) as connection:
+    with closing(sqlite3.connect(incoming)) as connection, connection:
         connection.execute("CREATE TABLE archive_info(key TEXT PRIMARY KEY,value TEXT)")
         connection.execute("INSERT INTO archive_info VALUES('payload_sha256',?)", (payload,))
         connection.executescript(
@@ -35,7 +42,7 @@ def _chain(monkeypatch, tmp_path):
             "CREATE TABLE gaps(id TEXT PRIMARY KEY,conversation_id TEXT,source_id TEXT,"
             "local_id INTEGER,server_id TEXT,reason TEXT,content_sha256 TEXT);"
         )
-    incoming.chmod(0o600)
+    ensure_owner_only(incoming)
     origin_path, merge_path = origin_dir / "result.json", merge_dir / "result.json"
     failures = [
         fixtures._scope_failure(inventory),
@@ -72,7 +79,7 @@ def _chain(monkeypatch, tmp_path):
     runner.write_json(merge_path, merged)
     exclusions = origin_dir / "exclusions.jsonl"
     exclusions.write_text("".join(json.dumps(value) + "\n" for value in failures))
-    exclusions.chmod(0o600)
+    ensure_owner_only(exclusions)
     monkeypatch.setattr(runner, "WORKSTATIONS", workstations)
     return SimpleNamespace(
         inventory=inventory, workstation=workstation, origin=origin, merged=merged,
@@ -158,7 +165,7 @@ def test_retry_chain_rejects_changed_or_disconnected_incoming_candidate(
     else:
         # Pin the candidate's current identity in both reports while leaving their
         # payload claim stale, so the read-only archive_info check must reject it.
-        with sqlite3.connect(operation.incoming) as connection:
+        with closing(sqlite3.connect(operation.incoming)) as connection, connection:
             connection.execute("UPDATE archive_info SET value=?", ("b" * 64,))
         identity = runner.bank._identity(operation.incoming)
         operation.merged["incoming_summary"]["identity"] = identity
@@ -247,7 +254,13 @@ def test_retry_chain_requires_private_reports_candidate_and_workstation_paths(
         "workstation": operation.workstation, "incoming": operation.incoming,
     }
     path = paths[target]
-    path.chmod(0o755 if path.is_dir() else 0o644)
+    if os.name == "nt":
+        subprocess.run(
+            ["icacls", str(path), "/inheritancelevel:e"],
+            check=True, capture_output=True, timeout=15,
+        )
+    else:
+        path.chmod(0o755 if path.is_dir() else 0o644)
     if target == "incoming":
         # Re-pin identity after the permission change so file protection itself,
         # rather than an incidental stale ctime, must cause the rejection.
@@ -314,7 +327,7 @@ def _conflict_source(operation, *, scope_index=0, reference_index=1,
     source_key = runner.bank._sha(proof)
     if defect == "source_key":
         source_key = "f" * 64
-    with sqlite3.connect(operation.incoming) as connection:
+    with closing(sqlite3.connect(operation.incoming)) as connection, connection:
         connection.execute(
             "INSERT OR IGNORE INTO sources VALUES(?,?,?,?,?,?)",
             (source_key, owner, peer, "synthetic-conflict-source", snapshot, encoded),

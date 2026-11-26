@@ -23,10 +23,11 @@ from app.core import wechat_mac_refresh_projection as projection
 from app.core import wechat_mac_refresh_source as native
 from app.core import wechat_macos_recovery_bank as bank
 from app.core import wechat_secondary_completions as completions
+from app.core.owner_only_files import owner_only_directory_problem
 from app.core.wechat_archive import WechatArchiveRepository, _file_identity
 from app.core.wechat_completion_json_codec import load_json_cell
 from app.core.wechat_conversation_events import _inputs
-from app.core.wechat_resource_detail_repair import MAX_EVENTS, MAX_PACKETS, _readonly
+from app.core.wechat_resource_detail_repair import MAX_EVENTS, MAX_PACKETS, _readonly, _write_private_bytes
 from app.core.wechat_resource_details import (
     COLUMNS, MAX_ENTRIES, load_registry, row_sha256,
 )
@@ -398,6 +399,13 @@ def _private_directory(path):
         or path.exists() or path.is_symlink()
     ):
         raise ValueError("Use a new output in the canonical private WeChat workstation.")
+    if os.name == "nt":
+        from app.core.workspace.paths import _windows_directory_identity
+
+        if owner_only_directory_problem(path.parent):
+            raise ValueError("The output directory must be owned and accessible only by the current user.")
+        root = WORKSTATIONS.resolve()
+        return path, (_windows_directory_identity(root), _windows_directory_identity(path.parent))
     descriptor = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
     state = os.fstat(descriptor)
     if state.st_uid != os.getuid() or state.st_mode & 0o077:
@@ -410,6 +418,18 @@ def _write(path, directory, value):
     raw = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
     if len(raw) > min(MAX_PACKET_FILE_BYTES, bank.MAX_PACKET_BYTES):
         raise ValueError("The capture exceeds its packet file budget. Select a smaller batch.")
+    if os.name == "nt":
+        from app.core.workspace.paths import _windows_workspace_mutation_guard
+
+        root_pin, parent_pin = directory
+        with _windows_workspace_mutation_guard(
+            WORKSTATIONS.resolve(), path.parent,
+            expected_workspace_identity=root_pin, expected_parent_identity=parent_pin,
+        ):
+            if owner_only_directory_problem(path.parent):
+                raise ValueError("The output directory must be owned and accessible only by the current user.")
+            _write_private_bytes(path, raw)
+        return
     descriptor = os.open(
         path.name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600,
         dir_fd=directory,
@@ -499,7 +519,7 @@ def main(argv=None):
                 _write(path, directory, {"packets": packets, "manifest": manifest, **report})
         print(json.dumps(report, sort_keys=True))
     finally:
-        if directory is not None:
+        if isinstance(directory, int):
             os.close(directory)
     return 0
 

@@ -10,6 +10,8 @@ import sqlite3
 
 import pytest
 
+from app.core.owner_only_files import write_owner_only_text
+
 from app.core import wechat_group_roster_source as roster
 from app.core import wechat_mac_refresh_source as native
 from tests.test_wechat_identity import _blob, _varint
@@ -43,8 +45,7 @@ def binding(tmp_path):
     }
     vault = registry.key_root / "macos-synthetic/verified-db-keys-v1.jsonl"
     vault.parent.mkdir(parents=True)
-    vault.write_text(json.dumps(row) + "\n")
-    vault.chmod(0o600)
+    write_owner_only_text(vault, json.dumps(row) + "\n")
     return registry, vault, database, row
 
 

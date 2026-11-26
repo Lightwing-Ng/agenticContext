@@ -1,9 +1,9 @@
 """Stable foundation boundary for runtime configuration, identity, and task state."""
 
-# Code version: v1.5.1-codex.0
+# Code version: v1.5.2-codex.0
 
 from ..brand import PRODUCT_NAME
-from ..cache_task_coordinator import CacheTaskCoordinator, CacheTaskIdentity
+from ..cache_task_coordinator import CacheTaskBusyError, CacheTaskCoordinator, CacheTaskIdentity
 from ..config import (
     DEFAULT_HOST,
     DEFAULT_PORT,
@@ -17,12 +17,23 @@ from ..config import (
     MIN_MAX_MEDIA_FILE_SIZE_MIB,
     MIN_DOWNLOAD_WORKERS,
     CrawlConfig,
+    default_settings_path,
     is_macos_host,
     is_windows_host,
     load_saved_config,
     normalize_copilot_entry_url,
     normalize_download_workers,
     save_config,
+)
+from ..date_display import (
+    COMPACT_FORMATS,
+    DEFAULT_FULL_STYLE,
+    EXAMPLE_DATE,
+    FULL_FORMATS,
+    DateDisplay,
+    format_date,
+    format_datetime,
+    format_time,
 )
 from ..logging_setup import configure_logging, get_log_file_path
 from ..job_lock import CacheTaskLock, SHARED_CACHE_TASK_LOCK
@@ -51,8 +62,12 @@ def __getattr__(name: str):
 
 __all__ = [
     "APP_VERSION",
+    "COMPACT_FORMATS",
+    "DEFAULT_FULL_STYLE",
     "DEFAULT_HOST",
     "DEFAULT_PORT",
+    "EXAMPLE_DATE",
+    "FULL_FORMATS",
     "LOCAL_STORE_ROOT",
     "MAX_CHATGPT_SCAN_WAIT_SECONDS",
     "MAX_CHATGPT_STARTUP_TIMEOUT_SECONDS",
@@ -65,6 +80,8 @@ __all__ = [
     "NativeDirectoryPickerError",
     "PRODUCT_NAME",
     "CrawlConfig",
+    "DateDisplay",
+    "CacheTaskBusyError",
     "CacheTaskCoordinator",
     "CacheTaskIdentity",
     "CacheTaskLock",
@@ -75,6 +92,10 @@ __all__ = [
     "build_x_text_snapshot",
     "choose_native_directory",
     "configure_logging",
+    "default_settings_path",
+    "format_date",
+    "format_datetime",
+    "format_time",
     "get_log_file_path",
     "is_macos_host",
     "is_windows_host",

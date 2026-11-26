@@ -11,6 +11,7 @@ from types import SimpleNamespace
 
 from app.core import wechat_mac_refresh as refresh
 from app.core import wechat_mac_refresh_worker as worker
+from app.core.owner_only_files import ensure_owner_only_directory
 from tests import test_wechat_mac_refresh as fixtures
 
 
@@ -55,6 +56,7 @@ def test_mac_refresh_stages_on_same_volume_outside_the_archive(
     operation = fixtures._large_bank_publication(refresh_archive, monkeypatch)
     temporary = tmp_path / "system-private-temp"
     temporary.mkdir(mode=0o700)
+    ensure_owner_only_directory(temporary)
     monkeypatch.setattr(platform, "system", lambda: "Darwin")
     monkeypatch.setattr(subprocess, "check_output", lambda *_args, **_kwargs: str(temporary))
     monkeypatch.setattr(refresh.os, "getuid", lambda: temporary.stat().st_uid, raising=False)

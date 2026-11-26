@@ -1,14 +1,15 @@
-{# Code version: v1.3.71-codex.0 #}
+{# Code version: v1.3.72-codex.0 #}
 <!doctype html>
 <html lang="en-US">
 <head>
     <meta charset="utf-8">
+    {% include "_date_display_assets.html" %}
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
     <meta name="robots" content="noindex, nofollow">
     <title>{{ product_name }} Agent Access</title>
     <link rel="icon" type="image/svg+xml" href="{{ url_for('static', filename='images/favicon.svg', v=version ~ '-favicon-v1.0.1-codex.1') }}">
     <script src="{{ url_for('static', filename='theme-mode.js', v='theme-mode-v1.0.0-codex.1') }}"></script>
-    <link rel="stylesheet" href="{{ url_for('static', filename='style.css', v=version ~ '-style-v2.162.0-codex.0') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css', v=version ~ '-style-v2.162.1-codex.0') }}">
     <style>
         .agent-access-dialog {
             display: grid;

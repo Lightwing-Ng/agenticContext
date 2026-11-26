@@ -1,6 +1,6 @@
 """Refresh a pinned contact cache after proved top-level export retirement.
 
-Code version: v1.0.1-codex.0
+Code version: v1.0.2-codex.0
 """
 
 from __future__ import annotations
@@ -246,7 +246,7 @@ def refresh_retired_contact_cache(root, contact_id, *, plan, before):
             or _after_state(root, before) != after_state
         ):
             raise ValueError("A pinned cache or source changed before contact refresh publication.")
-        with temporary.open("rb") as stream:
+        with temporary.open("r+b" if os.name == "nt" else "rb") as stream:
             os.fsync(stream.fileno())
         os.replace(temporary, target)
         return {
@@ -348,7 +348,7 @@ def refresh_retired_native_candidates(root, plan):
             or file_identity(registry) != plan.get("registry_identity")
         ):
             raise ValueError("A native hint cache or source changed before bridge publication.")
-        with temporary.open("rb") as stream:
+        with temporary.open("r+b" if os.name == "nt" else "rb") as stream:
             os.fsync(stream.fileno())
         os.replace(temporary, target)
         return {

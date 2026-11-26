@@ -1,10 +1,11 @@
 """Scoped retirement publication keeps native events and resource pins recoverable.
 
-Code version: v1.0.0-codex.0
+Code version: v1.0.1-codex.0
 """
 
 from __future__ import annotations
 
+from contextlib import closing
 import json
 from pathlib import Path
 import shutil
@@ -25,15 +26,15 @@ redundancy_store = fixtures.redundancy_store
 
 
 def _rows(path):
-    with sqlite3.connect(path) as connection:
+    with closing(sqlite3.connect(path)) as connection, connection:
         connection.row_factory = sqlite3.Row
         return {row["id"]: dict(row) for row in connection.execute("SELECT * FROM messages")}
 
 
 def _sidecar(path, history, *, pin=None):
-    with sqlite3.connect(history) as connection:
+    with closing(sqlite3.connect(history)) as connection, connection:
         fingerprint = wechat_history_partition_fingerprint(connection)
-    with sqlite3.connect(path) as connection:
+    with closing(sqlite3.connect(path)) as connection, connection:
         connection.executescript(
             "CREATE TABLE messages(id TEXT PRIMARY KEY,payload TEXT);"
             "CREATE TABLE archive_info(key TEXT PRIMARY KEY,value TEXT);"
@@ -84,7 +85,7 @@ def test_success_rebinds_only_current_pins_and_keeps_scoped_compressed_rollback(
     assert not fixture.candidate.exists()
     assert json.loads(fixture.receipt.read_text()) == report
     assert Path(report["rollback_path"]).is_file()
-    with sqlite3.connect(fixture.history) as source:
+    with closing(sqlite3.connect(fixture.history)) as source, source:
         assert source.execute("SELECT COUNT(*) FROM derived_message_aliases").fetchone()[0] == 3
     for path in fixture.sidecars:
         assert _rows(path) == contents[path]
@@ -108,7 +109,7 @@ def test_changed_input_refuses_before_replacement(publication_store, changed):
 
 def test_current_resource_containing_retired_message_refuses(publication_store):
     fixture = publication_store
-    with sqlite3.connect(fixture.sidecars[0]) as connection:
+    with closing(sqlite3.connect(fixture.sidecars[0])) as connection, connection:
         connection.execute("INSERT INTO messages VALUES(?,?)", (fixture.derived_ids[0], "must remain reachable"))
     before = fixture.history.read_bytes()
     with pytest.raises(ValueError, match="references a retired"):
@@ -119,7 +120,7 @@ def test_current_resource_containing_retired_message_refuses(publication_store):
 
 def test_retired_html_resource_parent_also_refuses(publication_store):
     fixture = publication_store
-    with sqlite3.connect(fixture.sidecars[1]) as connection:
+    with closing(sqlite3.connect(fixture.sidecars[1])) as connection, connection:
         connection.executescript(
             "CREATE TABLE html_forwarded_resources(id TEXT PRIMARY KEY,parent_id TEXT);"
             "CREATE INDEX html_resource_parent ON html_forwarded_resources(parent_id);"
@@ -135,7 +136,7 @@ def test_stale_index_remains_byte_exact_and_is_not_reactivated(publication_store
     stale = fixture.sidecars[1]
     info = publication._info(stale)
     publication._rebind(stale, info, {**_file_identity(fixture.history), "inode": 0})
-    with sqlite3.connect(stale) as connection:
+    with closing(sqlite3.connect(stale)) as connection, connection:
         connection.execute("INSERT INTO messages VALUES(?,'stale derived metadata')", (fixture.derived_ids[0],))
     before = stale.read_bytes()
     report = _publish(fixture)
@@ -195,7 +196,7 @@ def test_second_replace_failure_restores_all_rows_and_current_resource_pins(publ
     assert fixture.history.stat().st_ino != original_inode
     assert fixture.registry.read_bytes() == registry
     assert not fixture.receipt.exists()
-    with sqlite3.connect(fixture.history) as connection:
+    with closing(sqlite3.connect(fixture.history)) as connection, connection:
         assert not connection.execute("SELECT 1 FROM sqlite_master WHERE name='derived_message_aliases'").fetchone()
     for path in fixture.sidecars:
         assert _rows(path) == contents[path]
@@ -221,7 +222,7 @@ def test_clone_failure_has_no_full_copy_fallback(publication_store, monkeypatch)
 @pytest.mark.parametrize("field", ["unknown-count", "source-owner", "source-count", "conversation-count"])
 def test_only_scoped_manifest_counts_may_change(publication_store, field):
     fixture = publication_store
-    with sqlite3.connect(fixture.candidate) as connection:
+    with closing(sqlite3.connect(fixture.candidate)) as connection, connection:
         manifest = publication._manifest(connection)
         if field == "unknown-count":
             manifest["unique_original_message_count"] = 6

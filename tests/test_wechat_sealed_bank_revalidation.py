@@ -1,6 +1,6 @@
 """Fresh legacy-seal revalidation preserves sealed banks and revision history.
 
-Code version: v1.0.0-codex.0
+Code version: v1.0.2-codex.0
 """
 
 from contextlib import closing, ExitStack
@@ -10,7 +10,7 @@ import os
 from pathlib import Path
 import shutil
 import sqlite3
-import stat
+import sys
 from types import SimpleNamespace
 from unittest.mock import Mock
 
@@ -19,6 +19,9 @@ import pytest
 from app.core import wechat_macos_recovery as legacy
 from app.core import wechat_macos_recovery_bank as bank
 from app.core import wechat_macos_recovery_revalidation as revalidation
+from app.core.owner_only_files import ensure_owner_only, ensure_owner_only_directory
+from tests.test_wechat_candidate_storage_rebind import _ctime_only as _ctime_only
+from tests.test_wechat_candidate_storage_rebind import _widen_access as _widen_access
 from tests import test_wechat_macos_recovery_bank as fixtures
 from tests import test_wechat_macos_recovery_revalidation as existing
 from tests import test_wechat_macos_reparse as repairs
@@ -28,21 +31,54 @@ mac_archive = fixtures.mac_archive
 bank_archive = fixtures.bank_archive
 
 
-def _ctime_only(path):
-    before = bank._identity(path)
-    for _attempt in range(3):
-        path.chmod(stat.S_IMODE(path.stat().st_mode))
-        after = bank._identity(path)
-        if before["ctime_ns"] != after["ctime_ns"]:
-            break
-    assert before["ctime_ns"] != after["ctime_ns"]
-    assert {key: value for key, value in before.items() if key != "ctime_ns"} == {
-        key: value for key, value in after.items() if key != "ctime_ns"
-    }
+def test_missing_nofollow_refuses_native_tracking(monkeypatch, tmp_path):
+    monkeypatch.delattr(revalidation.os, "O_NOFOLLOW", raising=False)
+    with pytest.raises(ValueError, match="requires a no-follow descriptor"):
+        revalidation._prepare_new_clone_tracking(
+            tmp_path / "candidate", tmp_path / "source", tmp_path / "history", {},
+            None, mode=0o600, audit=[],
+        )
+
+
+@pytest.fixture
+def clone_document_flags(monkeypatch):
+    """Model BSD flags by inode only on hosts without their native implementation."""
+    if sys.platform == "darwin":
+        return os.chflags
+
+    identities = {}
+    inspect_storage = revalidation._hash_storage
+
+    def set_descriptor_flags(descriptor, flags):
+        state = os.fstat(descriptor)
+        identities[(state.st_dev, state.st_ino)] = flags
+
+    def set_path_flags(path, flags):
+        state = path.stat()
+        identities[(state.st_dev, state.st_ino)] = flags
+
+    def storage_with_flags(state, **coordinates):
+        storage = inspect_storage(state, **coordinates)
+        storage["flags"] = identities.get((state.st_dev, state.st_ino), 0)
+        return storage
+
+    monkeypatch.setattr(revalidation, "_native_fchflags", set_descriptor_flags)
+    monkeypatch.setattr(revalidation, "_hash_storage", storage_with_flags)
+    if os.name == "nt":
+        def simulate_native_clone_tracking(path, _source, history, inputs, guard, *, mode, **_evidence):
+            # Staging tests already substitute the APFS clone. Model its unavailable
+            # document-ID preparation while retaining native file and hash checks.
+            revalidation._guarded_inputs(history, inputs, guard)
+            revalidation._controlled_file(path, history, modes={mode})
+            current = storage_with_flags(path.lstat(), path=path)
+            set_path_flags(path, current["flags"] | revalidation._DOCUMENT_ID_FLAG)
+
+        monkeypatch.setattr(revalidation, "_prepare_new_clone_tracking", simulate_native_clone_tracking)
+    return set_path_flags
 
 
 @pytest.fixture(params=(False, True), ids=("media-absent", "media-present"))
-def sealed_case(bank_archive, tmp_path, monkeypatch, request):
+def sealed_case(bank_archive, tmp_path, monkeypatch, request, clone_document_flags):
     fixture = bank_archive
     media = existing._empty_media(fixture.history) if request.param else None
     staged_legacy = legacy.stage_mac_recovery(fixture.root, fixture.legacy_packet)
@@ -58,11 +94,13 @@ def sealed_case(bank_archive, tmp_path, monkeypatch, request):
     bank.publish_mac_recovery_bank(fixture.root, revised, _receipt)
     workstation = tmp_path / "private-workstation"
     workstation.mkdir(mode=0o700)
+    ensure_owner_only_directory(workstation)
     directory = workstation / "revalidation"
     directory.mkdir(mode=0o700)
+    ensure_owner_only_directory(directory)
     source = directory / "reviewed-source.sqlite3"
     shutil.copyfile(fixture.bank_path, source)
-    source.chmod(0o600)
+    ensure_owner_only(source)
     with closing(sqlite3.connect(source)) as connection:
         metadata = dict(connection.execute("SELECT key,value FROM archive_info"))
         revisions = connection.execute("SELECT COUNT(*) FROM projection_revisions").fetchone()[0]
@@ -192,7 +230,7 @@ def test_owner_local_readable_source_mode_is_preserved(sealed_case):
     case.source.chmod(0o644)
     with bank.mac_recovery_publication_guard(case.fixture.root) as guard:
         assert _validate(case, guard)["source_payload_sha256"] == case.payload_sha
-    assert stat.S_IMODE(case.source.stat().st_mode) == 0o644
+    assert revalidation._source_mode(case.source.stat()) == (0o600 if os.name == "nt" else 0o644)
     _unchanged(case)
 
 
@@ -207,8 +245,8 @@ def test_two_outputs_change_only_input_metadata_and_publish_through_normal_cas(s
             (case.source, case.preserved), (case.source, case.candidate),
         ]
         assert case.preserved.read_bytes() == case.before[case.source]
-        assert stat.S_IMODE(case.preserved.stat().st_mode) == 0o400
-        assert stat.S_IMODE(case.candidate.stat().st_mode) == 0o600
+        assert revalidation._source_mode(case.preserved.stat()) == 0o400
+        assert revalidation._source_mode(case.candidate.stat()) == 0o600
         source_schema, source_rows, source_info = _logical_contents(case.source)
         schema, rows, info = _logical_contents(case.candidate)
         assert schema == source_schema and rows == source_rows
@@ -306,15 +344,14 @@ def test_sealed_source_requires_closed_private_independent_resident_file(sealed_
     elif defect == "hardlink":
         case.source.with_name("alias-source.sqlite3").hardlink_to(case.source)
     elif defect == "mode":
-        case.source.chmod(0o666)
+        _widen_access(case.source, mode=0o666)
     elif defect == "parent":
-        case.source.parent.chmod(0o755)
+        _widen_access(case.source.parent, directory=True)
     elif defect == "sidecar":
         case.source.with_name(case.source.name + "-wal").touch()
     with ExitStack() as stack:
         if defect == "reader":
-            reader = stack.enter_context(closing(sqlite3.connect(case.source)))
-            reader.execute("SELECT COUNT(*) FROM messages").fetchone()
+            stack.enter_context(case.source.open("r+b" if os.name == "nt" else "rb"))
         with bank.mac_recovery_publication_guard(case.fixture.root) as guard:
             with pytest.raises(ValueError):
                 _stage(case, guard)
@@ -351,7 +388,7 @@ def test_clone_failure_preserves_source_and_the_completed_readonly_clone(sealed_
             _stage(case, guard)
     assert targets == [case.preserved, case.candidate]
     assert case.preserved.read_bytes() == case.before[case.source]
-    assert stat.S_IMODE(case.preserved.stat().st_mode) == 0o400
+    assert revalidation._source_mode(case.preserved.stat()) == 0o400
     assert not case.candidate.exists()
     _unchanged(case)
 

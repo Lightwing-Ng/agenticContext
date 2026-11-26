@@ -1,4 +1,4 @@
-/* Code version: v1.2.0-codex.1 */
+/* Code version: v1.2.1-codex.0 */
 
 (() => {
     const controllerUrl = new URL("select-controller.js?v=select-controller-v1.0.1", document.currentScript.src);
@@ -76,6 +76,8 @@
         trigger.setAttribute("aria-haspopup", "listbox");
         trigger.setAttribute("aria-expanded", "false");
         trigger.setAttribute("aria-controls", `${selectId}_options`);
+        const description = select.getAttribute("aria-describedby");
+        if (description) trigger.setAttribute("aria-describedby", description);
 
         const selectedLabel = document.createElement("span");
         selectedLabel.className = "trade-strategy-trigger-label browser-session-trigger-label";

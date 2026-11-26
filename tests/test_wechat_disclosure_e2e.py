@@ -1,6 +1,6 @@
 """WeChat provenance keeps physical motion, native disclosure, and aligned shadows.
 
-Code version: v1.1.0-codex.0
+Code version: v1.1.1-codex.0
 """
 
 from __future__ import annotations
@@ -176,7 +176,7 @@ def test_wechat_provenance_springs_open_without_width_snap_or_chevron(
 
 
 @pytest.mark.parametrize("width", [1280, 390])
-def test_wechat_provenance_reverses_from_current_size_and_closes_monotonically(
+def test_wechat_provenance_carries_velocity_on_reversal_and_settles_closed(
     disposable_browser, wechat_server, width
 ):
     context = disposable_browser.new_context(
@@ -199,12 +199,17 @@ def test_wechat_provenance_reverses_from_current_size_and_closes_monotonically(
         assert reverse_start["detailsHeight"] == pytest.approx(
             partial["detailsHeight"], abs=1
         )
-        closing = [_sample_motion(card, value / 10) for value in range(1, 10)]
         heights = [reverse_start["detailsHeight"]] + [
-            sample["detailsHeight"] for sample in closing
+            _sample_motion(card, fraction)["detailsHeight"]
+            for fraction in (0.025, 0.05, 0.075, 0.1, 0.15, 0.2, 0.3, 0.4, 0.6, 0.8, 0.9)
         ]
-        assert all(after <= before + 0.5 for before, after in zip(heights, heights[1:]))
-        assert heights[-1] < heights[0] - 2
+        peak = heights.index(max(heights))
+        assert 0 < peak < 7, heights
+        assert heights[peak] > heights[0] + 0.5, heights
+        settling = heights[peak:]
+        assert all(after <= before + 0.5 for before, after in zip(settling, settling[1:])), heights
+        assert min(heights) >= closed["detailsHeight"] - 0.5, heights
+        assert heights[-1] == pytest.approx(closed["detailsHeight"], abs=1)
         summary.press("Enter")
         expect(summary).to_have_attribute("aria-expanded", "true")
         _finish_motions(card)

@@ -143,7 +143,7 @@ def _global_fixture(fixture):
             spec.entries.append(entry)
         specs.append(spec)
 
-    with sqlite3.connect(fixture.history) as connection:
+    with closing(sqlite3.connect(fixture.history)) as connection, connection:
         connection.row_factory = sqlite3.Row
         initial_conversation = dict(
             connection.execute("SELECT * FROM conversations").fetchone()
@@ -505,7 +505,7 @@ def test_invalid_source_or_member_receipts_never_attach_partial_global_events(
     global_media_store, mismatch
 ):
     fixture = global_media_store
-    with sqlite3.connect(fixture.index) as index:
+    with closing(sqlite3.connect(fixture.index)) as index, index:
         if mismatch == "account":
             index.execute("UPDATE conversations SET account_key='account:wxid_wrong'")
         elif mismatch == "peer":
@@ -579,7 +579,7 @@ def test_export_stops_when_global_media_publication_changes(global_media_store):
         fixture.store, spec.conversation, account="account:" + spec.owner
     )
     assert fixture.index in export.sources
-    with sqlite3.connect(fixture.index) as index:
+    with closing(sqlite3.connect(fixture.index)) as index, index:
         index.execute("INSERT INTO archive_info VALUES('synthetic_revision','changed')")
     with pytest.raises(WechatSessionSourceChanged):
         next(export.items())
@@ -592,12 +592,12 @@ def test_verified_media_only_member_can_supply_a_session_without_any_primary_tex
 ):
     fixture = global_media_store
     spec = fixture.specs[2]
-    with sqlite3.connect(fixture.history) as history:
+    with closing(sqlite3.connect(fixture.history)) as history, history:
         history.execute(
             "DELETE FROM messages WHERE conversation_id=?", (spec.conversation,)
         )
         history.execute("DELETE FROM conversations WHERE id=?", (spec.conversation,))
-    with sqlite3.connect(fixture.index) as index:
+    with closing(sqlite3.connect(fixture.index)) as index, index:
         index.execute(
             "UPDATE archive_info SET value=? WHERE key='history_file_identity'",
             (json.dumps(_file_identity(fixture.history)),),

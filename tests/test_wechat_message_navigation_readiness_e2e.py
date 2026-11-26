@@ -1,6 +1,6 @@
 """Conversation geometry requires deferred messaging initialization.
 
-Code version: v1.0.1-codex.0
+Code version: v1.0.3-codex.0
 """
 
 from urllib.parse import urljoin
@@ -25,6 +25,14 @@ def test_fonts_ready_precedes_deferred_message_geometry(
         color_scheme=color_scheme,
     )
     held = []
+    released = False
+
+    def defer_messaging_script(route):
+        if released:
+            route.continue_()
+        else:
+            held.append(route)
+
     try:
         page = context.new_page()
         page.goto(
@@ -35,20 +43,33 @@ def test_fonts_ready_precedes_deferred_message_geometry(
         conversation_url = page.get_by_role(
             "link", name="Same title", exact=True
         ).get_attribute("href")
-        page.route("**/browser-messaging.js?*", lambda route: held.append(route))
+        page.route("**/browser-messaging.js?*", defer_messaging_script)
         page.goto(urljoin(wechat_server, conversation_url), wait_until="commit")
         page.wait_for_function("document.readyState === 'interactive'")
-        page.evaluate("document.fonts.ready")
-
-        before = page.locator("[data-chat-scrollport]").evaluate("""list => ({
-            ready: document.readyState,
-            fonts: document.fonts.status,
-            height: list.scrollHeight,
-            rows: list.querySelectorAll(':scope > .wechat-message-row').length,
-            clocks: list.querySelectorAll(':scope > .wechat-message-row > .wechat-message-time').length,
-            slots: list.querySelectorAll('.wechat-time-slot').length,
-        })""")
-        assert len(held) == 1
+        page.locator("[data-chat-scrollport]").evaluate("""async list => {
+            list.getBoundingClientRect();
+            await document.fonts.ready;
+        }""")
+        snapshot = page.wait_for_function("""() => {
+            const list = document.querySelector('[data-chat-scrollport]');
+            if (!list) return false;
+            // Reading the layout can start a second font load after the ready promise.
+            const height = list.scrollHeight;
+            if (document.fonts.status !== 'loaded') return false;
+            return {
+                ready: document.readyState,
+                fonts: document.fonts.status,
+                height,
+                rows: list.querySelectorAll(':scope > .wechat-message-row').length,
+                clocks: list.querySelectorAll(':scope > .wechat-message-row > .wechat-message-time').length,
+                slots: list.querySelectorAll('.wechat-time-slot').length,
+            };
+        }""")
+        try:
+            before = snapshot.json_value()
+        finally:
+            snapshot.dispose()
+        assert held
         assert before["ready"] == "interactive"
         assert before["fonts"] == "loaded"
         assert before["rows"] == 100
@@ -56,7 +77,9 @@ def test_fonts_ready_precedes_deferred_message_geometry(
 
         # DOMContentLoaded follows deferred scripts, unlike document.fonts.ready.
         with page.expect_event("domcontentloaded"):
-            held.pop().continue_()
+            released = True
+            while held:
+                held.pop().continue_()
         page.wait_for_load_state("domcontentloaded")
         if page.locator("#sidebar_toggle").get_attribute("aria-expanded") == "true":
             page.locator("#sidebar_toggle").click()

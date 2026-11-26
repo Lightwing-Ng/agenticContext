@@ -1,6 +1,6 @@
 """Local media discovery, deletion tombstones, and pagination."""
 
-# Code version: v1.38.0-codex.0
+# Code version: v1.38.1-codex.0
 
 from __future__ import annotations
 
@@ -24,6 +24,7 @@ from zoneinfo import ZoneInfo
 
 from . import config
 from .cache_catalog import LocalTweetCacheIndex
+from .date_display import DEFAULT_COMPACT_STYLE, format_date, format_datetime
 from .openclaw_history import OPENCLAW_SOURCE_LABELS
 from .resource_persistence import (
     CHATGPT_CATALOG_FILENAME,
@@ -168,35 +169,34 @@ def stable_media_id(relative_path: str) -> str:
     return f"media-{digest[:24]}"
 
 
-def format_captured_at_label(value: str | datetime | None) -> str:
-    """Format a media date as ``dd/mm/yyyy`` for the UI."""
-    return format_datetime_label(value, date_only=True)
+def format_captured_at_label(value: str | datetime | None, *, style: str = DEFAULT_COMPACT_STYLE) -> str:
+    """Format the calendar date for a media card."""
+    return format_datetime_label(value, date_only=True, style=style)
 
 
-def format_captured_at_timestamp_label(value: str | datetime | None) -> str:
+def format_captured_at_timestamp_label(
+    value: str | datetime | None, *, style: str = DEFAULT_COMPACT_STYLE, date_style: str | None = None
+) -> str:
     """Format a media date or timestamp according to the UI datetime contract."""
-    return format_datetime_label(value)
+    return format_datetime_label(value, style=style, date_style=date_style)
 
 
 def format_datetime_label(
     value: str | datetime | None,
     *,
     date_only: bool = False,
+    style: str = DEFAULT_COMPACT_STYLE,
+    date_style: str | None = None,
 ) -> str:
     """Format one user-visible date or timestamp in Hong Kong time."""
     parsed = _parse_datetime(value)
     if parsed is None:
         return "Unknown date"
     if date_only or _is_date_only_value(value):
-        return f"{parsed.day:02d}/{parsed.month:02d}/{parsed.year:04d}"
+        return format_date(parsed, style=date_style or style)
 
     localized = parsed.astimezone(DISPLAY_TIMEZONE)
-    timezone_code = _timezone_code(localized)
-    return (
-        f"{localized.day:02d}/{localized.month:02d}/{localized.year:04d} "
-        f"{localized.hour:02d}:{localized.minute:02d}:{localized.second:02d} "
-        f"({timezone_code})"
-    )
+    return f"{format_datetime(localized, style=style)} ({_timezone_code(localized)})"
 
 
 def resolve_local_media_path(local_store_root: Path | str, relative_path: str) -> Path | None:

@@ -1,6 +1,6 @@
 """Contact messages fit their scrollport and keep shared header alignment.
 
-Code version: v1.2.5-codex.0
+Code version: v1.2.6-codex.0
 """
 
 from __future__ import annotations
@@ -171,9 +171,10 @@ def _responsive_results(fixture):
             result["items"] = result["items"][:2]
             for item, timestamp in zip(
                 result["items"],
-                ("5 Apr 2019 19:40:17", "5 Apr 2019 19:38:52"),
+                ("2019-04-05T19:40:17+08:00", "2019-04-05T19:38:52+08:00"),
+                strict=True,
             ):
-                item["timestamp_label"] = timestamp
+                item.update(timestamp_value=timestamp, display_timestamp_value=timestamp)
         # The real oldest-first query assigns authoritative ordinals to each row.
         offset = (result["current_page"] - 1) * result["page_size"]
         for position, item in enumerate(result["items"], offset + 1):

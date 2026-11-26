@@ -1,6 +1,6 @@
 """Bounded resource details preserve canonical identity and exact native evidence.
 
-Code version: v1.1.1-codex.0
+Code version: v1.1.2-codex.0
 """
 
 from contextlib import closing
@@ -16,7 +16,6 @@ import pytest
 
 from app.core import owner_only_files
 from app.core import wechat_resource_details as details
-from app.core import windows_file_metadata
 from app.core.wechat_archive import WechatArchiveRepository, _time_fields
 from app.core.wechat_history_browser import query_wechat_history
 from app.core.wechat_resource_sender_evidence import secondary_native_events
@@ -24,7 +23,6 @@ from app.core.wechat_session_export import WechatSessionExport, WechatSessionSou
 from tests import test_wechat_macos_recovery_account_binding as account
 from tests import test_wechat_macos_recovery_bank as native
 from tests import test_wechat_resource_sender_evidence as sender
-from tests.test_wechat_json_file_identity import WindowsMetadataOS
 
 
 mac_archive = native.mac_archive
@@ -301,21 +299,35 @@ def test_malformed_or_untrusted_registry_fails_closed(fixture, problem):
         assert _attach(connection, fixture)[2] == "invalid"
 
 
-def test_registry_identity_pins_in_place_change_with_restored_size_and_mtime(fixture):
+@pytest.mark.parametrize("timestamps_tie", (False, True))
+def test_registry_identity_pins_in_place_change_with_restored_size_and_mtime(
+    fixture, monkeypatch, timestamps_tie,
+):
+    if timestamps_tie:
+        monkeypatch.setattr(details, "IS_WINDOWS", True)
+        monkeypatch.setattr(
+            details, "file_change_time",
+            lambda _path, *, descriptor=None: 116_444_736_000_000_000,
+        )
     path = _registry(fixture)
     before = details.registry_identity(fixture.history)
     raw = path.read_bytes()
     path.write_bytes(raw.replace(b"source title", b"edited title"))
     assert path.stat().st_size == before["size"]
     os.utime(path, ns=(path.stat().st_atime_ns, before["mtime_ns"]))
-    assert details.registry_identity(fixture.history) != before
+    after = details.registry_identity(fixture.history)
+    assert after != before
+    if timestamps_tie:
+        assert {key: value for key, value in after.items() if key != "sha256"} == {
+            key: value for key, value in before.items() if key != "sha256"
+        }
 
 
 def test_windows_registry_rejects_native_change_during_read(fixture, monkeypatch):
-    path = _registry(fixture)
-    monkeypatch.setattr(details, "os", WindowsMetadataOS(path))
+    _registry(fixture)
+    monkeypatch.setattr(details, "IS_WINDOWS", True)
     changes = iter((55, 55, 56))
-    monkeypatch.setattr(windows_file_metadata, "file_change_time", lambda *_args, **_kwargs: next(changes))
+    monkeypatch.setattr(details, "file_change_time", lambda *_args, **_kwargs: next(changes))
 
     with pytest.raises(ValueError, match="changed while reading"):
         details.load_registry(fixture.history)

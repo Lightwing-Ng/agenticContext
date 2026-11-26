@@ -1,15 +1,16 @@
-<!-- Code version: v3.87.3-codex.0 -->
+<!-- Code version: v3.87.5-codex.0 -->
 <!doctype html>
 <html lang="en-US">
 <head>
     <meta charset="utf-8">
+    {% include "_date_display_assets.html" %}
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
     <title>{{ product_name }} Agent</title>
     <link rel="icon" type="image/svg+xml" href="{{ url_for('static', filename='images/favicon.svg', v=version ~ '-favicon-v1.0.1-codex.1') }}">
     <script src="{{ url_for('static', filename='language-rendering.js', v='language-rendering-v1.0.0-codex.1') }}"></script>
     <script src="{{ url_for('static', filename='theme-mode.js', v='theme-mode-v1.0.0-codex.1') }}"></script>
     <link rel="stylesheet" href="{{ url_for('static', filename='vendor/katex/katex.min.css', v='katex-v0.18.7') }}">
-    <link rel="stylesheet" href="{{ url_for('static', filename='style.css', v=version ~ '-style-v2.162.0-codex.0') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css', v=version ~ '-style-v2.162.1-codex.0') }}">
     {% include "_cache_activity_assets.html" %}
     <link rel="stylesheet" href="{{ url_for('static', filename='agent-sessions.css', v='1.9.0') }}">
     <link rel="stylesheet" href="{{ url_for('static', filename='selection-list.css', v='selection-list-v1.0.1-codex.0') }}">
@@ -793,13 +794,13 @@ Task:
 <script src="{{ url_for('static', filename='sidebar.js', v='sidebar-v1.31.1-codex.0') }}"></script>
 <script src="{{ url_for('static', filename='settings-directory-picker.js', v='settings-directory-picker-v2.2.1-codex.0') }}"></script>
 <script src="{{ url_for('static', filename='select-controller.js', v='select-controller-v1.0.1') }}"></script>
-<script src="{{ url_for('static', filename='browser-filter-select.js', v='browser-filter-select-v1.2.0-codex.1') }}"></script>
+<script src="{{ url_for('static', filename='browser-filter-select.js', v='browser-filter-select-v1.2.1-codex.0') }}"></script>
 <script src="{{ url_for('static', filename='browser-session-status.js', v='browser-session-status-v1.14.1-codex.0') }}"></script>
 <script src="{{ url_for('static', filename='browser-session-messages.js', v='browser-session-messages-v1.0.1-codex.1') }}"></script>
 <script src="{{ url_for('static', filename='pagination-motion.js', v='pagination-motion-v1.1.0-codex.1') }}"></script>
 <script src="{{ url_for('static', filename='vendor/katex/katex.min.js', v='katex-v0.18.7') }}"></script>
 <script src="{{ url_for('static', filename='vendor/katex/contrib/auto-render.min.js', v='katex-v0.18.7') }}"></script>
     <script src="{{ url_for('static', filename='chatgpt-project-icons.js', v='chatgpt-project-icons-v1.1.0-codex.1') }}"></script>
-    <script src="{{ url_for('static', filename='computer-use-agent.js', v='computer-use-agent-v3.74.4-codex.0') }}"></script>
+    <script src="{{ url_for('static', filename='computer-use-agent.js', v='computer-use-agent-v3.74.5-codex.0') }}"></script>
 </body>
 </html>

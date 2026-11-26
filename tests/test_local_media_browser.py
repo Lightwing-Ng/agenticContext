@@ -1,6 +1,6 @@
 """Read-only local media browser tests.
 
-Code version: v1.14.1-codex.0
+Code version: v1.14.2-codex.0
 """
 
 from __future__ import annotations
@@ -1032,6 +1032,15 @@ def test_formats_captured_timestamp_with_seconds_and_timezone() -> None:
 
 def test_formats_date_only_value_without_time_or_timezone() -> None:
     assert format_datetime_label("2026-08-09") == "09/08/2026"
+
+
+def test_formats_media_precision_with_distinct_date_display_preferences() -> None:
+    styles = {"style": "yyyy_mmm_d", "date_style": "yyyy_mm_dd"}
+    assert format_captured_at_timestamp_label("2026-08-09", **styles) == "2026/08/09"
+    assert (
+        format_captured_at_timestamp_label("2026-08-09T23:09:50Z", **styles)
+        == "2026 Aug 10 07:09:50 (HKT)"
+    )
 
 
 def test_chatgpt_for_prompts_is_exempt_from_regular_inventory(tmp_path: Path) -> None:

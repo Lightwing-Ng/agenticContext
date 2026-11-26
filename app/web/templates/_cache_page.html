@@ -1,14 +1,17 @@
-{# Code version: v1.41.2-codex.0 #}
+{# Code version: v1.45.0-codex.0 #}
+{% set show_youtube_cache = youtube_cache_loopback and 'media' in cache_source.content_modes and not cache_source.is_local %}
 <!doctype html>
 <html lang="en-US">
 <head>
     <meta charset="utf-8">
+    {% include "_date_display_assets.html" %}
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
     <title>{{ cache_source.document_title }}</title>
     <link rel="icon" type="image/svg+xml" href="{{ url_for('static', filename='images/favicon.svg', v=version ~ '-favicon-v1.0.1-codex.1') }}">
     <script src="{{ url_for('static', filename='language-rendering.js', v='language-rendering-v1.0.0-codex.1') }}"></script>
     <script src="{{ url_for('static', filename='theme-mode.js', v='theme-mode-v1.0.0-codex.1') }}"></script>
-    <link rel="stylesheet" href="{{ url_for('static', filename='style.css', v=version ~ '-style-v2.162.0-codex.0') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css', v=version ~ '-style-v2.162.1-codex.0') }}">
+    {% if show_youtube_cache %}<link rel="stylesheet" href="{{ url_for('static', filename='youtube-cache.css', v='youtube-cache-v1.2.0-codex.0') }}">{% endif %}
     {% include "_cache_activity_assets.html" %}
     <script defer src="{{ url_for('static', filename='numeric-display.js', v='numeric-display-v1.1.0-codex.0') }}"></script>
     <script defer src="{{ url_for('static', filename='segmented-control.js', v='segmented-control-v1.1.0-codex.0') }}"></script>
@@ -17,7 +20,7 @@
     <script defer src="{{ url_for('static', filename='browser-session-status.js', v='browser-session-status-v1.14.1-codex.0') }}"></script>
     <script defer src="{{ url_for('static', filename='browser-session-picker.js', v='browser-session-picker-v1.10.1-codex.0') }}"></script>
     <script defer src="{{ url_for('static', filename='numeric-input-format.js', v='numeric-input-format-v1.1.0-codex.1') }}"></script>
-    <script defer src="{{ url_for('static', filename='cache-page.js', v='cache-page-v1.22.0-codex.0') }}"></script>
+    <script defer src="{{ url_for('static', filename='cache-page.js', v='cache-page-v1.27.0-codex.0') }}"></script>
     {% block head %}{% endblock %}
 </head>
 <body>
@@ -99,7 +102,7 @@
                 </div>
             </section>
             {% endif %}
-            <section class="sidebar-section">
+            <section class="sidebar-section" data-cache-source-controls>
                 <div class="section-heading">
                     <div
                         class="trade-strategy-combobox browser-session-combobox cache-source-switcher-combobox"
@@ -158,6 +161,27 @@
                                 <span class="trade-strategy-dropdown-text">{{ source.label }}</span>
                             </button>
                             {% endfor %}
+                            {% if show_youtube_cache %}
+                            <button
+                                type="button"
+                                id="cache_source_switcher_option_youtube"
+                                class="trade-strategy-dropdown-option browser-source-filter-option"
+                                data-youtube-cache-option
+                                data-cache-source-text-available="false"
+                                role="option"
+                                aria-selected="false"
+                                tabindex="-1"
+                                {% if cache_mode != 'media' %}hidden{% endif %}
+                            >
+                                <span class="trade-strategy-dropdown-check" aria-hidden="true"></span>
+                                <span
+                                    class="cache-source-mark browser-source-filter-mark is-full-color"
+                                    style="--cache-source-mark: url('{{ url_for('static', filename='images/youtube-full-color.svg', v='1.0.0') }}');"
+                                    aria-hidden="true"
+                                ></span>
+                                <span class="trade-strategy-dropdown-text">YouTube</span>
+                            </button>
+                            {% endif %}
                         </div>
                     </div>
                     <span
@@ -170,6 +194,7 @@
                     ></span>
                 </div>
 
+                {% if show_youtube_cache %}{% include "_youtube_cache_sidebar.html" %}{% endif %}
                 {% if not cache_source.is_local %}{{ render_browser_session(cache_source, browser_options) }}{% endif %}
 
                 <form

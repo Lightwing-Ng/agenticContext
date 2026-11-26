@@ -1,6 +1,6 @@
 """Global preparation preserves source isolation, sender proof, and idempotency.
 
-Code version: v1.3.0-codex.0
+Code version: v1.3.1-codex.0
 """
 
 from contextlib import closing
@@ -170,7 +170,7 @@ def test_account_refresh_reads_one_owner_once_and_publishes_all_eligible_chats(
             "SELECT * FROM messages WHERE conversation_id=? ORDER BY id", (other.session_id,)
         ).fetchall()
 
-    with sqlite3.connect(bank.mac_recovery_bank_path(root)) as original_bank:
+    with closing(sqlite3.connect(bank.mac_recovery_bank_path(root))) as original_bank:
         other_before = other_rows(original_bank)
     assert len(other_before) == 2
     registry = Registry(tmp_path)
@@ -208,7 +208,7 @@ def test_account_refresh_reads_one_owner_once_and_publishes_all_eligible_chats(
         assert set(registry.calls) == {(OWNER, False), (OWNER, True)}
         assert other.account_id not in {owner for owner, _ in registry.calls}
         assert history.read_bytes() == before
-        with sqlite3.connect(bank.mac_recovery_bank_path(root)) as published:
+        with closing(sqlite3.connect(bank.mac_recovery_bank_path(root))) as published:
             assert {row[0] for row in published.execute("SELECT account_id FROM sources")} == {
                 OWNER, other.account_id,
             }

@@ -1,12 +1,13 @@
 """Exercise portable WeChat source boundaries, typed bytes, and hostile containers.
 
-Code version: v1.0.0-codex.0
+Code version: v1.0.1-codex.0
 """
 
 from __future__ import annotations
 
 import hashlib
 import json
+import os
 import sqlite3
 import zipfile
 
@@ -378,6 +379,46 @@ def test_verified_resource_only_conversation_exports_without_primary_text(resour
     assert len(list(package.iter_rows("exchange.presentations"))) == 1
     metadata = json.loads(next(package.iter_rows("exchange.presentations"))["metadata_json"])
     assert metadata["presentation"]["resource"]["kind"] == "video"
+
+
+@pytest.mark.parametrize("changed", [False, True])
+def test_export_checks_the_same_windows_change_time_as_the_session(
+    archive, tmp_path, monkeypatch, changed,
+):
+    from app.core import wechat_exchange, wechat_macos_recovery_bank, wechat_session_export
+
+    class WindowsOS:
+        name = "nt"
+
+        def __getattr__(self, name):
+            return getattr(os, name)
+
+    mutation_delta = 1_000_000
+
+    def native_identity(_path, state):
+        return {"ctime_ns": state.st_ctime_ns + mutation_delta}
+
+    monkeypatch.setattr(wechat_exchange, "os", WindowsOS())
+    monkeypatch.setattr(wechat_session_export, "os", WindowsOS())
+    monkeypatch.setattr(wechat_macos_recovery_bank, "_storage_identity", native_identity)
+    root, sessions, _expected = archive
+    output = tmp_path / "windows-timestamp.wechatx"
+    if changed:
+        open_session = wechat_session_export.WechatSessionExport.__init__
+
+        def after_mutation(exporter, *args, **kwargs):
+            nonlocal mutation_delta
+            mutation_delta += 1_000_000
+            open_session(exporter, *args, **kwargs)
+
+        monkeypatch.setattr(wechat_session_export.WechatSessionExport, "__init__", after_mutation)
+        with pytest.raises(ValueError, match=r"source changed during export: history\.sqlite3"):
+            export_conversation(root, sessions[0], output)
+        assert not output.exists()
+        return
+
+    manifest = export_conversation(root, sessions[0], output)
+    assert read_package(output).package_id == manifest["package_id"]
 
 
 def test_preview_only_packet_keeps_its_literal_excerpt(previews, tmp_path):

@@ -1,6 +1,6 @@
 """Read configured Mac WeChat sources into authenticated memory-only snapshots.
 
-Code version: v1.3.0-codex.0
+Code version: v1.3.1-codex.0
 """
 
 from __future__ import annotations
@@ -18,6 +18,7 @@ import stat
 from . import wechat_mac_refresh_cipher as cipher
 from .compute_resources import discover_compute_resources
 from .owner_only_files import owner_only_problem
+from .wechat_mac_refresh_status import STORAGE_FAILURE_MESSAGE
 
 
 MAX_DATABASE_BYTES = 2 * 1024**3
@@ -59,7 +60,7 @@ class RefreshIssue(StrEnum):
     WORKER_TIMEOUT = "The local refresh worker reached its time limit. Try again."
     INTERPRETER_UNAVAILABLE = "A compatible local WeChat refresh interpreter is unavailable."
     MESSAGE_BUDGET = "This conversation's new records exceed the per-refresh message size limit."
-    DISK_SPACE = "Not enough free disk space is available to stage the WeChat archive update."
+    DISK_SPACE = STORAGE_FAILURE_MESSAGE
     ARCHIVE_CHANGED = "The WeChat archive changed during refresh. Try again after it finishes updating."
     VIEW_UNAVAILABLE = "The refreshed conversation is temporarily unavailable. Reopen it and try again."
 

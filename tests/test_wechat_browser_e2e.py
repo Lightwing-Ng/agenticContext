@@ -1,6 +1,6 @@
 """Account and conversation-type filters share desktop and narrow UI contracts.
 
-Code version: v1.9.4-codex.0
+Code version: v1.9.5-codex.0
 """
 
 from __future__ import annotations
@@ -27,6 +27,7 @@ from app.core.wechat_archive import import_wechat_archive, wechat_archive_path
 from app.core.wechat_history_browser import query_wechat_history
 from app.web.app import create_app
 from app.web.config_store import SavedConfigStore
+from app.web.date_display import DateDisplayStore
 from tests import test_sidebar_e2e
 from tests.test_browser_chat_effects_e2e import (
     _assert_metrics_unaffected_by_chat_effects,
@@ -350,7 +351,7 @@ def wechat_server(tmp_path_factory):
 
 
 @pytest.fixture(scope="module")
-def wechat_rename_url(tmp_path_factory):
+def wechat_rename_page(tmp_path_factory):
     sandbox = tmp_path_factory.mktemp("wechat-renames")
     store = sandbox / "store"
     owner = source()
@@ -375,12 +376,14 @@ def wechat_rename_url(tmp_path_factory):
             store, computer_use_settings_path=sandbox / "agent.json",
             computer_use_runtime_root=sandbox / "runtime", agent_external_operations_enabled=False,
         )
+    date_store = DateDisplayStore(sandbox / "date-display.json")
+    app.extensions["date_display"] = date_store
     server = make_server("127.0.0.1", 0, app, threaded=True)
     thread = Thread(target=server.serve_forever, daemon=True)
     thread.start()
     try:
         query = urlencode({"view": "text", "source": "wechat", "session": session.stable_id})
-        yield f"http://127.0.0.1:{server.server_port}/browser?{query}"
+        yield f"http://127.0.0.1:{server.server_port}/browser?{query}", date_store
     finally:
         server.shutdown()
         server.server_close()
@@ -389,13 +392,25 @@ def wechat_rename_url(tmp_path_factory):
 
 
 @pytest.mark.parametrize("width", [819, 390])
-def test_group_name_history_dates_align_character_columns(disposable_browser, wechat_rename_url, width):
+@pytest.mark.parametrize(
+    ("date_style", "expected_days"),
+    [
+        ("d_mmm_yyyy", ("11 Oct 2026", "6 Nov 2023", "9 Apr 2021")),
+        ("yyyy_mmm_dd", ("2026 Oct 11", "2023 Nov 06", "2021 Apr 09")),
+        ("yyyy_mm_dd_cjk", ("2026年10月11日", "2023年11月06日", "2021年04月09日")),
+    ],
+)
+def test_group_name_history_dates_align_character_columns(
+    disposable_browser, wechat_rename_page, width, date_style, expected_days
+):
+    url, date_store = wechat_rename_page
+    date_store.save(full=date_style, compact=None)
     context = disposable_browser.new_context(
         viewport={"width": width, "height": 1018}, reduced_motion="reduce",
     )
     try:
         page = context.new_page()
-        page.goto(wechat_rename_url, wait_until="networkidle")
+        page.goto(url, wait_until="networkidle")
         toggle = page.locator("#sidebar_toggle")
         if toggle.get_attribute("aria-expanded") == "true":
             toggle.click()
@@ -403,9 +418,15 @@ def test_group_name_history_dates_align_character_columns(disposable_browser, we
         history.locator("summary").click()
         dates = history.locator("tbody time")
         expect(dates.last).to_be_visible()
-        expect(dates).to_have_text([
-            "11 Oct 2026 21:18:37", "6 Nov 2023 09:04:52", "9 Apr 2021 02:53:41",
-        ])
+        expected_clocks = ("21:18:37", "09:04:52", "02:53:41")
+        expect(dates).to_have_text(
+            [f"{day} {clock}" for day, clock in zip(expected_days, expected_clocks, strict=True)]
+        )
+        assert dates.evaluate_all("dates => dates.map(date => date.dateTime)") == [
+            "2026-10-11T21:18:37+08:00",
+            "2023-11-06T09:04:52+08:00",
+            "2021-04-09T02:53:41+08:00",
+        ]
         columns = dates.evaluate_all("""async dates => {
             await document.fonts.ready;
             function characterLeft(part, index) {
@@ -417,8 +438,11 @@ def test_group_name_history_dates_align_character_columns(disposable_browser, we
                 return range.getBoundingClientRect().left;
             }
             return dates.map(date => {
-                const [day, month, year, clock] = date.children;
-                return [characterLeft(day, -1), characterLeft(month, 0), characterLeft(year, -1),
+                if (!date.firstElementChild) {
+                    return Array.from(date.textContent, (_, index) => characterLeft(date, index));
+                }
+                const [first, month, third, clock] = date.children;
+                return [characterLeft(first, -1), characterLeft(month, 0), characterLeft(third, -1),
                     ...Array.from(clock.textContent, (_, index) => characterLeft(clock, index))];
             });
         }""")

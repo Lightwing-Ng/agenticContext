@@ -1,4 +1,4 @@
-/* Code version: v2.162.0-codex.0 */
+/* Code version: v2.162.1-codex.0 */
 /*
  * Standalone faces are extracted from the approved TTC by scripts/build_web_fonts.py.
  * Collection URL fragments are not reliable face selectors in Chromium.
@@ -12084,6 +12084,10 @@ dialog.browser-dialog:not([open]) {
     --settings-category-icon-url: url("/static/images/trash.svg");
     --settings-category-icon-tint: var(--theme-error-strong);
     --settings-category-icon-surface: var(--theme-error-translucent);
+}
+
+.settings-category-nav-item-general {
+    --settings-category-icon-url: url("/static/images/calendar.day.timeline.right.svg");
 }
 
 .settings-category-nav-item:not(.settings-category-nav-item-maintenance) {

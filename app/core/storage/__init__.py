@@ -1,6 +1,6 @@
 """Durable local-resource boundary for catalogs, history, and backups."""
 
-# Code version: v1.8.0-codex.0
+# Code version: v1.8.1-codex.0
 
 from ..chat_history_browser import (
     ChatHistoryPage,
@@ -65,6 +65,11 @@ _LAZY_EXPORTS = {
         "ACCOUNT_SUMMARY_KINDS", "account_summary_pin", "read_account_summary",
     }),
     "storage.wechat_summary_worker": frozenset({"WechatSummaryWorker"}),
+    "youtube_cache": frozenset({
+        "YouTubeCacheError", "YouTubeCacheProgress", "YouTubeCacheResult",
+        "download_youtube_media", "parse_youtube_video_id", "read_cached_youtube_media",
+        "recent_cached_youtube_media", "youtube_cache_directory", "youtube_cache_path",
+    }),
 }
 # Facade names that differ from the member they expose.
 _LAZY_ALIASES = {

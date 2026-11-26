@@ -1,6 +1,6 @@
 """Disposable-browser E2E coverage for the responsive sidebar and language boundaries.
 
-Code version: v1.58.6-codex.0
+Code version: v1.58.7-codex.0
 """
 
 from __future__ import annotations
@@ -45,7 +45,6 @@ from app.core.resource_persistence import (
     ZHIHU_HISTORY_SCHEMA,
     write_parquet_rows_atomic,
 )
-from tests.browser_launch import launch_test_browser
 
 
 OVERLAY_VIEWPORTS = (
@@ -366,12 +365,12 @@ def _launch_disposable_browser(
         return browser_type.launch(headless=True)
     managed_executable = Path(browser_type.executable_path)
     if managed_executable.is_file():
-        return launch_test_browser(browser_type)
+        return browser_type.launch(headless=True)
 
     launch_errors: list[str] = []
     for channel in ("chrome", "msedge"):
         try:
-            return launch_test_browser(browser_type, channel=channel)
+            return browser_type.launch(headless=True, channel=channel)
         except PlaywrightError as error:  # pragma: no cover - depends on host browser inventory
             launch_errors.append(f"{channel}: {error}")
     raise AssertionError(

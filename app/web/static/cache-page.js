@@ -1,4 +1,4 @@
-/* Code version: v1.22.0-codex.0 */
+/* Code version: v1.27.0-codex.0 */
 
 (() => {
     "use strict";
@@ -17,14 +17,7 @@
         "zhihu:downloaded_posts": "processed_tweets",
     });
     const numberFormatter = new Intl.NumberFormat("en-US");
-    const datetimeFormatter = new Intl.DateTimeFormat("en-US", {
-        day: "numeric",
-        month: "short",
-        year: "numeric",
-        hour: "2-digit",
-        minute: "2-digit",
-        second: "2-digit",
-        hourCycle: "h23",
+    const timeZoneFormatter = new Intl.DateTimeFormat("en-US", {
         timeZoneName: "short",
     });
     const timezoneCodesByOffset = Object.freeze({
@@ -55,6 +48,8 @@
     const statusProgressDetail = document.getElementById("status_progress_detail");
     const progressProcessedLabel = document.querySelector("[data-progress-unit-label]");
     const cacheSourceSwitcher = document.querySelector("[data-cache-source-switcher]");
+    const cacheSourceMenuItemSelector = "[data-cache-source-switcher-option], [data-youtube-cache-option]";
+    const youtubeCachePanel = document.querySelector("[data-youtube-cache-panel]");
     const sectionLinks = Array.from(document.querySelectorAll("[data-section-link]"));
     const statusFields = Array.from(document.querySelectorAll("[data-status-field]"));
     const cacheContentModeControl = document.querySelector("[data-cache-content-mode]");
@@ -79,12 +74,15 @@
         if (!cacheSourceSwitcher) return;
         const normalizedMode = mode === "media" ? "media" : "text";
         cacheSourceSwitcher.dataset.cacheSourceContentMode = normalizedMode;
-        cacheSourceSwitcher.querySelectorAll("[data-cache-source-switcher-option]").forEach((option) => {
+        cacheSourceSwitcher.querySelectorAll(cacheSourceMenuItemSelector).forEach((option) => {
             const isAvailable = normalizedMode === "media"
                 || option.dataset.cacheSourceTextAvailable === "true";
             option.hidden = !isAvailable;
             if (!isAvailable) option.classList.remove("is-active");
         });
+        if (normalizedMode === "text" && page.hasAttribute("data-youtube-cache-selected")) {
+            setYoutubeCacheSelected(false);
+        }
     }
 
     function syncCacheContentMode(mode) {
@@ -243,30 +241,26 @@
     function formatDatetime(value) {
         const rawValue = String(value ?? "").trim();
         if (!rawValue) return "";
-        const dateOnlyMatch = rawValue.match(/^(\d{4})[-/](\d{2})[-/](\d{2})$/);
+        const dateOnlyMatch = rawValue.match(/^(\d{4})([-/]?)(\d{2})\2(\d{2})$/);
         if (dateOnlyMatch) {
-            return dateOnlyMatch[3] + "/" + dateOnlyMatch[2] + "/" + dateOnlyMatch[1];
-        }
-        const compactDateMatch = rawValue.match(/^(\d{4})(\d{2})(\d{2})$/);
-        if (compactDateMatch) {
-            return compactDateMatch[3] + "/" + compactDateMatch[2] + "/" + compactDateMatch[1];
+            const [, year, , month, day] = dateOnlyMatch;
+            return window.APP_DATES.date(`${year}-${month}-${day}`, {
+                compact: true,
+                fallback: "Unknown date",
+            });
         }
 
         const parsed = new Date(rawValue);
         if (Number.isNaN(parsed.getTime())) return "Unknown date";
-        const parts = Object.fromEntries(
-            datetimeFormatter.formatToParts(parsed).map((part) => [part.type, part.value]),
-        );
-        const timezoneLabel = parts.timeZoneName || "";
+        const timezoneLabel = timeZoneFormatter.formatToParts(parsed)
+            .find((part) => part.type === "timeZoneName")?.value || "";
         const offsetMinutes = String(-parsed.getTimezoneOffset());
         const timezoneCode = timezoneLabel === "GMT" && offsetMinutes === "0"
             ? "UTC"
             : /^[A-Za-z]{3}$/.test(timezoneLabel)
                 ? timezoneLabel.toUpperCase()
                 : timezoneCodesByOffset[offsetMinutes] || "UTC";
-        return parts.day + " " + parts.month + " " + parts.year
-            + " " + parts.hour + ":" + parts.minute + ":" + parts.second
-            + " (" + timezoneCode + ")";
+        return `${window.APP_DATES.dateTime(parsed)} (${timezoneCode})`;
     }
 
     function setPhaseState(phase) {
@@ -315,12 +309,260 @@
         observedSections.forEach((section) => sectionObserver.observe(section));
     }
 
+    function rememberYoutubeOutput(output) {
+        const previous = window.history.state;
+        if ((previous?.cacheYoutubeOutput ?? null) === output) return;
+        try {
+            window.history.replaceState({ ...previous, cacheYoutubeOutput: output }, "");
+        } catch (_error) {
+            // History restrictions must not prevent a source change.
+        }
+    }
+
+    function setYoutubeCacheSelected(selected) {
+        const youtubeOption = cacheSourceSwitcher.querySelector("[data-youtube-cache-option]");
+        const providerOption = document.getElementById(`cache_source_switcher_option_${sourceKey}`);
+        const selectedOption = selected ? youtubeOption : providerOption;
+        const trigger = cacheSourceSwitcher.querySelector("[data-cache-source-switcher-trigger]");
+        const label = selectedOption.querySelector(".trade-strategy-dropdown-text").textContent;
+        const icon = selectedOption.querySelector(".cache-source-mark");
+        const triggerIcon = trigger.querySelector(".cache-source-mark");
+        const iconProperty = "--cache-source-mark";
+
+        for (const option of [youtubeOption, providerOption]) {
+            const isSelected = option === selectedOption;
+            option.classList.toggle("is-selected", isSelected);
+            option.setAttribute("aria-selected", String(isSelected));
+        }
+        trigger.querySelector(".trade-strategy-trigger-label").textContent = label;
+        trigger.setAttribute("aria-label", `Cache source: ${label}`);
+        trigger.title = label;
+        triggerIcon.style.setProperty(iconProperty, icon.style.getPropertyValue(iconProperty));
+        triggerIcon.classList.toggle("is-full-color", icon.classList.contains("is-full-color"));
+        page.toggleAttribute("data-youtube-cache-selected", selected);
+        youtubeCachePanel.hidden = !selected;
+    }
+
+    function initializeYoutubeCacheForm() {
+        if (!youtubeCachePanel) return;
+
+        const form = youtubeCachePanel.querySelector("[data-youtube-cache-form]");
+        const modeControl = form.elements.namedItem("mode");
+        const modeSegment = form.querySelector(".segmented-control");
+        const urlInput = form.elements.namedItem("url");
+        const clearUrlButton = form.querySelector("[data-youtube-cache-clear-url]");
+        const submit = form.querySelector('button[type="submit"]');
+        const status = youtubeCachePanel.querySelector("[data-youtube-cache-status]");
+        const progress = youtubeCachePanel.querySelector("[data-youtube-cache-progress]");
+        const track = progress.querySelector(".status-progress");
+        const fill = track.querySelector(".status-progress-fill");
+        const recent = youtubeCachePanel.querySelector("[data-youtube-cache-recent]");
+        const fileList = recent.querySelector("ul");
+        let recentFiles = [];
+        let latestResult = null;
+        let recentRequest = 0;
+        let busy = false;
+
+        function setStatus(message, state, percent = null) {
+            status.dataset.state = state;
+            setTextIfChanged(status, message);
+            progress.hidden = percent === null;
+            fill.style.width = percent === null ? "" : `${percent}%`;
+            if (percent !== null) {
+                track.setAttribute("aria-valuenow", String(percent));
+                track.setAttribute("aria-valuetext", message);
+            } else {
+                track.removeAttribute("aria-valuenow");
+                track.removeAttribute("aria-valuetext");
+            }
+        }
+
+        function showDownloadProgress(snapshot, mode) {
+            if (snapshot?.phase === "processing") {
+                setStatus(`Processing YouTube ${mode}…`, "running");
+                return;
+            }
+            const downloaded = snapshot?.downloaded_bytes;
+            if (snapshot?.phase !== "downloading" || !Number.isSafeInteger(downloaded) || downloaded < 0) {
+                setStatus(`Preparing YouTube ${mode}…`, "running");
+                return;
+            }
+            const stream = ["audio", "video"].includes(snapshot.stream)
+                ? `YouTube ${snapshot.stream} stream` : "YouTube media";
+            const total = snapshot.total_bytes;
+            const measured = Number.isSafeInteger(total) && total > 0 && downloaded <= total;
+            const percent = measured ? Math.floor(downloaded / total * 100) : null;
+            const downloadedLabel = numberFormatter.format(downloaded);
+            const transferred = measured
+                ? `${downloadedLabel} / ${numberFormatter.format(total)} bytes (${percent}%)`
+                : `${downloadedLabel} bytes received`;
+            setStatus(`Downloading ${stream}… · ${transferred}`, "running", percent);
+        }
+
+        function syncUrlClearButton() {
+            const available = !urlInput.disabled && Boolean(urlInput.value.trim());
+            clearUrlButton.hidden = !available;
+            clearUrlButton.classList.toggle("is-visible", available);
+        }
+
+        function setBusy(value) {
+            busy = value;
+            for (const control of form.elements) control.disabled = value;
+            syncUrlClearButton();
+        }
+
+        function sameOriginUrl(value) {
+            const parsed = typeof value === "string" && value ? new URL(value, window.location.href) : null;
+            if (!parsed || parsed.origin !== window.location.origin) {
+                throw new Error("The YouTube cache service returned an invalid link.");
+            }
+            return value;
+        }
+
+        async function requestJson(url, options = {}) {
+            const response = await fetch(sameOriginUrl(url), {
+                cache: "no-store",
+                ...options,
+                headers: { Accept: "application/json", ...options.headers },
+            });
+            const data = await response.json().catch(() => null);
+            if (!response.ok || !data) {
+                throw new Error(data?.error || "Could not reach the YouTube cache service.");
+            }
+            return data;
+        }
+
+        function renderRecentFiles(items) {
+            const includeLatest = latestResult
+                && !items.some((item) => item.download_url === latestResult.download_url);
+            const files = includeLatest ? [latestResult, ...items] : items;
+            const currentList = Array.from(fileList.querySelectorAll("a"));
+            if (currentList.length === files.length && files.every((item, index) =>
+                currentList[index].getAttribute("href") === item.download_url
+                && currentList[index].title === item.filename)) return;
+
+            const rows = files.map((item) => {
+                const row = document.createElement("li");
+                const link = document.createElement("a");
+                const label = document.createElement("span");
+                link.className = "secondary-button youtube-cache-file";
+                link.href = sameOriginUrl(item.download_url);
+                link.download = "";
+                link.title = item.filename;
+                label.textContent = item.filename;
+                link.append(label);
+                row.append(link);
+                return row;
+            });
+            fileList.replaceChildren(...rows);
+            recent.hidden = rows.length === 0;
+        }
+
+        async function refreshRecentFiles() {
+            const request = ++recentRequest;
+            try {
+                const data = await requestJson(recent.dataset.youtubeCacheRecent);
+                if (request !== recentRequest || !Array.isArray(data.items)) return;
+                renderRecentFiles(data.items);
+                recentFiles = data.items;
+            } catch (_error) {
+                // Keep the links already shown if the recent-cache request fails.
+            }
+        }
+
+        async function waitForDownload(statusUrl, mode) {
+            let result = await requestJson(statusUrl);
+            while (result.status === "running") {
+                showDownloadProgress(result.progress, mode);
+                await new Promise((resolve) => window.setTimeout(resolve, 500));
+                result = await requestJson(statusUrl);
+            }
+            if (result.status !== "completed" || !result.filename) {
+                throw new Error(result.error || "The YouTube download could not be completed.");
+            }
+            return result;
+        }
+
+        function syncSubmitLabel() {
+            submit.textContent = modeControl.value === "audio" ? "Cache audio" : "Cache video";
+        }
+
+        function restoreMode(mode) {
+            modeControl.value = mode;
+            window.CACHELIKES_SEGMENTED_CONTROLS?.sync(modeSegment);
+            syncSubmitLabel();
+        }
+
+        form.addEventListener("change", (event) => {
+            if (event.target.name !== "mode") return;
+            syncSubmitLabel();
+            if (page.hasAttribute("data-youtube-cache-selected")) {
+                rememberYoutubeOutput(modeControl.value);
+            }
+        });
+
+        urlInput.addEventListener("input", syncUrlClearButton);
+        urlInput.addEventListener("focus", syncUrlClearButton);
+        clearUrlButton.addEventListener("mousedown", (event) => event.preventDefault());
+        clearUrlButton.addEventListener("click", () => {
+            urlInput.value = "";
+            urlInput.dispatchEvent(new Event("input", { bubbles: true }));
+            urlInput.focus();
+        });
+        syncUrlClearButton();
+
+        form.addEventListener("submit", async (event) => {
+            event.preventDefault();
+            if (busy) return;
+
+            const mode = modeControl.value;
+            const url = urlInput.value.trim();
+            setBusy(true);
+            setStatus(`Preparing YouTube ${mode}…`, "running");
+            try {
+                const job = await requestJson(form.action, {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ url, mode }),
+                });
+                const result = await waitForDownload(job.status_url, mode);
+                sameOriginUrl(result.download_url);
+                latestResult = result;
+                renderRecentFiles(recentFiles);
+                void refreshRecentFiles();
+                setStatus(
+                    result.cached ? "Already cached." : "Cached successfully.",
+                    "completed",
+                    result.cached ? null : 100,
+                );
+            } catch (error) {
+                setStatus(error.message, "error");
+            } finally {
+                setBusy(false);
+            }
+        });
+        return { modeControl, urlInput, restoreMode, refreshRecentFiles };
+    }
+
     function initializeCacheSourceSwitcher() {
         if (!cacheSourceSwitcher) return;
         const trigger = cacheSourceSwitcher.querySelector("[data-cache-source-switcher-trigger]");
         const menu = cacheSourceSwitcher.querySelector("[data-cache-source-switcher-menu]");
-        const options = Array.from(cacheSourceSwitcher.querySelectorAll("[data-cache-source-switcher-option]"));
+        const options = Array.from(cacheSourceSwitcher.querySelectorAll(cacheSourceMenuItemSelector));
         if (!trigger || !menu || !options.length) return;
+        const youtubeForm = initializeYoutubeCacheForm();
+
+        function restoreYoutubeSelection() {
+            if (!youtubeForm) return;
+            const mode = window.history.state?.cacheYoutubeOutput;
+            if (currentCacheContentMode() === "media" && (mode === "video" || mode === "audio")) {
+                setYoutubeCacheSelected(true);
+                youtubeForm.restoreMode(mode);
+                void youtubeForm.refreshRecentFiles();
+            } else if (page.hasAttribute("data-youtube-cache-selected")) {
+                setYoutubeCacheSelected(false);
+            }
+        }
 
         function navigableOptions() {
             return options.filter((option) => !option.hidden);
@@ -353,6 +595,23 @@
 
         function navigateToOption(option) {
             if (option.hidden) return;
+            if (option.hasAttribute("data-youtube-cache-option")) {
+                setMenuOpen(false);
+                setYoutubeCacheSelected(true);
+                const { modeControl, urlInput } = youtubeForm;
+                rememberYoutubeOutput(modeControl.value);
+                (urlInput.disabled ? trigger : urlInput).focus({ preventScroll: true });
+                void youtubeForm.refreshRecentFiles();
+                return;
+            }
+            if (option.dataset.cacheSourceSwitcherOption === sourceKey
+                && page.hasAttribute("data-youtube-cache-selected")) {
+                setMenuOpen(false);
+                setYoutubeCacheSelected(false);
+                rememberYoutubeOutput(null);
+                trigger.focus({ preventScroll: true });
+                return;
+            }
             const targetPath = option.dataset.cacheSourceSwitcherPath || "";
             if (!targetPath) return;
 
@@ -443,6 +702,8 @@
                 trigger.focus({ preventScroll: true });
             }
         });
+        restoreYoutubeSelection();
+        window.addEventListener("popstate", restoreYoutubeSelection);
     }
 
     function resolveStatusFieldValue(element, data, fieldName) {

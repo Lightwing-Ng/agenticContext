@@ -1,6 +1,6 @@
 """Download media from tweet URLs with yt-dlp."""
 
-# Code version: v1.11.1-codex.0
+# Code version: v1.12.1-codex.0
 
 from __future__ import annotations
 
@@ -16,7 +16,7 @@ import tempfile
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable
+from typing import BinaryIO, Callable
 
 from .browser_sessions import browser_descriptors
 from .cache_catalog import LocalTweetCacheIndex
@@ -334,7 +334,7 @@ def build_cookies_from_browser_arg(config: CrawlConfig) -> str:
     return f"{descriptor.browser_id}:{profile_path}"
 
 
-def _terminate_yt_dlp_process(process: subprocess.Popen[str]) -> tuple[str, str]:
+def _terminate_yt_dlp_process(process: subprocess.Popen[str]) -> tuple[str | None, str]:
     """Stop only this task's subprocess group and collect any completed output."""
 
     if os.name == "posix":
@@ -368,6 +368,8 @@ def _run_yt_dlp_attempt(
     command: list[str],
     deadline: float,
     should_stop: Callable[[], bool],
+    env: dict[str, str] | None = None,
+    consume_stdout: Callable[[str], bool] | None = None,
 ) -> subprocess.CompletedProcess[str]:
     """Poll a task-owned yt-dlp process so Stop and the deadline can interrupt it."""
 
@@ -379,24 +381,57 @@ def _run_yt_dlp_attempt(
         "stdout": subprocess.PIPE,
         "stderr": subprocess.PIPE,
         "text": True,
+        "env": env,
     }
     if os.name == "posix":
         kwargs["start_new_session"] = True
     elif os.name == "nt":
         kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
-    process = subprocess.Popen(command, **kwargs)
-    while True:
-        reason = "stopped" if should_stop() else "timed_out" if time.monotonic() >= deadline else ""
-        if reason:
-            stdout, stderr = _terminate_yt_dlp_process(process)
-            raise YtDlpInterrupted(reason, stdout, stderr)
+    with contextlib.ExitStack() as resources:
+        stdout_reader: BinaryIO | None = None
+        if consume_stdout is not None:
+            # Separate file handles keep line reads nonblocking on both POSIX and Windows.
+            directory = resources.enter_context(tempfile.TemporaryDirectory(prefix="agentic-yt-dlp-"))
+            output = Path(directory) / "stdout.log"
+            kwargs["stdout"] = resources.enter_context(output.open("wb"))
+            stdout_reader = resources.enter_context(output.open("rb"))
+        process = subprocess.Popen(command, **kwargs)
+        diagnostics: list[str] = []
+
+        def collect_output(*, final: bool = False) -> None:
+            if stdout_reader is None or consume_stdout is None:
+                return
+            while raw_line := stdout_reader.readline():
+                if not final and not raw_line.endswith(b"\n"):
+                    stdout_reader.seek(-len(raw_line), os.SEEK_CUR)
+                    break
+                line = raw_line.decode(process.encoding or "utf-8", errors="replace").replace("\r\n", "\n")
+                if not consume_stdout(line.rstrip("\n")):
+                    diagnostics.append(line)
+
         try:
-            stdout, stderr = process.communicate(
-                timeout=min(YT_DLP_STOP_POLL_SECONDS, max(0.001, deadline - time.monotonic()))
-            )
-            return subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
-        except subprocess.TimeoutExpired:
-            continue
+            while True:
+                reason = "stopped" if should_stop() else "timed_out" if time.monotonic() >= deadline else ""
+                if reason:
+                    stdout, stderr = _terminate_yt_dlp_process(process)
+                    collect_output(final=True)
+                    if stdout_reader is not None:
+                        stdout = "".join(diagnostics)
+                    raise YtDlpInterrupted(reason, stdout or "", stderr)
+                try:
+                    stdout, stderr = process.communicate(
+                        timeout=min(YT_DLP_STOP_POLL_SECONDS, max(0.001, deadline - time.monotonic()))
+                    )
+                except subprocess.TimeoutExpired:
+                    collect_output()
+                    continue
+                collect_output(final=True)
+                if stdout_reader is not None:
+                    stdout = "".join(diagnostics)
+                return subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
+        finally:
+            if process.poll() is None:
+                _terminate_yt_dlp_process(process)
 
 
 def run_yt_dlp_with_retries(
@@ -405,8 +440,11 @@ def run_yt_dlp_with_retries(
     *,
     should_stop: Callable[[], bool] | None = None,
     timeout_seconds: float = YT_DLP_TWEET_TIMEOUT_SECONDS,
+    env: dict[str, str] | None = None,
+    consume_stdout: Callable[[str], bool] | None = None,
+    on_retry: Callable[[], None] | None = None,
 ) -> subprocess.CompletedProcess[str]:
-    """Run yt-dlp with a bounded total deadline and cooperative Stop."""
+    """Run yt-dlp with cooperative Stop and optionally consume streamed stdout lines."""
 
     attempt = 0
     last_result: subprocess.CompletedProcess[str] | None = None
@@ -418,7 +456,7 @@ def run_yt_dlp_with_retries(
     while attempt < DOWNLOAD_RETRY_ATTEMPTS:
         attempt += 1
         try:
-            result = _run_yt_dlp_attempt(command, deadline, stop_requested)
+            result = _run_yt_dlp_attempt(command, deadline, stop_requested, env, consume_stdout)
         except YtDlpInterrupted as exc:
             raise YtDlpInterrupted(
                 exc.reason,
@@ -443,6 +481,8 @@ def run_yt_dlp_with_retries(
 
         previous_stdout.append(stdout)
         previous_stderr.append(stderr)
+        if on_retry is not None:
+            on_retry()
 
         logger.warning(
             "Retrying yt-dlp after transient failure.",

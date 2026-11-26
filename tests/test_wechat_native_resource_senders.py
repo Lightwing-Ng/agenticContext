@@ -3,6 +3,7 @@
 Code version: v1.1.1-codex.0
 """
 
+from contextlib import closing
 from datetime import UTC, datetime
 import hashlib
 import json
@@ -50,7 +51,7 @@ def archive(tmp_path):
         )
         native = tmp_path / "native.sqlite3"
         table = "Chat_" + hashlib.md5(PEER.encode(), usedforsecurity=False).hexdigest()
-        with sqlite3.connect(native) as connection:
+        with closing(sqlite3.connect(native)) as connection, connection:
             connection.execute(
                 f'CREATE TABLE "{table}"(MesLocalID INTEGER PRIMARY KEY,'
                 "MesSvrID INTEGER,CreateTime INTEGER,Type INTEGER,Des INTEGER,"
@@ -112,7 +113,7 @@ def archive(tmp_path):
             "Anchor",
         )
         history = tmp_path / "history.sqlite3"
-        with sqlite3.connect(history) as connection:
+        with closing(sqlite3.connect(history)) as connection, connection:
             connection.executescript(HISTORY_SCHEMA)
             connection.execute(
                 "CREATE TABLE source_snapshots(id INTEGER PRIMARY KEY,snapshot_id TEXT,source_id TEXT,metadata TEXT)"
@@ -197,8 +198,8 @@ def archive(tmp_path):
         )
         catalog = tmp_path / "catalog.sqlite3"
         with (
-            sqlite3.connect(catalog) as connection,
-            sqlite3.connect(history) as primary,
+            closing(sqlite3.connect(catalog)) as connection, connection,
+            closing(sqlite3.connect(history)) as primary, primary,
         ):
             connection.executescript(RESOURCE_SCHEMA)
             connection.execute("CREATE TABLE native_resource_occurrences(proof TEXT)")
@@ -251,7 +252,7 @@ def _recover(item, **kwargs):
 
 
 def _change_proof(item, change):
-    with sqlite3.connect(item.catalog) as connection:
+    with closing(sqlite3.connect(item.catalog)) as connection, connection:
         proof = json.loads(
             connection.execute("SELECT provenance FROM messages").fetchone()[0]
         )
@@ -278,7 +279,7 @@ def test_plain_video_prefix_resolves_without_mutating_sources_or_media(archive):
     assert "media_payload_not_read" in flags
     assert SENDER in row["search_text"]
     assert {p: _hash(p) for p in before} == before
-    with sqlite3.connect(item.catalog) as connection:
+    with closing(sqlite3.connect(item.catalog)) as connection, connection:
         assert connection.execute(
             "SELECT proof FROM native_resource_occurrences"
         ).fetchall() == [("retained",)]
@@ -366,7 +367,7 @@ def test_failed_recheck_retains_exact_prior_success_and_its_dictionary_proof(
     initial = _recover(item, dictionaries={5: dictionary})["message"]
 
     def retain(row):
-        with sqlite3.connect(item.catalog) as connection:
+        with closing(sqlite3.connect(item.catalog)) as connection, connection:
             connection.execute(
                 "UPDATE messages SET "
                 + ",".join(key + "=?" for key in row)
@@ -445,7 +446,7 @@ def test_replaying_a_staged_row_is_idempotent(archive):
     result = _recover(item)
     row = result["message"]
     columns = tuple(row)
-    with sqlite3.connect(item.catalog) as connection:
+    with closing(sqlite3.connect(item.catalog)) as connection, connection:
         connection.execute(
             "UPDATE messages SET "
             + ",".join(column + "=?" for column in columns)
@@ -469,7 +470,7 @@ def test_stage_preserves_memberships_and_every_input(archive, monkeypatch, tmp_p
     assert report["published"] is False
     assert report["candidate_sha256"] == _hash(candidate)
     assert {path: _hash(path) for path in paths} == before
-    with sqlite3.connect(candidate) as connection:
+    with closing(sqlite3.connect(candidate)) as connection, connection:
         row = connection.execute("SELECT sender_id,text FROM messages").fetchone()
         assert row == (SENDER, "[Video]")
         assert connection.execute(
@@ -488,7 +489,7 @@ def test_stage_records_dictionary_blocker_without_fabricating_sender(
         item.history, item.catalog, candidate, item.native, message_ids=[item.id]
     )
     assert report["statuses"] == {"missing_dictionary": 1}
-    with sqlite3.connect(candidate) as connection:
+    with closing(sqlite3.connect(candidate)) as connection, connection:
         row = connection.execute("SELECT sender_id,provenance FROM messages").fetchone()
         assert row[0] is None
         resolution = json.loads(row[1])["native_resource_sender_resolution"]
@@ -514,7 +515,7 @@ def test_stage_rejects_existing_candidate_without_overwriting_it(archive, tmp_pa
 )
 def test_different_catalog_account_or_peer_is_rejected(archive, field, value):
     item = archive()
-    with sqlite3.connect(item.catalog) as connection:
+    with closing(sqlite3.connect(item.catalog)) as connection, connection:
         connection.execute(f"UPDATE conversations SET {field}=?", (value,))
     with pytest.raises(ValueError, match="source scope"):
         _recover(item)
@@ -550,8 +551,8 @@ def test_shared_sender_projection_is_pure_and_rechecks_source_scope(
 ):
     item = archive()
     with (
-        sqlite3.connect(item.catalog) as catalog,
-        sqlite3.connect(item.native) as native,
+        closing(sqlite3.connect(item.catalog)) as catalog, catalog,
+        closing(sqlite3.connect(item.native)) as native, native,
     ):
         catalog.row_factory = native.row_factory = sqlite3.Row
         row = dict(catalog.execute("SELECT * FROM messages").fetchone())

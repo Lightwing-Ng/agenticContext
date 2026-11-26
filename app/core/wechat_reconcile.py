@@ -568,7 +568,7 @@ def _file_identity(path: Path):
         metadata.st_ctime_ns,
     )
     if os.name == "nt":
-        # Windows stat().ctime is birth time; retain it independently of mutations.
+        # Windows stat().ctime is birth time, so retain it separately from ChangeTime.
         birth = getattr(metadata, "st_birthtime_ns", metadata.st_ctime_ns)
         return (*identity[:4], file_change_time(path), birth)
     return identity

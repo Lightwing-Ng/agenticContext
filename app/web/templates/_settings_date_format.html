@@ -1,0 +1,39 @@
+<!-- Code version: v1.0.0-codex.0 -->
+<section
+    class="settings-category-panel"
+    id="settings-general"
+    data-settings-panel="general"
+    aria-labelledby="settings_general_heading"
+>
+    <div class="settings-category-heading">
+        <h3 id="settings_general_heading">Date format</h3>
+        <p>Choose the full and compact date styles used throughout the workspace.</p>
+    </div>
+    <div class="settings-category-fields">
+        {% set date_preferences = current_date_display() %}
+        {% for mode, label, formats in date_format_choices %}
+            {% set field_name = "full_date_format" if mode == "full" else "short_date_format" %}
+            {% set field_id = "settings_" ~ field_name %}
+            {% set current_style = date_preferences.style(mode == "compact") %}
+            <form action="{{ url_for('settings.save_date_format') }}" method="post">
+                <div class="field">
+                    <label for="{{ field_id }}">{{ label }}</label>
+                    <select
+                        class="form-select"
+                        id="{{ field_id }}"
+                        name="{{ field_name }}"
+                        data-shared-select-auto
+                        aria-describedby="{{ field_id }}_example"
+                        onchange="this.form.requestSubmit()"
+                    >
+                        {% for key, format in formats.items() %}
+                            <option value="{{ key }}" {% if key == current_style %}selected{% endif %}>{{ format.label }}</option>
+                        {% endfor %}
+                    </select>
+                    <span class="field-help" id="{{ field_id }}_example">{{ date_format_example(style=current_style) }}</span>
+                    <noscript><button class="secondary-button" type="submit">Save {{ label | lower }} date format</button></noscript>
+                </div>
+            </form>
+        {% endfor %}
+    </div>
+</section>

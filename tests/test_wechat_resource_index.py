@@ -5,6 +5,7 @@ Code version: v1.3.1-codex.0
 
 from __future__ import annotations
 
+from contextlib import closing
 import hashlib
 import json
 import sqlite3
@@ -13,6 +14,7 @@ from unittest.mock import patch
 
 import pytest
 
+from app.core.owner_only_files import owner_only_problem
 from app.core.wechat_archive import (
     WechatArchiveRepository,
     import_wechat_archive,
@@ -55,7 +57,7 @@ def resources(tmp_path):
     )
     database = db_root / "message_1.sqlite"
     columns = "(CreateTime INTEGER,Des INTEGER,MesLocalID INTEGER PRIMARY KEY,Message TEXT,MesSvrID INTEGER,Type INTEGER,WCDB_CT_Message INTEGER)"
-    with sqlite3.connect(database) as connection:
+    with closing(sqlite3.connect(database)) as connection, connection:
         for peer in ("peer-direct", "peer-group", "attachments@chatroom"):
             connection.execute(f'CREATE TABLE "{_table(peer)}" {columns}')
         rows = [
@@ -106,11 +108,11 @@ def resources(tmp_path):
             f'INSERT INTO "{_table("attachments@chatroom")}" VALUES(?,?,?,?,?,?,?)',
             (NOW, 1, 10, b"only-resource-conversation", SERVER, 43, 2),
         )
-    with sqlite3.connect(db_root / "MM.sqlite") as connection:
+    with closing(sqlite3.connect(db_root / "MM.sqlite")) as connection, connection:
         connection.execute("CREATE TABLE Friend(UsrName TEXT PRIMARY KEY)")
         connection.execute("INSERT INTO Friend VALUES('attachments@chatroom')")
     (owner_root / "FileIndex").mkdir()
-    with sqlite3.connect(owner_root / "FileIndex/fileIndexInfo.db") as connection:
+    with closing(sqlite3.connect(owner_root / "FileIndex/fileIndexInfo.db")) as connection, connection:
         connection.execute(
             "CREATE TABLE FileIndexInfoTable(fileMD5 TEXT,filePath TEXT,fileSize INTEGER,indexType INTEGER,msgLocalId INTEGER,msgtime INTEGER,msgType INTEGER,userName TEXT)"
         )
@@ -132,7 +134,7 @@ def resources(tmp_path):
             ],
         )
     (owner_root / "FileBrowse").mkdir()
-    with sqlite3.connect(owner_root / "FileBrowse/fileInfo.db") as connection:
+    with closing(sqlite3.connect(owner_root / "FileBrowse/fileInfo.db")) as connection, connection:
         connection.execute(
             "CREATE TABLE BrowseInfoTable(msgWrapSvrID INTEGER PRIMARY KEY,msgLocalID INTEGER,fileTime INTEGER,desTitle TEXT,fileExt TEXT,fileMD5 TEXT,fileSize INTEGER,fromUserName TEXT,fromChatName TEXT)"
         )
@@ -146,7 +148,7 @@ def resources(tmp_path):
 
 
 def _rows(fixture):
-    with sqlite3.connect(resource_index_path(fixture.store)) as connection:
+    with closing(sqlite3.connect(resource_index_path(fixture.store))) as connection, connection:
         connection.row_factory = sqlite3.Row
         return [
             dict(row)
@@ -175,7 +177,7 @@ def test_initial_index_preserves_literal_app_title_and_source_roles(
         + "</msg>"
     )
     peer = "peer-group" if prefix else "peer-direct"
-    with sqlite3.connect(fixture.source) as connection:
+    with closing(sqlite3.connect(fixture.source)) as connection, connection:
         connection.execute(
             f'INSERT OR REPLACE INTO "{_table(peer)}" VALUES(?,?,?,?,?,?,?)',
             (NOW + 3, 1, 13, payload, SERVER - 3, 49, 0),
@@ -237,7 +239,7 @@ def test_initial_index_preserves_source_labels_from_normal_zstd_app_cells(
         "<url>https://example.invalid/private-card</url>"
         f"{details}</appmsg></msg>"
     )
-    with sqlite3.connect(resources.source) as connection:
+    with closing(sqlite3.connect(resources.source)) as connection, connection:
         connection.execute(
             f'INSERT INTO "{_table(peer)}" VALUES(?,?,?,?,?,?,?)',
             (NOW + 3, 1, 13, zstd.compress(payload.encode()), SERVER - 3, 49, marker),
@@ -369,7 +371,7 @@ def test_existing_v1_catalog_without_app_labels_remains_readable(resources):
     fixture = resources
     build_resource_index(fixture.store, fixture.snapshot)
     path = resource_index_path(fixture.store)
-    with sqlite3.connect(path) as connection:
+    with closing(sqlite3.connect(path)) as connection, connection:
         assert (
             dict(connection.execute("SELECT key,value FROM archive_info"))[
                 "schema_version"
@@ -476,7 +478,7 @@ def test_native_types_and_real_times_become_metadata_placeholders_without_payloa
     assert "sender_id_unavailable" in json.loads(group["quality_flags"])
     assert source_before == fixture.source.read_bytes()
     assert history_before == fixture.history.read_bytes()
-    assert resource_index_path(fixture.store).stat().st_mode & 0o777 == 0o600
+    assert owner_only_problem(resource_index_path(fixture.store)) == ""
 
 
 def test_schema_identity_and_attachment_only_conversations_follow_existing_contract(
@@ -485,8 +487,8 @@ def test_schema_identity_and_attachment_only_conversations_follow_existing_contr
     fixture = resources
     build_resource_index(fixture.store, fixture.snapshot)
     with (
-        sqlite3.connect(resource_index_path(fixture.store)) as sidecar,
-        sqlite3.connect(fixture.history) as main,
+        closing(sqlite3.connect(resource_index_path(fixture.store))) as sidecar, sidecar,
+        closing(sqlite3.connect(fixture.history)) as main, main,
     ):
         for table in ("messages", "conversations"):
             assert (
@@ -527,7 +529,7 @@ def test_schema_identity_and_attachment_only_conversations_follow_existing_contr
 @pytest.mark.parametrize("coherent", [True, False])
 def test_browse_metadata_needs_exact_account_peer_server_and_time(resources, coherent):
     fixture = resources
-    with sqlite3.connect(fixture.owner_root / "FileBrowse/fileInfo.db") as connection:
+    with closing(sqlite3.connect(fixture.owner_root / "FileBrowse/fileInfo.db")) as connection, connection:
         connection.execute(
             "INSERT INTO BrowseInfoTable VALUES(?,?,?,?,?,?,?,?,?)",
             (
@@ -553,7 +555,7 @@ def test_existing_positive_server_ids_and_exact_snapshot_locators_are_not_duplic
     resources,
 ):
     fixture = resources
-    with sqlite3.connect(fixture.history) as connection:
+    with closing(sqlite3.connect(fixture.history)) as connection, connection:
         conversation = connection.execute(
             "SELECT id FROM conversations WHERE account_key=? AND kind='direct'",
             ("account:" + OWNER,),
@@ -611,7 +613,7 @@ def test_source_mutation_aborts_publication_and_preserves_previous_sidecar(resou
         rows = original(connection, table)
         if not changed:
             changed = True
-            with sqlite3.connect(fixture.source) as writer:
+            with closing(sqlite3.connect(fixture.source)) as writer, writer:
                 writer.execute(
                     f'UPDATE "{_table("peer-direct")}" SET CreateTime=CreateTime+1 WHERE MesLocalID=10'
                 )
@@ -657,7 +659,7 @@ def test_changed_main_archive_aborts_publication_and_preserves_previous_sidecar(
         rows = original(connection, table)
         if not changed:
             changed = True
-            with sqlite3.connect(fixture.history) as writer:
+            with closing(sqlite3.connect(fixture.history)) as writer, writer:
                 writer.execute(
                     "INSERT INTO archive_info VALUES('concurrent-reindex-test','changed')"
                 )
@@ -684,7 +686,7 @@ def test_symlinked_database_directory_cannot_cross_native_owner_boundaries(resou
 
 def test_unsafe_app_xml_and_unknown_direction_do_not_invent_file_or_sender(resources):
     fixture = resources
-    with sqlite3.connect(fixture.source) as connection:
+    with closing(sqlite3.connect(fixture.source)) as connection, connection:
         connection.execute(
             f'UPDATE "{_table("peer-direct")}" SET Message=?,WCDB_CT_Message=0,Des=NULL WHERE MesLocalID=13',
             (
@@ -705,9 +707,9 @@ def test_conflicting_original_hashes_do_not_choose_an_arbitrary_file_or_thumbnai
     resources,
 ):
     fixture = resources
-    with sqlite3.connect(
+    with closing(sqlite3.connect(
         fixture.owner_root / "FileIndex/fileIndexInfo.db"
-    ) as connection:
+    )) as connection, connection:
         connection.execute(
             "INSERT INTO FileIndexInfoTable VALUES(?,?,?,?,?,?,?,?)",
             ("f" * 32, "&I/different.pic", 101, 10, 10, NOW, 3, "peer-direct"),
@@ -728,11 +730,11 @@ def test_conflicting_original_hashes_do_not_choose_an_arbitrary_file_or_thumbnai
 
 def test_a_unique_thumbnail_is_labeled_and_cannot_overwrite_browse_metadata(resources):
     fixture = resources
-    with sqlite3.connect(
+    with closing(sqlite3.connect(
         fixture.owner_root / "FileIndex/fileIndexInfo.db"
-    ) as connection:
+    )) as connection, connection:
         connection.execute("DELETE FROM FileIndexInfoTable WHERE indexType=10")
-    with sqlite3.connect(fixture.owner_root / "FileBrowse/fileInfo.db") as connection:
+    with closing(sqlite3.connect(fixture.owner_root / "FileBrowse/fileInfo.db")) as connection, connection:
         connection.execute(
             "INSERT INTO BrowseInfoTable VALUES(?,?,?,?,?,?,?,?,?)",
             (

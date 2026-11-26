@@ -1,6 +1,6 @@
 """Source-clock presentation preserves literal wall clocks and source precision.
 
-Code version: v1.1.0-codex.0
+Code version: v1.1.1-codex.0
 """
 
 from copy import deepcopy
@@ -44,6 +44,13 @@ from app.web.presentation import format_wechat_source_clock
 def test_source_clock_display_keeps_literal_clock_and_precision(raw, expected):
     assert format_wechat_source_clock(raw) == expected
     assert format_wechat_source_clock(expected) == expected
+
+
+def test_selected_source_clock_style_preserves_fraction_and_explicit_offset():
+    assert (
+        format_wechat_source_clock("2021-06-02T12:47:08.1200-05:30", style="yyyy_mmm_dd")
+        == "2021 Jun 02 12:47:08.1200 UTC-05:30"
+    )
 
 
 @pytest.mark.parametrize(

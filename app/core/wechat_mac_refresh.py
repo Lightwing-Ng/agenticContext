@@ -1,6 +1,6 @@
 """Run explicit, bounded Mac WeChat refreshes in background workers.
 
-Code version: v1.9.0-codex.0
+Code version: v1.9.1-codex.0
 """
 
 from __future__ import annotations
@@ -24,7 +24,7 @@ from threading import Event, RLock, Thread
 from traceback import walk_tb
 
 from . import wechat_macos_recovery_bank as bank
-from .owner_only_files import ensure_owner_only_directory
+from .owner_only_files import ensure_owner_only_directory, owner_only_directory_problem
 from .wechat_archive import (
     WechatArchiveRepository,
     WechatTimelineProjectionError,
@@ -110,10 +110,13 @@ def _refresh_staging_parent(archive_directory):
     staging = configured.resolve(strict=True)
     archive = archive_directory.resolve(strict=True)
     info = staging.stat()
+    if os.name == "nt":
+        private = not owner_only_directory_problem(staging)
+    else:
+        private = info.st_uid == os.getuid() and not stat.S_IMODE(info.st_mode) & 0o077
     if (
         not stat.S_ISDIR(info.st_mode)
-        or info.st_uid != os.getuid()
-        or stat.S_IMODE(info.st_mode) & 0o077
+        or not private
         or getattr(info, "st_flags", 0) & 0x40000000
         or info.st_dev != archive.stat().st_dev
         or staging.is_relative_to(archive)

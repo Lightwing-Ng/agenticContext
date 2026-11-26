@@ -1,6 +1,6 @@
 """A retirement bridge preserves every surviving accepted contact reference.
 
-Code version: v1.0.1-codex.0
+Code version: v1.0.3-codex.0
 """
 
 from __future__ import annotations
@@ -8,12 +8,15 @@ from __future__ import annotations
 from contextlib import closing
 import hashlib
 import json
+import shutil
 import sqlite3
+import sys
 from types import SimpleNamespace
 
 import pytest
 
 from app.core import wechat_contact_analysis as analysis
+from app.core import wechat_export_merge
 from app.core.wechat_derived_cache_refresh import refresh_retired_contact_cache, refresh_retired_native_candidates
 from app.core.wechat_derived_redundancy import file_identity, plan_derived_redundancy
 from tests import test_wechat_derived_redundancy as fixtures
@@ -21,6 +24,12 @@ from tests import test_wechat_derived_redundancy as fixtures
 
 AUTHORS, CONTACTS = fixtures.AUTHORS, fixtures.CONTACTS
 redundancy_store = fixtures.redundancy_store
+
+
+@pytest.fixture(autouse=True)
+def fixture_clone_backend(monkeypatch):
+    if sys.platform != "darwin":
+        monkeypatch.setattr(wechat_export_merge, "_clonefile", shutil.copyfile)
 
 
 def _json(value):
@@ -34,7 +43,7 @@ def _inputs(fixture):
 @pytest.fixture
 def retired_cache(redundancy_store):
     fixture = redundancy_store
-    with sqlite3.connect(fixture.history) as connection:
+    with closing(sqlite3.connect(fixture.history)) as connection, connection:
         connection.execute("UPDATE messages SET sender_id=? WHERE sender_id=?", (AUTHORS[0], AUTHORS[1]))
         connection.execute("UPDATE messages SET sender_id='legacy-0' WHERE sender_id='legacy-1'")
     plan = plan_derived_redundancy(fixture.store, contact_id=CONTACTS[0])
@@ -49,7 +58,11 @@ def retired_cache(redundancy_store):
         "source_inputs": _inputs(fixture),
         "unchanged_rule": "Synthetic unchanged proof",
     }
-    with closing(analysis._readonly(fixture.history)) as history, sqlite3.connect(cache) as output:
+    with (
+        closing(analysis._readonly(fixture.history)) as history,
+        closing(sqlite3.connect(cache)) as output,
+        output,
+    ):
         output.executescript(analysis._REFERENCE_SCHEMA)
         for row in history.execute(analysis._ROW_SELECT):
             proof = json.loads(row["provenance"])
@@ -65,7 +78,7 @@ def retired_cache(redundancy_store):
         "source_fingerprint": fingerprint, "source_inputs": info["source_inputs"],
         "contact_cache_info": info, "contact_cache_identity": file_identity(cache),
     }
-    with sqlite3.connect(fixture.history) as history:
+    with closing(sqlite3.connect(fixture.history)) as history, history:
         history.execute("CREATE TABLE derived_message_aliases(old_id TEXT PRIMARY KEY,native_id TEXT,source_id TEXT,metadata TEXT,proof TEXT)")
         for match in plan["matches"]:
             history.execute("INSERT INTO derived_message_aliases VALUES(?,?,?,?,?)", (
@@ -89,14 +102,14 @@ def _capture_cache(fixture):
 def test_exact_retirement_bridge_keeps_all_native_and_other_references(retired_cache):
     fixture = retired_cache
     sources = fixture.history.read_bytes(), fixture.registry.read_bytes()
-    with sqlite3.connect(fixture.cache) as cache:
+    with closing(sqlite3.connect(fixture.cache)) as cache, cache:
         native_before = cache.execute("SELECT * FROM refs WHERE source_id LIKE 'ios-%' ORDER BY id").fetchall()
     report = _refresh(fixture)
     assert report["published"]
     assert report["removed_references"] == 3
     assert report["references_before"] == 9 and report["references_after"] == 6
     assert report["groups_before"] == 9 and report["groups_after"] == 6
-    with sqlite3.connect(fixture.cache) as cache:
+    with closing(sqlite3.connect(fixture.cache)) as cache, cache:
         assert cache.execute("SELECT * FROM refs WHERE source_id LIKE 'ios-%' ORDER BY id").fetchall() == native_before
         info = dict(cache.execute("SELECT * FROM info"))
         assert info["fingerprint"] == fixture.before["expected_source_fingerprint_after"]
@@ -117,7 +130,7 @@ def test_stale_or_missing_source_pins_cannot_rebind_a_cache(retired_cache, pin):
 
 def test_changed_cache_cannot_be_overwritten(retired_cache):
     fixture = retired_cache
-    with sqlite3.connect(fixture.cache) as cache:
+    with closing(sqlite3.connect(fixture.cache)) as cache, cache:
         cache.execute("UPDATE info SET value='Newer cache' WHERE key='unchanged_rule'")
     before = fixture.cache.read_bytes()
     with pytest.raises(ValueError, match="pre-publication cache"):
@@ -127,7 +140,7 @@ def test_changed_cache_cannot_be_overwritten(retired_cache):
 
 def test_alias_receipt_must_match_the_exact_retirement_plan(retired_cache):
     fixture = retired_cache
-    with sqlite3.connect(fixture.history) as history:
+    with closing(sqlite3.connect(fixture.history)) as history, history:
         history.execute("UPDATE derived_message_aliases SET metadata='{}'")
     state = analysis._source_state(fixture.store)
     fixture.before.update(expected_source_fingerprint_after=state[2], expected_source_inputs_after=_inputs(fixture), expected_source_checkpoint_after=state[3])
@@ -141,7 +154,7 @@ def test_alias_receipt_must_match_the_exact_retirement_plan(retired_cache):
 def test_missing_native_or_nested_reference_requires_a_full_rebuild(retired_cache, failure):
     fixture = retired_cache
     match = fixture.plan["matches"][0]
-    with sqlite3.connect(fixture.cache) as cache:
+    with closing(sqlite3.connect(fixture.cache)) as cache, cache:
         if failure == "missing-native":
             cache.execute("DELETE FROM refs WHERE id=?", (match["native_id"],))
         else:
@@ -157,7 +170,7 @@ def test_missing_native_or_nested_reference_requires_a_full_rebuild(retired_cach
 def test_other_evidence_remains_identical_or_refuses_dependency_changes(retired_cache, has_dependency):
     fixture = retired_cache
     value = fixture.plan["matches"][0]["derived_id"] if has_dependency else "unrelated proof"
-    with sqlite3.connect(fixture.cache) as cache:
+    with closing(sqlite3.connect(fixture.cache)) as cache, cache:
         cache.execute("CREATE TABLE supplemental_evidence(key TEXT,value TEXT)")
         cache.execute("INSERT INTO supplemental_evidence VALUES('proof',?)", (_json({"anchor": value}),))
     _capture_cache(fixture)
@@ -168,19 +181,19 @@ def test_other_evidence_remains_identical_or_refuses_dependency_changes(retired_
         assert fixture.cache.read_bytes() == before
     else:
         _refresh(fixture)
-        with sqlite3.connect(fixture.cache) as cache:
+        with closing(sqlite3.connect(fixture.cache)) as cache, cache:
             assert cache.execute("SELECT value FROM supplemental_evidence").fetchone()[0] == _json({"anchor": value})
 
 
 def test_removed_representative_uses_an_already_accepted_native_member(retired_cache):
     fixture = retired_cache
     match = fixture.plan["matches"][0]
-    with sqlite3.connect(fixture.cache) as cache:
+    with closing(sqlite3.connect(fixture.cache)) as cache, cache:
         cache.execute("UPDATE statement_members SET statement_id=? WHERE reference_id=?", (match["derived_id"], match["native_id"]))
         cache.execute("DELETE FROM statement_groups WHERE id=?", (match["native_id"],))
     _capture_cache(fixture)
     _refresh(fixture)
-    with sqlite3.connect(fixture.cache) as cache:
+    with closing(sqlite3.connect(fixture.cache)) as cache, cache:
         assert cache.execute("SELECT reference_id FROM statement_groups WHERE id=?", (match["derived_id"],)).fetchone()[0] == match["native_id"]
 
 
@@ -214,7 +227,7 @@ def _hint_fingerprint(fixture, *, previous):
 
 def _native_hints(fixture, *, fingerprint=None, retired_parent=False):
     path = fixture.cache.parent / "native-author-candidates.sqlite3"
-    with sqlite3.connect(path) as hints:
+    with closing(sqlite3.connect(path)) as hints, hints:
         hints.executescript(
             "CREATE TABLE candidates(author TEXT,parent_id TEXT,PRIMARY KEY(author,parent_id)) WITHOUT ROWID;"
             "CREATE TABLE info(key TEXT PRIMARY KEY,value TEXT) WITHOUT ROWID;"
@@ -232,13 +245,13 @@ def _native_hints(fixture, *, fingerprint=None, retired_parent=False):
 def test_native_hint_bridge_preserves_all_candidates_and_other_metadata(retired_cache):
     fixture = retired_cache
     path = _native_hints(fixture)
-    with sqlite3.connect(path) as hints:
+    with closing(sqlite3.connect(path)) as hints, hints:
         before = hints.execute("SELECT * FROM candidates ORDER BY author,parent_id").fetchall()
     source_bytes = fixture.history.read_bytes(), fixture.registry.read_bytes()
     report = refresh_retired_native_candidates(fixture.store, fixture.plan)
     assert report["published"] and report["candidates"] == 6
     assert report["checked_retired_parents"] == 3
-    with sqlite3.connect(path) as hints:
+    with closing(sqlite3.connect(path)) as hints, hints:
         assert hints.execute("SELECT * FROM candidates ORDER BY author,parent_id").fetchall() == before
         assert dict(hints.execute("SELECT * FROM info")) == {
             "fingerprint": _hint_fingerprint(fixture, previous=False),
@@ -325,7 +338,7 @@ def test_native_hint_cache_source_drift_does_not_publish(retired_cache, monkeypa
 
     def drift(source, destination):
         original(source, destination)
-        with sqlite3.connect(fixture.history) as history:
+        with closing(sqlite3.connect(fixture.history)) as history, history:
             history.execute("INSERT INTO archive_info VALUES('synthetic-source-drift','changed')")
 
     monkeypatch.setattr(wechat_export_merge, "_clonefile", drift)
@@ -366,7 +379,7 @@ def test_native_hint_bridge_rejects_changed_registry_identity(retired_cache):
     fixture = retired_cache
     path = _native_hints(fixture)
     before = path.read_bytes()
-    with sqlite3.connect(fixture.registry) as registry:
+    with closing(sqlite3.connect(fixture.registry)) as registry, registry:
         registry.execute("INSERT INTO contact_registry_info VALUES('synthetic-drift','changed')")
     with pytest.raises(ValueError, match="contact registry changed"):
         refresh_retired_native_candidates(fixture.store, fixture.plan)

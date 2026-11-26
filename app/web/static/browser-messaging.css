@@ -1,4 +1,4 @@
-/* Code version: v1.26.4-codex.0 */
+/* Code version: v1.26.6-codex.0 */
 /* Human-message variants consume the existing Local resources primitives. */
 [data-wechat-refresh-copy] {
     white-space: pre-line;
@@ -110,12 +110,14 @@
     display: inline-grid;
     grid-template-columns: 2ch 2em 4ch max-content;
     column-gap: 0.375em;
-    font-variant-numeric: tabular-nums;
+}
+.wechat-group-name-history-date--year-first {
+    grid-template-columns: 4ch 2em 2ch max-content;
 }
 .wechat-group-name-history-date > :is(:first-child, :nth-child(3)) {
     text-align: end;
 }
-.wechat-group-membership-history-table time {
+:is(.wechat-group-name-history-table, .wechat-group-membership-history-table) time {
     font-variant-numeric: tabular-nums;
 }
 :is(.wechat-group-name-history-table, .wechat-group-membership-history-table) a {
