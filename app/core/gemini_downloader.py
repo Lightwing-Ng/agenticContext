@@ -1,12 +1,13 @@
 """Browser-backed Gemini session history caching."""
 
-# Code version: v1.13.0-codex.0
+# Code version: v1.13.1-codex.0
 
 from __future__ import annotations
 
 import contextlib
 import hashlib
 import json
+import math
 import re
 import time
 from dataclasses import dataclass
@@ -631,7 +632,8 @@ def _wait_for_gemini_ready(
     if deadline is not None:
         ready_deadline = min(ready_deadline, float(deadline))
     remaining_seconds = ready_deadline - started_at
-    remaining_checks = max(1, int(max(0.5, remaining_seconds) / 0.5))
+    # Count partial polling intervals; the absolute deadline still bounds every check.
+    remaining_checks = max(1, math.ceil(remaining_seconds / 0.5))
     last_snapshot: dict[str, Any] = {}
     consecutive_signed_out_checks = 0
     for _attempt in range(remaining_checks):

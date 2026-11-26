@@ -1,10 +1,11 @@
 """Focused tests for Gemini session history SQLite persistence."""
 
-# Code version: v1.13.0-codex.0
+# Code version: v1.13.1-codex.0
 
 from __future__ import annotations
 
 import json
+import math
 from contextlib import nullcontext
 from pathlib import Path
 import time
@@ -937,12 +938,20 @@ def test_gemini_session_recognizes_the_unavailable_route(
         context.close()
 
 
-def test_gemini_ready_gate_tolerates_one_signed_out_hydration_frame() -> None:
+@pytest.fixture
+def gemini_readiness_clock(monkeypatch):
     waits: list[int] = []
+    # Crossing this clock boundary can round a one-second deadline down by one ULP.
+    started_at = math.nextafter(511.0, math.inf)
+    monkeypatch.setattr(
+        "app.core.gemini_downloader.time",
+        SimpleNamespace(monotonic=lambda: started_at + sum(waits) / 1_000),
+    )
+    return SimpleNamespace(wait_for_timeout=waits.append), waits
 
-    class Page:
-        def wait_for_timeout(self, milliseconds: int) -> None:
-            waits.append(milliseconds)
+
+def test_gemini_ready_gate_tolerates_one_signed_out_hydration_frame(gemini_readiness_clock) -> None:
+    page, waits = gemini_readiness_clock
 
     with patch(
         "app.core.gemini_downloader.inspect_gemini_session",
@@ -965,18 +974,14 @@ def test_gemini_ready_gate_tolerates_one_signed_out_hydration_frame() -> None:
             },
         ),
     ):
-        snapshot = _wait_for_gemini_ready(Page(), timeout_seconds=1)
+        snapshot = _wait_for_gemini_ready(page, timeout_seconds=1)
 
     assert snapshot["accountLabel"] == "Google Account: Demo"
     assert waits == [500]
 
 
-def test_gemini_ready_gate_requires_two_signed_out_frames() -> None:
-    waits: list[int] = []
-
-    class Page:
-        def wait_for_timeout(self, milliseconds: int) -> None:
-            waits.append(milliseconds)
+def test_gemini_ready_gate_requires_two_signed_out_frames(gemini_readiness_clock) -> None:
+    page, waits = gemini_readiness_clock
 
     signed_out_snapshot = {
         "href": "https://gemini.google.com/app",
@@ -991,6 +996,6 @@ def test_gemini_ready_gate_requires_two_signed_out_frames() -> None:
         side_effect=(signed_out_snapshot, signed_out_snapshot),
     ):
         with pytest.raises(RuntimeError, match="not signed in to Gemini"):
-            _wait_for_gemini_ready(Page(), timeout_seconds=1)
+            _wait_for_gemini_ready(page, timeout_seconds=1)
 
     assert waits == [500]
