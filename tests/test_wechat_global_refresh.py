@@ -1,6 +1,6 @@
 """Global preparation preserves source isolation, sender proof, and idempotency.
 
-Code version: v1.4.1-codex.0
+Code version: v1.4.2-codex.0
 """
 
 from contextlib import closing
@@ -26,6 +26,21 @@ from tests import test_wechat_mac_refresh as refresh_fixtures
 mac_archive = refresh_fixtures.mac_archive
 refresh_archive = refresh_fixtures.refresh_archive
 OWNER = refresh_fixtures.OWNER
+
+
+@pytest.mark.parametrize("partition", ("ios-" + "0" * 32, "html-synthetic-export"))
+def test_account_refresh_requires_the_exact_native_partition_coordinate(refresh_archive, partition):
+    root, history, session, _records = refresh_archive
+    assert global_refresh.archived_account_refresh_available(root, OWNER)
+
+    with closing(sqlite3.connect(history)) as connection, connection:
+        original = connection.execute(
+            "SELECT partition_id FROM conversations WHERE id=?", (session,),
+        ).fetchone()[0]
+        connection.execute("UPDATE partitions SET id=? WHERE id=?", (partition, original))
+        connection.execute("UPDATE conversations SET partition_id=? WHERE id=?", (partition, session))
+
+    assert not global_refresh.archived_account_refresh_available(root, OWNER)
 
 
 class Registry:

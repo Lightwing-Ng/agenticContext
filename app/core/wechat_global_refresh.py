@@ -1,6 +1,6 @@
 """Prepare bounded global Mac refresh packets without publishing or reading new keys.
 
-Code version: v1.4.0-codex.0
+Code version: v1.4.1-codex.0
 
 Inventory reads canonical scope metadata and the existing verified-key registry. The
 iterator decrypts one configured shard at a time and retains the existing per-scope
@@ -90,6 +90,20 @@ def _reference_identity(reference):
     )
 
 
+def _has_verified_native_partition(source, account_key, account_id):
+    partitions = source.execute(
+        "SELECT id,account_id FROM partitions WHERE account_key=? AND account_id=? "
+        "AND identity_status='Verified archive ID'",
+        (account_key, account_id),
+    )
+    # The native iOS archive format names partitions using the stored owner's
+    # legacy directory coordinate. The query matches the raw account separately.
+    return any(
+        partition == "ios-" + hashlib.md5(archived_owner.encode(), usedforsecurity=False).hexdigest()
+        for partition, archived_owner in partitions
+    )
+
+
 def _archived_scopes(local_store_root, account_id=None):
     if account_id is not None and (
         not isinstance(account_id, str) or _DIRECTORY.fullmatch(account_id) is None
@@ -105,14 +119,7 @@ def _archived_scopes(local_store_root, account_id=None):
     )
     args = ("account:" + account_id, account_id) if account_id is not None else ()
     with closing(sqlite3.connect(history.as_uri() + "?mode=ro&immutable=1", uri=True)) as source:
-        if account_id is not None and source.execute(
-            "SELECT 1 FROM partitions WHERE id=? AND account_key=? AND account_id=? "
-            "AND identity_status='Verified archive ID'",
-            (
-                "ios-" + hashlib.md5(account_id.encode(), usedforsecurity=False).hexdigest(),
-                *args,
-            ),
-        ).fetchone() is None:
+        if account_id is not None and not _has_verified_native_partition(source, *args):
             if bank._identity(history) != identity:
                 raise GlobalRefreshInputChanged("The canonical archive changed during inventory.")
             return history, identity, scopes, 0
