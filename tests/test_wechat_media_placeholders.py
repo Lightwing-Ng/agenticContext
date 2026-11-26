@@ -9,6 +9,7 @@ from copy import deepcopy
 from datetime import UTC, datetime
 from html.parser import HTMLParser
 import csv
+from contextlib import closing
 import hashlib
 import io
 import json
@@ -159,7 +160,7 @@ def placeholder_store(tmp_path):
                 text.casefold(),
             )
         )
-    with sqlite3.connect(history) as connection:
+    with closing(sqlite3.connect(history)) as connection, connection:
         connection.executescript(_SCHEMA)
         connection.execute(
             "CREATE TABLE source_snapshots(id INTEGER PRIMARY KEY,snapshot_id TEXT,"

@@ -1,6 +1,6 @@
 """Adapt indexed human conversations to the shared Local resources page model."""
 
-# Code version: v1.45.6-codex.0
+# Code version: v1.45.7-codex.0
 
 from __future__ import annotations
 
@@ -20,7 +20,7 @@ from .wechat_contacts import (
 from .wechat_contact_embedded import _recovered_forwarded_author
 from .wechat_context_evidence import WechatContextEvidence
 from .wechat_context_links import WechatContextLinks
-from .wechat_display_names import WechatDisplayNames
+from .wechat_display_names import WechatDisplayNames, verified_contact_profile_name
 from .wechat_forwarded import (
     apply_forwarded_clock_evidence,
     project_forwarded_references,
@@ -1500,18 +1500,23 @@ def query_wechat_history(
             (not name or name_source == "verified_contact_observation" and name in unidentified)
             and item.messaging["sender_identifier_namespace"] == "native_user_name"
             and item.author_label in unidentified
+            and not item.messaging["is_system_notice"]
         ):
+            profile_name = (
+                verified_contact_profile_name(contact, sender)
+                if item.messaging.get("resource") else ""
+            )
             direct_peer = item.role == "received" and _is_exact_direct_peer(
                 display_names, item.messaging, contact, sender
             )
-            if item.messaging["kind"] == "group" or direct_peer:
+            if not profile_name and (item.messaging["kind"] == "group" or direct_peer):
                 profile_name = _scoped_native_profile_name(
                     contact_repository, display_names, contact, sender, item.messaging, scoped_profiles,
                     allow_remark=direct_peer,
                 )
-                if profile_name:
-                    name = profile_name
-                    name_source = "verified_native_contact_profile"
+            if profile_name:
+                name = profile_name
+                name_source = "verified_native_contact_profile"
         if name:
             item.messaging["viewer_display_name"] = name
             contact = {

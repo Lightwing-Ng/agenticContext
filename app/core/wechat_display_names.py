@@ -1,6 +1,6 @@
 """Project local viewing names without changing WeChat identity or source evidence.
 
-Code version: v1.6.1-codex.0
+Code version: v1.6.2-codex.0
 """
 
 from __future__ import annotations
@@ -19,6 +19,18 @@ MAX_DISPLAY_NAME_BYTES = 512
 MAX_HIDDEN_ACCOUNT_SOURCES = 128
 _CONTACT_ID = re.compile(r"wechat:contact:[0-9a-f]{64}")
 _SOURCE_ID = re.compile(r"[A-Za-z0-9_-]{1,100}")
+
+
+def verified_contact_profile_name(contact, sender):
+    """Fill a native identifier label from an already verified contact binding."""
+    if not sender or contact.get("identity_status") != "verified":
+        return ""
+    unidentified = ("", sender, "Unknown sender")
+    for field in ("preferred_name", "display_name"):
+        name = contact.get(field) or ""
+        if name not in unidentified:
+            return name
+    return ""
 
 
 def display_names_path(local_store_root: Path | str) -> Path:

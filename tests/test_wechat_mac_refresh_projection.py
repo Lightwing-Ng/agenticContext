@@ -12,6 +12,8 @@ from multiprocessing import get_context
 
 import pytest
 
+from app.core.owner_only_files import ensure_owner_only
+
 from app.core import wechat_mac_refresh_projection as projection
 from app.core import wechat_macos_recovery_bank as bank
 from app.core.wechat_mac_refresh_source import RefreshError
@@ -148,7 +150,7 @@ def test_conversation_comparison_rejects_an_overlay_published_during_reuse(refre
 
     def publish_detail_registry(_):
         details.write_text("{}", encoding="utf-8")
-        details.chmod(0o600)
+        ensure_owner_only(details)
 
     database = _database(scope, records)
     try:

@@ -1,6 +1,6 @@
 """Same native bytes may gain bounded semantics without rewriting prior observations.
 
-Code version: v1.3.1-codex.0
+Code version: v1.3.2-codex.0
 """
 
 from contextlib import closing
@@ -313,7 +313,7 @@ def test_channels_labels_complete_cached_original_and_quote_from_same_native_byt
         assert metadata.pop("channels_description") == "原帖文案\n保留换行"
         assert metadata.pop("channels_nickname") == "示例发布者"
     fixtures._publish(fixture, packets=[old], name="channels-legacy-labels")
-    with sqlite3.connect(fixture.bank_path) as connection:
+    with closing(sqlite3.connect(fixture.bank_path)) as connection, connection:
         connection.execute(
             "UPDATE archive_info SET value='v1.4.3-codex.0' WHERE key='code_version'"
         )

@@ -1,6 +1,6 @@
 """Additive references remain in the scoped, paginated WeChat timeline.
 
-Code version: v1.0.2-codex.0
+Code version: v1.0.3-codex.0
 """
 
 from __future__ import annotations
@@ -19,6 +19,7 @@ from app.core.chat_history_browser import (
     build_chat_history_markdown,
     query_chat_history,
 )
+from app.core.owner_only_files import ensure_owner_only
 from app.core.wechat_archive import (
     WechatArchiveRepository,
     _SCHEMA,
@@ -83,12 +84,12 @@ def _reference(session, name, time, *, identifier=None):
 def _sidecar(store, entries):
     history = wechat_archive_path(store)
     path = history.with_name("resource_references.sqlite3")
-    with sqlite3.connect(history) as primary:
+    with closing(sqlite3.connect(history)) as primary:
         fingerprint = wechat_history_partition_fingerprint(primary)
     groups = {}
     for session, message in entries:
         groups.setdefault(session["id"], [session, []])[1].append(message)
-    with sqlite3.connect(path) as connection:
+    with closing(sqlite3.connect(path)) as connection, connection:
         connection.executescript(_SCHEMA)
         connection.executemany(
             "INSERT INTO archive_info VALUES(?,?)",
@@ -125,7 +126,7 @@ def _sidecar(store, entries):
 
 
 def _space_text_records(store, session):
-    with sqlite3.connect(wechat_archive_path(store)) as connection:
+    with closing(sqlite3.connect(wechat_archive_path(store))) as connection, connection:
         ids = [
             row[0]
             for row in connection.execute(
@@ -276,13 +277,13 @@ def test_stale_or_invalid_sidecar_leaves_primary_text_available(store, change):
     resource = _reference(session, "Image reference", 20)
     path = _sidecar(store, [(session, resource)])
     if change == "history":
-        with sqlite3.connect(wechat_archive_path(store)) as connection:
+        with closing(sqlite3.connect(wechat_archive_path(store))) as connection, connection:
             connection.execute(
                 "UPDATE partitions SET account_label='Reindexed label' WHERE id=?",
                 (session["partition_id"],),
             )
     else:
-        with sqlite3.connect(path) as connection:
+        with closing(sqlite3.connect(path)) as connection, connection:
             if change == "fingerprint":
                 connection.execute(
                     "UPDATE archive_info SET value=? WHERE key='history_partitions_sha256'",
@@ -354,7 +355,7 @@ def test_relocated_canonical_resource_index_keeps_its_exact_scope(store):
     }).encode()
     receipt = history.with_name(FILENAME)
     receipt.write_bytes(hmac.digest(key, DOMAIN + payload, "sha256") + payload)
-    receipt.chmod(0o600)
+    ensure_owner_only(receipt)
 
     assert indexed_ids() == ("ready", {image[0], other_image[0]})
     assert indexed_ids(session["id"]) == ("ready", {image[0]})
@@ -379,7 +380,7 @@ def test_optional_resource_coverage_reports_only_known_native_accounts(store):
     assert repository.query()["resource_index_accounts"] is None
     path = _sidecar(store, [(session, _reference(session, "Image reference", 20))])
     assert repository.query()["resource_index_accounts"] is None
-    with sqlite3.connect(path) as connection:
+    with closing(sqlite3.connect(path)) as connection, connection:
         connection.execute(
             "INSERT INTO archive_info VALUES('report',?)",
             (
@@ -396,7 +397,7 @@ def test_optional_resource_coverage_reports_only_known_native_accounts(store):
     page = repository.query(session=session["id"])
     assert page["resource_index_status"] == "ready"
     assert page["resource_index_accounts"] == ("wxid_account_a", "wxid_account_b")
-    with sqlite3.connect(wechat_archive_path(store)) as connection:
+    with closing(sqlite3.connect(wechat_archive_path(store))) as connection, connection:
         connection.execute(
             "UPDATE partitions SET account_label='Changed label' WHERE id=?",
             (session["partition_id"],),
@@ -428,7 +429,7 @@ def test_malformed_optional_coverage_does_not_invalidate_otherwise_ready_index(
 ):
     session = _session(store)
     path = _sidecar(store, [(session, _reference(session, "Image reference", 20))])
-    with sqlite3.connect(path) as connection:
+    with closing(sqlite3.connect(path)) as connection, connection:
         connection.execute(
             "INSERT INTO archive_info VALUES('report',?)",
             (report if isinstance(report, str) else json.dumps(report),),

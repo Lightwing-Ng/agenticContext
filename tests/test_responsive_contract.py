@@ -1,6 +1,6 @@
 """Responsive sidebar contract tests.
 
-Code version: v1.1.2-codex.0
+Code version: v1.1.3-codex.0
 """
 
 from __future__ import annotations
@@ -151,13 +151,14 @@ def test_sidebar_gel_contract_uses_shared_physics_without_layout_mutation() -> N
     for token in (
         ".app-shell.is-sidebar-animating [data-sidebar-gel-content] {",
         "animation-duration: var(--sidebar-motion-duration);",
-        "animation-timing-function: var(--motion-bouncy);",
+        "animation-timing-function: linear;",
         "transform-origin: left top;",
         "@keyframes workspace-sidebar-gel-open",
         "@keyframes workspace-sidebar-gel-close",
         "translate3d(12px, 0, 0) scale3d(0.984, 1.024, 1)",
-        "translate3d(-5px, 0, 0) scale3d(1.01, 0.992, 1)",
-        "translate3d(2px, 0, 0) scale3d(0.997, 1.004, 1)",
+        "translate3d(-12px, 0, 0) scale3d(0.984, 1.024, 1)",
+        "translate3d(-0.12px, 0, 0) scale3d(0.9998, 1.0002, 1)",
+        "translate3d(0.12px, 0, 0) scale3d(0.9998, 1.0002, 1)",
     ):
         assert token in stylesheet
 

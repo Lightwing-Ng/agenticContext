@@ -1,6 +1,6 @@
 """Dataset exchange controls preserve download and preview-before-import boundaries.
 
-Code version: v1.2.2-codex.0
+Code version: v1.2.3-codex.0
 """
 
 from __future__ import annotations
@@ -559,6 +559,10 @@ def test_dataset_export_prepares_asynchronously_and_downloads_without_repeating_
         expect(option).not_to_have_attribute("aria-disabled", "true")
         assert not sync_downloads
         assert not session_app[0].config["TEST_EXCHANGE_SYNC_DOWNLOADS"]
+        if touch:
+            page.locator("#browser_search_input").press("Escape")
+            if not menu.is_visible():
+                trigger.tap()
         with page.expect_download() as csv:
             if touch:
                 menu.get_by_role(

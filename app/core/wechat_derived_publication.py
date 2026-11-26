@@ -1,6 +1,6 @@
 """Publish a scoped retirement and preserve only independently current resource pins.
 
-Code version: v1.0.0-codex.0
+Code version: v1.0.1-codex.0
 """
 
 from __future__ import annotations
@@ -18,6 +18,7 @@ import tempfile
 
 from .wechat_archive import _file_identity, wechat_history_partition_fingerprint
 from .wechat_derived_retirement import (
+    _fsync as _sync,
     _inputs,
     _json,
     _no_writers,
@@ -28,7 +29,7 @@ from .wechat_derived_retirement import (
 from .wechat_export_merge import _clonefile
 
 
-VERSION = "v1.0.0-codex.0"
+VERSION = "v1.0.1-codex.0"
 _SIDECARS = (
     "resource_references.sqlite3", "media_events.sqlite3", "resource_revalidated.sqlite3"
 )
@@ -54,12 +55,9 @@ def _same_identity(actual, expected):
             and all(type(value) is int for value in expected.values()) and actual == expected)
 
 
-def _sync(path):
-    with path.open("rb") as stream:
-        os.fsync(stream.fileno())
-
-
 def _sync_directory(path):
+    if os.name == "nt":
+        return
     descriptor = os.open(path, os.O_RDONLY)
     try:
         os.fsync(descriptor)

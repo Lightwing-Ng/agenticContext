@@ -1,6 +1,6 @@
 """Revalidate a sealed Mac bank against current canonical timeline semantics.
 
-Code version: v1.6.0-codex.0
+Code version: v1.6.1-codex.0
 """
 
 from __future__ import annotations
@@ -19,6 +19,8 @@ from pathlib import Path
 from . import wechat_macos_recovery_bank as bank
 from . import wechat_macos_reparse as reparse
 from . import wechat_media_event_index as event_index
+from .owner_only_files import ensure_owner_only, owner_only_directory_problem, owner_only_problem
+from .wechat_completion_clone import sync_completion_file
 from .wechat_archive import WechatArchiveRepository, _file_identity, wechat_archive_path
 from .wechat_export_merge import _clonefile
 from .wechat_macos_recovery import attach_mac_recovery
@@ -27,7 +29,7 @@ from .wechat_media_event_index import _validated_conversations, attach_media_eve
 from .wechat_media_event_revalidation import _validate_membership
 from .wechat_media_placeholders import attach_media_placeholders
 
-VERSION = "v1.6.0-codex.0"
+VERSION = "v1.6.1-codex.0"
 _INPUT = "media_events.sqlite3"
 _LEGACY_INPUT = "macos_recovery.json"
 _RESERVE_BYTES = 16 * 1024**2
@@ -553,14 +555,14 @@ def stage_mac_recovery_bank_revalidation(
     inputs = evidence["input_identities"]
     _unchanged(history, inputs)
     _clonefile(original, preserved)
-    preserved.chmod(0o400)
+    _seal_clone(preserved, 0o400)
     if bank._file_sha(preserved) != evidence["source_bank_sha256"]:
         raise ValueError(
             "The preserved bank does not match the verified original bytes."
         )
     _unchanged(history, inputs)
     _clonefile(original, candidate)
-    candidate.chmod(0o600)
+    _seal_clone(candidate, 0o600)
     if bank._file_sha(candidate) != evidence["source_bank_sha256"]:
         raise ValueError("The candidate is not an exact clone of the sealed bank.")
     with closing(sqlite3.connect(candidate)) as output:
@@ -587,9 +589,9 @@ def stage_mac_recovery_bank_revalidation(
             raise ValueError(
                 "The revalidated candidate failed full SQLite integrity checking."
             )
-    for path in (candidate, preserved):
-        with path.open("rb") as stream:
-            os.fsync(stream.fileno())
+    sync_completion_file(candidate)
+    if os.name != "nt":
+        sync_completion_file(preserved)
     _unchanged(history, inputs)
     if bank._file_sha(preserved) != evidence["source_bank_sha256"]:
         raise ValueError("The preserved bank changed during candidate staging.")
@@ -602,7 +604,7 @@ def stage_mac_recovery_bank_revalidation(
         "preserved_path": str(preserved),
         "preserved_sha256": evidence["source_bank_sha256"],
         "preserved_identity": bank._identity(preserved),
-        "preserved_owner_read_only": stat.S_IMODE(preserved.stat().st_mode) == 0o400,
+        "preserved_owner_read_only": _source_mode(preserved.stat()) == 0o400,
         "added": 0,
         "upgraded": 0,
         "total": evidence["messages"],
@@ -610,8 +612,26 @@ def stage_mac_recovery_bank_revalidation(
     }
 
 
+def _source_mode(value):
+    if os.name == "nt":
+        return 0o600 if value.st_mode & stat.S_IWRITE else 0o400
+    return stat.S_IMODE(value.st_mode)
+
+
+def _seal_clone(path, mode):
+    if os.name == "nt":
+        ensure_owner_only(path)
+    if os.name == "nt" and mode == 0o400:
+        sync_completion_file(path)
+    path.chmod(mode)
+
+
 def _private_directory(path):
     for parent in (path, path.parent):
+        if os.name == "nt":
+            if owner_only_directory_problem(parent):
+                raise ValueError("Controlled revalidation requires private owned output directories.")
+            continue
         value = parent.lstat()
         if (
             not stat.S_ISDIR(value.st_mode) or not hasattr(os, "getuid")
@@ -624,8 +644,8 @@ def _controlled_file(path, history, *, modes):
     identity = bank._identity(path)
     value = path.lstat()
     if (
-        not hasattr(os, "getuid") or value.st_uid != os.getuid()
-        or value.st_nlink != 1 or stat.S_IMODE(value.st_mode) not in modes
+        (owner_only_problem(path) if os.name == "nt" else value.st_uid != os.getuid())
+        or value.st_nlink != 1 or _source_mode(value) not in modes
         or value.st_dev != history.stat().st_dev
         or any(os.path.lexists(str(path) + suffix) for suffix in ("-wal", "-shm", "-journal"))
     ):
@@ -639,8 +659,11 @@ def _guarded_inputs(history, inputs, guard):
     _unchanged(history, inputs)
 
 
-def _hash_storage(value):
-    return {key: getattr(value, "st_" + key, 0) for key in _HASH_STORAGE_FIELDS}
+def _hash_storage(value, *, path=None, descriptor=None):
+    storage = {key: getattr(value, "st_" + key, 0) for key in _HASH_STORAGE_FIELDS}
+    if os.name == "nt":
+        storage.update(bank._storage_identity(path, value, descriptor=descriptor))
+    return storage
 
 
 def _native_fchflags(descriptor, flags):
@@ -773,7 +796,7 @@ def _closed_sha(
     attempts = _HASH_RETRY_LIMIT if expected_sha256 is not None else 1
     for attempt in range(attempts):
         _guarded_inputs(history, inputs, guard)
-        states = [_hash_storage(path.lstat())]
+        states = [_hash_storage(path.lstat(), path=path)]
         if baseline is None:
             baseline = states[0]
 
@@ -788,26 +811,26 @@ def _closed_sha(
         try:
             _controlled_file(path, history, modes=modes)
             bank._no_baseline_copy_handles(path)
-            states.append(_hash_storage(path.lstat()))
+            states.append(_hash_storage(path.lstat(), path=path))
             check_storage()
             descriptor = os.open(
                 path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0),
             )
             with os.fdopen(descriptor, "rb") as stream:
-                states.append(_hash_storage(os.fstat(stream.fileno())))
+                states.append(_hash_storage(os.fstat(stream.fileno()), path=path, descriptor=stream.fileno()))
                 check_storage()
                 while block := stream.read(4 * 1024**2):
                     digest.update(block)
-                states.append(_hash_storage(os.fstat(stream.fileno())))
+                states.append(_hash_storage(os.fstat(stream.fileno()), path=path, descriptor=stream.fileno()))
                 check_storage()
             bank._no_baseline_copy_handles(path)
             _controlled_file(path, history, modes=modes)
-            states.append(_hash_storage(path.lstat()))
+            states.append(_hash_storage(path.lstat(), path=path))
             check_storage()
         finally:
             _guarded_inputs(history, inputs, guard)
         _controlled_file(path, history, modes=modes)
-        states.append(_hash_storage(path.lstat()))
+        states.append(_hash_storage(path.lstat(), path=path))
         check_storage()
         actual_sha = digest.hexdigest()
         if expected_sha256 is not None and actual_sha != expected_sha256:
@@ -1033,7 +1056,7 @@ def stage_sealed_mac_recovery_bank_revalidation(
     clone_preparations = []
     for path, mode in ((preserved, 0o400), (candidate, 0o600)):
         _clonefile(source, path)
-        path.chmod(mode)
+        _seal_clone(path, mode)
         _prepare_new_clone_tracking(
             path, source, history, inputs, publication_guard,
             mode=mode, audit=clone_preparations,
@@ -1064,9 +1087,9 @@ def stage_sealed_mac_recovery_bank_revalidation(
         raise ValueError("The controlled clone changed before its write lease.")
     bank._no_baseline_copy_handles(candidate)
     _update_controlled_candidate(candidate, history, evidence, publication_guard, candidate_before)
-    for path in (candidate, preserved):
-        with path.open("rb") as stream:
-            os.fsync(stream.fileno())
+    sync_completion_file(candidate)
+    if os.name != "nt":
+        sync_completion_file(preserved)
     preserved_sha, preserved_identity = _closed_sha(preserved, history, inputs, publication_guard, modes={0o400})
     if preserved_sha != expected_source_sha256:
         raise ValueError("The preserved controlled artifact changed after staging.")
@@ -1119,7 +1142,8 @@ def _verified_archive(receipt, source, history, inputs, guard, expected_sha):
     descriptor = os.open(receipt, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
     with os.fdopen(descriptor, "rb") as stream:
         opened = os.fstat(stream.fileno())
-        if any(getattr(opened, "st_" + key) != value for key, value in receipt_identity.items()):
+        storage = _hash_storage(opened, path=receipt, descriptor=stream.fileno())
+        if any(storage[key] != value for key, value in receipt_identity.items()):
             raise ValueError("The preservation receipt changed before parsing.")
         raw = stream.read(_MAX_PRESERVATION_RECEIPT_BYTES + 1)
     if len(raw) > _MAX_PRESERVATION_RECEIPT_BYTES or _controlled_file(receipt, history, modes={0o400, 0o600}) != receipt_identity:
@@ -1271,7 +1295,7 @@ def stage_archived_sealed_mac_recovery_bank_revalidation(
     if free < required:
         raise ValueError("Insufficient space for one logical candidate and the 1 GiB archive-preserved reserve.")
     _clonefile(source, candidate)
-    candidate.chmod(0o600)
+    _seal_clone(candidate, 0o600)
     clone_preparations = []
     _prepare_new_clone_tracking(
         candidate, source, history, inputs, publication_guard, mode=0o600,
@@ -1299,8 +1323,7 @@ def stage_archived_sealed_mac_recovery_bank_revalidation(
         raise ValueError("The archived candidate changed before its write lease.")
     bank._no_baseline_copy_handles(candidate)
     _update_controlled_candidate(candidate, history, evidence, publication_guard, candidate_before)
-    with candidate.open("rb") as stream:
-        os.fsync(stream.fileno())
+    sync_completion_file(candidate)
     candidate_sha, candidate_identity = _closed_sha(candidate, history, inputs, publication_guard, modes={0o600})
     source_identity = bank._candidate_storage_rebind(
         source, history, source_identity, expected_source_sha256,

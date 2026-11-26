@@ -1,10 +1,11 @@
 """Reviewed native metadata publication refuses races and retains rollback bytes.
 
-Code version: v1.0.0-codex.0
+Code version: v1.0.1-codex.0
 """
 
 from __future__ import annotations
 
+from contextlib import closing
 import json
 import shutil
 import sqlite3
@@ -31,7 +32,7 @@ def staged_extension(native_metadata, monkeypatch):
     fallback = fixture.history.with_name("resource_revalidated.sqlite3")
     initial.replace(fallback)
     # The publication format is unchanged for legacy, fully sealed scopes.
-    with sqlite3.connect(fallback) as source:
+    with closing(sqlite3.connect(fallback)) as source, source:
         source.execute(
             "UPDATE archive_info SET value='v1.0.1-codex.0' WHERE key='proof_version'"
         )
@@ -78,7 +79,7 @@ def test_publication_refuses_changed_review_inputs(staged_extension, changed):
         "canonical": fixture.original,
         "fallback": fallback,
     }[changed]
-    with sqlite3.connect(target) as source:
+    with closing(sqlite3.connect(target)) as source, source:
         source.execute("INSERT INTO archive_info VALUES('later-change','retained')")
     before = fallback.read_bytes()
     with pytest.raises(ValueError, match="changed"):
@@ -150,7 +151,7 @@ def test_corrupt_prior_coverage_is_not_silently_discarded(native_metadata):
     )
     fallback = fixture.history.with_name("resource_revalidated.sqlite3")
     initial.replace(fallback)
-    with sqlite3.connect(fallback) as source:
+    with closing(sqlite3.connect(fallback)) as source, source:
         source.execute("UPDATE messages SET text='not the preserved source'")
     before = fallback.read_bytes()
     with pytest.raises(ValueError, match="sealed"):
@@ -170,7 +171,7 @@ def test_stale_prior_pin_requires_fresh_reproof_without_losing_scope(native_meta
     )
     fallback = fixture.history.with_name("resource_revalidated.sqlite3")
     initial.replace(fallback)
-    with sqlite3.connect(fixture.history) as history:
+    with closing(sqlite3.connect(fixture.history)) as history, history:
         history.execute(
             "INSERT INTO archive_info VALUES('new-primary-revision','retained')"
         )
@@ -179,7 +180,7 @@ def test_stale_prior_pin_requires_fresh_reproof_without_losing_scope(native_meta
         fixture.store, candidate, conversation_ids=[fixture.conversation["id"]]
     )
     assert report["preserved_conversations"] == [fixture.conversation["id"]]
-    with sqlite3.connect(candidate) as source:
+    with closing(sqlite3.connect(candidate)) as source, source:
         info = dict(source.execute("SELECT * FROM archive_info"))
     assert json.loads(info["history_file_identity"]) == refresh._resident(
         fixture.history

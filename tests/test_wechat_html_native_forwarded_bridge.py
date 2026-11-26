@@ -40,7 +40,7 @@ def _missing_html_clocks(fixture, raw):
 
 
 def _remove_originals(fixture):
-    with sqlite3.connect(fixture.history) as connection:
+    with closing(sqlite3.connect(fixture.history)) as connection, connection:
         connection.execute(
             "DELETE FROM messages WHERE conversation_id=?",
             (fixture.original_conversation,),
@@ -48,7 +48,7 @@ def _remove_originals(fixture):
 
 
 def _native_naive_clocks(fixture):
-    with sqlite3.connect(fixture.history) as connection:
+    with closing(sqlite3.connect(fixture.history)) as connection, connection:
         proof = json.loads(
             connection.execute(
                 "SELECT provenance FROM messages WHERE id=?", (fixture.html_parent,)
@@ -121,7 +121,7 @@ def _mixed_group_packets(fixture):
 
     fixtures._update_proof(fixture, fixture.native_parent, native)
     fixtures._update_proof(fixture, fixture.html_parent, html)
-    with sqlite3.connect(fixture.history) as connection:
+    with closing(sqlite3.connect(fixture.history)) as connection, connection:
         for parent in (fixture.native_parent, fixture.html_parent):
             connection.execute(
                 "UPDATE conversations SET kind='group',peer_id=? WHERE id="
@@ -196,11 +196,11 @@ def test_mixed_group_packets_prefer_native_only_with_a_same_owner_anchor(
     row, proof, metadata = _mixed_group_packets(fixture)
     cross_source = _cross_owner_group_packet(fixture, row, proof, metadata)
     if same_owner_anchor is False:
-        with sqlite3.connect(fixture.history) as connection:
+        with closing(sqlite3.connect(fixture.history)) as connection, connection:
             connection.execute("DELETE FROM messages WHERE id=?", (fixture.html_parent,))
     elif same_owner_anchor == "wrong room":
         peer = "unrelated-mixed-packet@chatroom"
-        with sqlite3.connect(fixture.history) as connection:
+        with closing(sqlite3.connect(fixture.history)) as connection, connection:
             connection.execute(
                 "UPDATE conversations SET peer_id=? WHERE partition_id=?", (peer, cross_source)
             )
@@ -319,9 +319,9 @@ def test_missing_html_clock_prefers_native_and_preserves_every_observation(
     }
     references = _reference_rows(fixture)
     assert len(references["refs"]) == len(references["statement_members"]) == 12
-    with sqlite3.connect(
+    with closing(sqlite3.connect(
         analysis.contact_analysis_cache_path(fixture.store, CID)
-    ) as connection:
+    )) as connection, connection:
         assert not {"text", "body", "provenance"} & {
             row[1] for row in connection.execute("PRAGMA table_info(refs)")
         }
@@ -394,7 +394,7 @@ def test_group_receiving_packets_never_establish_a_private_original_thread(
 ):
     fixture = forwarded_origin_store
     peer = "1234567890@chatroom"
-    with sqlite3.connect(fixture.history) as connection:
+    with closing(sqlite3.connect(fixture.history)) as connection, connection:
         for parent in (fixture.native_parent, fixture.html_parent):
             connection.execute(
                 "UPDATE conversations SET kind='group',peer_id=? WHERE id="
@@ -443,7 +443,7 @@ def test_ambiguous_native_packet_clocks_do_not_choose_an_arbitrary_origin(
 ):
     fixture = forwarded_origin_store
     _remove_originals(fixture)
-    with sqlite3.connect(fixture.history) as connection:
+    with closing(sqlite3.connect(fixture.history)) as connection, connection:
         connection.row_factory = sqlite3.Row
         other = dict(
             connection.execute(
@@ -475,7 +475,7 @@ def test_routed_native_packet_keeps_its_native_source_and_html_container(
     _native_naive_clocks(fixture)
     _missing_html_clocks(fixture, "1970-01-01 08:00:00")
     _remove_originals(fixture)
-    with sqlite3.connect(fixture.history) as connection:
+    with closing(sqlite3.connect(fixture.history)) as connection, connection:
         receiving = connection.execute(
             "SELECT conversation_id FROM messages WHERE id=?", (fixture.html_parent,)
         ).fetchone()[0]
@@ -563,7 +563,7 @@ def test_source_metadata_decodes_once_per_pass_and_keeps_snapshot_scope(monkeypa
         return parse(value)
 
     monkeypatch.setattr(origins, "_object", tracked)
-    with sqlite3.connect(":memory:") as source:
+    with closing(sqlite3.connect(":memory:")) as source, source:
         source.row_factory = sqlite3.Row
         source.execute(
             "CREATE TABLE source_snapshots(id INTEGER,source_id TEXT,metadata TEXT)"

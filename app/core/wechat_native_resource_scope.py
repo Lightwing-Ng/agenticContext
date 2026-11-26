@@ -1,6 +1,6 @@
 """Stage preserved native metadata scopes without reading attachment payloads.
 
-Code version: v1.2.0-codex.0
+Code version: v1.2.1-codex.0
 """
 
 from __future__ import annotations
@@ -410,7 +410,7 @@ def _write(
             output.commit()
             if output.execute("PRAGMA quick_check").fetchall() != [("ok",)]:
                 raise ValueError("The metadata candidate failed its integrity check.")
-        with candidate.open("rb") as stream:
+        with candidate.open("r+b" if os.name == "nt" else "rb") as stream:
             os.fsync(stream.fileno())
     except BaseException:
         if (

@@ -1,8 +1,9 @@
 """Global repair publication preserves observations and reports its true boundary.
 
-Code version: v1.4.0-codex.0
+Code version: v1.4.1-codex.0
 """
 
+from contextlib import closing
 from copy import deepcopy
 import json
 from pathlib import Path
@@ -13,6 +14,7 @@ from unittest.mock import Mock
 
 import pytest
 
+from app.core.owner_only_files import ensure_owner_only, ensure_owner_only_directory
 from app.core.wechat_global_refresh import GlobalRefreshInventory
 from app.core.wechat_global_guard import global_refresh_busy
 from app.core.wechat_mac_refresh_projection import ConversationScope
@@ -68,7 +70,7 @@ def test_preservation_rejects_a_changed_old_observation(bank_archive, table):
     candidate, receipt = fixtures._stage(
         bank_archive, packets=[bank_archive.group], name="changed-observation"
     )
-    with sqlite3.connect(candidate) as connection:
+    with closing(sqlite3.connect(candidate)) as connection, connection:
         connection.execute(f"UPDATE {table} SET proof=?", ('{"changed":true}',))
 
     with pytest.raises(
@@ -83,7 +85,7 @@ def test_preservation_rejects_an_old_message_changed_without_a_new_journal(bank_
     candidate, receipt = fixtures._stage(
         bank_archive, packets=[bank_archive.group], name="changed-message"
     )
-    with sqlite3.connect(candidate) as connection:
+    with closing(sqlite3.connect(candidate)) as connection, connection:
         connection.execute(
             "UPDATE messages SET text='Synthetic unjournaled edit' "
             "WHERE conversation_id=?",
@@ -119,7 +121,7 @@ def test_preservation_rejects_source_bank_identity_drift(bank_archive):
     candidate, receipt = fixtures._stage(
         bank_archive, packets=[bank_archive.group], name="drift-candidate"
     )
-    with sqlite3.connect(bank_archive.bank_path) as connection:
+    with closing(sqlite3.connect(bank_archive.bank_path)) as connection, connection:
         connection.execute(
             "UPDATE archive_info SET value='changed' WHERE key='payload_sha256'"
         )
@@ -140,6 +142,7 @@ def _isolated_run(monkeypatch, tmp_path, *, staged_inputs=None, readback_error=N
     workstations.mkdir(mode=0o700)
     workstation = workstations / "global-repair"
     workstation.mkdir(mode=0o700)
+    ensure_owner_only_directory(workstation)
     monkeypatch.setattr(runner, "WORKSTATIONS", workstations)
     inputs = {"history.sqlite3": {"size": 1, "mtime_ns": 1}}
     before = {
@@ -500,9 +503,11 @@ def _scope_failure(inventory, *, scope_index=0, reference_index=0, reason=None):
 def _retry_report(monkeypatch, tmp_path, inventory, failures, **changes):
     workstations = tmp_path / "workstations"
     workstations.mkdir(mode=0o700, exist_ok=True)
+    ensure_owner_only_directory(workstations)
     monkeypatch.setattr(runner, "WORKSTATIONS", workstations)
     prior_run = workstations / "prior-audit"
     prior_run.mkdir(mode=0o700)
+    ensure_owner_only_directory(prior_run)
     report = {
         "version": runner.VERSION, "status": "verified", "published": True,
         "local_store": str(inventory.history_path.parents[2]),
@@ -511,9 +516,11 @@ def _retry_report(monkeypatch, tmp_path, inventory, failures, **changes):
     }
     report_path = prior_run / "result.json"
     runner.write_json(report_path, report)
-    (prior_run / "exclusions.jsonl").write_text(
+    exclusions = prior_run / "exclusions.jsonl"
+    exclusions.write_text(
         "".join(json.dumps(record) + "\n" for record in failures)
     )
+    ensure_owner_only(exclusions)
     return report_path
 
 

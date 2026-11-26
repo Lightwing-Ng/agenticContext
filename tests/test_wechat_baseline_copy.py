@@ -1,6 +1,6 @@
 """Existing working copies require exact, single-use proof before baseline reuse.
 
-Code version: v1.0.0-codex.0
+Code version: v1.0.1-codex.0
 """
 
 from contextlib import closing
@@ -13,7 +13,9 @@ from types import SimpleNamespace
 
 import pytest
 
+from app.core import owner_only_files
 from app.core import wechat_macos_recovery_bank as bank
+from tests.test_wechat_candidate_storage_rebind import _widen_access
 from tests import test_wechat_macos_recovery_bank as fixtures
 
 
@@ -27,8 +29,10 @@ def baseline_copy(bank_archive, tmp_path):
     fixtures._publish(fixture, packets=[fixture.direct], name="published-baseline")
     workstation = tmp_path / "private-workstation"
     workstation.mkdir(mode=0o700)
+    owner_only_files.ensure_owner_only_directory(workstation)
     operation = workstation / "failed-run"
     operation.mkdir(mode=0o700)
+    owner_only_files.ensure_owner_only_directory(operation)
     candidate = operation / "candidate.sqlite3"
     with closing(sqlite3.connect(fixture.bank_path)) as source, closing(sqlite3.connect(candidate)) as output:
         source.backup(output)
@@ -37,6 +41,8 @@ def baseline_copy(bank_archive, tmp_path):
         fixture=fixture, candidate=candidate,
         scratch_before=candidate.read_bytes(), bank_before=fixture.bank_path.read_bytes(),
         history_before=fixture.history.read_bytes(),
+        scratch_mode=stat.S_IMODE(candidate.stat().st_mode),
+        scratch_access=owner_only_files.owner_only_problem(candidate),
     )
 
 
@@ -64,7 +70,8 @@ def test_existing_candidate_still_requires_explicit_verified_capability(baseline
             account_ids=(fixtures.OWNER,),
         )
     _unchanged(operation)
-    assert stat.S_IMODE(operation.candidate.stat().st_mode) == 0o644
+    assert stat.S_IMODE(operation.candidate.stat().st_mode) == operation.scratch_mode
+    assert owner_only_files.owner_only_problem(operation.candidate) == operation.scratch_access
 
 
 def test_verified_reuse_matches_fresh_staging_skips_backup_and_checks_integrity_once(
@@ -89,7 +96,7 @@ def test_verified_reuse_matches_fresh_staging_skips_backup_and_checks_integrity_
 
     with bank.mac_recovery_publication_guard(fixture.root) as guard:
         cap = bank.verify_baseline_copy(fixture.root, operation.candidate, publication_guard=guard)
-        assert stat.S_IMODE(operation.candidate.stat().st_mode) == 0o600
+        assert owner_only_files.owner_only_problem(operation.candidate) == ""
         summary = cap.summary
         with closing(connect(fixture.bank_path)) as baseline:
             metadata = dict(baseline.execute("SELECT key,value FROM archive_info"))
@@ -98,7 +105,7 @@ def test_verified_reuse_matches_fresh_staging_skips_backup_and_checks_integrity_
         assert summary["candidate_identity"] == bank._identity(operation.candidate)
         assert summary["reused_clone_credit_bytes"] == min(
             fixture.bank_path.stat().st_size,
-            operation.candidate.stat().st_blocks * 512,
+            getattr(operation.candidate.stat(), "st_blocks", 0) * 512,
         )
         summary["input_identities"].clear()
         assert cap.summary["input_identities"]
@@ -142,7 +149,8 @@ def test_verification_rejects_every_nonbaseline_content_before_permission_change
         with pytest.raises(ValueError):
             bank.verify_baseline_copy(operation.fixture.root, operation.candidate, publication_guard=guard)
     assert operation.candidate.read_bytes() == before
-    assert stat.S_IMODE(operation.candidate.stat().st_mode) == 0o644
+    assert stat.S_IMODE(operation.candidate.stat().st_mode) == operation.scratch_mode
+    assert owner_only_files.owner_only_problem(operation.candidate) == operation.scratch_access
     _unchanged(operation, scratch=False)
 
 
@@ -156,7 +164,7 @@ def test_reuse_requires_an_independent_private_resident_working_file(baseline_co
     elif defect == "hardlink":
         operation.candidate.with_name("alias.sqlite3").hardlink_to(operation.candidate)
     elif defect == "public_parent":
-        operation.candidate.parent.chmod(0o755)
+        _widen_access(operation.candidate.parent, directory=True)
     elif defect == "sidecar":
         operation.candidate.with_name(operation.candidate.name + "-journal").touch()
     else:
@@ -177,6 +185,7 @@ def test_every_active_sqlite_reader_blocks_reuse_verification(baseline_copy):
     _unchanged(operation)
 
 
+@pytest.mark.skipif(os.name == "nt", reason="POSIX lsof protocol")
 @pytest.mark.parametrize("result", (None, "timeout", "stderr", "bad_status"))
 def test_uncertain_handle_inspection_never_authorizes_reuse(baseline_copy, monkeypatch, result):
     operation = baseline_copy
@@ -190,6 +199,20 @@ def test_uncertain_handle_inspection_never_authorizes_reuse(baseline_copy, monke
         monkeypatch.setattr(bank.subprocess, "run", inspect)
     with bank.mac_recovery_publication_guard(operation.fixture.root) as guard:
         with pytest.raises(ValueError):
+            bank.verify_baseline_copy(operation.fixture.root, operation.candidate, publication_guard=guard)
+    _unchanged(operation)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="native Windows sharing inspection")
+def test_failed_windows_sharing_inspection_never_authorizes_reuse(baseline_copy, monkeypatch):
+    operation = baseline_copy
+
+    def inspect(_path):
+        raise OSError("Synthetic sharing inspection failure")
+
+    monkeypatch.setattr(bank, "has_open_file_handles", inspect)
+    with bank.mac_recovery_publication_guard(operation.fixture.root) as guard:
+        with pytest.raises(ValueError, match="inspection did not complete"):
             bank.verify_baseline_copy(operation.fixture.root, operation.candidate, publication_guard=guard)
     _unchanged(operation)
 

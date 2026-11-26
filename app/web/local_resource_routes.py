@@ -5,7 +5,7 @@ refresh service without reaching for a browser or Agent. Serialization of one st
 public shape lives here too, so a template global and a JSON response cannot drift.
 """
 
-# Code version: v1.25.8-codex.0
+# Code version: v1.25.9-codex.0
 
 from __future__ import annotations
 
@@ -48,8 +48,8 @@ from app.core.storage import (
     resolve_browser_media_path,
     resolve_resource_for_reveal,
     reveal_media_path,
+    youtube_cache_directory,
 )
-from app.core.youtube_cache import youtube_cache_directory
 from app.web.public_errors import public_exception_message
 from app.web.cache_sources import get_cache_source_label
 from app.web.date_display import current_date_display
@@ -588,7 +588,7 @@ def register_local_resource_routes(app: Flask, context: LocalResourceRouteContex
                             root, account=filters["account"], chat_kind=filters["chat_kind"],
                             sort=filters["sort"], page=filters["page"], previous_snapshot=True,
                         )
-                    if preview is not None and preview.sessions:
+                    if preview is not None:
                         text_page = preview
                         wechat_read_preview = True
                 if text_page is None:

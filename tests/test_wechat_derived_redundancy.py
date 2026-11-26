@@ -1,10 +1,11 @@
 """Only exact, independently identified native runs justify derived retirement.
 
-Code version: v1.2.0-codex.0
+Code version: v1.2.1-codex.0
 """
 
 from __future__ import annotations
 
+from contextlib import closing
 from datetime import datetime, timedelta
 import hashlib
 import json
@@ -42,7 +43,7 @@ def redundancy_store(tmp_path):
     owners = ("wxid_synthetic_iphone", "wxid_synthetic_ipad")
     sources = ["ios-" + hashlib.md5(owner.encode()).hexdigest() for owner in owners]
     sources.append("xlsx-synthetic")
-    with sqlite3.connect(history) as connection:
+    with closing(sqlite3.connect(history)) as connection, connection:
         connection.executescript(_SCHEMA)
         connection.execute("CREATE TABLE source_snapshots(id INTEGER PRIMARY KEY,snapshot_id TEXT,source_id TEXT,metadata TEXT)")
         for position, source in enumerate(sources):
@@ -86,7 +87,7 @@ def redundancy_store(tmp_path):
                      json.dumps(proof), "[]", body.casefold()),
                 )
                 (native_ids if owner else derived_ids).append(identifier)
-    with sqlite3.connect(registry) as connection:
+    with closing(sqlite3.connect(registry)) as connection, connection:
         initialize_contact_registry(connection)
         for cid, author in zip(CONTACTS, AUTHORS, strict=True):
             connection.execute("INSERT INTO contacts VALUES(?,?,?,?,?,?)", (cid, "wechat", "", author, "wechat_account", "verified"))

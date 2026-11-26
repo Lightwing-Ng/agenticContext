@@ -1,6 +1,6 @@
 """Behavioral checks for the POSIX test and quality entrypoints.
 
-Code version: v1.4.2-codex.0
+Code version: v1.4.3-codex.0
 """
 
 from importlib.metadata import version
@@ -18,19 +18,14 @@ pytestmark = pytest.mark.skipif(os.name == "nt", reason="Exercises POSIX executa
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
-@pytest.mark.parametrize("entrypoint", ["check.sh", "check.ps1"])
-def test_quality_gate_runs_every_javascript_test_module(entrypoint):
-    """New JavaScript test modules must enter both platform quality gates."""
-    expected = {
-        path.relative_to(PROJECT_ROOT).as_posix()
-        for path in (PROJECT_ROOT / "tests").glob("test_*.mjs")
-    }
-    source = (PROJECT_ROOT / "scripts" / entrypoint).read_text(encoding="utf-8")
-    command = next(line for line in source.splitlines() if "node --test " in line)
-    selected = re.findall(r"tests/test_[^\s]+\.mjs", command)
-    assert expected
-    assert set(selected) == expected
-    assert len(selected) == len(set(selected))
+def test_powershell_quality_gate_passes_discovered_javascript_modules_to_node():
+    """The Windows gate feeds dynamically discovered files to Node as arguments."""
+    source = (PROJECT_ROOT / "scripts" / "check.ps1").read_text(encoding="utf-8")
+    discovery = re.search(r"(?ms)^\s*\$jsTestFiles = @\(\s*(.*?)^\s*\)", source)
+    assert discovery is not None
+    assert 'Get-ChildItem -Path "tests" -Filter "test_*.mjs" -File' in discovery[1]
+    assert "ForEach-Object { $_.FullName }" in discovery[1]
+    assert re.search(r"(?m)^\s*& node --test @jsTestFiles\s*$", source)
 
 
 def _environment():

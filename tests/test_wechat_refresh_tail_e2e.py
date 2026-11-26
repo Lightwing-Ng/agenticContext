@@ -5,6 +5,7 @@ Code version: v1.0.1-codex.0
 
 from __future__ import annotations
 
+from contextlib import closing
 import sqlite3
 from threading import Thread
 from urllib.parse import parse_qs, urlencode, urlsplit
@@ -46,7 +47,7 @@ def test_refresh_restores_the_result_after_the_saved_view_is_ready(
     store = tmp_path / "store"
     import_wechat_archive(original, store)
     account = "account:wxid_account_a"
-    with sqlite3.connect(wechat_archive_path(store)) as connection:
+    with closing(sqlite3.connect(wechat_archive_path(store))) as connection, connection:
         session = connection.execute(
             "SELECT id FROM conversations WHERE account_key=? AND kind='group'", (account,)
         ).fetchone()[0]

@@ -1,6 +1,6 @@
 """Authenticated raw overviews survive reloads without reusing changed evidence.
 
-Code version: v1.2.1-codex.0
+Code version: v1.2.3-codex.0
 """
 
 from collections import OrderedDict
@@ -444,6 +444,13 @@ def test_previous_snapshot_accepts_an_unchanged_archive_after_reader_update(
 ):
     fixture, _completion, rows = previous_snapshot
     monkeypatch.setattr(snapshots, "_code_fingerprint", lambda: "updated-reader-code")
+    cache_state = snapshots._cache_file_state
+
+    def native_cache_state(path, *, descriptor=None):
+        # Windows adds a native metadata token beyond the plain stat tuple.
+        return (*cache_state(path, descriptor=descriptor), 1)
+
+    monkeypatch.setattr(snapshots, "_cache_file_state", native_cache_state)
 
     assert _load_previous(fixture) == (
         ("browser_snapshot_conversations", "ready", (rows[0][2],)), rows,
@@ -477,26 +484,30 @@ def test_previous_snapshot_allows_first_completion_publication(snapshot_store):
 def _publish_details(path):
     candidate = path.with_suffix(".candidate")
     candidate.write_bytes(details.encode_registry([]))
-    candidate.chmod(0o600)
+    owner_only_files.ensure_owner_only(candidate)
     candidate.replace(path)
 
 
-@pytest.mark.parametrize("prior_detail_pin", ("legacy", "absent", "published"))
+@pytest.mark.parametrize("prior_detail_pin", ("legacy", "legacy_metadata", "absent", "published"))
 def test_previous_snapshot_allows_private_detail_publication(snapshot_store, prior_detail_pin):
     fixture = snapshot_store
     history = fixture.repository.path
     path = history.with_name(details.FILENAME)
-    if prior_detail_pin == "published":
+    if prior_detail_pin in {"published", "legacy_metadata"}:
         _publish_details(path)
     verified = _load(fixture)
     assert verified[0] is not None
-    if prior_detail_pin == "legacy":
+    if prior_detail_pin in {"legacy", "legacy_metadata"}:
         directory = _directory(fixture)
         key, _ = snapshots._read_signing_key(directory / "signing.key")
         previous = snapshots._decode_snapshot(
             (directory / "conversations.snapshot").read_bytes(), key,
         )
-        del previous["pin"]["inputs"][str(path.resolve())]
+        inputs = previous["pin"]["inputs"]
+        if prior_detail_pin == "legacy":
+            del inputs[str(path.resolve())]
+        else:
+            inputs[str(path.resolve())].pop("sha256", None)
         assert snapshots._write_snapshot(directory, key, previous, lambda: True)
     _publish_details(path)
     assert _load_previous(fixture) == verified
@@ -512,7 +523,7 @@ def test_previous_snapshot_rejects_unsafe_detail_transition(snapshot_store, chan
     if change == "removed":
         path.unlink()
     elif change == "public":
-        path.chmod(0o644)
+        _expose_fixture(path)
     elif change == "oversized":
         with path.open("r+b") as stream:
             stream.truncate(details.MAX_BYTES + 1)
@@ -590,7 +601,7 @@ def test_navigation_relocation_preserves_signed_rows_without_admitting_current_d
     def save(path, domain, value):
         payload = snapshots._json(value)
         path.write_bytes(hmac.digest(key, domain + payload, "sha256") + payload)
-        path.chmod(0o600)
+        owner_only_files.ensure_owner_only(path)
 
     save(history.with_name(relocation.FILENAME), relocation.DOMAIN,
          {"version": relocation.VERSION, "files": records})

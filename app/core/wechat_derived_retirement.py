@@ -1,6 +1,6 @@
 """Stage proved export redundancies as compact aliases without publishing history.
 
-Code version: v1.1.3-codex.0
+Code version: v1.1.4-codex.0
 """
 
 from __future__ import annotations
@@ -21,7 +21,7 @@ import subprocess
 import tempfile
 
 
-VERSION = "v1.1.3-codex.0"
+VERSION = "v1.1.4-codex.0"
 MAX_MATCHES = 250_000
 WRITE_BATCH_SIZE = 256
 METADATA_BATCH_SIZE = 64
@@ -244,8 +244,15 @@ def _guards(connection, pairs, physical):
 
 
 def _fsync(path):
-    with Path(path).open("rb") as stream:
+    # Windows requires a writable file handle. Keep APFS clone handles read-only.
+    with Path(path).open("r+b" if os.name == "nt" else "rb") as stream:
         os.fsync(stream.fileno())
+
+
+def _allocated_bytes(path):
+    """Return reported file allocation, or None when the host omits it."""
+    blocks = getattr(path.stat(), "st_blocks", None)
+    return blocks * 512 if blocks is not None else None
 
 
 def _backup(path, rows, header, *, check_space=None):
@@ -350,7 +357,7 @@ def stage_retirement(local_store_root, plan, *, backup_directory, apply=False):
 
         _clonefile(history, candidate)
         candidate.chmod(0o600)
-        allocated_before = candidate.stat().st_blocks*512
+        allocated_before = _allocated_bytes(candidate)
         _inputs(local_store_root, plan)
         rollback = []
         with closing(_readonly(history)) as source:
@@ -421,11 +428,17 @@ def stage_retirement(local_store_root, plan, *, backup_directory, apply=False):
         _fsync(candidate)
         _inputs(local_store_root, plan)
         space("verified")
+        allocated_after = _allocated_bytes(candidate)
+        allocated_delta = (
+            allocated_after - allocated_before
+            if allocated_after is not None and allocated_before is not None
+            else None
+        )
         report.update(candidate_identity=file_identity(candidate), rollback_path=str(rollback_path),
                       rollback_sha256=hashlib.sha256(rollback_path.read_bytes()).hexdigest(),
                       evidence_rows_moved=sum(row["kind"] == "message_evidence" for row in rollback),
-                      candidate_allocated_bytes=candidate.stat().st_blocks*512,
-                      candidate_allocated_bytes_delta=candidate.stat().st_blocks*512-allocated_before,
+                      candidate_allocated_bytes=allocated_after,
+                      candidate_allocated_bytes_delta=allocated_delta,
                       message_write_batches=len(batch_estimates),
                       observed_free_bytes_before=free_samples[0]["free_bytes"],
                       observed_free_bytes_after=free_samples[-1]["free_bytes"],

@@ -1,6 +1,6 @@
 """Known exact bytes permit bounded closed-hash ctime retries before derived writes.
 
-Code version: v1.1.0-codex.0
+Code version: v1.1.3-codex.0
 """
 
 from contextlib import ExitStack
@@ -16,6 +16,7 @@ import pytest
 
 from app.core import wechat_macos_recovery_bank as bank
 from app.core import wechat_macos_recovery_revalidation as revalidation
+from app.core.owner_only_files import ensure_owner_only, ensure_owner_only_directory
 from tests import test_wechat_archived_bank_revalidation as archived
 from tests import test_wechat_sealed_bank_revalidation as sealed
 
@@ -24,18 +25,21 @@ mac_archive = sealed.mac_archive
 bank_archive = sealed.bank_archive
 sealed_case = sealed.sealed_case
 archived_case = archived.archived_case
+clone_document_flags = sealed.clone_document_flags
 
 
 @pytest.fixture
-def hash_case(bank_archive, tmp_path):
+def hash_case(bank_archive, tmp_path, clone_document_flags):
     workstation = tmp_path / "private-hash-workstation"
     workstation.mkdir(mode=0o700)
+    ensure_owner_only_directory(workstation)
     directory = workstation / "private-run"
     directory.mkdir(mode=0o700)
+    ensure_owner_only_directory(directory)
     path = directory / "synthetic-artifact.bin"
     body = bytes(range(256)) * 256
     path.write_bytes(body)
-    path.chmod(0o600)
+    ensure_owner_only(path)
     return SimpleNamespace(
         fixture=bank_archive, path=path, body=body,
         sha=hashlib.sha256(body).hexdigest(), history_before=bank_archive.history.read_bytes(),
@@ -70,20 +74,24 @@ def _during_real_reads(monkeypatch, path, action):
     original = os.fdopen
     passes = []
 
-    def fdopen(descriptor, *args, **kwargs):
-        stream = original(descriptor, *args, **kwargs)
-        opened = os.fstat(stream.fileno())
-        try:
-            target = path.stat()
-        except FileNotFoundError:
-            return stream
-        if (opened.st_dev, opened.st_ino) != (target.st_dev, target.st_ino):
-            return stream
-        record = {"bytes": 0}
-        passes.append(record)
-        return _ObservedRead(stream, record, action, len(passes))
+    class ObservedOS:
+        def __getattr__(self, name):
+            return getattr(os, name)
 
-    monkeypatch.setattr(revalidation.os, "fdopen", fdopen)
+        def fdopen(self, descriptor, *args, **kwargs):
+            stream = original(descriptor, *args, **kwargs)
+            opened = os.fstat(stream.fileno())
+            try:
+                target = path.stat()
+            except FileNotFoundError:
+                return stream
+            if (opened.st_dev, opened.st_ino) != (target.st_dev, target.st_ino):
+                return stream
+            record = {"bytes": 0}
+            passes.append(record)
+            return _ObservedRead(stream, record, action, len(passes))
+
+    monkeypatch.setattr(revalidation, "os", ObservedOS())
     return passes
 
 
@@ -129,7 +137,7 @@ def test_known_hash_retries_complete_passes_until_a_stable_identical_read(
     assert identity == bank._identity(case.path)
     assert len(passes) == unstable_passes + 1
     assert all(item["bytes"] == len(case.body) for item in passes)
-    assert stat.S_IMODE(case.path.stat().st_mode) == mode
+    assert revalidation._source_mode(case.path.stat()) == mode
     _assert_audit(audit, case.sha, phase="synthetic_known_hash")
     assert case.path.read_bytes() == case.body
 
@@ -172,13 +180,11 @@ def test_a_wrong_first_pass_digest_never_authorizes_a_retry(hash_case, monkeypat
 
 
 @pytest.mark.parametrize("change", ("mode", "mtime", "inode", "link", "size", "owner", "flags"))
-def test_nonctime_storage_changes_never_receive_a_retry(hash_case, monkeypatch, change):
+def test_nonctime_storage_changes_never_receive_a_retry(hash_case, monkeypatch, change, clone_document_flags):
     case = hash_case
     original_lstat = Path.lstat
     simulated_owner = []
-    initial_flags = getattr(case.path.stat(), "st_flags", 0)
-    if change == "flags" and not hasattr(os, "chflags"):
-        pytest.skip("The host has no native file-flags operation.")
+    initial_flags = revalidation._hash_storage(case.path.stat(), path=case.path)["flags"]
 
     class OwnerView:
         def __init__(self, value):
@@ -192,6 +198,7 @@ def test_nonctime_storage_changes_never_receive_a_retry(hash_case, monkeypatch, 
         return OwnerView(value) if path == case.path and simulated_owner else value
 
     monkeypatch.setattr(Path, "lstat", lstat)
+    replace_denied_while_open = os.name == "nt" and change == "inode"
 
     def mutate(_attempt):
         before = case.path.stat()
@@ -213,20 +220,24 @@ def test_nonctime_storage_changes_never_receive_a_retry(hash_case, monkeypatch, 
         elif change == "owner":
             simulated_owner.append(True)
         else:
-            os.chflags(case.path, initial_flags ^ stat.UF_NODUMP)
+            clone_document_flags(case.path, initial_flags ^ stat.UF_NODUMP)
 
     passes = _during_real_reads(monkeypatch, case.path, mutate)
     try:
         with bank.mac_recovery_publication_guard(case.fixture.root) as guard:
-            with pytest.raises(ValueError):
+            with pytest.raises(PermissionError if replace_denied_while_open else ValueError) as failure:
                 revalidation._closed_sha(
                     case.path, case.fixture.history, bank._inputs(case.fixture.history), guard,
                     modes={0o400, 0o600}, expected_sha256=case.sha,
                 )
         assert len(passes) == 1
+        if replace_denied_while_open:
+            # The open Windows CRT handle prevents the attempted pathname replacement.
+            assert failure.value.winerror == 5
+            assert case.path.read_bytes() == case.body
     finally:
         if change == "flags":
-            os.chflags(case.path, initial_flags)
+            clone_document_flags(case.path, initial_flags)
 
 
 def test_canonical_input_drift_is_rejected_without_a_storage_retry(hash_case, monkeypatch):
@@ -246,7 +257,7 @@ def test_known_hash_keeps_existing_handle_and_sidecar_gates(hash_case, obstacle)
     case = hash_case
     with ExitStack() as stack:
         if obstacle == "reader":
-            stack.enter_context(case.path.open("rb"))
+            stack.enter_context(case.path.open("r+b" if os.name == "nt" else "rb"))
         else:
             case.path.with_name(case.path.name + "-wal").write_bytes(b"Synthetic sidecar")
         with bank.mac_recovery_publication_guard(case.fixture.root) as guard:
@@ -371,6 +382,8 @@ def test_callback_source_ctime_only_change_requires_audited_exact_bytes_before_c
 def test_archived_known_hash_retry_is_audited_without_repeating_preflight(archived_case, monkeypatch, target):
     case = archived_case
     path = case.source if target == "source" else case.candidate
+    # A source receipt may need a strict coordinate rebind before the retryable hash.
+    sealed._ctime_only(case.source)
     passes = _during_real_reads(
         monkeypatch, path, lambda attempt: sealed._ctime_only(path) if attempt == 1 else None,
     )
@@ -379,8 +392,12 @@ def test_archived_known_hash_retry_is_audited_without_repeating_preflight(archiv
         receipt = archived._stage(case, guard, on_preflight=callback)
     callback.assert_called_once()
     assert len(passes) >= 2
-    records = [record for record in _records(receipt) if record["before_identity"]["ino"] == path.stat().st_ino]
-    _assert_audit(records, case.source_sha)
+    phase = "sealed_revalidation_source_hash" if target == "source" else "archived_revalidation_clone_hash"
+    records = [
+        record for record in _records(receipt)
+        if record["before_identity"]["ino"] == path.stat().st_ino and record["phase"] == phase
+    ]
+    _assert_audit(records, case.source_sha, phase=phase)
     assert receipt["candidate_sha256"] == hashlib.sha256(case.candidate.read_bytes()).hexdigest()
     archived._unchanged(case)
 
@@ -395,7 +412,7 @@ def test_preserved_readonly_clone_hash_can_retry_and_returns_its_proof(sealed_ca
         receipt = sealed._stage(case, guard)
     assert len(passes) >= 2
     assert receipt["preserved_sha256"] == case.source_sha
-    assert stat.S_IMODE(case.preserved.stat().st_mode) == 0o400
+    assert revalidation._source_mode(case.preserved.stat()) == 0o400
     records = [record for record in _records(receipt) if record["before_identity"]["ino"] == case.preserved.stat().st_ino]
     _assert_audit(records, case.source_sha)
     sealed._unchanged(case)

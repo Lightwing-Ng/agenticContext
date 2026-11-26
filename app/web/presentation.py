@@ -7,7 +7,7 @@ touches a Flask request, a service, or an application instance, so route modules
 import it directly instead of receiving it through the application factory.
 """
 
-# Code version: v1.5.3-codex.0
+# Code version: v1.5.4-codex.0
 
 from __future__ import annotations
 
@@ -30,7 +30,7 @@ from app.core.agent import (
     parse_agent_action,
     render_final_agent_action,
 )
-from app.core.date_display import DEFAULT_FULL_STYLE, format_datetime, format_time
+from app.core.foundation import DEFAULT_FULL_STYLE, format_datetime, format_time
 from app.core.providers import format_chatgpt_display_markdown, normalize_zhihu_rich_text
 from app.core.storage import DISPLAY_TIMEZONE
 from app.web.public_errors import public_exception_message

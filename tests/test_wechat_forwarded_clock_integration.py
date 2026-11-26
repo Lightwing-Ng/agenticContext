@@ -1,6 +1,6 @@
 """Native packet clock links survive projection, export, and reversible cache upgrades.
 
-Code version: v1.1.0-codex.0
+Code version: v1.1.1-codex.0
 """
 
 from contextlib import closing
@@ -104,7 +104,7 @@ def test_contact_reuses_pinned_minute_clock_only_with_attested_history_relocatio
     cache = analysis.contact_analysis_cache_path(fixture.store, CID)
 
     def cached_clock():
-        with sqlite3.connect(cache) as connection:
+        with closing(sqlite3.connect(cache)) as connection:
             return connection.execute(
                 "SELECT timestamp_label,source_clock FROM refs WHERE id=?", (target,)
             ).fetchone()

@@ -1,6 +1,6 @@
 """Persist and resume an interrupted coordinated WeChat exchange publication.
 
-Code version: v1.1.1-codex.0
+Code version: v1.1.2-codex.0
 """
 
 from contextlib import closing
@@ -25,6 +25,8 @@ _STATE_FILES = _TARGETS | {"contacts.sqlite3", "exclusions.json", "source_exclus
 
 
 def _sync_directory(directory):
+    if os.name == "nt":
+        return
     descriptor = os.open(directory, os.O_RDONLY)
     try:
         os.fsync(descriptor)
@@ -113,7 +115,7 @@ def prepare_publication(directory, replacements, backups, state):
         },
     }
     for path in [*replacements.values(), *backups.values()]:
-        with path.open("rb") as stream:
+        with path.open("r+b" if os.name == "nt" else "rb") as stream:
             os.fsync(stream.fileno())
     _write_payload(directory, payload)
 
@@ -322,7 +324,7 @@ def _prepare_rollback(
         })
         if candidate is not None:
             stage_snapshot[candidate] = stage_pins[target]
-            with candidate.open("rb") as stream:
+            with candidate.open("r+b" if os.name == "nt" else "rb") as stream:
                 os.fsync(stream.fileno())
     payload = {
         "version": 1,

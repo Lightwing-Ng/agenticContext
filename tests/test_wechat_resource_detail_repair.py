@@ -12,6 +12,8 @@ import sqlite3
 
 import pytest
 
+from app.core.owner_only_files import owner_only_problem
+
 from app.core import wechat_resource_detail_repair as repair
 from app.core import wechat_resource_details as details
 from app.core.wechat_archive import WechatArchiveRepository, _file_identity, _identifier, _time_fields
@@ -113,7 +115,7 @@ def test_staging_is_review_only_and_preserves_all_source_bytes(repair_fixture, t
     assert report["rejected"] == {}
     assert not target.exists()
     candidate = tmp_path / "candidate.json"
-    assert candidate.stat().st_mode & 0o777 == 0o600
+    assert owner_only_problem(candidate) == ""
     assert hashlib.sha256(candidate.read_bytes()).hexdigest() == report["candidate_sha256"]
     assert _source_bytes(f) == before
 
@@ -138,7 +140,7 @@ def test_publication_merges_existing_proof_and_drives_the_real_sql_reader(
     assert by_id[original["message_id"]] == original
     assert set(by_id) == {f.row["id"], row["id"]}
     assert rollback.read_bytes() == old_registry
-    assert rollback.stat().st_mode & 0o777 == 0o600
+    assert owner_only_problem(rollback) == ""
     result = WechatArchiveRepository(f.root).query(
         session=f.conversation["id"], query="second preserved", persist_event_cache=False,
     )

@@ -1,6 +1,6 @@
 """A stale scratch can advance only through preserved observations and exact journals.
 
-Code version: v1.0.1-codex.0
+Code version: v1.0.2-codex.0
 """
 
 from contextlib import closing
@@ -14,6 +14,7 @@ import pytest
 
 from app.core import wechat_macos_baseline_copy as sync
 from app.core import wechat_macos_recovery_bank as bank
+from app.core.owner_only_files import ensure_owner_only_directory
 from tests import test_wechat_macos_recovery_bank as fixtures
 from tests import test_wechat_macos_reparse as repairs
 
@@ -53,7 +54,9 @@ def _operation(fixture, tmp_path, *, kind="direct", append=False):
         expected_payload = dict(connection.execute("SELECT key,value FROM archive_info"))["payload_sha256"]
     directory = tmp_path / "private-workstation" / "old-failed-run"
     directory.parent.mkdir(mode=0o700)
+    ensure_owner_only_directory(directory.parent)
     directory.mkdir(mode=0o700)
+    ensure_owner_only_directory(directory)
     scratch = directory / "candidate.sqlite3"
     with closing(sqlite3.connect(fixture.bank_path)) as source, closing(sqlite3.connect(scratch)) as output:
         source.backup(output)
