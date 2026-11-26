@@ -1,4 +1,4 @@
-/* Code version: v1.8.0-codex.0 */
+/* Code version: v1.9.0-codex.0 */
 
 (function initializeWechatRefresh() {
     "use strict";
@@ -239,7 +239,7 @@
         return lines.join(" ");
     }
 
-    function accountProgress(snapshot) {
+    function refreshProgress(snapshot) {
         const sources = count(snapshot.parts_total);
         const current = count(snapshot.part_current);
         const records = count(snapshot.part_rows_total);
@@ -361,7 +361,7 @@
             returnFocus: activity?.trigger,
         });
         const showProgress = (snapshot) => {
-            const progress = account ? accountProgress(snapshot) : null;
+            const progress = refreshProgress(snapshot);
             notice?.update({
                 copy: progressCopy(snapshot, account, !progress || progress.unit !== "sources"),
                 progress,

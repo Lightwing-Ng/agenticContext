@@ -1,6 +1,6 @@
 # Visual Style Reference
 
-Documentation version: `v1.38.16-codex.0`
+Documentation version: `v1.38.17-codex.0`
 
 ## Authority
 
@@ -143,16 +143,16 @@ source coverage when counts are available.
 
 Refresh progress updates the existing waiting handle with an allowlisted phase,
 the current source ordinal, actual messages checked and possible updates identified.
-Unavailable or unverified sources remain explicit. Candidate counts are not saved
-counts; the result distinguishes new messages, restored placeholders and repaired
-message details only after publication. Account refresh adds a determinate meter
-for the current source's measured record processing. When a record total is
-unavailable and the selected source count is known, the meter measures completed
-sources. Its labels and the phase separate source processing from publication
-and verification. The indeterminate spinner, shared 420px card, material, and
-typography retain their existing roles. Updating an older handle respects the
-latest waiting task, and closing a notification keeps later progress updates from
-reopening it while the local task continues.
+Unavailable or unverified sources remain explicit. Candidate counts describe
+prospective changes. After publication, the result distinguishes new messages,
+restored placeholders, and repaired message details. Conversation and account refresh share the
+waiting card's determinate meter. It measures records within the current source
+when the refresh reports a record total. Otherwise it measures processed sources
+once the source count is known. The phase remains visible during verification and
+saving, even after the source meter reaches its total. The indeterminate spinner,
+shared 420px card, material, and typography retain their existing roles. Updating
+an older handle respects the latest waiting task. Closing a notification keeps
+later progress updates from reopening it while the local task continues.
 
 Starting a conversation or account refresh focuses the waiting card's close control.
 Closing it or pressing Escape returns focus to the Cache tasks trigger. The current

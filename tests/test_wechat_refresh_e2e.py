@@ -1,6 +1,6 @@
 """WeChat refresh actions retain shared geometry, scope, and honest progress.
 
-Code version: v1.5.0-codex.0
+Code version: v1.5.1-codex.0
 """
 
 from __future__ import annotations
@@ -199,8 +199,10 @@ def test_refresh_shows_immediate_progress_and_sends_only_one_pending_request(
         refresh.click(no_wait_after=True)
         expect(refresh).to_be_disabled()
         expect(refresh).to_have_attribute("aria-busy", "true")
-        expect(page.locator("#cache_wait_modal")).to_be_visible()
+        modal = page.locator("#cache_wait_modal")
+        expect(modal).to_be_visible()
         expect(page.locator("#cache_wait_modal_title")).to_have_text("Refreshing chat history")
+        expect(modal.get_by_role("progressbar")).to_have_count(0)
         refresh.evaluate("button => button.dispatchEvent(new MouseEvent('click', {bubbles:true}))")
         assert len(pending) == 1
         request = pending[0].request
@@ -515,12 +517,18 @@ def test_refresh_progress_stays_available_in_cache_tasks_after_dismissal(
         expect(close).to_have_css("opacity", "1")
         reading = "Reading source 2 of 7. 1,234 messages checked. 56 possible updates identified."
         expect(copy).to_have_text(reading)
-        assert "%" not in modal.inner_text()
         assert "synthetic-source" not in modal.inner_text()
         assert "Added" not in modal.inner_text()
-        expect(modal.get_by_role("progressbar")).to_have_count(0)
+        source_meter = modal.get_by_role("progressbar", name="WeChat refresh source processing progress")
+        expect(source_meter).to_have_attribute("aria-valuenow", "14")
+        expect(source_meter).to_have_attribute("aria-valuetext", "1 / 7 sources processed (14%)")
         geometry = modal.locator(".workspace-modal-dialog").bounding_box()
         assert geometry["width"] == pytest.approx(min(420, width - 32), abs=1)
+
+        snapshot.update(phase="comparing", part_rows_processed=1_234, part_rows_total=2_000)
+        record_meter = modal.get_by_role("progressbar", name="Source 2 of 7 record processing progress")
+        expect(record_meter).to_have_attribute("aria-valuenow", "61")
+        expect(record_meter).to_have_attribute("aria-valuetext", "1,234 / 2,000 records processed (61%)")
 
         close.click()
         expect(modal).to_be_hidden()
@@ -533,7 +541,7 @@ def test_refresh_progress_stays_available_in_cache_tasks_after_dismissal(
         expect(task).to_be_visible()
         expect(meter).to_be_visible()
         expect(row).to_contain_text("1 / 7 sources processed")
-        expect(row).to_contain_text(reading)
+        expect(row).to_contain_text("Comparing messages in source 2 of 7.")
 
         snapshot.update(
             phase="checking", parts_completed=7, part_current=0,
@@ -558,7 +566,10 @@ def test_refresh_progress_stays_available_in_cache_tasks_after_dismissal(
         expect(panel).to_be_hidden()
         expect(modal).to_be_visible()
         expect(close).to_be_focused()
-        expect(copy).to_have_text(f"Saving verified changes. 7 of 7 sources processed. {details}")
+        expect(copy).to_have_text(f"Saving verified changes. {details}")
+        expect(source_meter).to_have_attribute("aria-valuenow", "100")
+        expect(source_meter).to_have_attribute("aria-valuetext", "7 / 7 sources processed (100%)")
+        expect(refresh).to_be_disabled()
         page.keyboard.press("Escape")
         expect(modal).to_be_hidden()
         expect(trigger).to_be_focused()
