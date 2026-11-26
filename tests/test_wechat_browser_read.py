@@ -1,9 +1,9 @@
 """Cold pages remain responsive while exact verified results are built once.
 
-Code version: v1.2.1-codex.0
+Code version: v1.2.2-codex.0
 """
 
-from threading import Event
+from threading import Event, current_thread
 import time
 
 import pytest
@@ -239,38 +239,54 @@ def test_shutdown_stops_queued_work_without_waiting_for_blocked_validation(tmp_p
 
 @pytest.mark.parametrize("detail", (False, True))
 def test_real_route_returns_pending_shell_and_safe_poll_while_loader_blocked(session_app, monkeypatch, detail):
+    from app.core import wechat_browser_read as reads
     from app.core.wechat_archive import WechatArchiveRepository
     from app.web import local_resource_routes as routes
     from tests.test_wechat_resource_timeline import _session
 
     app, source_root = session_app
     entered, release = Event(), Event()
+    request_thread = current_thread()
+    loader_threads = []
+    readiness_waits = []
     original = routes.query_chat_history
 
+    class BoundedReadyEvent(Event):
+        def wait(self, timeout=None):
+            assert timeout is not None and 0 <= timeout <= reads.READY_GRACE_SECONDS < 1
+            readiness_waits.append(timeout)
+            return super().wait(timeout)
+
     def blocked(*args, **kwargs):
+        assert current_thread() is not request_thread
+        loader_threads.append(current_thread())
         entered.set()
         assert release.wait(4)
         return original(*args, **kwargs)
 
+    monkeypatch.setattr(reads, "Event", BoundedReadyEvent)
     monkeypatch.setattr(routes, "query_chat_history", blocked)
     service = app.extensions["wechat_browser_read"]
     detail_attaches = []
     timeline = WechatArchiveRepository._timeline_tables
 
     def observe_timeline(repository, *args, **options):
+        assert current_thread() is not request_thread
         detail_attaches.append((options.get("conversation_id"), options.get("strict")))
         return timeline(repository, *args, **options)
 
     try:
-        started = time.monotonic()
         address = "/browser?view=text&source=wechat&session_view=1"
         if detail:
             session = _session(source_root, kind="group")["id"]
             address += "&session=" + session
-            monkeypatch.setattr(WechatArchiveRepository, "_timeline_tables", observe_timeline)
+        monkeypatch.setattr(WechatArchiveRepository, "_timeline_tables", observe_timeline)
         response = app.test_client().get(address)
-        assert response.status_code == 200 and time.monotonic() - started < 1
+        assert response.status_code == 200
+        assert len(readiness_waits) <= 1
         assert entered.wait(1)
+        lane = "conversation" if detail else "list"
+        assert loader_threads == [service._threads[lane]]
         assert b"data-wechat-read-pending" in response.data
         assert b"No WeChat conversations" not in response.data
         assert b"No cached text found" not in response.data
